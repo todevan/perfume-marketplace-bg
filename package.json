@@ -1,0 +1,52 @@
+{
+  "name": "perfume-marketplace-bg",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "dev:worker": "vite build && wrangler dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && wrangler deploy --env=\"\"",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "test": "node scripts/validate-catalog.mjs && vitest run && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && vite build",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:e2e": "vite build && playwright test",
+    "check:release": "node scripts/check-production-readiness.mjs",
+    "backup:storage": "node scripts/backup-finalized-storage.mjs",
+    "restore:storage": "node scripts/restore-finalized-storage.mjs --confirm-restore",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset --local",
+    "db:lint": "supabase db lint --local --level warning",
+    "db:test": "supabase test db",
+    "validate:catalog": "node scripts/validate-catalog.mjs",
+    "seed:catalog": "node scripts/seed-catalog.mjs"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^1.25.0",
+    "@supabase/ssr": "^0.12.3",
+    "@supabase/supabase-js": "^2.110.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@sveltejs/adapter-cloudflare": "^7.2.9",
+    "@sveltejs/kit": "^2.70.1",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@testing-library/svelte": "^5.4.2",
+    "@types/node": "^24.10.0",
+    "jsdom": "^29.1.1",
+    "supabase": "^2.109.1",
+    "svelte": "5.56.6",
+    "svelte-check": "^4.7.3",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.9",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.114.0"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

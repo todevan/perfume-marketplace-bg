@@ -1,0 +1,88 @@
+{
+  "features": [
+    {
+      "id": "feat-001",
+      "name": "Production runtime and invite-only authentication",
+      "status": "complete",
+      "acceptance": [
+        "Cookie-aware Supabase SSR client",
+        "Fail-closed protected routes",
+        "Invite confirmation, onboarding, logout and phone verification actions",
+        "No secret keys exposed to the browser"
+      ]
+    },
+    {
+      "id": "feat-002",
+      "name": "Forward-only database security and workflow migrations",
+      "status": "complete",
+      "acceptance": [
+        "Migrations 003-007 apply after the existing foundation",
+        "Public profile projection prevents private-column leakage",
+        "Active beta membership gates writes",
+        "Moderation and audit transitions are report-bound"
+      ]
+    },
+    {
+      "id": "feat-003",
+      "name": "Typed repositories, server loads and listing workflow",
+      "status": "complete",
+      "acceptance": [
+        "UI receives DTOs instead of database rows",
+        "Production routes do not import demo data when Supabase is configured",
+        "Listing drafts, search, favorites, publishing and pending brands are persisted"
+      ]
+    },
+    {
+      "id": "feat-004",
+      "name": "Offers, chat, deals, reviews and notifications",
+      "status": "complete",
+      "acceptance": [
+        "Accepted offer creates a reserved deal and private conversation",
+        "Realtime chat remains RLS-isolated",
+        "Double confirmation unlocks a review"
+      ]
+    },
+    {
+      "id": "feat-005",
+      "name": "Upload finalization, reports, merchants and moderation",
+      "status": "complete",
+      "acceptance": [
+        "Only finalized sanitized listing images can be published",
+        "Reports and moderator actions create immutable audit records",
+        "Merchant verification is manual and separate from billing"
+      ]
+    },
+    {
+      "id": "feat-006",
+      "name": "Cloudflare configuration, live-test harness and launch documentation",
+      "status": "complete",
+      "acceptance": [
+        "Unit, type, build and local browser checks pass",
+        "Local Supabase test harness is documented and migrations pass the embedded PostgreSQL verification",
+        "All paid feature flags remain disabled",
+        "External-account launch gates are explicit and fail closed"
+      ]
+    },
+    {
+      "id": "feat-007",
+      "name": "Closed-beta deployment hardening checkpoint",
+      "status": "complete",
+      "acceptance": [
+        "Worker routes are authoritative for beta crawler controls and no public sitemap is exposed",
+        "Production workers.dev is disabled while staging remains testable with its own Images binding",
+        "Playwright is capped at two workers with a deterministic build and preview lifecycle",
+        "Production dependencies have no known vulnerabilities and the full audit has no high-severity findings",
+        "CI validates deployment contracts and dry-runs staging and production Worker bundles",
+        "The complete local release gate passes where credentials are not required and fails closed where external credentials are required",
+        "A local checkpoint commit records the verified hardening changes"
+      ],
+      "recommended_skills": [
+        {
+          "skill": "autonomous-builder",
+          "phase": "implementation",
+          "reason": "Coordinates the bounded implementation, verification and checkpoint workflow."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "project_name": "perfume-marketplace-bg",
+  "current_phase": "handoff",
+  "current_feature": null,
+  "status": "local_deployment_hardening_complete_with_external_staging_gates",
+  "auto_continue": false,
+  "tech_stack": {
+    "language": "TypeScript/SQL",
+    "framework": "SvelteKit 2 / Svelte 5",
+    "runtime": "Cloudflare Workers",
+    "backend": "Supabase"
+  },
+  "completed_features": [
+    "feat-001",
+    "feat-002",
+    "feat-003",
+    "feat-004",
+    "feat-005",
+    "feat-006",
+    "feat-007"
+  ],
+  "pending_features": [],
+  "session_count": 2,
+  "last_activity": "2026-07-26T11:14:10+03:00",
+  "next_action": "Provision the documented staging credentials, connect hosted Cloudflare and Supabase environments, perform the first real staging deploy, then run provider E2E, carrier, backup and restore rehearsals.",
+  "external_launch_gates": [
+    "Authenticated private GitHub remote",
+    "Cloudflare and hosted Supabase staging/production projects",
+    "Verified Resend sending domain",
+    "Twilio Bulgaria credentials and A1/Yettel/Vivacom carrier tests",
+    "Production domain and secrets",
+    "Legal approval and company/contact details",
+    "Real staging E2E and backup/restore rehearsal"
+  ],
+  "github": {
+    "enabled": false,
+    "reason": "The workspace is a local repository, but no authenticated private remote is configured."
+  },
+  "skill_dispatch": {
+    "guide_loaded": false,
+    "reason": "No workspace Claude skills guide is present; using the available autonomous-builder instructions and built-in testing/security tools.",
+    "skills_invoked": [
+      {
+        "skill": "autonomous-builder",
+        "invoked_at": "2026-07-26T10:58:00+03:00",
+        "feature": "feat-007",
+        "outcome": "success"
+      }
+    ]
+  }
+}

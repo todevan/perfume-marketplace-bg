@@ -1,0 +1,28 @@
+{
+  "errors": [
+    {
+      "id": "err-001",
+      "phase": "baseline",
+      "message": "System pnpm shim points to a missing Corepack module; Supabase CLI is not globally installed.",
+      "attempts": 2,
+      "resolution": "Prepend the bundled override, fallback and Node directories to PATH so nested package scripts also resolve the bundled pnpm.",
+      "status": "resolved"
+    },
+    {
+      "id": "err-002",
+      "phase": "local-supabase",
+      "message": "Supabase CLI 2.109 rejected deprecated [inbucket] and the obsolete auth.rate_limit.verify key.",
+      "attempts": 1,
+      "resolution": "Use [local_smtp] and only current rate-limit keys.",
+      "status": "resolved"
+    },
+    {
+      "id": "err-003",
+      "phase": "database-integration-tests",
+      "message": "Docker CLI is installed but the Docker Desktop daemon is not running, so the local Supabase stack cannot start yet.",
+      "attempts": 1,
+      "resolution": "Keep the project-local CLI/config/tests ready; do not start a system-level daemon without explicit user authority. Run live DB checks when Docker Desktop is available.",
+      "status": "external_blocker"
+    }
+  ]
+}

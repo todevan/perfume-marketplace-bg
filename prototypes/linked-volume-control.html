@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="bg">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Обем и остатък — интерактивен прототип</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+        --brand-main: #f3dfbf;
+        --brand-secondary: #f4ece1;
+        --brand-tertiary: #d6caba;
+        --ink-primary: #241c16;
+        --ink-secondary: #5f5147;
+        --action-primary: #4a3126;
+        --border-strong: #8a7967;
+        --focus: #2f5668;
+        --danger: #8d2f36;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        margin: 0;
+        background: var(--brand-secondary);
+        color: var(--ink-primary);
+      }
+
+      main {
+        width: min(100% - 32px, 760px);
+        margin: 48px auto;
+      }
+
+      .eyebrow,
+      h1,
+      label,
+      legend,
+      button {
+        font-style: italic;
+        font-weight: 700;
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        font-size: 0.875rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 6vw, 3.5rem);
+        line-height: 1.05;
+      }
+
+      .intro {
+        max-width: 62ch;
+        margin: 16px 0 28px;
+        color: var(--ink-secondary);
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+
+      .card {
+        padding: clamp(20px, 5vw, 40px);
+        border: 1px solid var(--border-strong);
+        border-radius: 18px;
+        background: var(--brand-main);
+        box-shadow: 0 18px 55px rgb(74 49 38 / 0.12);
+      }
+
+      .field + .field {
+        margin-top: 28px;
+      }
+
+      .field-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 10px;
+      }
+
+      label {
+        display: inline-block;
+        font-size: 0.9375rem;
+        line-height: 1.35;
+      }
+
+      output {
+        color: var(--ink-primary);
+        font-size: 1rem;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      select,
+      input[type="number"] {
+        width: 100%;
+        min-height: 48px;
+        border: 1px solid var(--border-strong);
+        border-radius: 10px;
+        background: var(--brand-secondary);
+        color: var(--ink-primary);
+        font: 400 1rem/1.4 Arial, "Helvetica Neue", Helvetica, sans-serif;
+      }
+
+      select {
+        margin-top: 8px;
+        padding: 10px 42px 10px 12px;
+      }
+
+      input[type="number"] {
+        max-width: 112px;
+        padding: 8px 10px;
+      }
+
+      select:focus-visible,
+      input:focus-visible,
+      button:focus-visible {
+        outline: 3px solid var(--focus);
+        outline-offset: 3px;
+      }
+
+      .range-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 112px;
+        align-items: center;
+        gap: 18px;
+      }
+
+      input[type="range"] {
+        width: 100%;
+        height: 44px;
+        margin: 0;
+        cursor: pointer;
+        accent-color: var(--action-primary);
+      }
+
+      input:disabled {
+        cursor: not-allowed;
+        opacity: 0.58;
+      }
+
+      .unit-input {
+        position: relative;
+      }
+
+      .unit-input input {
+        padding-right: 40px;
+      }
+
+      .unit {
+        position: absolute;
+        top: 50%;
+        right: 12px;
+        color: var(--ink-secondary);
+        font-size: 0.875rem;
+        pointer-events: none;
+        transform: translateY(-50%);
+      }
+
+      .quick-values {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .quick-values button {
+        min-height: 44px;
+        padding: 8px 12px;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        background: var(--brand-secondary);
+        color: var(--ink-primary);
+        cursor: pointer;
+        transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
+      }
+
+      .quick-values button:hover {
+        border-color: var(--action-primary);
+        background: var(--action-primary);
+        color: var(--brand-secondary);
+      }
+
+      .hint,
+      .formula {
+        margin: 10px 0 0;
+        color: var(--ink-secondary);
+        font-size: 0.9375rem;
+        line-height: 1.5;
+      }
+
+      .formula {
+        padding: 14px 16px;
+        border-left: 4px solid var(--action-primary);
+        background: rgb(244 236 225 / 0.72);
+      }
+
+      .error {
+        min-height: 1.4em;
+        margin: 8px 0 0;
+        color: var(--danger);
+        font-size: 0.875rem;
+      }
+
+      @media (max-width: 560px) {
+        main {
+          width: min(100% - 20px, 760px);
+          margin: 20px auto;
+        }
+
+        .range-row {
+          grid-template-columns: 1fr;
+          gap: 4px;
+        }
+
+        input[type="number"] {
+          max-width: none;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Форма за обява</p>
+      <h1>Обем и остатък</h1>
+      <p class="intro">
+        Двата контрола са свързани. При промяна на обема избраният процент се запазва и оставащите
+        милилитри се преизчисляват автоматично.
+      </p>
+
+      <section class="card" aria-labelledby="control-title">
+        <h2 id="control-title" hidden>Данни за състояние и количество</h2>
+
+        <div class="field">
+          <label for="condition">Състояние</label>
+          <select id="condition" name="condition">
+            <option value="sealed">Запечатан</option>
+            <option value="opened" selected>Отворен</option>
+            <option value="tester">Тестер</option>
+            <option value="sample">Фабрична мостра</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <div class="field-heading">
+            <label for="bottle-volume">Обем на флакона</label>
+            <output id="bottle-output" for="bottle-volume bottle-number">65 ml</output>
+          </div>
+          <div class="range-row">
+            <input
+              id="bottle-volume"
+              name="bottle_volume_ml"
+              type="range"
+              min="0.1"
+              max="500"
+              step="0.1"
+              value="65"
+              aria-describedby="bottle-hint"
+            />
+            <div class="unit-input">
+              <input
+                id="bottle-number"
+                type="number"
+                min="0.1"
+                max="500"
+                step="0.1"
+                value="65"
+                inputmode="decimal"
+                aria-label="Точен обем на флакона в милилитри"
+                aria-describedby="bottle-hint"
+              />
+              <span class="unit" aria-hidden="true">ml</span>
+            </div>
+          </div>
+          <div class="quick-values" aria-label="Често използвани обеми">
+            <button type="button" data-volume="30">30 ml</button>
+            <button type="button" data-volume="50">50 ml</button>
+            <button type="button" data-volume="75">75 ml</button>
+            <button type="button" data-volume="100">100 ml</button>
+            <button type="button" data-volume="125">125 ml</button>
+            <button type="button" data-volume="150">150 ml</button>
+            <button type="button" data-volume="200">200 ml</button>
+          </div>
+          <p class="hint" id="bottle-hint">Въведете оригиналния обем, изписан върху флакона или кутията.</p>
+        </div>
+
+        <div class="field">
+          <div class="field-heading">
+            <label for="remaining-percent">Остатък</label>
+            <output id="remaining-output" for="remaining-percent remaining-number">
+              29,9 ml (46%)
+            </output>
+          </div>
+          <div class="range-row">
+            <input
+              id="remaining-percent"
+              name="remaining_percent"
+              type="range"
+              min="0"
+              max="100"
+              step="0.1"
+              value="46"
+              aria-describedby="remaining-hint remaining-error"
+              aria-valuetext="29,9 милилитра, 46 процента"
+            />
+            <div class="unit-input">
+              <input
+                id="remaining-number"
+                name="remaining_ml"
+                type="number"
+                min="0"
+                max="65"
+                step="0.1"
+                value="29.9"
+                inputmode="decimal"
+                aria-label="Точен остатък в милилитри"
+                aria-describedby="remaining-hint remaining-error"
+              />
+              <span class="unit" aria-hidden="true">ml</span>
+            </div>
+          </div>
+          <p class="hint" id="remaining-hint">Плъзгачът работи в проценти; полето вдясно позволява точни ml.</p>
+          <p class="error" id="remaining-error" aria-live="polite"></p>
+        </div>
+
+        <p class="formula" id="formula">65 ml × 46% = 29,9 ml остатък.</p>
+      </section>
+    </main>
+
+    <script>
+      const condition = document.querySelector('#condition');
+      const bottleRange = document.querySelector('#bottle-volume');
+      const bottleNumber = document.querySelector('#bottle-number');
+      const remainingRange = document.querySelector('#remaining-percent');
+      const remainingNumber = document.querySelector('#remaining-number');
+      const bottleOutput = document.querySelector('#bottle-output');
+      const remainingOutput = document.querySelector('#remaining-output');
+      const remainingError = document.querySelector('#remaining-error');
+      const formula = document.querySelector('#formula');
+
+      let bottleMl = 65;
+      let remainingMl = 29.9;
+      let remainingValidationMessage = '';
+
+      const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+      const roundTenth = (value) => Math.round((value + Number.EPSILON) * 10) / 10;
+      const remainingPercent = () => roundTenth((remainingMl / bottleMl) * 100);
+      const formatNumber = (value) =>
+        new Intl.NumberFormat('bg-BG', { maximumFractionDigits: 1 }).format(value);
+
+      function render() {
+        const percent = remainingPercent();
+        const locked = condition.value === 'sealed';
+
+        bottleRange.value = String(bottleMl);
+        bottleNumber.value = String(bottleMl);
+        bottleOutput.value = `${formatNumber(bottleMl)} ml`;
+
+        remainingRange.value = String(percent);
+        remainingRange.disabled = locked;
+        remainingRange.setAttribute(
+          'aria-valuetext',
+          `${formatNumber(remainingMl)} милилитра, ${formatNumber(percent)} процента`,
+        );
+
+        remainingNumber.max = String(bottleMl);
+        remainingNumber.value = String(remainingMl);
+        remainingNumber.disabled = locked;
+        remainingNumber.setAttribute('aria-invalid', String(Boolean(remainingValidationMessage)));
+        remainingError.textContent = remainingValidationMessage;
+        remainingOutput.value = `${formatNumber(remainingMl)} ml (${formatNumber(percent)}%)`;
+        formula.textContent = `${formatNumber(bottleMl)} ml × ${formatNumber(percent)}% = ${formatNumber(remainingMl)} ml остатък.`;
+      }
+
+      function setBottle(value) {
+        const entered = Number(value);
+        if (!Number.isFinite(entered)) return;
+
+        const ratio = remainingMl / bottleMl;
+        bottleMl = roundTenth(clamp(entered, 0.1, 500));
+        remainingMl = roundTenth(bottleMl * ratio);
+        remainingValidationMessage = '';
+        render();
+      }
+
+      function setPercent(value) {
+        const entered = Number(value);
+        if (!Number.isFinite(entered)) return;
+
+        const percent = clamp(entered, 0, 100);
+        remainingMl = roundTenth((bottleMl * percent) / 100);
+        remainingValidationMessage = '';
+        render();
+      }
+
+      function setRemainingMl(value) {
+        const entered = Number(value);
+        if (!Number.isFinite(entered)) return;
+
+        remainingValidationMessage =
+          entered < 0
+            ? 'Остатъкът не може да е отрицателен.'
+            : entered > bottleMl
+              ? 'Остатъкът не може да е по-голям от обема на флакона.'
+              : '';
+        remainingMl = roundTenth(clamp(entered, 0, bottleMl));
+        render();
+      }
+
+      bottleRange.addEventListener('input', (event) => setBottle(event.currentTarget.value));
+      bottleNumber.addEventListener('input', (event) => {
+        if (event.currentTarget.value !== '') setBottle(event.currentTarget.value);
+      });
+      bottleNumber.addEventListener('blur', render);
+      remainingRange.addEventListener('input', (event) => setPercent(event.currentTarget.value));
+      remainingNumber.addEventListener('input', (event) => {
+        if (event.currentTarget.value !== '') setRemainingMl(event.currentTarget.value);
+      });
+      remainingNumber.addEventListener('blur', render);
+
+      condition.addEventListener('change', () => {
+        if (condition.value === 'sealed') remainingMl = bottleMl;
+        remainingValidationMessage = '';
+        render();
+      });
+
+      document.querySelectorAll('[data-volume]').forEach((button) => {
+        button.addEventListener('click', () => setBottle(button.dataset.volume));
+      });
+
+      render();
+    </script>
+  </body>
+</html>

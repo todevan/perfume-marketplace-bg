@@ -1,0 +1,1660 @@
+{
+  "$schema": "./brand-categories.schema.json",
+  "schemaVersion": 2,
+  "metadata": {
+    "catalogId": "bg-beta-brand-registry",
+    "locale": "bg-BG",
+    "lastReviewed": "2026-07-20",
+    "reviewCycle": "quarterly",
+    "defaultCurrency": "EUR",
+    "selectionPolicy": "Curated Bulgarian launch catalogue. Category lists are alphabetical relevance sets, not numerical popularity rankings. Audience belongs to the individual fragrance, not permanently to the brand.",
+    "collectionSemantics": "Editorial discovery collections only. A collection membership never auto-assigns an audience or segment to a listing.",
+    "supportedAliasTypes": [
+      "searchAlias",
+      "formerName",
+      "misspelling",
+      "transliteration",
+      "productLine"
+    ],
+    "normalization": {
+      "unicodeForm": "NFKC",
+      "caseFold": true,
+      "collapseWhitespace": true,
+      "stripDiacriticsForSearch": true
+    },
+    "provenance": {
+      "method": "manual_editorial_curation",
+      "sourceCatalogVersion": 1,
+      "externalImports": false,
+      "scraping": false
+    }
+  },
+  "otherBrandPolicy": {
+    "enabled": true,
+    "label": "Други",
+    "minLength": 2,
+    "maxLength": 80,
+    "publication": "immediate",
+    "moderationState": "pending_canonicalization",
+    "captureFields": [
+      "originalInput",
+      "normalizedKey",
+      "suggestedBrandId",
+      "provenance",
+      "auditTrail"
+    ],
+    "auditTrailRequired": true
+  },
+  "brands": [
+    {
+      "id": "brand-abercrombie-fitch",
+      "canonicalName": "Abercrombie & Fitch",
+      "aliases": []
+    },
+    {
+      "id": "brand-acqua-di-parma",
+      "canonicalName": "Acqua di Parma",
+      "aliases": []
+    },
+    {
+      "id": "brand-adidas",
+      "canonicalName": "Adidas",
+      "aliases": []
+    },
+    {
+      "id": "brand-afnan-perfumes",
+      "canonicalName": "Afnan Perfumes",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Afnan"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-ahmed-al-maghribi",
+      "canonicalName": "Ahmed Al Maghribi",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Ahmed Al Maghribi Perfumes"
+        },
+        {
+          "type": "transliteration",
+          "value": "Ahmad Al Maghraby"
+        },
+        {
+          "type": "transliteration",
+          "value": "Ahmed Al Magribi"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-ajmal",
+      "canonicalName": "Ajmal",
+      "aliases": [],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-akro",
+      "canonicalName": "Akro",
+      "aliases": []
+    },
+    {
+      "id": "brand-al-haramain-perfumes",
+      "canonicalName": "Al Haramain Perfumes",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Al Haramain"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-amouage",
+      "canonicalName": "Amouage",
+      "aliases": []
+    },
+    {
+      "id": "brand-antonio-banderas",
+      "canonicalName": "Antonio Banderas",
+      "aliases": []
+    },
+    {
+      "id": "brand-aquolina",
+      "canonicalName": "Aquolina",
+      "aliases": []
+    },
+    {
+      "id": "brand-aramis",
+      "canonicalName": "Aramis",
+      "aliases": []
+    },
+    {
+      "id": "brand-ard-al-zaafaran",
+      "canonicalName": "Ard Al Zaafaran",
+      "aliases": [
+        {
+          "type": "transliteration",
+          "value": "Ard Al Zafaran"
+        },
+        {
+          "type": "transliteration",
+          "value": "Ard Al Zaafran"
+        },
+        {
+          "type": "transliteration",
+          "value": "Ard Al Zaafaraan"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-ariana-grande",
+      "canonicalName": "Ariana Grande",
+      "aliases": []
+    },
+    {
+      "id": "brand-armaf",
+      "canonicalName": "Armaf",
+      "aliases": [],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-atelier-cologne",
+      "canonicalName": "Atelier Cologne",
+      "aliases": []
+    },
+    {
+      "id": "brand-atelier-des-ors",
+      "canonicalName": "Atelier des Ors",
+      "aliases": []
+    },
+    {
+      "id": "brand-atelier-materi",
+      "canonicalName": "Atelier Materi",
+      "aliases": []
+    },
+    {
+      "id": "brand-atkinsons",
+      "canonicalName": "Atkinsons",
+      "aliases": []
+    },
+    {
+      "id": "brand-avon",
+      "canonicalName": "Avon",
+      "aliases": []
+    },
+    {
+      "id": "brand-azzaro",
+      "canonicalName": "Azzaro",
+      "aliases": []
+    },
+    {
+      "id": "brand-balmain",
+      "canonicalName": "Balmain",
+      "aliases": []
+    },
+    {
+      "id": "brand-bdk-parfums",
+      "canonicalName": "BDK Parfums",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "bdk Parfums"
+        },
+        {
+          "type": "searchAlias",
+          "value": "BDK"
+        }
+      ]
+    },
+    {
+      "id": "brand-bentley",
+      "canonicalName": "Bentley",
+      "aliases": []
+    },
+    {
+      "id": "brand-billie-eilish",
+      "canonicalName": "Billie Eilish",
+      "aliases": []
+    },
+    {
+      "id": "brand-boadicea-the-victorious",
+      "canonicalName": "Boadicea the Victorious",
+      "aliases": []
+    },
+    {
+      "id": "brand-bond-no-9",
+      "canonicalName": "Bond No. 9",
+      "aliases": []
+    },
+    {
+      "id": "brand-borntostandout",
+      "canonicalName": "BORNTOSTANDOUT",
+      "aliases": []
+    },
+    {
+      "id": "brand-boucheron",
+      "canonicalName": "Boucheron",
+      "aliases": []
+    },
+    {
+      "id": "brand-brioni",
+      "canonicalName": "Brioni",
+      "aliases": []
+    },
+    {
+      "id": "brand-britney-spears",
+      "canonicalName": "Britney Spears",
+      "aliases": []
+    },
+    {
+      "id": "brand-burberry",
+      "canonicalName": "Burberry",
+      "aliases": []
+    },
+    {
+      "id": "brand-bvlgari",
+      "canonicalName": "Bvlgari",
+      "aliases": []
+    },
+    {
+      "id": "brand-byredo",
+      "canonicalName": "Byredo",
+      "aliases": []
+    },
+    {
+      "id": "brand-cacharel",
+      "canonicalName": "Cacharel",
+      "aliases": []
+    },
+    {
+      "id": "brand-calvin-klein",
+      "canonicalName": "Calvin Klein",
+      "aliases": []
+    },
+    {
+      "id": "brand-carner-barcelona",
+      "canonicalName": "Carner Barcelona",
+      "aliases": []
+    },
+    {
+      "id": "brand-carolina-herrera",
+      "canonicalName": "Carolina Herrera",
+      "aliases": []
+    },
+    {
+      "id": "brand-cartier",
+      "canonicalName": "Cartier",
+      "aliases": []
+    },
+    {
+      "id": "brand-cerruti",
+      "canonicalName": "Cerruti",
+      "aliases": []
+    },
+    {
+      "id": "brand-chabaud-maison-de-parfum",
+      "canonicalName": "Chabaud Maison de Parfum",
+      "aliases": []
+    },
+    {
+      "id": "brand-chanel",
+      "canonicalName": "Chanel",
+      "aliases": []
+    },
+    {
+      "id": "brand-chloe",
+      "canonicalName": "Chloé",
+      "aliases": []
+    },
+    {
+      "id": "brand-chopard",
+      "canonicalName": "Chopard",
+      "aliases": []
+    },
+    {
+      "id": "brand-christina-aguilera",
+      "canonicalName": "Christina Aguilera",
+      "aliases": []
+    },
+    {
+      "id": "brand-clinique",
+      "canonicalName": "Clinique",
+      "aliases": []
+    },
+    {
+      "id": "brand-clive-christian",
+      "canonicalName": "Clive Christian",
+      "aliases": []
+    },
+    {
+      "id": "brand-coach",
+      "canonicalName": "Coach",
+      "aliases": []
+    },
+    {
+      "id": "brand-comme-des-garcons",
+      "canonicalName": "Comme des Garçons",
+      "aliases": []
+    },
+    {
+      "id": "brand-creed",
+      "canonicalName": "Creed",
+      "aliases": []
+    },
+    {
+      "id": "brand-d-s-durga",
+      "canonicalName": "D.S. & Durga",
+      "aliases": []
+    },
+    {
+      "id": "brand-davidoff",
+      "canonicalName": "Davidoff",
+      "aliases": []
+    },
+    {
+      "id": "brand-diesel",
+      "canonicalName": "Diesel",
+      "aliases": []
+    },
+    {
+      "id": "brand-dior",
+      "canonicalName": "Dior",
+      "aliases": []
+    },
+    {
+      "id": "brand-diptyque",
+      "canonicalName": "Diptyque",
+      "aliases": []
+    },
+    {
+      "id": "brand-dkny",
+      "canonicalName": "DKNY",
+      "aliases": []
+    },
+    {
+      "id": "brand-dolce-gabbana",
+      "canonicalName": "Dolce&Gabbana",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Dolce & Gabbana"
+        },
+        {
+          "type": "searchAlias",
+          "value": "D&G"
+        }
+      ]
+    },
+    {
+      "id": "brand-dunhill",
+      "canonicalName": "Dunhill",
+      "aliases": []
+    },
+    {
+      "id": "brand-editions-de-parfums-frederic-malle",
+      "canonicalName": "Editions de Parfums Frédéric Malle",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Frédéric Malle"
+        },
+        {
+          "type": "searchAlias",
+          "value": "Frederic Malle"
+        }
+      ]
+    },
+    {
+      "id": "brand-electimuss-london",
+      "canonicalName": "Electimuss London",
+      "aliases": []
+    },
+    {
+      "id": "brand-elie-saab",
+      "canonicalName": "Elie Saab",
+      "aliases": []
+    },
+    {
+      "id": "brand-elizabeth-arden",
+      "canonicalName": "Elizabeth Arden",
+      "aliases": []
+    },
+    {
+      "id": "brand-ella-k-parfums-paris",
+      "canonicalName": "Ella K Parfums Paris",
+      "aliases": []
+    },
+    {
+      "id": "brand-escada",
+      "canonicalName": "Escada",
+      "aliases": []
+    },
+    {
+      "id": "brand-escentric-molecules",
+      "canonicalName": "Escentric Molecules",
+      "aliases": []
+    },
+    {
+      "id": "brand-essential-parfums",
+      "canonicalName": "Essential Parfums",
+      "aliases": []
+    },
+    {
+      "id": "brand-estee-lauder",
+      "canonicalName": "Estée Lauder",
+      "aliases": []
+    },
+    {
+      "id": "brand-etat-libre-d-orange",
+      "canonicalName": "Etat Libre d'Orange",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "État Libre d’Orange"
+        },
+        {
+          "type": "searchAlias",
+          "value": "Etat Libre d’Orange"
+        },
+        {
+          "type": "searchAlias",
+          "value": "ELDO"
+        }
+      ]
+    },
+    {
+      "id": "brand-ex-nihilo",
+      "canonicalName": "Ex Nihilo",
+      "aliases": []
+    },
+    {
+      "id": "brand-ferragamo",
+      "canonicalName": "Ferragamo",
+      "aliases": [
+        {
+          "type": "formerName",
+          "value": "Salvatore Ferragamo"
+        }
+      ]
+    },
+    {
+      "id": "brand-floraiku-paris",
+      "canonicalName": "Floraïku Paris",
+      "aliases": []
+    },
+    {
+      "id": "brand-fragrance-du-bois",
+      "canonicalName": "Fragrance du Bois",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Fragrance Du Bois"
+        }
+      ]
+    },
+    {
+      "id": "brand-fragrance-world",
+      "canonicalName": "Fragrance World",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Fragrance World Perfumes"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-francesca-bianchi-perfumes",
+      "canonicalName": "Francesca Bianchi Perfumes",
+      "aliases": []
+    },
+    {
+      "id": "brand-french-avenue",
+      "canonicalName": "French Avenue",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "French Avenue Perfumes"
+        },
+        {
+          "type": "searchAlias",
+          "value": "French Avenue by Fragrance World"
+        }
+      ],
+      "parentBrandId": "brand-fragrance-world",
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-fugazzi",
+      "canonicalName": "Fugazzi",
+      "aliases": []
+    },
+    {
+      "id": "brand-furla",
+      "canonicalName": "Furla",
+      "aliases": []
+    },
+    {
+      "id": "brand-giardini-di-toscana",
+      "canonicalName": "Giardini di Toscana",
+      "aliases": []
+    },
+    {
+      "id": "brand-giorgio-armani",
+      "canonicalName": "Giorgio Armani",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Armani"
+        }
+      ]
+    },
+    {
+      "id": "brand-gisada",
+      "canonicalName": "Gisada",
+      "aliases": []
+    },
+    {
+      "id": "brand-givenchy",
+      "canonicalName": "Givenchy",
+      "aliases": []
+    },
+    {
+      "id": "brand-goldfield-banks",
+      "canonicalName": "Goldfield & Banks",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Goldfield & Banks Australia"
+        }
+      ]
+    },
+    {
+      "id": "brand-gucci",
+      "canonicalName": "Gucci",
+      "aliases": []
+    },
+    {
+      "id": "brand-guerlain",
+      "canonicalName": "Guerlain",
+      "aliases": []
+    },
+    {
+      "id": "brand-guess",
+      "canonicalName": "Guess",
+      "aliases": []
+    },
+    {
+      "id": "brand-hermes",
+      "canonicalName": "Hermès",
+      "aliases": []
+    },
+    {
+      "id": "brand-histoires-de-parfums",
+      "canonicalName": "Histoires de Parfums",
+      "aliases": []
+    },
+    {
+      "id": "brand-hugo-boss",
+      "canonicalName": "Hugo Boss",
+      "aliases": []
+    },
+    {
+      "id": "brand-imaginary-authors",
+      "canonicalName": "Imaginary Authors",
+      "aliases": []
+    },
+    {
+      "id": "brand-initio-parfums-prives",
+      "canonicalName": "Initio Parfums Privés",
+      "aliases": []
+    },
+    {
+      "id": "brand-issey-miyake",
+      "canonicalName": "Issey Miyake",
+      "aliases": []
+    },
+    {
+      "id": "brand-jaguar",
+      "canonicalName": "Jaguar",
+      "aliases": []
+    },
+    {
+      "id": "brand-jean-paul-gaultier",
+      "canonicalName": "Jean Paul Gaultier",
+      "aliases": []
+    },
+    {
+      "id": "brand-jennifer-lopez",
+      "canonicalName": "Jennifer Lopez",
+      "aliases": []
+    },
+    {
+      "id": "brand-jeroboam",
+      "canonicalName": "Jeroboam",
+      "aliases": []
+    },
+    {
+      "id": "brand-jimmy-choo",
+      "canonicalName": "Jimmy Choo",
+      "aliases": []
+    },
+    {
+      "id": "brand-jo-malone-london",
+      "canonicalName": "Jo Malone London",
+      "aliases": []
+    },
+    {
+      "id": "brand-joop",
+      "canonicalName": "Joop!",
+      "aliases": []
+    },
+    {
+      "id": "brand-jovoy-paris",
+      "canonicalName": "Jovoy Paris",
+      "aliases": []
+    },
+    {
+      "id": "brand-juicy-couture",
+      "canonicalName": "Juicy Couture",
+      "aliases": []
+    },
+    {
+      "id": "brand-juliette-has-a-gun",
+      "canonicalName": "Juliette Has a Gun",
+      "aliases": []
+    },
+    {
+      "id": "brand-kajal-perfumes-paris",
+      "canonicalName": "Kajal Perfumes Paris",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Kajal"
+        }
+      ]
+    },
+    {
+      "id": "brand-karl-lagerfeld",
+      "canonicalName": "Karl Lagerfeld",
+      "aliases": []
+    },
+    {
+      "id": "brand-kenzo",
+      "canonicalName": "Kenzo",
+      "aliases": []
+    },
+    {
+      "id": "brand-kerosene",
+      "canonicalName": "Kerosene",
+      "aliases": []
+    },
+    {
+      "id": "brand-khadlaj-perfumes",
+      "canonicalName": "Khadlaj Perfumes",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Khadlaj"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-kilian-paris",
+      "canonicalName": "KILIAN Paris",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Kilian"
+        },
+        {
+          "type": "formerName",
+          "value": "By Kilian"
+        },
+        {
+          "type": "misspelling",
+          "value": "Killian Paris"
+        }
+      ]
+    },
+    {
+      "id": "brand-l-artisan-parfumeur",
+      "canonicalName": "L'Artisan Parfumeur",
+      "aliases": []
+    },
+    {
+      "id": "brand-laboratorio-olfattivo",
+      "canonicalName": "Laboratorio Olfattivo",
+      "aliases": []
+    },
+    {
+      "id": "brand-lacoste",
+      "canonicalName": "Lacoste",
+      "aliases": []
+    },
+    {
+      "id": "brand-lalique",
+      "canonicalName": "Lalique",
+      "aliases": []
+    },
+    {
+      "id": "brand-lancome",
+      "canonicalName": "Lancôme",
+      "aliases": []
+    },
+    {
+      "id": "brand-lanvin",
+      "canonicalName": "Lanvin",
+      "aliases": []
+    },
+    {
+      "id": "brand-lattafa-perfumes",
+      "canonicalName": "Lattafa Perfumes",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Lattafa"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-le-labo",
+      "canonicalName": "Le Labo",
+      "aliases": []
+    },
+    {
+      "id": "brand-liquides-imaginaires",
+      "canonicalName": "Liquides Imaginaires",
+      "aliases": []
+    },
+    {
+      "id": "brand-loewe",
+      "canonicalName": "Loewe",
+      "aliases": []
+    },
+    {
+      "id": "brand-lorenzo-pazzaglia",
+      "canonicalName": "Lorenzo Pazzaglia",
+      "aliases": []
+    },
+    {
+      "id": "brand-louis-vuitton",
+      "canonicalName": "Louis Vuitton",
+      "aliases": []
+    },
+    {
+      "id": "brand-m-micallef",
+      "canonicalName": "M.Micallef",
+      "aliases": []
+    },
+    {
+      "id": "brand-maison-alhambra",
+      "canonicalName": "Maison Alhambra",
+      "aliases": [
+        {
+          "type": "misspelling",
+          "value": "Maison Al Hambra"
+        },
+        {
+          "type": "searchAlias",
+          "value": "Maison Alhambra by Lattafa"
+        }
+      ],
+      "parentBrandId": "brand-lattafa-perfumes",
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-maison-crivelli",
+      "canonicalName": "Maison Crivelli",
+      "aliases": []
+    },
+    {
+      "id": "brand-maison-francis-kurkdjian",
+      "canonicalName": "Maison Francis Kurkdjian",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "MFK"
+        }
+      ]
+    },
+    {
+      "id": "brand-maison-margiela",
+      "canonicalName": "Maison Margiela",
+      "aliases": [
+        {
+          "type": "formerName",
+          "value": "Maison Martin Margiela"
+        },
+        {
+          "type": "productLine",
+          "value": "Replica"
+        }
+      ]
+    },
+    {
+      "id": "brand-mancera",
+      "canonicalName": "Mancera",
+      "aliases": []
+    },
+    {
+      "id": "brand-marc-jacobs",
+      "canonicalName": "Marc Jacobs",
+      "aliases": [
+        {
+          "type": "misspelling",
+          "value": "Mark Jacobs"
+        }
+      ]
+    },
+    {
+      "id": "brand-marc-antoine-barrois",
+      "canonicalName": "Marc-Antoine Barrois",
+      "aliases": []
+    },
+    {
+      "id": "brand-masque-milano",
+      "canonicalName": "Masque Milano",
+      "aliases": []
+    },
+    {
+      "id": "brand-matiere-premiere",
+      "canonicalName": "Matiere Premiere",
+      "aliases": []
+    },
+    {
+      "id": "brand-memo-paris",
+      "canonicalName": "Memo Paris",
+      "aliases": []
+    },
+    {
+      "id": "brand-mercedes-benz",
+      "canonicalName": "Mercedes-Benz",
+      "aliases": []
+    },
+    {
+      "id": "brand-michael-kors",
+      "canonicalName": "Michael Kors",
+      "aliases": []
+    },
+    {
+      "id": "brand-miller-harris",
+      "canonicalName": "Miller Harris",
+      "aliases": []
+    },
+    {
+      "id": "brand-missoni",
+      "canonicalName": "Missoni",
+      "aliases": []
+    },
+    {
+      "id": "brand-mizensir",
+      "canonicalName": "Mizensir",
+      "aliases": []
+    },
+    {
+      "id": "brand-molinard",
+      "canonicalName": "Molinard",
+      "aliases": []
+    },
+    {
+      "id": "brand-moncler",
+      "canonicalName": "Moncler",
+      "aliases": []
+    },
+    {
+      "id": "brand-montale",
+      "canonicalName": "Montale",
+      "aliases": []
+    },
+    {
+      "id": "brand-montblanc",
+      "canonicalName": "Montblanc",
+      "aliases": []
+    },
+    {
+      "id": "brand-moschino",
+      "canonicalName": "Moschino",
+      "aliases": []
+    },
+    {
+      "id": "brand-mugler",
+      "canonicalName": "Mugler",
+      "aliases": []
+    },
+    {
+      "id": "brand-narciso-rodriguez",
+      "canonicalName": "Narciso Rodriguez",
+      "aliases": []
+    },
+    {
+      "id": "brand-nasomatto",
+      "canonicalName": "Nasomatto",
+      "aliases": []
+    },
+    {
+      "id": "brand-nina-ricci",
+      "canonicalName": "Nina Ricci",
+      "aliases": []
+    },
+    {
+      "id": "brand-nishane",
+      "canonicalName": "Nishane",
+      "aliases": []
+    },
+    {
+      "id": "brand-nobile-1942",
+      "canonicalName": "Nobile 1942",
+      "aliases": []
+    },
+    {
+      "id": "brand-obvious",
+      "canonicalName": "Obvious",
+      "aliases": []
+    },
+    {
+      "id": "brand-omanluxury",
+      "canonicalName": "OMANLUXURY",
+      "aliases": []
+    },
+    {
+      "id": "brand-ormonde-jayne",
+      "canonicalName": "Ormonde Jayne",
+      "aliases": []
+    },
+    {
+      "id": "brand-orto-parisi",
+      "canonicalName": "Orto Parisi",
+      "aliases": []
+    },
+    {
+      "id": "brand-parfums-de-marly",
+      "canonicalName": "Parfums de Marly",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "PDM"
+        }
+      ]
+    },
+    {
+      "id": "brand-parfums-dusita",
+      "canonicalName": "Parfums Dusita",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Dusita"
+        }
+      ]
+    },
+    {
+      "id": "brand-paris-corner",
+      "canonicalName": "Paris Corner",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Paris Corner Perfumes"
+        }
+      ],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-penhaligon-s",
+      "canonicalName": "Penhaligon's",
+      "aliases": []
+    },
+    {
+      "id": "brand-perris-monte-carlo",
+      "canonicalName": "Perris Monte Carlo",
+      "aliases": []
+    },
+    {
+      "id": "brand-philipp-plein",
+      "canonicalName": "Philipp Plein",
+      "aliases": []
+    },
+    {
+      "id": "brand-police",
+      "canonicalName": "Police",
+      "aliases": []
+    },
+    {
+      "id": "brand-prada",
+      "canonicalName": "Prada",
+      "aliases": []
+    },
+    {
+      "id": "brand-profumum-roma",
+      "canonicalName": "Profumum Roma",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "PROFVMVM ROMA"
+        }
+      ]
+    },
+    {
+      "id": "brand-puredistance",
+      "canonicalName": "Puredistance",
+      "aliases": []
+    },
+    {
+      "id": "brand-rabanne",
+      "canonicalName": "Rabanne",
+      "aliases": [
+        {
+          "type": "formerName",
+          "value": "Paco Rabanne"
+        }
+      ]
+    },
+    {
+      "id": "brand-ralph-lauren",
+      "canonicalName": "Ralph Lauren",
+      "aliases": []
+    },
+    {
+      "id": "brand-ramon-monegal",
+      "canonicalName": "Ramon Monegal",
+      "aliases": []
+    },
+    {
+      "id": "brand-rasasi",
+      "canonicalName": "Rasasi",
+      "aliases": [],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-roberto-cavalli",
+      "canonicalName": "Roberto Cavalli",
+      "aliases": []
+    },
+    {
+      "id": "brand-rochas",
+      "canonicalName": "Rochas",
+      "aliases": []
+    },
+    {
+      "id": "brand-roja",
+      "canonicalName": "ROJA",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Roja Parfums"
+        },
+        {
+          "type": "searchAlias",
+          "value": "ROJA London"
+        }
+      ]
+    },
+    {
+      "id": "brand-room-1015",
+      "canonicalName": "Room 1015",
+      "aliases": []
+    },
+    {
+      "id": "brand-rosendo-mateu",
+      "canonicalName": "Rosendo Mateu",
+      "aliases": []
+    },
+    {
+      "id": "brand-serge-lutens",
+      "canonicalName": "Serge Lutens",
+      "aliases": []
+    },
+    {
+      "id": "brand-shiseido",
+      "canonicalName": "Shiseido",
+      "aliases": []
+    },
+    {
+      "id": "brand-simone-andreoli",
+      "canonicalName": "Simone Andreoli",
+      "aliases": []
+    },
+    {
+      "id": "brand-sol-de-janeiro",
+      "canonicalName": "Sol de Janeiro",
+      "aliases": []
+    },
+    {
+      "id": "brand-sospiro",
+      "canonicalName": "Sospiro",
+      "aliases": []
+    },
+    {
+      "id": "brand-stephane-humbert-lucas-777",
+      "canonicalName": "Stéphane Humbert Lucas 777",
+      "aliases": []
+    },
+    {
+      "id": "brand-swiss-arabian",
+      "canonicalName": "Swiss Arabian",
+      "aliases": [],
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-tauer-perfumes",
+      "canonicalName": "Tauer Perfumes",
+      "aliases": []
+    },
+    {
+      "id": "brand-thameen-london",
+      "canonicalName": "Thameen London",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Thameen"
+        }
+      ]
+    },
+    {
+      "id": "brand-the-house-of-oud",
+      "canonicalName": "The House of Oud",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "THoO"
+        }
+      ]
+    },
+    {
+      "id": "brand-theodoros-kalotinis",
+      "canonicalName": "Theodoros Kalotinis",
+      "aliases": []
+    },
+    {
+      "id": "brand-thomas-kosmala",
+      "canonicalName": "Thomas Kosmala",
+      "aliases": []
+    },
+    {
+      "id": "brand-tiziana-terenzi",
+      "canonicalName": "Tiziana Terenzi",
+      "aliases": []
+    },
+    {
+      "id": "brand-tom-ford",
+      "canonicalName": "Tom Ford",
+      "aliases": []
+    },
+    {
+      "id": "brand-trussardi",
+      "canonicalName": "Trussardi",
+      "aliases": []
+    },
+    {
+      "id": "brand-une-nuit-nomade",
+      "canonicalName": "Une Nuit Nomade",
+      "aliases": []
+    },
+    {
+      "id": "brand-valentino",
+      "canonicalName": "Valentino",
+      "aliases": []
+    },
+    {
+      "id": "brand-versace",
+      "canonicalName": "Versace",
+      "aliases": []
+    },
+    {
+      "id": "brand-viktor-rolf",
+      "canonicalName": "Viktor&Rolf",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Viktor & Rolf"
+        }
+      ]
+    },
+    {
+      "id": "brand-vilhelm-parfumerie",
+      "canonicalName": "Vilhelm Parfumerie",
+      "aliases": []
+    },
+    {
+      "id": "brand-widian",
+      "canonicalName": "Widian",
+      "aliases": []
+    },
+    {
+      "id": "brand-xerjoff",
+      "canonicalName": "Xerjoff",
+      "aliases": []
+    },
+    {
+      "id": "brand-yves-saint-laurent",
+      "canonicalName": "Yves Saint Laurent",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "YSL"
+        }
+      ]
+    },
+    {
+      "id": "brand-zadig-voltaire",
+      "canonicalName": "Zadig&Voltaire",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Zadig & Voltaire"
+        }
+      ]
+    },
+    {
+      "id": "brand-zarkoperfume",
+      "canonicalName": "Zarkoperfume",
+      "aliases": []
+    },
+    {
+      "id": "brand-zimaya",
+      "canonicalName": "Zimaya",
+      "aliases": [
+        {
+          "type": "searchAlias",
+          "value": "Zimaya Perfumes"
+        },
+        {
+          "type": "searchAlias",
+          "value": "Zimaya by Afnan"
+        }
+      ],
+      "parentBrandId": "brand-afnan-perfumes",
+      "originCountryCode": "AE"
+    },
+    {
+      "id": "brand-zoologist",
+      "canonicalName": "Zoologist",
+      "aliases": []
+    }
+  ],
+  "collections": {
+    "men": {
+      "label": "Мъжки",
+      "dimension": "audience",
+      "value": "men",
+      "expectedBrandCount": 80,
+      "brandIds": [
+        "brand-abercrombie-fitch",
+        "brand-acqua-di-parma",
+        "brand-adidas",
+        "brand-afnan-perfumes",
+        "brand-ajmal",
+        "brand-al-haramain-perfumes",
+        "brand-amouage",
+        "brand-antonio-banderas",
+        "brand-aramis",
+        "brand-armaf",
+        "brand-atkinsons",
+        "brand-azzaro",
+        "brand-bentley",
+        "brand-boucheron",
+        "brand-brioni",
+        "brand-burberry",
+        "brand-bvlgari",
+        "brand-calvin-klein",
+        "brand-carolina-herrera",
+        "brand-cartier",
+        "brand-cerruti",
+        "brand-chanel",
+        "brand-coach",
+        "brand-creed",
+        "brand-davidoff",
+        "brand-diesel",
+        "brand-dior",
+        "brand-dolce-gabbana",
+        "brand-dunhill",
+        "brand-ferragamo",
+        "brand-french-avenue",
+        "brand-giorgio-armani",
+        "brand-gisada",
+        "brand-givenchy",
+        "brand-gucci",
+        "brand-guerlain",
+        "brand-guess",
+        "brand-hermes",
+        "brand-hugo-boss",
+        "brand-issey-miyake",
+        "brand-jaguar",
+        "brand-jean-paul-gaultier",
+        "brand-jimmy-choo",
+        "brand-joop",
+        "brand-karl-lagerfeld",
+        "brand-kenzo",
+        "brand-kilian-paris",
+        "brand-lacoste",
+        "brand-lalique",
+        "brand-lattafa-perfumes",
+        "brand-loewe",
+        "brand-louis-vuitton",
+        "brand-maison-alhambra",
+        "brand-maison-francis-kurkdjian",
+        "brand-mancera",
+        "brand-mercedes-benz",
+        "brand-missoni",
+        "brand-moncler",
+        "brand-montale",
+        "brand-montblanc",
+        "brand-moschino",
+        "brand-narciso-rodriguez",
+        "brand-nasomatto",
+        "brand-nishane",
+        "brand-parfums-de-marly",
+        "brand-philipp-plein",
+        "brand-police",
+        "brand-prada",
+        "brand-rabanne",
+        "brand-ralph-lauren",
+        "brand-rasasi",
+        "brand-rochas",
+        "brand-roja",
+        "brand-swiss-arabian",
+        "brand-tom-ford",
+        "brand-valentino",
+        "brand-versace",
+        "brand-viktor-rolf",
+        "brand-xerjoff",
+        "brand-yves-saint-laurent"
+      ]
+    },
+    "women": {
+      "label": "Дамски",
+      "dimension": "audience",
+      "value": "women",
+      "expectedBrandCount": 80,
+      "brandIds": [
+        "brand-abercrombie-fitch",
+        "brand-afnan-perfumes",
+        "brand-al-haramain-perfumes",
+        "brand-amouage",
+        "brand-aquolina",
+        "brand-ariana-grande",
+        "brand-armaf",
+        "brand-avon",
+        "brand-balmain",
+        "brand-billie-eilish",
+        "brand-boucheron",
+        "brand-britney-spears",
+        "brand-burberry",
+        "brand-bvlgari",
+        "brand-cacharel",
+        "brand-calvin-klein",
+        "brand-carolina-herrera",
+        "brand-cartier",
+        "brand-chanel",
+        "brand-chloe",
+        "brand-chopard",
+        "brand-christina-aguilera",
+        "brand-clinique",
+        "brand-coach",
+        "brand-davidoff",
+        "brand-dior",
+        "brand-dkny",
+        "brand-dolce-gabbana",
+        "brand-elie-saab",
+        "brand-elizabeth-arden",
+        "brand-escada",
+        "brand-estee-lauder",
+        "brand-ferragamo",
+        "brand-french-avenue",
+        "brand-furla",
+        "brand-giorgio-armani",
+        "brand-givenchy",
+        "brand-gucci",
+        "brand-guerlain",
+        "brand-guess",
+        "brand-hermes",
+        "brand-hugo-boss",
+        "brand-issey-miyake",
+        "brand-jean-paul-gaultier",
+        "brand-jennifer-lopez",
+        "brand-jimmy-choo",
+        "brand-jo-malone-london",
+        "brand-juicy-couture",
+        "brand-juliette-has-a-gun",
+        "brand-karl-lagerfeld",
+        "brand-kenzo",
+        "brand-kilian-paris",
+        "brand-lacoste",
+        "brand-lalique",
+        "brand-lancome",
+        "brand-lanvin",
+        "brand-lattafa-perfumes",
+        "brand-maison-margiela",
+        "brand-marc-jacobs",
+        "brand-michael-kors",
+        "brand-montale",
+        "brand-montblanc",
+        "brand-moschino",
+        "brand-mugler",
+        "brand-narciso-rodriguez",
+        "brand-nina-ricci",
+        "brand-parfums-de-marly",
+        "brand-prada",
+        "brand-rabanne",
+        "brand-roberto-cavalli",
+        "brand-rochas",
+        "brand-shiseido",
+        "brand-sol-de-janeiro",
+        "brand-tom-ford",
+        "brand-trussardi",
+        "brand-valentino",
+        "brand-versace",
+        "brand-viktor-rolf",
+        "brand-yves-saint-laurent",
+        "brand-zadig-voltaire"
+      ]
+    },
+    "unisex": {
+      "label": "Унисекс",
+      "dimension": "audience",
+      "value": "unisex",
+      "expectedBrandCount": 80,
+      "brandIds": [
+        "brand-acqua-di-parma",
+        "brand-afnan-perfumes",
+        "brand-ajmal",
+        "brand-al-haramain-perfumes",
+        "brand-amouage",
+        "brand-armaf",
+        "brand-atelier-cologne",
+        "brand-atkinsons",
+        "brand-bdk-parfums",
+        "brand-boadicea-the-victorious",
+        "brand-bond-no-9",
+        "brand-byredo",
+        "brand-calvin-klein",
+        "brand-carner-barcelona",
+        "brand-chopard",
+        "brand-clive-christian",
+        "brand-comme-des-garcons",
+        "brand-creed",
+        "brand-diptyque",
+        "brand-electimuss-london",
+        "brand-escentric-molecules",
+        "brand-essential-parfums",
+        "brand-etat-libre-d-orange",
+        "brand-ex-nihilo",
+        "brand-fragrance-du-bois",
+        "brand-francesca-bianchi-perfumes",
+        "brand-french-avenue",
+        "brand-giardini-di-toscana",
+        "brand-goldfield-banks",
+        "brand-guerlain",
+        "brand-hermes",
+        "brand-histoires-de-parfums",
+        "brand-initio-parfums-prives",
+        "brand-jo-malone-london",
+        "brand-jovoy-paris",
+        "brand-kajal-perfumes-paris",
+        "brand-kerosene",
+        "brand-khadlaj-perfumes",
+        "brand-kilian-paris",
+        "brand-laboratorio-olfattivo",
+        "brand-l-artisan-parfumeur",
+        "brand-lattafa-perfumes",
+        "brand-le-labo",
+        "brand-liquides-imaginaires",
+        "brand-louis-vuitton",
+        "brand-maison-alhambra",
+        "brand-maison-crivelli",
+        "brand-maison-francis-kurkdjian",
+        "brand-maison-margiela",
+        "brand-mancera",
+        "brand-matiere-premiere",
+        "brand-memo-paris",
+        "brand-miller-harris",
+        "brand-molinard",
+        "brand-montale",
+        "brand-nasomatto",
+        "brand-nishane",
+        "brand-obvious",
+        "brand-ormonde-jayne",
+        "brand-orto-parisi",
+        "brand-parfums-de-marly",
+        "brand-paris-corner",
+        "brand-penhaligon-s",
+        "brand-profumum-roma",
+        "brand-roja",
+        "brand-room-1015",
+        "brand-serge-lutens",
+        "brand-sospiro",
+        "brand-swiss-arabian",
+        "brand-tauer-perfumes",
+        "brand-thameen-london",
+        "brand-the-house-of-oud",
+        "brand-thomas-kosmala",
+        "brand-tiziana-terenzi",
+        "brand-tom-ford",
+        "brand-vilhelm-parfumerie",
+        "brand-widian",
+        "brand-xerjoff",
+        "brand-zarkoperfume",
+        "brand-zimaya"
+      ]
+    },
+    "niche": {
+      "label": "Нишови",
+      "dimension": "segment",
+      "value": "niche",
+      "expectedBrandCount": 80,
+      "brandIds": [
+        "brand-akro",
+        "brand-amouage",
+        "brand-atelier-des-ors",
+        "brand-atelier-materi",
+        "brand-bdk-parfums",
+        "brand-boadicea-the-victorious",
+        "brand-borntostandout",
+        "brand-byredo",
+        "brand-carner-barcelona",
+        "brand-chabaud-maison-de-parfum",
+        "brand-clive-christian",
+        "brand-creed",
+        "brand-d-s-durga",
+        "brand-diptyque",
+        "brand-editions-de-parfums-frederic-malle",
+        "brand-electimuss-london",
+        "brand-ella-k-parfums-paris",
+        "brand-escentric-molecules",
+        "brand-essential-parfums",
+        "brand-etat-libre-d-orange",
+        "brand-ex-nihilo",
+        "brand-floraiku-paris",
+        "brand-fragrance-du-bois",
+        "brand-francesca-bianchi-perfumes",
+        "brand-fugazzi",
+        "brand-giardini-di-toscana",
+        "brand-goldfield-banks",
+        "brand-histoires-de-parfums",
+        "brand-imaginary-authors",
+        "brand-initio-parfums-prives",
+        "brand-jeroboam",
+        "brand-jovoy-paris",
+        "brand-juliette-has-a-gun",
+        "brand-kajal-perfumes-paris",
+        "brand-kerosene",
+        "brand-kilian-paris",
+        "brand-laboratorio-olfattivo",
+        "brand-l-artisan-parfumeur",
+        "brand-le-labo",
+        "brand-liquides-imaginaires",
+        "brand-lorenzo-pazzaglia",
+        "brand-m-micallef",
+        "brand-maison-crivelli",
+        "brand-maison-francis-kurkdjian",
+        "brand-mancera",
+        "brand-marc-antoine-barrois",
+        "brand-masque-milano",
+        "brand-matiere-premiere",
+        "brand-memo-paris",
+        "brand-mizensir",
+        "brand-montale",
+        "brand-nasomatto",
+        "brand-nishane",
+        "brand-nobile-1942",
+        "brand-omanluxury",
+        "brand-ormonde-jayne",
+        "brand-orto-parisi",
+        "brand-parfums-de-marly",
+        "brand-parfums-dusita",
+        "brand-penhaligon-s",
+        "brand-perris-monte-carlo",
+        "brand-profumum-roma",
+        "brand-puredistance",
+        "brand-ramon-monegal",
+        "brand-roja",
+        "brand-room-1015",
+        "brand-rosendo-mateu",
+        "brand-simone-andreoli",
+        "brand-sospiro",
+        "brand-stephane-humbert-lucas-777",
+        "brand-tauer-perfumes",
+        "brand-thameen-london",
+        "brand-the-house-of-oud",
+        "brand-theodoros-kalotinis",
+        "brand-tiziana-terenzi",
+        "brand-une-nuit-nomade",
+        "brand-vilhelm-parfumerie",
+        "brand-widian",
+        "brand-xerjoff",
+        "brand-zoologist"
+      ]
+    },
+    "arabic": {
+      "label": "Арабски",
+      "dimension": "segment",
+      "value": "arabic",
+      "expectedBrandCount": 15,
+      "brandIds": [
+        "brand-afnan-perfumes",
+        "brand-ahmed-al-maghribi",
+        "brand-ajmal",
+        "brand-al-haramain-perfumes",
+        "brand-ard-al-zaafaran",
+        "brand-armaf",
+        "brand-fragrance-world",
+        "brand-french-avenue",
+        "brand-khadlaj-perfumes",
+        "brand-lattafa-perfumes",
+        "brand-maison-alhambra",
+        "brand-paris-corner",
+        "brand-rasasi",
+        "brand-swiss-arabian",
+        "brand-zimaya"
+      ]
+    }
+  }
+}
+

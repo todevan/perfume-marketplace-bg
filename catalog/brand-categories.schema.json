@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:bg-perfume-marketplace:catalog:brand-categories:v2",
+  "title": "Bulgarian perfume marketplace brand registry",
+  "description": "Canonical brand registry and editorial discovery collections for the Bulgarian beta catalogue.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "metadata",
+    "otherBrandPolicy",
+    "brands",
+    "collections"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "./brand-categories.schema.json"
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "otherBrandPolicy": {
+      "$ref": "#/$defs/otherBrandPolicy"
+    },
+    "brands": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/brand"
+      }
+    },
+    "collections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "men",
+        "women",
+        "unisex",
+        "niche",
+        "arabic"
+      ],
+      "properties": {
+        "men": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/collection80"
+            },
+            {
+              "properties": {
+                "label": {
+                  "const": "Мъжки"
+                },
+                "dimension": {
+                  "const": "audience"
+                },
+                "value": {
+                  "const": "men"
+                },
+                "expectedBrandCount": {
+                  "const": 80
+                }
+              }
+            }
+          ]
+        },
+        "women": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/collection80"
+            },
+            {
+              "properties": {
+                "label": {
+                  "const": "Дамски"
+                },
+                "dimension": {
+                  "const": "audience"
+                },
+                "value": {
+                  "const": "women"
+                },
+                "expectedBrandCount": {
+                  "const": 80
+                }
+              }
+            }
+          ]
+        },
+        "unisex": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/collection80"
+            },
+            {
+              "properties": {
+                "label": {
+                  "const": "Унисекс"
+                },
+                "dimension": {
+                  "const": "audience"
+                },
+                "value": {
+                  "const": "unisex"
+                },
+                "expectedBrandCount": {
+                  "const": 80
+                }
+              }
+            }
+          ]
+        },
+        "niche": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/collection80"
+            },
+            {
+              "properties": {
+                "label": {
+                  "const": "Нишови"
+                },
+                "dimension": {
+                  "const": "segment"
+                },
+                "value": {
+                  "const": "niche"
+                },
+                "expectedBrandCount": {
+                  "const": 80
+                }
+              }
+            }
+          ]
+        },
+        "arabic": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/collection15"
+            },
+            {
+              "properties": {
+                "label": {
+                  "const": "Арабски"
+                },
+                "dimension": {
+                  "const": "segment"
+                },
+                "value": {
+                  "const": "arabic"
+                },
+                "expectedBrandCount": {
+                  "const": 15
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalogId",
+        "locale",
+        "lastReviewed",
+        "reviewCycle",
+        "defaultCurrency",
+        "selectionPolicy",
+        "collectionSemantics",
+        "supportedAliasTypes",
+        "normalization",
+        "provenance"
+      ],
+      "properties": {
+        "catalogId": {
+          "const": "bg-beta-brand-registry"
+        },
+        "locale": {
+          "const": "bg-BG"
+        },
+        "lastReviewed": {
+          "type": "string",
+          "format": "date"
+        },
+        "reviewCycle": {
+          "enum": [
+            "monthly",
+            "quarterly",
+            "semiannual",
+            "annual"
+          ]
+        },
+        "defaultCurrency": {
+          "const": "EUR"
+        },
+        "selectionPolicy": {
+          "type": "string",
+          "minLength": 20
+        },
+        "collectionSemantics": {
+          "type": "string",
+          "minLength": 20
+        },
+        "supportedAliasTypes": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "const": "searchAlias"
+            },
+            {
+              "const": "formerName"
+            },
+            {
+              "const": "misspelling"
+            },
+            {
+              "const": "transliteration"
+            },
+            {
+              "const": "productLine"
+            }
+          ],
+          "items": false
+        },
+        "normalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unicodeForm",
+            "caseFold",
+            "collapseWhitespace",
+            "stripDiacriticsForSearch"
+          ],
+          "properties": {
+            "unicodeForm": {
+              "const": "NFKC"
+            },
+            "caseFold": {
+              "const": true
+            },
+            "collapseWhitespace": {
+              "const": true
+            },
+            "stripDiacriticsForSearch": {
+              "const": true
+            }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "sourceCatalogVersion",
+            "externalImports",
+            "scraping"
+          ],
+          "properties": {
+            "method": {
+              "const": "manual_editorial_curation"
+            },
+            "sourceCatalogVersion": {
+              "const": 1
+            },
+            "externalImports": {
+              "const": false
+            },
+            "scraping": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "otherBrandPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "label",
+        "minLength",
+        "maxLength",
+        "publication",
+        "moderationState",
+        "captureFields",
+        "auditTrailRequired"
+      ],
+      "properties": {
+        "enabled": {
+          "const": true
+        },
+        "label": {
+          "const": "Други"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 79
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 200
+        },
+        "publication": {
+          "const": "immediate"
+        },
+        "moderationState": {
+          "const": "pending_canonicalization"
+        },
+        "captureFields": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "const": "originalInput"
+            },
+            {
+              "const": "normalizedKey"
+            },
+            {
+              "const": "suggestedBrandId"
+            },
+            {
+              "const": "provenance"
+            },
+            {
+              "const": "auditTrail"
+            }
+          ],
+          "items": false
+        },
+        "auditTrailRequired": {
+          "const": true
+        }
+      }
+    },
+    "brand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "canonicalName",
+        "aliases"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/brandId"
+        },
+        "canonicalName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "\\S"
+        },
+        "aliases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/alias"
+          }
+        },
+        "parentBrandId": {
+          "$ref": "#/$defs/brandId"
+        },
+        "originCountryCode": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        }
+      }
+    },
+    "alias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "value"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "searchAlias",
+            "formerName",
+            "misspelling",
+            "transliteration",
+            "productLine"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "brandId": {
+      "type": "string",
+      "pattern": "^brand-[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "collection80": {
+      "$ref": "#/$defs/collectionBase80"
+    },
+    "collection15": {
+      "$ref": "#/$defs/collectionBase15"
+    },
+    "collectionBase80": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "dimension",
+        "value",
+        "expectedBrandCount",
+        "brandIds"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimension": {
+          "enum": [
+            "audience",
+            "segment"
+          ]
+        },
+        "value": {
+          "enum": [
+            "men",
+            "women",
+            "unisex",
+            "niche",
+            "arabic"
+          ]
+        },
+        "expectedBrandCount": {
+          "const": 80
+        },
+        "brandIds": {
+          "type": "array",
+          "minItems": 80,
+          "maxItems": 80,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/brandId"
+          }
+        }
+      }
+    },
+    "collectionBase15": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "dimension",
+        "value",
+        "expectedBrandCount",
+        "brandIds"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimension": {
+          "const": "segment"
+        },
+        "value": {
+          "const": "arabic"
+        },
+        "expectedBrandCount": {
+          "const": 15
+        },
+        "brandIds": {
+          "type": "array",
+          "minItems": 15,
+          "maxItems": 15,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/brandId"
+          }
+        }
+      }
+    }
+  }
+}

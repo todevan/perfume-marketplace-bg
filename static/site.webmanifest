@@ -1,0 +1,9 @@
+{
+  "name": "Perfume Marketplace Beta",
+  "short_name": "Perfume Beta",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F4ECE1",
+  "theme_color": "#F4ECE1",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

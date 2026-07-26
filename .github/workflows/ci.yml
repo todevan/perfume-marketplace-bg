@@ -1,0 +1,63 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit --prod
+      - name: Audit all dependencies at high severity
+        run: pnpm audit --audit-level high
+      - name: Validate catalogue
+        run: pnpm validate:catalog
+      - name: Run unit and contract tests
+        run: pnpm test:unit
+      - name: Run Svelte checks
+        run: pnpm check
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Build once and run stable Playwright suite
+        run: pnpm test:e2e
+      - name: Validate staging Cloudflare bundle
+        run: pnpm exec wrangler deploy --dry-run --env staging
+      - name: Validate production Cloudflare bundle
+        run: pnpm exec wrangler deploy --dry-run --env=""
+
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit --prod
+      - run: pnpm db:start
+      - run: pnpm db:reset
+      - run: pnpm db:lint
+      - run: pnpm db:test
+      - if: always()
+        run: pnpm db:stop --no-backup
