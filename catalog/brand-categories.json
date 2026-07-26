@@ -403,10 +403,6 @@
         {
           "type": "searchAlias",
           "value": "Frédéric Malle"
-        },
-        {
-          "type": "searchAlias",
-          "value": "Frederic Malle"
         }
       ]
     },
@@ -457,10 +453,6 @@
         {
           "type": "searchAlias",
           "value": "État Libre d’Orange"
-        },
-        {
-          "type": "searchAlias",
-          "value": "Etat Libre d’Orange"
         },
         {
           "type": "searchAlias",
@@ -1657,4 +1649,3 @@
     }
   }
 }
-

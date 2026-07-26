@@ -113,8 +113,9 @@ function normalizeSearchKey(value) {
   return value
     .normalize('NFKD')
     .replace(/\p{Mark}/gu, '')
+    .replace(/&/gu, ' and ')
     .toLocaleLowerCase('bg-BG')
-    .replace(/\s+/gu, ' ')
+    .replace(/[^\p{Letter}\p{Number}]+/gu, ' ')
     .trim();
 }
 
@@ -304,6 +305,7 @@ function validateBrands() {
 
     check(Array.isArray(brand.aliases), `${path}.aliases must be an array.`);
     const exactAliases = new Set();
+    const normalizedAliases = new Map();
     if (Array.isArray(brand.aliases)) {
       for (const [aliasIndex, alias] of brand.aliases.entries()) {
         const aliasPath = `${path}.aliases[${aliasIndex}]`;
@@ -325,7 +327,16 @@ function validateBrands() {
           aliasCounts.set(alias.type, (aliasCounts.get(alias.type) ?? 0) + 1);
         }
         if (typeof alias.value === 'string') {
-          registerSearchKey(searchKeys, normalizeSearchKey(alias.value), brand.id, aliasPath);
+          const normalizedAlias = normalizeSearchKey(alias.value);
+          const existingAliasPath = normalizedAliases.get(normalizedAlias);
+          check(
+            existingAliasPath === undefined,
+            `${aliasPath} normalizes to the same key as ${existingAliasPath}: ${normalizedAlias}.`,
+          );
+          if (existingAliasPath === undefined) {
+            normalizedAliases.set(normalizedAlias, aliasPath);
+          }
+          registerSearchKey(searchKeys, normalizedAlias, brand.id, aliasPath);
         }
         aliasTotal += 1;
       }

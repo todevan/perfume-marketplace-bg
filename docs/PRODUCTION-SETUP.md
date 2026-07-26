@@ -70,8 +70,8 @@ Run the fail-closed gate before deployment:
 pnpm check:release -- --env-file=.env.production
 ```
 
-The command checks secrets/configuration, disabled monetisation, the six
-forward-only migrations `003`–`008` and required legal routes. It intentionally
+The command checks secrets/configuration, disabled monetisation, the seven
+forward-only migrations `003`–`009` and required legal routes. It intentionally
 fails on a fresh checkout.
 
 ## Migration and catalogue order

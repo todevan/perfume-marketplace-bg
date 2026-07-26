@@ -20,6 +20,9 @@ const filenames = {
 const sql = Object.fromEntries(
 	Object.entries(filenames).map(([key, filename]) => [key, compact(readMigration(filename))])
 );
+const lintHardening = compact(
+	readMigration('202607260009_database_lint_hardening.sql')
+);
 
 const includesAll = (source, fragments) => {
 	for (const fragment of fragments) {
@@ -32,6 +35,18 @@ test('the beta hardening sequence is contiguous and has stable filenames', () =>
 		.filter((filename) => filename.startsWith('20260722000'))
 		.sort();
 	assert.deepEqual(actual, Object.values(filenames));
+});
+
+test('database lint hardening is forward-only and fail-closed', () => {
+	includesAll(lintHardening, [
+		"'public.sync_editorial_catalog(jsonb)'::regprocedure",
+		"'public.reject_listing_upload(uuid,text)'::regprocedure",
+		'select pg_get_functiondef(',
+		'if occurrence_count <> 1 then',
+		'execute function_definition',
+		'revoke execute on function public.reject_listing_upload(uuid, text) from public, anon, authenticated',
+		'grant execute on function public.reject_listing_upload(uuid, text) to service_role'
+	]);
 });
 
 test('closed-beta access is invite-only, consented, and self-scoped', () => {

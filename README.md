@@ -68,7 +68,8 @@ Release gate-ът нарочно се проваля при чист checkout: �
 3. `202607220005_uploads_evidence.sql` — quarantine/finalized upload records и cleanup;
 4. `202607220006_moderation_lifecycle.sql` — report-bound решения, suspension и audit;
 5. `202607220007_search_realtime_jobs.sql` — slugs, search RPC, Realtime, notifications, email ledger и scheduled jobs;
-6. `202607220008_first_admin_bootstrap.sql` — еднократен, service-role-only bootstrap за първия staging администратор.
+6. `202607220008_first_admin_bootstrap.sql` — еднократен, service-role-only bootstrap за първия staging администратор;
+7. `202607260009_database_lint_hardening.sql` — forward-only корекции за PL/pgSQL ambiguity, fail-closed lint и запазени RPC ACL договори.
 
 Каталогът се зарежда чрез една provenance-aware транзакция с `pnpm seed:catalog`. Точните редакционни колекции остават `80/80/80/80/15`.
 

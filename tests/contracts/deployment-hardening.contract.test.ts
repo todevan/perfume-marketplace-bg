@@ -118,6 +118,9 @@ describe('closed beta deployment hardening', () => {
 		expect(packageJson.scripts['deploy:staging']).toBe(
 			'vite build && wrangler deploy --env staging'
 		);
+		expect(packageJson.scripts['db:lint']).toBe(
+			'supabase db lint --local --level warning --fail-on warning'
+		);
 	});
 
 	it('routes crawler endpoints through the Worker and has no static robots bypass', async () => {
