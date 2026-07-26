@@ -7,6 +7,8 @@ import { GET as getSitemap } from '../../src/routes/sitemap.xml/+server';
 
 const workspace = resolve(import.meta.dirname, '../..');
 const readinessScript = resolve(workspace, 'scripts/check-production-readiness.mjs');
+const deploymentWorkflowPath = resolve(workspace, '.github/workflows/deploy.yml');
+const packageJsonPath = resolve(workspace, 'package.json');
 const billingFlags = [
 	'FEATURE_BILLING_ENABLED',
 	'FEATURE_LISTING_FEES_ENABLED',
@@ -62,6 +64,62 @@ function runReadiness(environment: NodeJS.ProcessEnv = validReleaseEnvironment) 
 }
 
 describe('closed beta deployment hardening', () => {
+	it('keeps deployment manual, staging-only, and guarded to main', () => {
+		const workflow = readFileSync(deploymentWorkflowPath, 'utf8');
+		const triggerBlock = workflow.match(/^on:\r?\n([\s\S]*?)^permissions:/m)?.[1];
+		expect(triggerBlock?.trim()).toBe('workflow_dispatch:');
+
+		const jobsBlock = workflow.slice(workflow.indexOf('\njobs:') + '\njobs:'.length);
+		const jobNames = [...jobsBlock.matchAll(/^  ([a-z0-9_-]+):\r?$/gim)].map(
+			(match) => match[1]
+		);
+		expect(jobNames).toEqual(['staging']);
+		expect(workflow).toContain("if: github.ref == 'refs/heads/main'");
+		expect(workflow).not.toMatch(/^\s+environment:/m);
+		expect(workflow).not.toContain('--env=""');
+	});
+
+	it('uses repository secrets and validates staging before the only deploy step', () => {
+		const workflow = readFileSync(deploymentWorkflowPath, 'utf8');
+		expect(workflow).toContain('group: deploy-staging');
+		expect(workflow).toContain('cancel-in-progress: false');
+		expect(workflow).toContain(
+			'CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}'
+		);
+		expect(workflow).toContain(
+			'CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}'
+		);
+		expect(workflow).not.toContain('${{ vars.');
+
+		const install = workflow.indexOf('run: pnpm install --frozen-lockfile');
+		const productionAudit = workflow.indexOf('run: pnpm audit --prod');
+		const highAudit = workflow.indexOf('run: pnpm audit --audit-level high');
+		const tests = workflow.indexOf('run: pnpm test');
+		const dryRun = workflow.indexOf(
+			'run: pnpm exec wrangler deploy --dry-run --env staging'
+		);
+		const deploy = workflow.indexOf('run: pnpm exec wrangler deploy --env staging');
+
+		expect(install).toBeGreaterThan(-1);
+		expect(productionAudit).toBeGreaterThan(install);
+		expect(highAudit).toBeGreaterThan(productionAudit);
+		expect(tests).toBeGreaterThan(highAudit);
+		expect(dryRun).toBeGreaterThan(tests);
+		expect(deploy).toBeGreaterThan(dryRun);
+		expect(workflow.match(/run: pnpm exec wrangler deploy --env staging/g)).toHaveLength(1);
+	});
+
+	it('exposes only an explicit staging deploy package script', () => {
+		const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
+			scripts: Record<string, string>;
+		};
+		expect(packageJson.scripts.deploy).toBeUndefined();
+		expect(packageJson.scripts['deploy:production']).toBeUndefined();
+		expect(packageJson.scripts['deploy:staging']).toBe(
+			'vite build && wrangler deploy --env staging'
+		);
+	});
+
 	it('routes crawler endpoints through the Worker and has no static robots bypass', async () => {
 		const wrangler = JSON.parse(readFileSync(resolve(workspace, 'wrangler.jsonc'), 'utf8'));
 		expect(wrangler.assets.run_worker_first).toEqual(

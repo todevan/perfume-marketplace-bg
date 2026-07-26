@@ -8,7 +8,7 @@
     "dev:worker": "vite build && wrangler dev",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "vite build && wrangler deploy --env=\"\"",
+    "deploy:staging": "vite build && wrangler deploy --env staging",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "node scripts/validate-catalog.mjs && vitest run && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && vite build",
@@ -24,7 +24,8 @@
     "db:lint": "supabase db lint --local --level warning",
     "db:test": "supabase test db",
     "validate:catalog": "node scripts/validate-catalog.mjs",
-    "seed:catalog": "node scripts/seed-catalog.mjs"
+    "seed:catalog": "node scripts/seed-catalog.mjs",
+    "bootstrap:first-admin": "node scripts/bootstrap-first-admin.mjs"
   },
   "dependencies": {
     "@lucide/svelte": "^1.25.0",
@@ -44,7 +45,7 @@
     "svelte": "5.56.6",
     "svelte-check": "^4.7.3",
     "typescript": "^5.9.3",
-    "vite": "^7.2.9",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10",
     "wrangler": "^4.114.0"
   },

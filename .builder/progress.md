@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-07-26 — GitHub Free staging bootstrap in progress
+
+- Replaced the deploy workflow with a `workflow_dispatch`-only, `main`-guarded
+  staging job. There is no GitHub Environment, push deploy, production job,
+  generic deploy script, or ambiguous production default.
+- Added forward-only migration `008_first_admin_bootstrap` with the exact
+  service-role-only RPCs `prepare_first_admin_invite(text, interval)` and
+  `bind_first_admin_invite(uuid, uuid)`. The bootstrap is tokenless,
+  concurrency-safe, append-only audited, terminal after one exact invite/user
+  binding, and never creates legal consent or active beta membership.
+- Added the trusted staging-only first-admin operator. A definite pre-user
+  delivery failure compensates the pending marker; a successful or uncertain
+  Auth delivery keeps deterministic invite/user recovery IDs and never
+  resends or revokes automatically.
+- Added exact dashboard paths, secret ownership, inventory stop conditions,
+  Cloudflare rollback order and the deferred provider gates to the staging
+  runbook.
+- Aligned the Svelte plugin toolchain on Vite `8.1.5` and overrode the
+  vulnerable transitive `cookie` `0.6.0` with `0.7.2`. Production and full
+  dependency audits now report zero known vulnerabilities and peer checks are
+  clean.
+- Current local verification is green: aggregate `pnpm test`; 19 Vitest files
+  and 166 tests; 23 static SQL/bootstrap contracts; catalogue
+  `80/80/80/80/15`; 13 Playwright scenarios with 5 provider scenarios
+  intentionally skipped; 0 Svelte errors/warnings; Cloudflare build; both
+  Wrangler dry-runs; and the expected 35-condition production fail-closed
+  gate. Migration `008` adds 18 pgTAP assertions, but they remain unexecuted
+  because no local Docker/PostgreSQL test service is available.
+- Selected `todevan/perfume-marketplace-bg` as the new private canonical
+  repository. `todevan/remix-of-scent-exchange` remains explicitly untouched.
+- Defined a GitHub Free model with repository secrets and manual staging
+  dispatch only; no protected branch, required-check, environment-reviewer, or
+  protected-environment enforcement is assumed.
+- Added fail-closed Supabase inventory stop conditions. No hosted reset,
+  migration repair, schema drop, truncation, or remote history rewrite is
+  authorized.
+- Added a fail-closed Cloudflare bootstrap and rollback contract: exact tested
+  commit, dry-runs, demo/billing/SMS/Images disabled, recorded known-good
+  deployment, and no database rollback disguised as application recovery.
+- Provider integrations, production, legal approval, external invitations,
+  carrier tests, and backup/restore acceptance remain deferred external gates.
+- GitHub, Supabase, Cloudflare, and all other provider resources remain
+  unmodified. GitHub CLI is unavailable, and Supabase/Wrangler are not
+  authenticated; hosted inventories, migration/seed, Worker deploy, smoke
+  checks and manual GitHub dispatch therefore remain blocked rather than
+  guessed or partially applied.
+
 ## 2026-07-26 — deployment hardening checkpoint
 
 - Made the Worker authoritative for `/robots.txt` and `/sitemap.xml`, removed the static crawler-policy bypass, kept `Disallow: /`, and preserved the beta sitemap `404`.

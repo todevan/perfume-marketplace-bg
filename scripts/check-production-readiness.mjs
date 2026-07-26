@@ -181,7 +181,8 @@ for (const migration of [
   '202607220004_workflow_invariants.sql',
   '202607220005_uploads_evidence.sql',
   '202607220006_moderation_lifecycle.sql',
-  '202607220007_search_realtime_jobs.sql'
+  '202607220007_search_realtime_jobs.sql',
+  '202607220008_first_admin_bootstrap.sql'
 ]) {
   if (!existsSync(resolve(workspace, 'supabase', 'migrations', migration))) {
     failures.push(`missing migration: ${migration}`);

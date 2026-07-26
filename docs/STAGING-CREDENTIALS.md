@@ -10,8 +10,55 @@ Cloudflare configuration validation, or either
 hosted staging service is connected or deployed.
 
 Do not copy production credentials into staging. Store secrets in the provider
-or the GitHub `staging` environment, never in `wrangler.jsonc`, a committed
-`.env` file, or a pull-request-visible GitHub variable.
+or as explicitly listed GitHub repository secrets, never in `wrangler.jsonc`,
+a committed `.env` file, or a pull-request-visible GitHub variable.
+
+## GitHub Free repository model
+
+The new canonical private repository is
+`todevan/perfume-marketplace-bg`. The older
+`todevan/remix-of-scent-exchange` repository is out of scope and must remain
+untouched: do not add it as a remote, push to it, rewrite it, archive it, or
+copy credentials from it.
+
+This project intentionally uses a minimal GitHub Free operating model:
+
+- staging deployment is manual only; a push or merge must not be treated as
+  deployment approval;
+- the GitHub Actions run must be started with `workflow_dispatch` for the
+  exact tested branch/commit;
+- the only GitHub repository secrets required for the initial staging deploy
+  are `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`;
+- no GitHub Environment reviewer gate, protected environment, protected branch,
+  or required status-check enforcement is assumed;
+- repository administrators must therefore verify the selected commit SHA and
+  the successful local/CI checks before manually starting staging;
+- production deployment and production GitHub secrets remain deferred.
+
+Before connecting the local repository, verify that the new remote is the
+intended private repository and inventory its refs. If it is not empty or its
+history is unexpected, stop. Do not force-push, reset the remote, merge
+unrelated history, or attempt a repair without a separately approved
+reconciliation plan.
+
+### Dashboard locations and secret ownership
+
+| System | Exact dashboard location | Values owned there |
+|---|---|---|
+| GitHub | Repository **Settings → Secrets and variables → Actions → Secrets → New repository secret** | Only `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` |
+| GitHub | Repository **Actions → deploy staging → Run workflow**, branch `main` | Manual staging dispatch and deployed commit SHA |
+| Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Settings → Variables and Secrets** | Worker runtime variables and `SUPABASE_SECRET_KEY` |
+| Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Deployments** | Active deployment/version ID and rollback target |
+| Supabase | Project **Connect** or **Settings → API Keys** | Publishable key and server secret; copy them only into their intended secret store |
+| Supabase | Project **Authentication → URL Configuration** | Exact Site URL and allowed `/auth/callback` and `/auth/confirm` redirects |
+| Supabase | Project **Authentication → Sign In / Providers → Email** | Public signup disabled and email confirmation enabled |
+| Supabase | Project **Authentication → Users** and **Storage** | Mandatory pre-migration zero-user/zero-object inventory |
+
+The trusted local shell owns the Supabase CLI access token, database password,
+legacy service-role key when required by operator tooling, and first-admin
+bootstrap values. They do not belong in GitHub, Cloudflare Worker variables or
+committed files. GitHub owns only the two least-privilege Cloudflare deployment
+values listed above.
 
 ## Connect Cloudflare first
 
@@ -24,16 +71,80 @@ or the GitHub `staging` environment, never in `wrangler.jsonc`, a committed
 | `IMAGE_PROCESSOR_MODE` | Private runtime configuration | Worker upload pipeline | Keep `disabled` for the first deploy; change to `cloudflare-images` only after the binding and sanitizer pass their tests |
 
 Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as GitHub
-**Environment secrets** for `staging`. Configure the remaining application
-variables and secrets on the `perfume-marketplace-bg-staging` Worker. The
-current Wrangler configuration uses `keep_vars: true`, so a code deploy
-preserves values already provisioned on that environment.
+**repository secrets** in `todevan/perfume-marketplace-bg`. Configure the
+remaining application variables and secrets on the
+`perfume-marketplace-bg-staging` Worker. The current Wrangler configuration
+uses `keep_vars: true`, so a code deploy preserves values already provisioned
+on that Worker.
 
 The staging `workers.dev` address is intentionally available for internal
 testing. `PUBLIC_APP_URL` must use the exact HTTPS origin assigned to that
 Worker, with no path, query, or fragment.
 
+### Cloudflare inventory, bootstrap, and rollback gate
+
+Before the first real deploy, inventory the Cloudflare account, Worker names,
+routes, existing deployments, variables, secrets, Images bindings, and
+`workers.dev` exposure. Stop if the account is wrong, the expected staging
+Worker already contains unknown configuration or traffic, the API token has
+broader unexplained access, or the inventory cannot be completed. Do not
+overwrite an existing Worker to make the names match.
+
+The bootstrap is fail-closed:
+
+1. Record the exact tested Git commit and run both Wrangler dry-runs locally.
+2. Authenticate Wrangler locally, confirm the intended Cloudflare account, and
+   deploy explicitly with `--env staging`. Wrangler creates
+   `perfume-marketplace-bg-staging`; do not create a similarly named Worker by
+   hand. Until runtime configuration exists, an application `503` is the
+   expected safe result.
+3. Configure the new Worker with the inventoried Supabase values and keep
+   `PUBLIC_DEMO_MODE=false`, invite-only access enabled, every
+   monetisation/payment flag `false`, `FEATURE_SMS_VERIFICATION_ENABLED=false`,
+   and `IMAGE_PROCESSOR_MODE=disabled`.
+4. Deploy staging a second time and verify the deployment ID, `/robots.txt`,
+   the sitemap `404`, authentication
+   denial, billing flags, and the staging-only `workers.dev` address before
+   adding any provider integrations.
+5. Record the known-good Cloudflare deployment ID.
+
+If verification fails, stop provider testing. Roll back only to the explicitly
+recorded known-good Cloudflare deployment. When there is no previous known-good
+version, disable public access to the staging `workers.dev` endpoint until a
+corrected build passes. Never enable demo mode, point staging at production
+data, reset Supabase, or mutate migration history as a rollback technique. If a
+database migration was already applied, keep the database forward-only and use
+a compatible application rollback or a new corrective migration.
+
 ## Connect the hosted Supabase staging project
+
+### Mandatory read-only inventory and stop conditions
+
+Use the designated, staging-only Supabase project. Before linking, seeding, or
+applying migrations, record and verify all of the following:
+
+- organization, project name, project ref, project URL, region, and intended
+  staging owner;
+- existing migration history and every non-system schema/table/view/function,
+  trigger, extension, RLS policy, scheduled job, Realtime publication, Storage
+  bucket/object, Edge Function, webhook, and secret name;
+- counts for `auth.users`, application tables, and `storage.objects`;
+- Auth public-signup setting, Site URL, redirect allow-list, email/SMS provider
+  state, and MFA policy;
+- whether any row, user, object, or log indicates real or production data.
+
+Stop immediately if the project identity or region is wrong; any unexpected
+migration or application object exists; any auth user, Storage object, or
+non-synthetic application row exists; public signup is enabled unexpectedly;
+the project appears shared with another application; or permissions prevent a
+complete inventory. Preserve the read-only evidence and ask for a decision.
+
+Remote reset and repair operations are not authorized. In particular, never
+run `supabase db reset` against a linked/hosted project, never use
+`supabase migration repair`, never drop/truncate schemas to make the inventory
+look empty, and never rewrite an applied migration. `supabase db reset` is
+local-only. A mismatch requires a new isolated staging project or a separately
+approved forward-only remediation plan.
 
 | Name | Classification | Where it is used | When it is required |
 |---|---|---|---|
@@ -44,14 +155,62 @@ Worker, with no path, query, or fragment.
 | `PUBLIC_SUPABASE_ANON_KEY` | Legacy browser-visible fallback | Legacy/local Supabase compatibility | Leave unset when `PUBLIC_SUPABASE_PUBLISHABLE_KEY` is available |
 | `SUPABASE_URL` | Provider runtime value | `notification-email` and `upload-cleanup` Edge Functions | Verify it is available in the hosted Edge Function environment before testing those functions |
 
-Although the current GitHub production workflow stores
-`PUBLIC_SUPABASE_PUBLISHABLE_KEY` as a GitHub secret, it is a browser-visible
-publishable key, not a server secret. Row Level Security remains the access
+`PUBLIC_SUPABASE_PUBLISHABLE_KEY` is browser-visible, but it is not one of the
+two GitHub repository secrets used by the current manual staging workflow.
+Configure it on the staging Worker. Row Level Security remains the access
 boundary.
 
 Keep the hosted staging project isolated from production and populate it only
 with synthetic people and listings. Disable public signup in Supabase Auth
 before testing invitations.
+
+### First administrator bootstrap
+
+Migration `008_first_admin_bootstrap` adds the only exception to the normal
+“active administrator creates invitations” rule. Its two public RPC contracts
+are service-role-only, tokenless and one-time:
+
+- `prepare_first_admin_invite(email, valid_for)` creates or safely reuses the
+  audited pending bootstrap marker;
+- `bind_first_admin_invite(invite_id, user_id)` binds that exact marker to the
+  authoritative Supabase Auth invitation.
+
+The binding creates only a pending beta membership. It does not accept Terms,
+Privacy or Marketplace Rules for the administrator, and it does not bypass
+email confirmation, onboarding or staff MFA.
+
+Run the trusted operator only from a local shell after the hosted migration,
+Auth callback allow-list and real email transport have been verified. Never
+store its service-role key or operator values in GitHub or Worker
+configuration:
+
+```powershell
+$env:APP_ENV='staging'
+$env:FIRST_ADMIN_BOOTSTRAP_ENABLED='true'
+$env:FIRST_ADMIN_EMAIL_TRANSPORT_CONFIRMED='true'
+$env:FIRST_ADMIN_EMAIL='operator@example.com'
+pnpm bootstrap:first-admin -- prepare
+```
+
+If Auth delivery fails before a user is created, the script revokes the pending
+database marker as compensation. If delivery succeeds but binding fails, the
+marker remains pending and the script prints only the non-secret invite/user
+recovery IDs. Retry without resending email:
+
+```powershell
+$env:FIRST_ADMIN_BOOTSTRAP_INVITE_ID='<reported invite UUID>'
+$env:FIRST_ADMIN_BOOTSTRAP_USER_ID='<reported user UUID>'
+pnpm bootstrap:first-admin -- bind
+```
+
+The bind-only retry needs the staging Supabase URL, service-role key and the two
+UUIDs, but it does not depend on Resend, the callback origin or currently
+working email transport.
+
+Do not run this operator in the current infrastructure-only staging phase:
+Resend/Auth email delivery is deliberately deferred. It rejects every
+environment except `APP_ENV=staging`, and a successfully bound bootstrap is
+terminal.
 
 ## Add Resend before testing invitations and notifications
 
@@ -146,16 +305,23 @@ Payments, fees, subscriptions, boosts, and advertising remain out of scope.
 
 1. Run local tests, audits, release-contract tests, and both Wrangler dry-runs
    without credentials.
-2. Provision `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the GitHub
-   `staging` environment.
-3. Add the Supabase URL, publishable key, and server secret plus the closed-beta
-   application flags to the staging Worker.
-4. Perform the first real staging deploy with image processing and SMS still
-   disabled.
-5. Add Turnstile, Resend, notification, and cleanup secrets before testing
-   their corresponding flows.
-6. Add the Twilio values and enable SMS verification only for the planned
-   `+359` carrier tests.
-7. Configure Cloudflare Images and backups, run their acceptance/recovery
-   tests, then enable `IMAGE_PROCESSOR_MODE=cloudflare-images`.
-
+2. Create and inspect the new private GitHub repository
+   `todevan/perfume-marketplace-bg`; stop on unexpected remote history and
+   leave `todevan/remix-of-scent-exchange` untouched.
+3. Complete the read-only Supabase and Cloudflare inventories. Stop on every
+   mismatch listed above; do not reset or repair a remote service.
+4. Link and migrate only the verified empty Supabase staging project, then
+   seed and verify the editorial catalogue.
+5. Use local Wrangler authentication for the first explicit staging deploy,
+   which creates the Worker and is expected to fail closed until configured.
+6. Add the inventoried Supabase URL, publishable key, server secret and
+   closed-beta flags to that Worker; deploy again and record the first
+   known-good deployment ID.
+7. Provision only `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as GitHub
+   repository secrets, then manually dispatch staging for the exact tested
+   `main` commit and repeat the smoke checks.
+8. Defer Turnstile, Resend, notification delivery, cleanup scheduling, Twilio,
+   Cloudflare Images, and backup/restore acceptance until the baseline Worker
+   and Supabase smoke tests are clean.
+9. Keep production, external invitations, custom domain, legal approval,
+   carrier tests, and every payment/monetisation capability gated.

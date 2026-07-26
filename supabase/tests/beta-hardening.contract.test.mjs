@@ -13,7 +13,8 @@ const filenames = {
 	workflow: '202607220004_workflow_invariants.sql',
 	uploads: '202607220005_uploads_evidence.sql',
 	moderation: '202607220006_moderation_lifecycle.sql',
-	search: '202607220007_search_realtime_jobs.sql'
+	search: '202607220007_search_realtime_jobs.sql',
+	bootstrap: '202607220008_first_admin_bootstrap.sql'
 };
 
 const sql = Object.fromEntries(

@@ -1,8 +1,8 @@
 {
   "project_name": "perfume-marketplace-bg",
-  "current_phase": "handoff",
-  "current_feature": null,
-  "status": "local_deployment_hardening_complete_with_external_staging_gates",
+  "current_phase": "staging_bootstrap",
+  "current_feature": "feat-008",
+  "status": "implementation_in_progress_with_external_provider_gates",
   "auto_continue": false,
   "tech_stack": {
     "language": "TypeScript/SQL",
@@ -19,13 +19,16 @@
     "feat-006",
     "feat-007"
   ],
-  "pending_features": [],
-  "session_count": 2,
-  "last_activity": "2026-07-26T11:14:10+03:00",
-  "next_action": "Provision the documented staging credentials, connect hosted Cloudflare and Supabase environments, perform the first real staging deploy, then run provider E2E, carrier, backup and restore rehearsals.",
+  "pending_features": [
+    "feat-008"
+  ],
+  "session_count": 4,
+  "last_activity": "2026-07-26T12:21:00+03:00",
+  "next_action": "Authenticate GitHub CLI as todevan, Supabase CLI and Wrangler locally without sharing credentials; then inventory the empty private repository and designated staging resources read-only before any link, migration, seed or deploy.",
   "external_launch_gates": [
-    "Authenticated private GitHub remote",
-    "Cloudflare and hosted Supabase staging/production projects",
+    "Authenticated empty private GitHub remote at todevan/perfume-marketplace-bg",
+    "Read-only inventory and explicit acceptance of Cloudflare and hosted Supabase staging resources",
+    "Manual fail-closed staging bootstrap and recorded Cloudflare rollback target",
     "Verified Resend sending domain",
     "Twilio Bulgaria credentials and A1/Yettel/Vivacom carrier tests",
     "Production domain and secrets",
@@ -34,7 +37,12 @@
   ],
   "github": {
     "enabled": false,
-    "reason": "The workspace is a local repository, but no authenticated private remote is configured."
+    "target_repository": "todevan/perfume-marketplace-bg",
+    "visibility": "private",
+    "operating_model": "GitHub Free repository secrets with manual staging dispatch only; no protected environment or branch enforcement",
+    "legacy_repository": "todevan/remix-of-scent-exchange",
+    "legacy_repository_policy": "untouched",
+    "reason": "GitHub CLI is not installed/authenticated for todevan, so the new private remote cannot yet be created or inventoried safely. The legacy repository remains untouched."
   },
   "skill_dispatch": {
     "guide_loaded": false,
@@ -45,6 +53,24 @@
         "invoked_at": "2026-07-26T10:58:00+03:00",
         "feature": "feat-007",
         "outcome": "success"
+      },
+      {
+        "skill": "autonomous-builder",
+        "invoked_at": "2026-07-26T11:43:00+03:00",
+        "feature": "feat-008",
+        "outcome": "in_progress"
+      },
+      {
+        "skill": "github:github",
+        "invoked_at": "2026-07-26T11:43:00+03:00",
+        "feature": "feat-008",
+        "outcome": "routed_to_github_yeet_for_publish_but_blocked_without_authenticated_gh"
+      },
+      {
+        "skill": "dependency-upgrader",
+        "invoked_at": "2026-07-26T12:05:00+03:00",
+        "feature": "feat-008",
+        "outcome": "vite_8_peer_alignment_and_cookie_advisory_resolved"
       }
     ]
   }

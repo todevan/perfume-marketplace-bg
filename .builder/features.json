@@ -83,6 +83,30 @@
           "reason": "Coordinates the bounded implementation, verification and checkpoint workflow."
         }
       ]
+    },
+    {
+      "id": "feat-008",
+      "name": "Hosted staging bootstrap and first-admin safety",
+      "status": "in_progress",
+      "acceptance": [
+        "GitHub Free deployment is manual, staging-only and cannot select production",
+        "A forward-only one-time first-admin bootstrap is service-role-only and audited",
+        "The chosen Supabase project passes a read-only empty-staging inventory before migrations",
+        "Cloudflare staging remains fail-closed until its exact runtime configuration is provisioned",
+        "No provider secret, real user data, payment path or production deployment is introduced"
+      ],
+      "recommended_skills": [
+        {
+          "skill": "autonomous-builder",
+          "phase": "implementation",
+          "reason": "Coordinates the local security changes, hosted safety gates, verification and checkpoint workflow."
+        },
+        {
+          "skill": "github:yeet",
+          "phase": "deployment",
+          "reason": "Publishes the verified initial history only after an authenticated empty private remote exists."
+        }
+      ]
     }
   ]
 }

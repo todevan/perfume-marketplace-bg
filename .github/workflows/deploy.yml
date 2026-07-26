@@ -1,32 +1,20 @@
-name: deploy
+name: deploy staging
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      target:
-        description: Deployment target
-        required: true
-        default: staging
-        type: choice
-        options:
-          - staging
-          - production
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ github.event.inputs.target || 'staging' }}
+  group: deploy-staging
   cancel-in-progress: false
 
 jobs:
   staging:
-    if: github.event_name == 'push' || github.event.inputs.target == 'staging'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: staging
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -44,72 +32,8 @@ jobs:
       - run: pnpm test
       - name: Validate staging Cloudflare bundle
         run: pnpm exec wrangler deploy --dry-run --env staging
-      - run: pnpm exec wrangler deploy --env staging
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-  production:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'production'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.9.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Audit production dependencies
-        run: pnpm audit --prod
-      - name: Audit all dependencies at high severity
-        run: pnpm audit --audit-level high
-      - run: pnpm test
-      - name: Verify production configuration contract
-        run: pnpm check:release
-        env:
-          APP_ENV: production
-          PUBLIC_DEMO_MODE: 'false'
-          PRIVATE_BETA_REQUIRE_INVITE: 'true'
-          PRIVATE_BETA_REQUIRE_STAFF_MFA: 'true'
-          LEGAL_CONTENT_APPROVED: ${{ vars.LEGAL_CONTENT_APPROVED }}
-          PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL }}
-          PUBLIC_SUPABASE_URL: ${{ vars.PUBLIC_SUPABASE_URL }}
-          PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          TERMS_VERSION: ${{ vars.TERMS_VERSION }}
-          PRIVACY_VERSION: ${{ vars.PRIVACY_VERSION }}
-          MARKETPLACE_RULES_VERSION: ${{ vars.MARKETPLACE_RULES_VERSION }}
-          INCIDENT_CONTACT_EMAIL: ${{ vars.INCIDENT_CONTACT_EMAIL }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          RESEND_FROM_EMAIL: ${{ vars.RESEND_FROM_EMAIL }}
-          NOTIFICATION_WEBHOOK_SECRET: ${{ secrets.NOTIFICATION_WEBHOOK_SECRET }}
-          UPLOAD_CLEANUP_SECRET: ${{ secrets.UPLOAD_CLEANUP_SECRET }}
-          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
-          PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.PUBLIC_TURNSTILE_SITE_KEY }}
-          TURNSTILE_EXPECTED_HOSTNAME: ${{ vars.TURNSTILE_EXPECTED_HOSTNAME }}
-          SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID: ${{ secrets.SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID }}
-          SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID: ${{ secrets.SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID }}
-          SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN: ${{ secrets.SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_IMAGES_API_TOKEN: ${{ secrets.CLOUDFLARE_IMAGES_API_TOKEN }}
-          IMAGE_PROCESSOR_MODE: cloudflare-images
-          FEATURE_BILLING_ENABLED: 'false'
-          FEATURE_LISTING_FEES_ENABLED: 'false'
-          FEATURE_MERCHANT_SUBSCRIPTIONS_ENABLED: 'false'
-          FEATURE_BOOSTS_ENABLED: 'false'
-          FEATURE_DIRECT_ADS_ENABLED: 'false'
-          FEATURE_SMS_VERIFICATION_ENABLED: 'true'
-          FEATURE_MYPOS_PAYMENTS_ENABLED: 'false'
-          FEATURE_STRIPE_FALLBACK_ENABLED: 'false'
-          PAYMENT_PROVIDER: disabled
-      - name: Validate production Cloudflare bundle
-        run: pnpm exec wrangler deploy --dry-run --env=""
-      - run: pnpm exec wrangler deploy --env=""
+      - name: Deploy staging Worker
+        run: pnpm exec wrangler deploy --env staging
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

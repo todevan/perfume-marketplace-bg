@@ -16,7 +16,7 @@
 - merchant application и report-bound moderation с append-only audit;
 - quarantine upload запис, реално MIME разпознаване, WebP/JPEG re-encode и премахване на EXIF;
 - in-app известия и идемпотентен Resend delivery ledger;
-- Cloudflare Worker конфигурация, CI, staging/production deploy workflow и encrypted Storage backup;
+- Cloudflare Worker конфигурация, автоматичен quality CI, ръчен staging deploy workflow и encrypted Storage backup;
 - всички billing/payment/boost/subscription/ads функции са изключени по подразбиране.
 
 ## Runtime режими
@@ -67,7 +67,8 @@ Release gate-ът нарочно се проваля при чист checkout: �
 2. `202607220004_workflow_invariants.sql` — атомарни listing/offer/deal transitions и lifecycle правила;
 3. `202607220005_uploads_evidence.sql` — quarantine/finalized upload records и cleanup;
 4. `202607220006_moderation_lifecycle.sql` — report-bound решения, suspension и audit;
-5. `202607220007_search_realtime_jobs.sql` — slugs, search RPC, Realtime, notifications, email ledger и scheduled jobs.
+5. `202607220007_search_realtime_jobs.sql` — slugs, search RPC, Realtime, notifications, email ledger и scheduled jobs;
+6. `202607220008_first_admin_bootstrap.sql` — еднократен, service-role-only bootstrap за първия staging администратор.
 
 Каталогът се зарежда чрез една provenance-aware транзакция с `pnpm seed:catalog`. Точните редакционни колекции остават `80/80/80/80/15`.
 
@@ -92,4 +93,4 @@ Release gate-ът нарочно се проваля при чист checkout: �
 
 ## Преди първа външна покана
 
-Създайте private GitHub remote, hosted Supabase staging/production във Frankfurt, Cloudflare Workers/Images, проверен Resend поддомейн, Twilio `+359` конфигурация и custom domain. След това изпълнете реалния carrier тест за A1/Yettel/Vivacom, backup/restore rehearsal, staging E2E с продавач/купувач/moderator и правен преглед на Terms, Privacy, Rules, Safety и appeals процеса.
+Новият canonical private remote е `todevan/perfume-marketplace-bg`; старото repo `todevan/remix-of-scent-exchange` остава недокоснато. Текущият GitHub Free модел използва repository secrets и само ръчно staging пускане, без да разчита на protected branch/environment enforcement. Преди свързване направете read-only inventory на remote-а, Supabase staging и Cloudflare и спрете при всяко несъответствие — без remote reset или repair. Hosted provider интеграциите, production, custom domain, carrier тестовете, backup/restore rehearsal, външните покани и правният преглед остават launch gates.
