@@ -85,6 +85,7 @@ Release gate-ът нарочно се проваля при чист checkout: �
 ## Документация
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime, trust boundaries и data flows;
+- [`docs/STAGING-CREDENTIALS.md`](docs/STAGING-CREDENTIALS.md) — актуален hosted staging checkpoint, secret ownership, dashboard locations и rollback ред;
 - [`docs/PRODUCTION-SETUP.md`](docs/PRODUCTION-SETUP.md) — среди, secrets и deploy последователност;
 - [`docs/BACKUP-RESTORE.md`](docs/BACKUP-RESTORE.md) — отделен encrypted backup за Storage;
 - [`docs/INCIDENT-RESPONSE.md`](docs/INCIDENT-RESPONSE.md) — incident/contact процес;

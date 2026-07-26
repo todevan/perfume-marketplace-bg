@@ -13,6 +13,53 @@ Do not copy production credentials into staging. Store secrets in the provider
 or as explicitly listed GitHub repository secrets, never in `wrangler.jsonc`,
 a committed `.env` file, or a pull-request-visible GitHub variable.
 
+## Current hosted staging checkpoint
+
+Checkpoint date: 2026-07-26. This is an infrastructure-only, fail-closed
+checkpoint. It is not a usable beta environment and must not receive external
+invitations.
+
+| Area | Verified state |
+|---|---|
+| GitHub | `todevan/perfume-marketplace-bg` exists as the new canonical private repository. The older `todevan/remix-of-scent-exchange` repository remains untouched. |
+| Quality CI | GitHub Actions run `30199070863` is green for both application and database jobs. The first Worker deployment used tested commit `c5d627c`. |
+| Local database | The disposable local stack now matches hosted PostgreSQL major version 17. Migrations `001`–`009` apply locally, SQL lint is clean, and all 111 pgTAP assertions pass. |
+| Local catalogue | The atomic seed contains 196 brands, 48 aliases, and 335 editorial memberships. Membership counts are exactly 80 men, 80 women, 80 unisex, 80 niche, and 15 Arabic. |
+| Cloudflare account | Account ID `0cb7373563c400a08bd46564320dd747` owns the staging Worker. |
+| Cloudflare Worker | `perfume-marketplace-bg-staging` is available at `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev`. |
+| Fail-closed deployment | Version `2f623ed4-adfd-496a-8191-363a6658c38c`, deployment `fb83c5a3-122a-41fa-8f22-9eca954567ed`, returns the expected `503` while Supabase runtime configuration is absent. `/`, `/login`, `/dashboard`, `/robots.txt`, and `/sitemap.xml` were checked, and no demo content was exposed. |
+| Hosted Supabase | Read-only inventory completed for project `zllqwlekadiuyejgbuxc`: zero Auth users, zero Storage buckets/objects, no application tables/views, no migration history, and only the platform-default `public.rls_auto_enable` function. The hosted database is PostgreSQL 17.6. The project is intentionally still unlinked and unmodified because its region is `eu-north-1` (Stockholm), not the required `eu-central-1` (Frankfurt). |
+| Configured Worker | Blocked on a Frankfurt Supabase project or an explicit region-requirement change. The deployed `503` version is a safe bootstrap baseline, not the first functional known-good application version. |
+| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write was created, verified and stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. The first manual `workflow_dispatch` deployment remains pending. |
+| External providers | Resend, Turnstile, Cloudflare Images processing, Twilio, real-provider E2E, and backup/restore rehearsal remain deferred. |
+| Production | Locked. No production project, route, secret, deployment, domain, user, invitation, or payment capability is authorized by this checkpoint. |
+
+Do not link or mutate project `zllqwlekadiuyejgbuxc` while the Frankfurt
+requirement remains active. Continue only with a new empty Frankfurt project,
+or after an explicit decision changes the region requirement. Do not mark the
+configured Worker or the manual GitHub deployment complete from screenshots or
+local results; record each only after the remote mutation and verification
+evidence exists.
+
+### Keep secrets with their current owner
+
+- The local Wrangler OAuth profile is for trusted operator use. Do not export
+  its token to GitHub.
+- A Supabase CLI access token, database password, service-role key, and
+  first-admin bootstrap values belong only in the trusted local shell or the
+  official local CLI profile.
+- GitHub owns a separate, account-scoped Cloudflare API token with only Workers
+  Scripts Write. Its repository secrets are `CLOUDFLARE_API_TOKEN` and account
+  ID `0cb7373563c400a08bd46564320dd747` as
+  `CLOUDFLARE_ACCOUNT_ID`. Rotate the token no later than 2026-10-25.
+- Worker runtime configuration belongs on
+  `perfume-marketplace-bg-staging`. Store `SUPABASE_SECRET_KEY` as a Worker
+  secret; configure browser-safe Supabase values and feature flags as Worker
+  variables.
+- Never copy a Supabase personal access token, database password,
+  service-role key, Cloudflare OAuth token, or first-admin values into GitHub
+  repository secrets, documentation, CI logs, or committed files.
+
 ## GitHub Free repository model
 
 The new canonical private repository is
@@ -115,6 +162,28 @@ corrected build passes. Never enable demo mode, point staging at production
 data, reset Supabase, or mutate migration history as a rollback technique. If a
 database migration was already applied, keep the database forward-only and use
 a compatible application rollback or a new corrective migration.
+
+### Roll back hosted staging in this order
+
+1. Stop manual GitHub dispatches and provider tests. Record the active Worker
+   deployment, tested Git SHA, request IDs, and relevant sanitized logs.
+2. If a functional known-good Worker deployment has been recorded, roll the
+   Worker back to that exact deployment and repeat the authentication,
+   crawler, demo-mode, and billing smoke checks.
+3. If no functional known-good deployment exists, keep the application
+   fail-closed or disable the public `workers.dev` endpoint. The recorded
+   `fb83c5a3-122a-41fa-8f22-9eca954567ed` deployment is only a safe `503`
+   bootstrap baseline.
+4. Do not reverse a hosted database migration with reset, repair, drop,
+   truncate, or migration-history edits. Use a compatible application version
+   or add a reviewed forward-only corrective migration.
+5. If a catalogue seed fails, confirm that its transaction rolled back before
+   retrying. Do not partially patch catalogue rows by hand.
+6. If credential exposure is suspected, revoke or rotate the affected
+   provider credential before redeploying. Update only the secret store that
+   owns it.
+7. After recovery, repeat hosted smoke tests and record the new deployment ID
+   and tested Git SHA before resuming provider work.
 
 ## Connect the hosted Supabase staging project
 
