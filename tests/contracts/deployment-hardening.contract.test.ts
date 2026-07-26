@@ -10,6 +10,7 @@ const readinessScript = resolve(workspace, 'scripts/check-production-readiness.m
 const deploymentWorkflowPath = resolve(workspace, '.github/workflows/deploy.yml');
 const qualityWorkflowPath = resolve(workspace, '.github/workflows/ci.yml');
 const packageJsonPath = resolve(workspace, 'package.json');
+const svelteConfigPath = resolve(workspace, 'svelte.config.js');
 const billingFlags = [
 	'FEATURE_BILLING_ENABLED',
 	'FEATURE_LISTING_FEES_ENABLED',
@@ -114,6 +115,13 @@ describe('closed beta deployment hardening', () => {
 		const workflow = readFileSync(qualityWorkflowPath, 'utf8');
 		expect(workflow).toContain(
 			'pnpm exec playwright install --with-deps chromium webkit'
+		);
+	});
+
+	it('keeps Cloudflare platform emulation ephemeral during Vite preview', () => {
+		const svelteConfig = readFileSync(svelteConfigPath, 'utf8');
+		expect(svelteConfig).toMatch(
+			/platformProxy:\s*\{\s*[\s\S]*?persist:\s*false/
 		);
 	});
 
