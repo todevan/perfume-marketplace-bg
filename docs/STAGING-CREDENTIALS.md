@@ -22,24 +22,25 @@ invitations.
 | Area | Verified state |
 |---|---|
 | GitHub | `todevan/perfume-marketplace-bg` exists as the new canonical private repository. The older `todevan/remix-of-scent-exchange` repository remains untouched. |
-| Quality CI | GitHub Actions run `30199070863` is green for both application and database jobs. The first Worker deployment used tested commit `c5d627c`. |
+| Quality CI | GitHub Actions run `30201952581` is green for both application and database jobs on commit `ba135edb432dc30d958624c236c3e28a36a02831`. |
 | Local database | The disposable local stack now matches hosted PostgreSQL major version 17. Migrations `001`–`009` apply locally, SQL lint is clean, and all 111 pgTAP assertions pass. |
 | Local catalogue | The atomic seed contains 196 brands, 48 aliases, and 335 editorial memberships. Membership counts are exactly 80 men, 80 women, 80 unisex, 80 niche, and 15 Arabic. |
 | Cloudflare account | Account ID `0cb7373563c400a08bd46564320dd747` owns the staging Worker. |
 | Cloudflare Worker | `perfume-marketplace-bg-staging` is available at `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev`. |
-| Fail-closed deployment | Version `2f623ed4-adfd-496a-8191-363a6658c38c`, deployment `fb83c5a3-122a-41fa-8f22-9eca954567ed`, returns the expected `503` while Supabase runtime configuration is absent. `/`, `/login`, `/dashboard`, `/robots.txt`, and `/sitemap.xml` were checked, and no demo content was exposed. |
+| Fail-closed deployment | Manual GitHub run `30202089147` deployed commit `ba135edb432dc30d958624c236c3e28a36a02831` as Cloudflare version `f7488f01-40cf-4605-bc6a-9746f56f0044`, deployment `6701b6ad-718c-4a30-92e4-622bc346eead`. It returns the expected `503` while Supabase runtime configuration is absent. `/`, `/login`, `/dashboard`, `/robots.txt`, and `/sitemap.xml` were checked, and no demo content was exposed. |
 | Hosted Supabase | Read-only inventory completed for project `zllqwlekadiuyejgbuxc`: zero Auth users, zero Storage buckets/objects, no application tables/views, no migration history, and only the platform-default `public.rls_auto_enable` function. The hosted database is PostgreSQL 17.6. The project is intentionally still unlinked and unmodified because its region is `eu-north-1` (Stockholm), not the required `eu-central-1` (Frankfurt). |
 | Configured Worker | Blocked on a Frankfurt Supabase project or an explicit region-requirement change. The deployed `503` version is a safe bootstrap baseline, not the first functional known-good application version. |
-| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write was created, verified and stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. The first manual `workflow_dispatch` deployment remains pending. |
+| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write was created, verified and stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. The first manual `workflow_dispatch` run `30202089147` completed successfully for the exact approved `main` SHA, and its logs contained no raw-token patterns. This proves the GitHub-to-Cloudflare path only; it is not a functional beta acceptance result. |
 | External providers | Resend, Turnstile, Cloudflare Images processing, Twilio, real-provider E2E, and backup/restore rehearsal remain deferred. |
 | Production | Locked. No production project, route, secret, deployment, domain, user, invitation, or payment capability is authorized by this checkpoint. |
 
 Do not link or mutate project `zllqwlekadiuyejgbuxc` while the Frankfurt
 requirement remains active. Continue only with a new empty Frankfurt project,
-or after an explicit decision changes the region requirement. Do not mark the
-configured Worker or the manual GitHub deployment complete from screenshots or
-local results; record each only after the remote mutation and verification
-evidence exists.
+or after an explicit decision changes the region requirement. The manual
+GitHub-to-Cloudflare transport is verified, but the Worker must not be marked
+functional from that result. A functional known-good Worker still requires the
+remote Supabase configuration, application smoke checks and recorded
+deployment evidence.
 
 ### Keep secrets with their current owner
 
