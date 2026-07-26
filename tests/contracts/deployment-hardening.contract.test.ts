@@ -8,6 +8,7 @@ import { GET as getSitemap } from '../../src/routes/sitemap.xml/+server';
 const workspace = resolve(import.meta.dirname, '../..');
 const readinessScript = resolve(workspace, 'scripts/check-production-readiness.mjs');
 const deploymentWorkflowPath = resolve(workspace, '.github/workflows/deploy.yml');
+const qualityWorkflowPath = resolve(workspace, '.github/workflows/ci.yml');
 const packageJsonPath = resolve(workspace, 'package.json');
 const billingFlags = [
 	'FEATURE_BILLING_ENABLED',
@@ -107,6 +108,13 @@ describe('closed beta deployment hardening', () => {
 		expect(dryRun).toBeGreaterThan(tests);
 		expect(deploy).toBeGreaterThan(dryRun);
 		expect(workflow.match(/run: pnpm exec wrangler deploy --env staging/g)).toHaveLength(1);
+	});
+
+	it('installs every browser engine used by the Playwright project matrix', () => {
+		const workflow = readFileSync(qualityWorkflowPath, 'utf8');
+		expect(workflow).toContain(
+			'pnpm exec playwright install --with-deps chromium webkit'
+		);
 	});
 
 	it('exposes only an explicit staging deploy package script', () => {

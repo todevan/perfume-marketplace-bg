@@ -32,7 +32,7 @@ jobs:
         run: pnpm test:unit
       - name: Run Svelte checks
         run: pnpm check
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - name: Build once and run stable Playwright suite
         run: pnpm test:e2e
       - name: Validate staging Cloudflare bundle
