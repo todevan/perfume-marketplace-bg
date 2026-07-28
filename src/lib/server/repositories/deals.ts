@@ -13,6 +13,7 @@ import {
 	LISTING_PROJECTION,
 	type ListingJoinedRow
 } from './listings';
+import { toActorSummaryDto } from './profiles';
 import { pageDto, throwIfError, type MarketplaceSupabaseClient } from './shared';
 
 type DealRow = Tables<'deals'>;
@@ -20,13 +21,7 @@ type ProfileRow = Views<'public_profiles'>;
 type ConfirmationRow = Tables<'deal_confirmations'>;
 
 function actor(row: ProfileRow): ActorSummaryDto {
-	return {
-		id: row.id,
-		username: row.username,
-		avatarUrl: row.avatar_path,
-		accountKind: row.account_kind,
-		merchantVerified: row.is_merchant_verified
-	};
+	return toActorSummaryDto(row, 'deals.actor');
 }
 
 function removedActor(profileId: string): ActorSummaryDto {
@@ -67,7 +62,10 @@ async function hydrateDeals(
 	);
 	const listingById = new Map(listings.map((listing) => [listing.id, listing]));
 	const profileById = new Map(
-		((profilesResult.data ?? []) as unknown as ProfileRow[]).map((profile) => [profile.id, actor(profile)])
+		((profilesResult.data ?? []) as unknown as ProfileRow[]).map((profile) => {
+			const summary = actor(profile);
+			return [summary.id, summary] as const;
+		})
 	);
 	const confirmations = (confirmationsResult.data ?? []) as ConfirmationRow[];
 

@@ -2,7 +2,7 @@
 
 Работеща SvelteKit основа за затворен marketplace за нови и употребявани парфюми, продажба, размяна и обяви „Търся“. Името, логото и домейнът остават конфигурационни.
 
-Кодът вече съдържа production data flow, invite-only authentication и forward-only Supabase hardening. Външните staging/production акаунти, домейнът, SMS операторът и одобрените правни текстове не могат да бъдат създадени от хранилището и остават launch gates.
+Кодът вече съдържа production data flow, invite-only authentication и forward-only Supabase hardening. Изолираният Frankfurt staging backend е свързан, мигриран и остава затворен без потребители или покани. Production, домейнът, външните доставчици и одобрените правни текстове остават launch gates.
 
 ## Реализирано
 
@@ -17,6 +17,7 @@
 - quarantine upload запис, реално MIME разпознаване, WebP/JPEG re-encode и премахване на EXIF;
 - in-app известия и идемпотентен Resend delivery ledger;
 - Cloudflare Worker конфигурация, автоматичен quality CI, ръчен staging deploy workflow и encrypted Storage backup;
+- защитен hosted baseline в Supabase проект `nuhkpqjjyuygiemrxbdp` (`eu-central-1`) с target guard преди всяка remote операция;
 - всички billing/payment/boost/subscription/ads функции са изключени по подразбиране.
 
 ## Runtime режими
@@ -52,6 +53,8 @@ pnpm check
 pnpm build
 pnpm test:e2e
 pnpm db:test
+pnpm db:staging:verify-target
+pnpm db:staging:push:dry-run
 pnpm check:release -- --env-file=.env.production
 ```
 
@@ -70,8 +73,9 @@ Release gate-ът нарочно се проваля при чист checkout: �
 5. `202607220007_search_realtime_jobs.sql` — slugs, search RPC, Realtime, notifications, email ledger и scheduled jobs;
 6. `202607220008_first_admin_bootstrap.sql` — еднократен, service-role-only bootstrap за първия staging администратор;
 7. `202607260009_database_lint_hardening.sql` — forward-only корекции за PL/pgSQL ambiguity, fail-closed lint и запазени RPC ACL договори.
+8. `202607280010_hosted_runtime_correction.sql` — hosted ACL корекция, която отнема директния `anon` достъп до public profile проекцията.
 
-Каталогът се зарежда чрез една provenance-aware транзакция с `pnpm seed:catalog`. Точните редакционни колекции остават `80/80/80/80/15`.
+Каталогът се зарежда чрез една provenance-aware транзакция с `pnpm seed:catalog` локално или `pnpm seed:staging` след успешен hosted target guard. Провереният baseline съдържа 196 марки, 48 aliases и 335 editorial memberships. Точните редакционни колекции остават `80/80/80/80/15`.
 
 ## Production граници
 
@@ -95,4 +99,4 @@ Release gate-ът нарочно се проваля при чист checkout: �
 
 ## Преди първа външна покана
 
-Новият canonical private remote е `todevan/perfume-marketplace-bg`; старото repo `todevan/remix-of-scent-exchange` остава недокоснато. Текущият GitHub Free модел използва repository secrets и само ръчно staging пускане, без да разчита на protected branch/environment enforcement. Преди свързване направете read-only inventory на remote-а, Supabase staging и Cloudflare и спрете при всяко несъответствие — без remote reset или repair. Hosted provider интеграциите, production, custom domain, carrier тестовете, backup/restore rehearsal, външните покани и правният преглед остават launch gates.
+Новият canonical private remote е `todevan/perfume-marketplace-bg`; старото repo `todevan/remix-of-scent-exchange` остава недокоснато. Текущият GitHub Free модел използва repository secrets и само ръчно staging пускане, без да разчита на protected branch/environment enforcement. Staging target guard-ът допуска единствено проекта `perfume-marketplace-bg-staging` с ref `nuhkpqjjyuygiemrxbdp`, organization `khazvscqabwvslnphbqp` и region `eu-central-1`; Stockholm проектът остава недокоснат. Hosted staging е с изключени public/anonymous signup, включено email confirmation и нула Auth потребители и Storage обекти. Resend, Turnstile, Cloudflare Images processing, Twilio, production, custom domain, carrier тестовете, backup/restore rehearsal, външните покани и правният преглед остават launch gates.

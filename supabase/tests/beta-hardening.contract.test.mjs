@@ -23,6 +23,9 @@ const sql = Object.fromEntries(
 const lintHardening = compact(
 	readMigration('202607260009_database_lint_hardening.sql')
 );
+const hostedRuntimeCorrection = compact(
+	readMigration('202607280010_hosted_runtime_correction.sql')
+);
 
 const includesAll = (source, fragments) => {
 	for (const fragment of fragments) {
@@ -46,6 +49,13 @@ test('database lint hardening is forward-only and fail-closed', () => {
 		'execute function_definition',
 		'revoke execute on function public.reject_listing_upload(uuid, text) from public, anon, authenticated',
 		'grant execute on function public.reject_listing_upload(uuid, text) to service_role'
+	]);
+});
+
+test('hosted runtime correction removes the platform direct anon view grant', () => {
+	includesAll(hostedRuntimeCorrection, [
+		'revoke all on public.public_profiles from public, anon',
+		'grant select on public.public_profiles to authenticated, service_role'
 	]);
 });
 

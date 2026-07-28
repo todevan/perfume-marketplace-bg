@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { openDealDisputeInputSchema } from '../../src/lib/contracts';
+import {
+	listingDraftInputSchema,
+	openDealDisputeInputSchema
+} from '../../src/lib/contracts';
 import { searchCatalog } from '../../src/lib/server/repositories/catalog';
 import { openDealDispute } from '../../src/lib/server/repositories/deals';
-import { searchListings } from '../../src/lib/server/repositories/listings';
+import {
+	createListingDraft,
+	searchListings,
+	updateListingDraft,
+	type ListingJoinedRow
+} from '../../src/lib/server/repositories/listings';
 import type { MarketplaceSupabaseClient } from '../../src/lib/server/repositories/shared';
 import {
 	cashAmountMinor,
@@ -72,8 +80,137 @@ describe('RPC-backed marketplace boundaries', () => {
 		const result = await searchListings(client, {
 			query: '', segments: [], sort: 'newest', limit: 12, offset: 0
 		});
-		expect(rpc).toHaveBeenCalledWith('search_listings', expect.objectContaining({ page_size: 13 }));
+		expect(rpc).toHaveBeenCalledWith('search_listings', { page_size: 13 });
 		expect(result).toMatchObject({ items: [], nextCursor: null, totalIsExact: true });
+	});
+
+	it('omits absent search defaults and sends only populated RPC filters', async () => {
+		const rpc = vi.fn(async () => ({ data: [], error: null }));
+		const client = { rpc } as unknown as MarketplaceSupabaseClient;
+		await searchListings(client, {
+			query: 'oud',
+			audience: 'unisex',
+			segments: ['niche'],
+			dealMode: 'swap',
+			city: 'Sofia',
+			minPriceMinor: 1000,
+			maxPriceMinor: 5000,
+			cursorActivatedAt: '2026-07-22T10:00:00.000Z',
+			cursorId: uuid,
+			sort: 'newest',
+			limit: 12,
+			offset: 0
+		});
+		expect(rpc).toHaveBeenCalledWith('search_listings', {
+			search_query: 'oud',
+			filter_audience: 'unisex',
+			filter_segments: ['niche'],
+			filter_deal_mode: 'swap',
+			filter_city: 'Sofia',
+			min_price_minor: 1000,
+			max_price_minor: 5000,
+			page_size: 13,
+			cursor_activated_at: '2026-07-22T10:00:00.000Z',
+			cursor_id: uuid
+		});
+	});
+
+	it('supplies the trigger placeholder on insert and never sends it during an update', async () => {
+		const listingId = '22222222-2222-4222-8222-222222222222';
+		const brandId = '33333333-3333-4333-8333-333333333333';
+		const now = '2026-07-22T10:00:00.000Z';
+		const row: ListingJoinedRow = {
+			id: listingId,
+			slug: 'example-fragrance-2222222222',
+			seller_id: uuid,
+			kind: 'offer',
+			deal_mode: 'sale',
+			product_format: 'retail_bottle',
+			audience: 'unisex',
+			segments: ['niche'],
+			brand_id: brandId,
+			brand_input_text: null,
+			brand_normalized_key: null,
+			suggested_brand_id: null,
+			catalog_provenance: {},
+			fragrance_id: null,
+			fragrance_name: 'Example Fragrance',
+			concentration: 'EDP',
+			concentration_label: null,
+			fragrantica_url: null,
+			title: 'Example fragrance bottle',
+			description: 'A test listing.',
+			city: 'Sofia',
+			bottle_volume_ml: 100,
+			remaining_ml: 90,
+			is_sealed: false,
+			price_minor: 5000,
+			estimated_value_minor: null,
+			max_budget_minor: null,
+			status: 'draft',
+			activated_at: null,
+			expires_at: null,
+			completed_at: null,
+			created_at: now,
+			updated_at: now,
+			brand: { id: brandId, canonical_name: 'Example Brand', slug: 'example-brand' },
+			seller: {
+				id: uuid,
+				username: 'seller',
+				avatar_path: null,
+				account_kind: 'private',
+				is_merchant_verified: false
+			},
+			photos: [],
+			authenticity: null
+		};
+		const input = listingDraftInputSchema.parse({
+			kind: 'offer',
+			dealMode: 'sale',
+			productFormat: 'retail_bottle',
+			audience: 'unisex',
+			segments: ['niche'],
+			brandId,
+			fragranceId: null,
+			fragranceName: 'Example Fragrance',
+			concentration: 'EDP',
+			concentrationLabel: null,
+			referenceUrl: null,
+			title: 'Example fragrance bottle',
+			description: 'A test listing.',
+			city: 'Sofia',
+			bottleVolumeMl: 100,
+			remainingMl: 90,
+			isSealed: false,
+			priceMinor: 5000,
+			estimatedValueMinor: null,
+			maxBudgetMinor: null
+		});
+
+		const single = vi.fn(async () => ({ data: row, error: null }));
+		const insert = vi.fn((_payload: unknown) => ({
+			select: vi.fn(() => ({ single }))
+		}));
+		const updateChain = {
+			eq: vi.fn(),
+			in: vi.fn(),
+			select: vi.fn(() => ({ single }))
+		};
+		updateChain.eq.mockReturnValue(updateChain);
+		updateChain.in.mockReturnValue(updateChain);
+		const update = vi.fn((_payload: unknown) => updateChain);
+		const client = {
+			from: vi.fn(() => ({ insert, update }))
+		} as unknown as MarketplaceSupabaseClient;
+
+		await createListingDraft(client, uuid, input);
+		await updateListingDraft(client, uuid, { listingId, patch: input });
+
+		expect(insert).toHaveBeenCalledWith(expect.objectContaining({ slug: 'server-managed' }));
+		const updatePayload = update.mock.calls[0]?.[0];
+		expect(updatePayload).not.toHaveProperty('slug');
+		expect(updatePayload).not.toHaveProperty('seller_id');
+		expect(updatePayload).not.toHaveProperty('status');
 	});
 
 	it('uses alias-aware search_catalog for non-empty catalog queries', async () => {

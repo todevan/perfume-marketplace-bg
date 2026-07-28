@@ -183,7 +183,8 @@ for (const migration of [
   '202607220006_moderation_lifecycle.sql',
   '202607220007_search_realtime_jobs.sql',
   '202607220008_first_admin_bootstrap.sql',
-  '202607260009_database_lint_hardening.sql'
+  '202607260009_database_lint_hardening.sql',
+  '202607280010_hosted_runtime_correction.sql'
 ]) {
   if (!existsSync(resolve(workspace, 'supabase', 'migrations', migration))) {
     failures.push(`missing migration: ${migration}`);

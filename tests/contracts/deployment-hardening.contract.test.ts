@@ -166,6 +166,35 @@ describe('closed beta deployment hardening', () => {
 		expect(wrangler.env.staging.images).toEqual({ binding: 'IMAGES' });
 	});
 
+	it('pins the Frankfurt closed-beta runtime without committing server secrets', () => {
+		const wrangler = JSON.parse(readFileSync(resolve(workspace, 'wrangler.jsonc'), 'utf8'));
+		const variables = wrangler.env.staging.vars as Record<string, string>;
+
+		expect(variables).toMatchObject({
+			APP_ENV: 'staging',
+			PUBLIC_DEMO_MODE: 'false',
+			PUBLIC_APP_URL:
+				'https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev',
+			PUBLIC_SUPABASE_URL: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
+			PRIVATE_BETA_REQUIRE_INVITE: 'true',
+			PRIVATE_BETA_REQUIRE_STAFF_MFA: 'true',
+			LEGAL_CONTENT_APPROVED: 'false',
+			FEATURE_SMS_VERIFICATION_ENABLED: 'false',
+			IMAGE_PROCESSOR_MODE: 'disabled',
+			FEATURE_BILLING_ENABLED: 'false',
+			FEATURE_LISTING_FEES_ENABLED: 'false',
+			FEATURE_MERCHANT_SUBSCRIPTIONS_ENABLED: 'false',
+			FEATURE_BOOSTS_ENABLED: 'false',
+			FEATURE_DIRECT_ADS_ENABLED: 'false',
+			FEATURE_MYPOS_PAYMENTS_ENABLED: 'false',
+			FEATURE_STRIPE_FALLBACK_ENABLED: 'false',
+			PAYMENT_PROVIDER: 'disabled'
+		});
+		expect(variables.PUBLIC_SUPABASE_PUBLISHABLE_KEY).toMatch(/^sb_publishable_/);
+		expect(variables).not.toHaveProperty('SUPABASE_SECRET_KEY');
+		expect(variables).not.toHaveProperty('SUPABASE_SERVICE_ROLE_KEY');
+	});
+
 	it('passes the release contract only with demo mode and every billing flag disabled', () => {
 		const result = runReadiness();
 		expect(result.status, result.stderr).toBe(0);

@@ -15,32 +15,57 @@ a committed `.env` file, or a pull-request-visible GitHub variable.
 
 ## Current hosted staging checkpoint
 
-Checkpoint date: 2026-07-26. This is an infrastructure-only, fail-closed
+Checkpoint date: 2026-07-28. This is a backend-connected, invite-locked
 checkpoint. It is not a usable beta environment and must not receive external
 invitations.
 
 | Area | Verified state |
 |---|---|
 | GitHub | `todevan/perfume-marketplace-bg` exists as the new canonical private repository. The older `todevan/remix-of-scent-exchange` repository remains untouched. |
-| Quality CI | GitHub Actions run `30201952581` is green for both application and database jobs on commit `ba135edb432dc30d958624c236c3e28a36a02831`. |
-| Local database | The disposable local stack now matches hosted PostgreSQL major version 17. Migrations `001`–`009` apply locally, SQL lint is clean, and all 111 pgTAP assertions pass. |
+| Quality CI | The first functional `main` quality receipt is pending in the receipt table below. Do not reuse an older run as approval for this baseline. |
+| Local database | The disposable local stack matches hosted PostgreSQL major version 17. Migrations `001`–`010` apply locally, SQL lint is clean, and all 111 pgTAP assertions pass. |
 | Local catalogue | The atomic seed contains 196 brands, 48 aliases, and 335 editorial memberships. Membership counts are exactly 80 men, 80 women, 80 unisex, 80 niche, and 15 Arabic. |
 | Cloudflare account | Account ID `0cb7373563c400a08bd46564320dd747` owns the staging Worker. |
 | Cloudflare Worker | `perfume-marketplace-bg-staging` is available at `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev`. |
-| Fail-closed deployment | Manual GitHub run `30202089147` deployed commit `ba135edb432dc30d958624c236c3e28a36a02831` as Cloudflare version `f7488f01-40cf-4605-bc6a-9746f56f0044`, deployment `6701b6ad-718c-4a30-92e4-622bc346eead`. It returns the expected `503` while Supabase runtime configuration is absent. `/`, `/login`, `/dashboard`, `/robots.txt`, and `/sitemap.xml` were checked, and no demo content was exposed. |
-| Hosted Supabase | Read-only inventory completed for project `zllqwlekadiuyejgbuxc`: zero Auth users, zero Storage buckets/objects, no application tables/views, no migration history, and only the platform-default `public.rls_auto_enable` function. The hosted database is PostgreSQL 17.6. The project is intentionally still unlinked and unmodified because its region is `eu-north-1` (Stockholm), not the required `eu-central-1` (Frankfurt). |
-| Configured Worker | Blocked on a Frankfurt Supabase project or an explicit region-requirement change. The deployed `503` version is a safe bootstrap baseline, not the first functional known-good application version. |
-| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write was created, verified and stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. The first manual `workflow_dispatch` run `30202089147` completed successfully for the exact approved `main` SHA, and its logs contained no raw-token patterns. This proves the GitHub-to-Cloudflare path only; it is not a functional beta acceptance result. |
+| Fail-closed rollback | Git SHA `c7d2b19` remains the recorded bootstrap checkpoint. Cloudflare Worker version `75593db4-12fd-486d-ae8a-bdf9ebbb3ece` is the explicit safe `503` rollback target while the new functional receipt is pending. |
+| Hosted Supabase identity | The bootstrap project label `wow` was renamed to `perfume-marketplace-bg-staging`. Ref `nuhkpqjjyuygiemrxbdp` belongs to organization `khazvscqabwvslnphbqp`, runs in `eu-central-1` (Frankfurt), and reports PostgreSQL 17 with `ACTIVE_HEALTHY`. |
+| Hosted Supabase result | Migrations `001`–`010` are recorded. The runtime has 4 Storage buckets with 0 objects, 12 Realtime publication tables, 2 scheduled jobs, and 0 Auth users or identities. The catalogue contains 196 brands, 48 aliases, and 335 memberships with exact `80/80/80/80/15` collection counts. |
+| Hosted Auth lock | Public signup and anonymous signup are disabled; email confirmation is enabled. Site URL is the exact staging Worker origin, and only its `/auth/callback` and `/auth/confirm` URLs are allowed. SMTP, SMS, and CAPTCHA are unconfigured. |
+| Configured Worker | The first backend-connected `main` deployment and HTTP smoke receipt are pending. Until the receipt table is complete, the environment remains an internal backend baseline rather than an accepted beta. |
+| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write is stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. The first functional manual `workflow_dispatch` receipt is pending below. |
 | External providers | Resend, Turnstile, Cloudflare Images processing, Twilio, real-provider E2E, and backup/restore rehearsal remain deferred. |
 | Production | Locked. No production project, route, secret, deployment, domain, user, invitation, or payment capability is authorized by this checkpoint. |
 
-Do not link or mutate project `zllqwlekadiuyejgbuxc` while the Frankfurt
-requirement remains active. Continue only with a new empty Frankfurt project,
-or after an explicit decision changes the region requirement. The manual
-GitHub-to-Cloudflare transport is verified, but the Worker must not be marked
-functional from that result. A functional known-good Worker still requires the
-remote Supabase configuration, application smoke checks and recorded
-deployment evidence.
+The previous Stockholm project `zllqwlekadiuyejgbuxc` remains untouched and is
+not an authorized target. Every hosted database operation must pass the guard
+for ref `nuhkpqjjyuygiemrxbdp`, organization `khazvscqabwvslnphbqp`, region
+`eu-central-1`, PostgreSQL 17, and `ACTIVE_HEALTHY`. A functional known-good
+Worker still requires the first functional `main` deployment and recorded smoke
+evidence.
+
+### First functional backend-baseline receipts — pending operator completion
+
+Do not replace these placeholders with estimates or an earlier run. The parent
+operator fills them only after the baseline code is on `main`, its quality
+workflow is green, and that exact SHA is deployed and smoked. These fields
+intentionally describe the deployment immediately before the receipt-only
+documentation commit.
+
+| Receipt | Value |
+|---|---|
+| Baseline code `main` Git SHA | `PENDING_BASELINE_MAIN_GIT_SHA` |
+| Quality workflow run ID | `PENDING_QUALITY_WORKFLOW_RUN_ID` |
+| Quality application job ID | `PENDING_QUALITY_APPLICATION_JOB_ID` |
+| Quality database job ID | `PENDING_QUALITY_DATABASE_JOB_ID` |
+| First functional staging deploy run ID | `PENDING_STAGING_DEPLOY_RUN_ID` |
+| First functional Worker version ID | `PENDING_FIRST_WORKER_VERSION_ID` |
+| First functional Worker deployment ID | `PENDING_FIRST_WORKER_DEPLOYMENT_ID` |
+| First hosted HTTP smoke receipt | `PENDING_HOSTED_SMOKE_RECEIPT` |
+
+After this table is committed, deploy that new documentation SHA once more.
+The immutable GitHub Actions run and Cloudflare deployment records are the
+authoritative final exact-SHA receipt; copying that SHA back into this tracked
+file would create an endless self-referential commit cycle.
 
 ### Keep secrets with their current owner
 
@@ -55,8 +80,10 @@ deployment evidence.
   `CLOUDFLARE_ACCOUNT_ID`. Rotate the token no later than 2026-10-25.
 - Worker runtime configuration belongs on
   `perfume-marketplace-bg-staging`. Store `SUPABASE_SECRET_KEY` as a Worker
-  secret; configure browser-safe Supabase values and feature flags as Worker
-  variables.
+  secret—the only Supabase secret on this Worker. Non-secret staging variables,
+  browser-safe Supabase values, and feature flags are source-controlled under
+  `env.staging.vars` in `wrangler.jsonc`; never copy the legacy service-role
+  key there.
 - Never copy a Supabase personal access token, database password,
   service-role key, Cloudflare OAuth token, or first-admin values into GitHub
   repository secrets, documentation, CI logs, or committed files.
@@ -97,33 +124,35 @@ reconciliation plan.
 | GitHub | Repository **Actions → deploy staging → Run workflow**, branch `main` | Manual staging dispatch and deployed commit SHA |
 | Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Settings → Variables and Secrets** | Worker runtime variables and `SUPABASE_SECRET_KEY` |
 | Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Deployments** | Active deployment/version ID and rollback target |
-| Supabase | Project **Connect** or **Settings → API Keys** | Publishable key and server secret; copy them only into their intended secret store |
+| Supabase | Organization `khazvscqabwvslnphbqp` → project `perfume-marketplace-bg-staging` (`nuhkpqjjyuygiemrxbdp`) → **Connect** or **Settings → API Keys** | Publishable key and server secret; copy them only into their intended secret store |
 | Supabase | Project **Authentication → URL Configuration** | Exact Site URL and allowed `/auth/callback` and `/auth/confirm` redirects |
-| Supabase | Project **Authentication → Sign In / Providers → Email** | Public signup disabled and email confirmation enabled |
-| Supabase | Project **Authentication → Users** and **Storage** | Mandatory pre-migration zero-user/zero-object inventory |
+| Supabase | Project **Authentication → Sign In / Providers → Email** | Public and anonymous signup disabled; email confirmation enabled |
+| Supabase | Project **Authentication → Users** and **Storage** | Confirmed 0 Auth users/identities and 0 Storage objects; the 4 empty buckets are migration-owned |
 
 The trusted local shell owns the Supabase CLI access token, database password,
 legacy service-role key when required by operator tooling, and first-admin
 bootstrap values. They do not belong in GitHub, Cloudflare Worker variables or
 committed files. GitHub owns only the two least-privilege Cloudflare deployment
-values listed above.
+values listed above. Clear the database password and legacy service-role key
+from the shell environment after the hosted command that needs them.
 
 ## Connect Cloudflare first
 
 | Name or binding | Classification | Where it is used | When it is required |
 |---|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | Secret | GitHub staging deployment job and real Wrangler deploy | Required for the first real staging deploy; not required for dry-runs |
-| `CLOUDFLARE_ACCOUNT_ID` | Account identifier | GitHub staging deployment job and the production-readiness contract | Required for the first real staging deploy |
+| `CLOUDFLARE_API_TOKEN` | Secret | GitHub staging deployment job and real Wrangler deploy | Required for a real staging deploy; not required for dry-runs |
+| `CLOUDFLARE_ACCOUNT_ID` | Account identifier | GitHub staging deployment job and the production-readiness contract | Required for a real staging deploy |
 | `IMAGES` | Cloudflare binding, not a secret | Worker upload route through the staging `wrangler.jsonc` environment | Required before enabling the Cloudflare Images processor |
 | `CLOUDFLARE_IMAGES_API_TOKEN` | Secret | Images provisioning/operations and the production-readiness contract; the application upload route uses the `IMAGES` binding instead | Can be deferred until the image pipeline is configured and tested |
 | `IMAGE_PROCESSOR_MODE` | Private runtime configuration | Worker upload pipeline | Keep `disabled` for the first deploy; change to `cloudflare-images` only after the binding and sanitizer pass their tests |
 
 Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as GitHub
 **repository secrets** in `todevan/perfume-marketplace-bg`. Configure the
-remaining application variables and secrets on the
-`perfume-marketplace-bg-staging` Worker. The current Wrangler configuration
-uses `keep_vars: true`, so a code deploy preserves values already provisioned
-on that Worker.
+sole application secret, `SUPABASE_SECRET_KEY`, on the
+`perfume-marketplace-bg-staging` Worker. The committed `wrangler.jsonc` is
+authoritative for every non-secret staging variable. Its `keep_vars: true`
+preserves only provider values not explicitly specified by the deployment;
+committed staging variables are reapplied on each deploy.
 
 The staging `workers.dev` address is intentionally available for internal
 testing. `PUBLIC_APP_URL` must use the exact HTTPS origin assigned to that
@@ -131,7 +160,7 @@ Worker, with no path, query, or fragment.
 
 ### Cloudflare inventory, bootstrap, and rollback gate
 
-Before the first real deploy, inventory the Cloudflare account, Worker names,
+Before each real deploy, inventory the Cloudflare account, Worker names,
 routes, existing deployments, variables, secrets, Images bindings, and
 `workers.dev` exposure. Stop if the account is wrong, the expected staging
 Worker already contains unknown configuration or traffic, the API token has
@@ -152,8 +181,9 @@ The bootstrap is fail-closed:
    and `IMAGE_PROCESSOR_MODE=disabled`.
 4. Deploy staging a second time and verify the deployment ID, `/robots.txt`,
    the sitemap `404`, authentication
-   denial, billing flags, and the staging-only `workers.dev` address before
-   adding any provider integrations.
+   denial, the staging-only `workers.dev` address, and the CI configuration
+   contract that keeps all billing flags disabled before adding any provider
+   integrations.
 5. Record the known-good Cloudflare deployment ID.
 
 If verification fails, stop provider testing. Roll back only to the explicitly
@@ -170,10 +200,10 @@ a compatible application rollback or a new corrective migration.
    deployment, tested Git SHA, request IDs, and relevant sanitized logs.
 2. If a functional known-good Worker deployment has been recorded, roll the
    Worker back to that exact deployment and repeat the authentication,
-   crawler, demo-mode, and billing smoke checks.
+   crawler, demo-mode, and security smoke checks.
 3. If no functional known-good deployment exists, keep the application
    fail-closed or disable the public `workers.dev` endpoint. The recorded
-   `fb83c5a3-122a-41fa-8f22-9eca954567ed` deployment is only a safe `503`
+   Worker version `75593db4-12fd-486d-ae8a-bdf9ebbb3ece` is the safe `503`
    bootstrap baseline.
 4. Do not reverse a hosted database migration with reset, repair, drop,
    truncate, or migration-history edits. Use a compatible application version
@@ -190,8 +220,10 @@ a compatible application rollback or a new corrective migration.
 
 ### Mandatory read-only inventory and stop conditions
 
-Use the designated, staging-only Supabase project. Before linking, seeding, or
-applying migrations, record and verify all of the following:
+Use only project `perfume-marketplace-bg-staging`, ref
+`nuhkpqjjyuygiemrxbdp`, in organization `khazvscqabwvslnphbqp` and Frankfurt
+region `eu-central-1`. Before linking, seeding, or applying migrations, record
+and verify all of the following:
 
 - organization, project name, project ref, project URL, region, and intended
   staging owner;
@@ -216,6 +248,29 @@ look empty, and never rewrite an applied migration. `supabase db reset` is
 local-only. A mismatch requires a new isolated staging project or a separately
 approved forward-only remediation plan.
 
+Run the guarded commands from the trusted local shell:
+
+```powershell
+pnpm db:staging:verify-target
+pnpm db:staging:push:dry-run
+pnpm db:staging:push
+pnpm seed:staging
+pnpm db:staging:types
+pnpm db:staging:types:check
+```
+
+Each command rechecks the official link, project inventory, region, health,
+PostgreSQL major version, URL, and project-bound key before it can mutate
+hosted state. Type generation is pinned to the same project ref and public
+schema; `db:staging:types:check` fails when the committed generated types differ
+from the hosted result. Do not substitute a raw linked `db push`, unguarded
+seed, or remote reset/repair.
+
+The accepted hosted result is migration history `001`–`010`, 4 empty Storage
+buckets, 12 Realtime publication tables, 2 scheduled jobs, 0 Auth users or
+identities, and 0 Storage objects. The catalogue counts are 196 brands, 48
+aliases, and 335 memberships with exact `80/80/80/80/15` collections.
+
 | Name | Classification | Where it is used | When it is required |
 |---|---|---|---|
 | `PUBLIC_SUPABASE_URL` | Public project URL | Browser/server Supabase clients, catalogue seed, storage backup, and restore | Required for the first connected staging Worker |
@@ -230,9 +285,37 @@ two GitHub repository secrets used by the current manual staging workflow.
 Configure it on the staging Worker. Row Level Security remains the access
 boundary.
 
+For this baseline, `PUBLIC_SUPABASE_URL` must equal
+`https://nuhkpqjjyuygiemrxbdp.supabase.co`. The staging target guard verifies
+that URL and the browser-safe publishable key against the Frankfurt ref without
+printing either value. The Worker-only `SUPABASE_SECRET_KEY` is verified
+separately by the staging `/login` backend attestation: it must read the exact
+`196/48/335` catalogue counts from that origin or the route fails closed with
+`503`. The key and provider error details are never returned to the browser or
+written to application logs.
+
 Keep the hosted staging project isolated from production and populate it only
 with synthetic people and listings. Disable public signup in Supabase Auth
 before testing invitations.
+
+### Keep hosted Auth locked until provider testing
+
+The Frankfurt staging Auth configuration is:
+
+- public signup: disabled;
+- anonymous signup: disabled;
+- email confirmation: enabled;
+- Site URL:
+  `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev`;
+- redirect allow-list:
+  `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/callback`
+  and
+  `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/confirm`;
+- custom SMTP, SMS provider, and CAPTCHA: unconfigured.
+
+Do not run `supabase config push` against this project. The local Supabase
+configuration contains localhost callback values and an SMS test OTP that must
+never replace the hosted Auth settings.
 
 ### First administrator bootstrap
 
@@ -371,27 +454,28 @@ Do not provision `MYPOS_SID`, `MYPOS_WALLET_NUMBER`, `MYPOS_KEY_INDEX`,
 `STRIPE_SECRET_KEY`, or `STRIPE_WEBHOOK_SECRET` for this staging phase.
 Payments, fees, subscriptions, boosts, and advertising remain out of scope.
 
-## Use this order for the next staging phase
+## Finish the baseline before adding providers
 
-1. Run local tests, audits, release-contract tests, and both Wrangler dry-runs
-   without credentials.
-2. Create and inspect the new private GitHub repository
-   `todevan/perfume-marketplace-bg`; stop on unexpected remote history and
-   leave `todevan/remix-of-scent-exchange` untouched.
-3. Complete the read-only Supabase and Cloudflare inventories. Stop on every
-   mismatch listed above; do not reset or repair a remote service.
-4. Link and migrate only the verified empty Supabase staging project, then
-   seed and verify the editorial catalogue.
-5. Use local Wrangler authentication for the first explicit staging deploy,
-   which creates the Worker and is expected to fail closed until configured.
-6. Add the inventoried Supabase URL, publishable key, server secret and
-   closed-beta flags to that Worker; deploy again and record the first
-   known-good deployment ID.
-7. Provision only `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as GitHub
-   repository secrets, then manually dispatch staging for the exact tested
-   `main` commit and repeat the smoke checks.
-8. Defer Turnstile, Resend, notification delivery, cleanup scheduling, Twilio,
-   Cloudflare Images, and backup/restore acceptance until the baseline Worker
-   and Supabase smoke tests are clean.
-9. Keep production, external invitations, custom domain, legal approval,
-   carrier tests, and every payment/monetisation capability gated.
+1. Run the full local test/audit matrix, PostgreSQL checks, and both Wrangler
+   dry-runs sequentially.
+2. Push the reviewed branch, require green application and database quality
+   jobs, and merge only that tested state to `main`.
+3. Manually dispatch `deploy staging` for the exact `main` SHA. The workflow
+   must deploy only staging and run the hosted HTTP smoke automatically.
+4. Verify the smoke receipt covers public login/legal/safety `200` responses,
+   protected-route `303` redirects, closed `robots.txt`, missing sitemap,
+   security/no-store headers, no demo data, and fail-closed login without
+   Turnstile.
+5. Fill the first functional deployment receipts near the top of this
+   document, commit them, then deploy the resulting documentation SHA so the
+   active Worker and final `main` agree. Keep that final receipt in the
+   immutable GitHub Actions and Cloudflare deployment records.
+6. If functional smoke fails, the workflow automatically restores Worker
+   version `75593db4-12fd-486d-ae8a-bdf9ebbb3ece` and verifies its five-route
+   fail-closed contract. Keep the database forward-only and investigate before
+   another dispatch.
+7. Start Resend, Turnstile, Cloudflare Images, Twilio, real-provider E2E, and
+   backup/restore work only in a separately approved phase.
+8. Keep production, first-admin bootstrap, real users, external invitations,
+   custom domain, legal approval, carrier tests, and every
+   payment/monetisation capability gated.

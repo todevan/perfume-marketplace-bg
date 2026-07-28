@@ -32,17 +32,36 @@ Use three isolated Supabase projects/data sets:
 | Environment | Data | Cloudflare Worker | Purpose |
 |---|---|---|---|
 | Local | synthetic only | local Wrangler/Vite | development and integration tests |
-| Staging | synthetic test users | `perfume-marketplace-bg-staging` | migrations, E2E and invite rehearsal |
+| Staging | currently empty; synthetic only when enabled | `perfume-marketplace-bg-staging` | migrations, E2E and invite rehearsal |
 | Production | invited beta users | custom domain Worker | closed beta |
 
 Never copy production personal data into local or staging. Use different Supabase secrets, Resend credentials, Turnstile keys and Twilio configuration in each environment.
 
+The only authorized hosted staging database target is:
+
+| Property | Required value |
+|---|---|
+| Supabase project name | `perfume-marketplace-bg-staging` |
+| Project ref | `nuhkpqjjyuygiemrxbdp` |
+| Organization | `khazvscqabwvslnphbqp` |
+| Region | `eu-central-1` (Frankfurt) |
+| PostgreSQL major/status | `17` / `ACTIVE_HEALTHY` |
+
+Run `pnpm db:staging:verify-target` before every hosted database command. The
+operator refuses a missing link, the previous Stockholm ref, another
+organization or region, an unhealthy project, or a Supabase URL/key mismatch.
+
 ## One-time account setup
 
-1. Create hosted Supabase staging and production projects in Frankfurt on the required paid plan.
-2. Disable public signup, configure the verified Resend auth SMTP sender and set the Site URL plus exact redirect allow-list.
+1. Keep the verified Frankfurt staging project isolated. Create production
+   separately only after the launch gates approve it.
+2. Keep public and anonymous signup disabled, email confirmation enabled, the
+   Site URL set to the exact staging Worker origin, and the redirect allow-list
+   limited to `/auth/callback` and `/auth/confirm`. SMTP, SMS, and CAPTCHA stay
+   unconfigured during the backend-baseline phase.
 3. Configure Twilio Verify/SMS for `+359` only. Test A1, Yettel and Vivacom before inviting users.
-4. Create Cloudflare staging and production Workers. Configure a custom production domain before sending external invitations.
+4. Keep the existing `perfume-marketplace-bg-staging` Worker isolated. Create
+   a production Worker and custom domain only after the production gates pass.
 5. Configure Cloudflare Images for private originals and sanitized JPEG/WebP derivatives. Do not enable uploads while `IMAGE_PROCESSOR_MODE=disabled`.
 6. Require MFA for every admin and moderator in both Supabase and the upstream administrative accounts.
 7. Deploy `notification-email` and `upload-cleanup`, store their provider/scheduler secrets with `supabase secrets set`, then create an **INSERT-only** Database Webhook for `public.notifications`. Send `x-webhook-secret`; never put a service key in the webhook header.
@@ -70,8 +89,8 @@ Run the fail-closed gate before deployment:
 pnpm check:release -- --env-file=.env.production
 ```
 
-The command checks secrets/configuration, disabled monetisation, the seven
-forward-only migrations `003`–`009` and required legal routes. It intentionally
+The command checks secrets/configuration, disabled monetisation, the eight
+forward-only migrations `003`–`010` and required legal routes. It intentionally
 fails on a fresh checkout.
 
 ## Migration and catalogue order
@@ -81,11 +100,13 @@ fails on a fresh checkout.
    Storage, configuration, or permissions mismatch.
 2. Run `supabase db reset` locally and `supabase test db` when Docker is
    available. This reset is local-only.
-3. Apply all migrations to the verified empty staging project without editing
-   `001` or `002`.
+3. Run `pnpm db:staging:verify-target`, then
+   `pnpm db:staging:push:dry-run`. Apply only the reviewed forward-only history
+   with `pnpm db:staging:push`; never edit `001` or `002`.
 4. Re-inventory the remote migration history and schema, then run the live
    RLS/concurrency test suite against synthetic staging accounts.
-5. Run `pnpm seed:catalog` from a trusted server environment.
+5. Run `pnpm seed:staging` from a trusted local shell. Clear the legacy
+   service-role key from the shell immediately after the seed.
 6. Exercise the full Playwright flow with buyer, seller and moderator only
    after its required providers are configured.
 7. Take and verify a production backup before applying the same migrations to
@@ -97,12 +118,20 @@ or history rewriting. If remote state differs from the recorded inventory,
 stop and choose either a new isolated staging project or an explicitly approved
 forward-only remediation.
 
+The accepted Frankfurt backend baseline has migrations `001`–`010`, 4 Storage
+buckets with 0 objects, 12 Realtime publication tables, 2 scheduled jobs, and
+0 Auth users or identities. Its atomic catalogue result is 196 brands, 48
+aliases, and 335 editorial memberships, split exactly
+`80/80/80/80/15`. Treat any later mismatch as a stop condition.
+
 ## Staging bootstrap sequence
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm test
 pnpm test:e2e
+pnpm db:staging:verify-target
+pnpm db:staging:push:dry-run
 pnpm exec wrangler deploy --dry-run --env staging
 ```
 
@@ -112,16 +141,19 @@ staging Worker and may safely return an application `503` until its Supabase
 runtime values exist. Configure that Worker, deploy a second time, and record
 the first known-good deployment ID only after `/robots.txt` denies indexing,
 `/sitemap.xml` returns 404, unauthenticated private routes fail closed, demo
-mode is off, and billing flags are still false.
+mode is off, and the source-controlled/CI configuration contract keeps every
+billing flag false.
 
 Only then add the two Cloudflare repository secrets and manually dispatch
 staging for the exact tested `main` commit. Capture the known-good deployment
 ID before every later dispatch and repeat the same smoke checks.
 
-If the application or security smoke test fails, roll Cloudflare back only to
-the recorded known-good deployment. If no known-good version exists, disable
-the public staging endpoint. Do not reset or repair Supabase as part of an
-application rollback. Applied database changes remain forward-only.
+If the application or security smoke test fails, the manual staging workflow
+automatically restores the recorded fail-closed Worker version
+`75593db4-12fd-486d-ae8a-bdf9ebbb3ece` and verifies its five-route rollback
+contract. The workflow remains failed and must be investigated before another
+dispatch. Do not reset or repair Supabase as part of an application rollback.
+Applied database changes remain forward-only.
 
 Production deployment is not part of the current GitHub Free bootstrap. It
 remains blocked until the provider, backup/restore, domain, legal, carrier,
