@@ -7,19 +7,14 @@ import type {
 	UpdateReviewInput
 } from '../../contracts';
 import type { Tables, Views } from '../database.types';
+import { toActorSummaryDto } from './profiles';
 import { pageDto, requireData, throwIfError, type MarketplaceSupabaseClient } from './shared';
 
 type ReviewRow = Tables<'reviews'>;
 type ProfileRow = Views<'public_profiles'>;
 
 function actor(row: ProfileRow): ActorSummaryDto {
-	return {
-		id: row.id,
-		username: row.username,
-		avatarUrl: row.avatar_path,
-		accountKind: row.account_kind,
-		merchantVerified: row.is_merchant_verified
-	};
+	return toActorSummaryDto(row, 'reviews.actor');
 }
 
 function removedActor(profileId: string): ActorSummaryDto {
@@ -43,7 +38,10 @@ async function hydrateReviews(
 		.in('id', [...new Set(rows.map((row) => row.reviewer_id))]);
 	throwIfError('reviews.reviewers', error);
 	const reviewers = new Map(
-		((data ?? []) as unknown as ProfileRow[]).map((profile) => [profile.id, actor(profile)])
+		((data ?? []) as unknown as ProfileRow[]).map((profile) => {
+			const summary = actor(profile);
+			return [summary.id, summary] as const;
+		})
 	);
 	return rows.map((row) => {
 		const reviewer = reviewers.get(row.reviewer_id) ?? removedActor(row.reviewer_id);

@@ -191,6 +191,7 @@ describe('safe redirects and runtime mode', () => {
 
 	it('requires Supabase values in production mode', () => {
 		const runtime = getRuntimeConfiguration({
+			APP_ENV: 'staging',
 			PUBLIC_DEMO_MODE: 'false',
 			PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
 			PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
@@ -200,10 +201,27 @@ describe('safe redirects and runtime mode', () => {
 		});
 		expect(runtime.mode).toBe('production');
 		if (runtime.mode === 'production') {
+			expect(runtime.appEnvironment).toBe('staging');
 			expect(runtime.publicSupabaseKey).toBe('publishable-key');
 			expect(runtime.supabaseSecretKey).toBe('server-secret');
 			expect(runtime.imageProcessorMode).toBe('cloudflare-images');
 		}
+	});
+
+	it('defaults APP_ENV to development and rejects unknown deployment environments', () => {
+		expect(
+			getRuntimeConfiguration({
+				PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
+				PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+			}).appEnvironment
+		).toBe('development');
+		expect(() =>
+			getRuntimeConfiguration({
+				APP_ENV: 'preview',
+				PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
+				PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+			})
+		).toThrow(RuntimeConfigurationError);
 	});
 
 	it('supports legacy keys only as explicit fallbacks and keeps processing disabled by default', () => {
@@ -275,6 +293,10 @@ describe('Turnstile verification', () => {
 	});
 
 	it('fails closed for absent configuration and mismatched actions', async () => {
+		await expect(verifyTurnstile({ token: '', secretKey: '' })).resolves.toMatchObject({
+			success: false,
+			reason: 'not_configured'
+		});
 		await expect(verifyTurnstile({ token: 'token', secretKey: '' })).resolves.toMatchObject({
 			success: false,
 			reason: 'not_configured'

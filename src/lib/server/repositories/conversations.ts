@@ -11,6 +11,7 @@ import type {
 	UpdateConversationStateInput
 } from '../../contracts';
 import type { Tables, Views } from '../database.types';
+import { toActorSummaryDto } from './profiles';
 import { pageDto, requireData, throwIfError, type MarketplaceSupabaseClient } from './shared';
 
 type ConversationRow = Tables<'conversations'>;
@@ -20,13 +21,7 @@ type OfferRow = Tables<'offers'>;
 type ProfileRow = Views<'public_profiles'>;
 
 function actor(row: ProfileRow): ActorSummaryDto {
-	return {
-		id: row.id,
-		username: row.username,
-		avatarUrl: row.avatar_path,
-		accountKind: row.account_kind,
-		merchantVerified: row.is_merchant_verified
-	};
+	return toActorSummaryDto(row, 'conversations.actor');
 }
 
 function removedActor(profileId: string): ActorSummaryDto {
@@ -62,7 +57,12 @@ async function loadActors(
 		.select('id,username,avatar_path,account_kind,is_merchant_verified')
 		.in('id', [...new Set(profileIds)]);
 	throwIfError('conversations.actors', error);
-	return new Map(((data ?? []) as unknown as ProfileRow[]).map((row) => [row.id, actor(row)]));
+	return new Map(
+		((data ?? []) as unknown as ProfileRow[]).map((row) => {
+			const summary = actor(row);
+			return [summary.id, summary] as const;
+		})
+	);
 }
 
 export async function listConversations(

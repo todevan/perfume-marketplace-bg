@@ -59,6 +59,26 @@ describe('DTO repository boundary', () => {
 		expect(dto).not.toHaveProperty('last_seen_at');
 	});
 
+	it('fails closed for missing profile identity while defaulting non-trust aggregates safely', () => {
+		expect(() => toPublicProfileDto({ ...publicProfileRow, username: null })).toThrowError(
+			RepositoryError
+		);
+
+		const dto = toPublicProfileDto({
+			...publicProfileRow,
+			is_merchant_verified: null,
+			rating_average: null,
+			rating_count: null,
+			completed_deals_count: null
+		});
+		expect(dto).toMatchObject({
+			merchantVerified: false,
+			ratingAverage: 0,
+			ratingCount: 0,
+			completedDealsCount: 0
+		});
+	});
+
 	it('projects reports without evidence paths, assignment, or moderator notes', () => {
 		const dto = toReportDto({
 			id: 'report-id',

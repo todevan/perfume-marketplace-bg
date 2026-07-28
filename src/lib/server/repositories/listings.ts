@@ -11,7 +11,8 @@ import type {
 	ListingSearchInput,
 	UpdateListingDraftInput
 } from '../../contracts';
-import type { Tables, TablesInsert, Views } from '../database.types';
+import type { Database, Tables, TablesInsert, Views } from '../database.types';
+import { requirePublicProfileActor, toActorSummaryDto } from './profiles';
 import {
 	oneRelation,
 	pageDto,
@@ -35,6 +36,9 @@ type AuthenticityRelation = Pick<
 	Tables<'listing_authenticity_reviews'>,
 	'status' | 'public_note'
 >;
+type SearchListingsArgs = Database['public']['Functions']['search_listings']['Args'];
+
+const SERVER_MANAGED_SLUG_PLACEHOLDER = 'server-managed';
 
 export type ListingJoinedRow = Tables<'listings'> & {
 	brand: BrandRelation | readonly BrandRelation[] | null;
@@ -54,13 +58,7 @@ export const LISTING_PROJECTION = `
 ` as const;
 
 function actorDto(profile: ProfileRelation): ActorSummaryDto {
-	return {
-		id: profile.id,
-		username: profile.username,
-		avatarUrl: profile.avatar_path,
-		accountKind: profile.account_kind,
-		merchantVerified: profile.is_merchant_verified
-	};
+	return toActorSummaryDto(profile, 'listings.actor');
 }
 
 function removedSeller(sellerId: string): ProfileRelation {
@@ -163,7 +161,10 @@ async function attachPublicSellers(
 		.in('id', missingSellerIds);
 	throwIfError('listings.publicSellers', error);
 	const sellers = new Map(
-		((data ?? []) as unknown as ProfileRelation[]).map((seller) => [seller.id, seller])
+		((data ?? []) as unknown as ProfileRelation[]).map((seller) => {
+			const validSeller = requirePublicProfileActor(seller, 'listings.publicSellers');
+			return [validSeller.id, validSeller] as const;
+		})
 	);
 	return rows.map((row) => ({
 		...row,
@@ -201,18 +202,22 @@ export async function searchListings(
 ): Promise<ListingPageDto> {
 	const needsPostFilter = Boolean(input.kind || input.productFormat || input.brandId || input.fragranceId);
 	const rpcPageSize = needsPostFilter ? 60 : Math.min(60, input.limit + 1);
-	const { data: searchRows, error: searchError } = await client.rpc('search_listings', {
-		search_query: input.query || null,
-		filter_audience: input.audience ?? null,
-		filter_segments: input.segments.length ? [...input.segments] : null,
-		filter_deal_mode: input.dealMode ?? null,
-		filter_city: input.city ?? null,
-		min_price_minor: input.minPriceMinor ?? null,
-		max_price_minor: input.maxPriceMinor ?? null,
+	const searchArgs: SearchListingsArgs = {
 		page_size: rpcPageSize,
-		cursor_activated_at: input.cursorActivatedAt ?? null,
-		cursor_id: input.cursorId ?? null
-	});
+		...(input.query ? { search_query: input.query } : {}),
+		...(input.audience ? { filter_audience: input.audience } : {}),
+		...(input.segments.length ? { filter_segments: [...input.segments] } : {}),
+		...(input.dealMode ? { filter_deal_mode: input.dealMode } : {}),
+		...(input.city ? { filter_city: input.city } : {}),
+		...(input.minPriceMinor !== undefined ? { min_price_minor: input.minPriceMinor } : {}),
+		...(input.maxPriceMinor !== undefined ? { max_price_minor: input.maxPriceMinor } : {}),
+		...(input.cursorActivatedAt ? { cursor_activated_at: input.cursorActivatedAt } : {}),
+		...(input.cursorId ? { cursor_id: input.cursorId } : {})
+	};
+	const { data: searchRows, error: searchError } = await client.rpc(
+		'search_listings',
+		searchArgs
+	);
 	throwIfError('listings.searchRpc', searchError);
 	const candidates = searchRows ?? [];
 	if (candidates.length === 0) {
@@ -330,6 +335,10 @@ export async function findListingBySlug(
 function listingInsert(profileId: string, input: ListingDraftInput): TablesInsert<'listings'> {
 	return {
 		seller_id: profileId,
+		// The BEFORE INSERT trigger replaces this valid sentinel with the immutable
+		// title/id slug. Supplying it satisfies the generated NOT NULL insert
+		// contract without duplicating the database slugification algorithm.
+		slug: SERVER_MANAGED_SLUG_PLACEHOLDER,
 		kind: input.kind,
 		deal_mode: input.dealMode,
 		product_format: input.productFormat ?? null,
@@ -374,9 +383,14 @@ export async function updateListingDraft(
 	profileId: string,
 	input: UpdateListingDraftInput
 ): Promise<ListingDetailDto> {
-	const patch = listingInsert(profileId, input.patch);
-	delete (patch as Partial<TablesInsert<'listings'>>).seller_id;
-	delete (patch as Partial<TablesInsert<'listings'>>).status;
+	// Slugs are immutable after insert. Omitting the sentinel also avoids firing
+	// the database's UPDATE OF slug protection trigger.
+	const {
+		seller_id: _sellerId,
+		slug: _slug,
+		status: _status,
+		...patch
+	} = listingInsert(profileId, input.patch);
 	const { data, error } = await client
 		.from('listings')
 		.update(patch)

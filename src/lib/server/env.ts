@@ -5,9 +5,12 @@ export interface RuntimeEnvironmentSource {
 	[key: string]: string | undefined;
 }
 
+export type AppEnvironment = 'development' | 'staging' | 'production';
+
 export interface DemoRuntimeConfiguration {
 	mode: 'demo';
 	demoMode: true;
+	appEnvironment: AppEnvironment;
 	publicAppUrl?: string;
 	publicTurnstileSiteKey?: string;
 }
@@ -15,6 +18,7 @@ export interface DemoRuntimeConfiguration {
 export interface ProductionRuntimeConfiguration {
 	mode: 'production';
 	demoMode: false;
+	appEnvironment: AppEnvironment;
 	publicSupabaseUrl: string;
 	publicSupabaseKey: string;
 	/** @deprecated Legacy alias retained for existing server modules. */
@@ -83,6 +87,15 @@ function imageProcessorMode(
 	);
 }
 
+function appEnvironment(platformEnvironment?: RuntimeEnvironmentSource): AppEnvironment {
+	const value = firstValue('APP_ENV', platformEnvironment) ?? 'development';
+	if (value === 'development' || value === 'staging' || value === 'production') return value;
+	throw new RuntimeConfigurationError(
+		['APP_ENV'],
+		'Invalid APP_ENV: expected "development", "staging", or "production".'
+	);
+}
+
 /**
  * Runtime bindings take precedence over build-time values so this works with Cloudflare bindings.
  * Demo mode is deliberately strict: values such as "1", "yes", or a missing variable never enable it.
@@ -91,6 +104,7 @@ export function getRuntimeConfiguration(
 	platformEnvironment?: RuntimeEnvironmentSource
 ): RuntimeConfiguration {
 	const demoMode = firstValue('PUBLIC_DEMO_MODE', platformEnvironment) === 'true';
+	const configuredAppEnvironment = appEnvironment(platformEnvironment);
 	const publicAppUrl = optionalHttpUrl(
 		firstValue('PUBLIC_APP_URL', platformEnvironment),
 		'PUBLIC_APP_URL'
@@ -104,6 +118,7 @@ export function getRuntimeConfiguration(
 		return {
 			mode: 'demo',
 			demoMode: true,
+			appEnvironment: configuredAppEnvironment,
 			publicAppUrl,
 			publicTurnstileSiteKey
 		};
@@ -133,6 +148,7 @@ export function getRuntimeConfiguration(
 	return {
 		mode: 'production',
 		demoMode: false,
+		appEnvironment: configuredAppEnvironment,
 		publicSupabaseUrl,
 		publicSupabaseKey,
 		publicSupabaseAnonKey: publicSupabaseKey,

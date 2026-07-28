@@ -1,15 +1,30 @@
-import { fail, redirect } from '@sveltejs/kit';
+import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { loadRequestAuthContext } from '$lib/server/auth/context';
 import { safeRedirectPath } from '$lib/server/auth/redirect';
 import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
+import { attestHostedBackendBaseline } from '$lib/server/services/backend-health';
 
 const DEMO_EMAIL = 'demo@example.bg';
 const DEMO_PASSWORD = 'demo-beta';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export const load: PageServerLoad = ({ url, locals }) => {
+export const load: PageServerLoad = async ({ url, locals }) => {
 	const next = safeRedirectPath(url.searchParams.get('next'), '/dashboard');
+	if (
+		locals.runtime.mode === 'production' &&
+		locals.runtime.appEnvironment === 'staging'
+	) {
+		try {
+			await attestHostedBackendBaseline({
+				publicSupabaseUrl: locals.runtime.publicSupabaseUrl,
+				supabaseSecretKey: locals.runtime.supabaseSecretKey
+			});
+		} catch {
+			error(503, 'Входът временно не е достъпен.');
+		}
+	}
+
 	if (locals.runtime.mode === 'production' && locals.user) {
 		if (locals.betaAccess?.isActive) redirect(303, next);
 		redirect(303, `/onboarding?next=${encodeURIComponent(next)}`);
@@ -89,4 +104,3 @@ export const actions: Actions = {
 		});
 	}
 };
-

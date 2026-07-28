@@ -1,5 +1,8 @@
 begin;
 
+-- Hosted CLI tests connect through a temporary login role. Assume the linked
+-- project's postgres role so pgTAP's extensions schema is visible consistently.
+set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 

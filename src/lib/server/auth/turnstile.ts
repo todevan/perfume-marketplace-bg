@@ -26,8 +26,8 @@ export async function verifyTurnstile(options: {
 }): Promise<TurnstileVerificationResult> {
 	const token = options.token?.trim();
 	const secretKey = options.secretKey?.trim();
-	if (!token) return { success: false, reason: 'missing_token' };
 	if (!secretKey) return { success: false, reason: 'not_configured' };
+	if (!token) return { success: false, reason: 'missing_token' };
 
 	const payload = new URLSearchParams({ secret: secretKey, response: token });
 	if (options.remoteIp) payload.set('remoteip', options.remoteIp);
@@ -79,4 +79,3 @@ export async function verifyTurnstileForAction(
 		fetch: event.fetch
 	});
 }
-

@@ -5,19 +5,14 @@ import {
 	LISTING_PROJECTION,
 	type ListingJoinedRow
 } from './listings';
+import { toActorSummaryDto } from './profiles';
 import { pageDto, requireData, throwIfError, type MarketplaceSupabaseClient } from './shared';
 
 type OfferRow = Tables<'offers'>;
 type ProfileRow = Views<'public_profiles'>;
 
 function actor(row: ProfileRow): ActorSummaryDto {
-	return {
-		id: row.id,
-		username: row.username,
-		avatarUrl: row.avatar_path,
-		accountKind: row.account_kind,
-		merchantVerified: row.is_merchant_verified
-	};
+	return toActorSummaryDto(row, 'offers.actor');
 }
 
 function removedActor(profileId: string): ActorSummaryDto {
@@ -54,7 +49,10 @@ async function hydrateOffers(
 	);
 	const listingById = new Map(listings.map((listing) => [listing.id, listing]));
 	const profileById = new Map(
-		((profileResult.data ?? []) as unknown as ProfileRow[]).map((profile) => [profile.id, actor(profile)])
+		((profileResult.data ?? []) as unknown as ProfileRow[]).map((profile) => {
+			const summary = actor(profile);
+			return [summary.id, summary] as const;
+		})
 	);
 
 	return rows.flatMap((row) => {

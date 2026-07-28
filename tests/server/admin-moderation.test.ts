@@ -80,6 +80,7 @@ function productionLocals(role: 'user' | 'moderator' | 'admin', aal: 'aal1' | 'a
 		runtime: {
 			mode: 'production',
 			demoMode: false,
+			appEnvironment: 'development',
 			publicSupabaseUrl: 'https://project.supabase.co',
 			publicSupabaseKey: 'publishable',
 			publicSupabaseAnonKey: 'publishable',
@@ -152,7 +153,7 @@ describe('admin request boundary', () => {
 
 	it('fails closed in demo mode before exposing the admin runtime', () => {
 		const locals = productionLocals('admin', 'aal2');
-		locals.runtime = { mode: 'demo', demoMode: true };
+		locals.runtime = { mode: 'demo', demoMode: true, appEnvironment: 'development' };
 		expect(
 			thrownStatus(() => requireStaffRequest(locals, new URL('https://market.example/admin')))
 				.status

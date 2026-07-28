@@ -23,8 +23,14 @@
     "db:reset": "supabase db reset --local",
     "db:lint": "supabase db lint --local --level warning --fail-on warning",
     "db:test": "supabase test db",
+    "db:staging:verify-target": "node scripts/staging-db-operator.mjs verify-target",
+    "db:staging:push:dry-run": "node scripts/staging-db-operator.mjs push-dry-run",
+    "db:staging:push": "node scripts/staging-db-operator.mjs push",
+    "db:staging:types": "node scripts/generate-hosted-types.mjs",
+    "db:staging:types:check": "node scripts/generate-hosted-types.mjs --check",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "seed:catalog": "node scripts/seed-catalog.mjs",
+    "seed:staging": "node scripts/staging-db-operator.mjs seed",
     "bootstrap:first-admin": "node scripts/bootstrap-first-admin.mjs"
   },
   "dependencies": {
