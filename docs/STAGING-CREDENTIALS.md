@@ -22,7 +22,7 @@ invitations.
 | Area | Verified state |
 |---|---|
 | GitHub | `todevan/perfume-marketplace-bg` exists as the new canonical private repository. The older `todevan/remix-of-scent-exchange` repository remains untouched. |
-| Quality CI | The first functional `main` quality receipt is pending in the receipt table below. Do not reuse an older run as approval for this baseline. |
+| Quality CI | Workflow run `30343704378` is green on `main` commit `39867216c0440077476ce13f89bd1f40505bef8e`: application job `90224876706` and database job `90224876599` both passed. |
 | Local database | The disposable local stack matches hosted PostgreSQL major version 17. Migrations `001`–`010` apply locally, SQL lint is clean, and all 111 pgTAP assertions pass. |
 | Local catalogue | The atomic seed contains 196 brands, 48 aliases, and 335 editorial memberships. Membership counts are exactly 80 men, 80 women, 80 unisex, 80 niche, and 15 Arabic. |
 | Cloudflare account | Account ID `0cb7373563c400a08bd46564320dd747` owns the staging Worker. |
@@ -31,36 +31,33 @@ invitations.
 | Hosted Supabase identity | The bootstrap project label `wow` was renamed to `perfume-marketplace-bg-staging`. Ref `nuhkpqjjyuygiemrxbdp` belongs to organization `khazvscqabwvslnphbqp`, runs in `eu-central-1` (Frankfurt), and reports PostgreSQL 17 with `ACTIVE_HEALTHY`. |
 | Hosted Supabase result | Migrations `001`–`010` are recorded. The runtime has 4 Storage buckets with 0 objects, 12 Realtime publication tables, 2 scheduled jobs, and 0 Auth users or identities. The catalogue contains 196 brands, 48 aliases, and 335 memberships with exact `80/80/80/80/15` collection counts. |
 | Hosted Auth lock | Public signup and anonymous signup are disabled; email confirmation is enabled. Site URL is the exact staging Worker origin, and only its `/auth/callback` and `/auth/confirm` URLs are allowed. SMTP, SMS, and CAPTCHA are unconfigured. |
-| Configured Worker | The first backend-connected `main` deployment and HTTP smoke receipt are pending. Until the receipt table is complete, the environment remains an internal backend baseline rather than an accepted beta. |
-| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write is stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. The first functional manual `workflow_dispatch` receipt is pending below. |
+| Configured Worker | Commit `39867216c0440077476ce13f89bd1f40505bef8e` was deployed as Worker version `9024d848-dcd7-4894-b6da-d2f2453b2df0`, deployment `0ce71c4c-4e9e-4118-b813-62e4fb6a5260`. The backend-attested exact-SHA HTTP smoke passed all 13 checks. |
+| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write is stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. Manual `workflow_dispatch` run `30343975074` passed, and its logs contained no raw Supabase, GitHub, Cloudflare bearer, or JWT token patterns. |
 | External providers | Resend, Turnstile, Cloudflare Images processing, Twilio, real-provider E2E, and backup/restore rehearsal remain deferred. |
 | Production | Locked. No production project, route, secret, deployment, domain, user, invitation, or payment capability is authorized by this checkpoint. |
 
 The previous Stockholm project `zllqwlekadiuyejgbuxc` remains untouched and is
 not an authorized target. Every hosted database operation must pass the guard
 for ref `nuhkpqjjyuygiemrxbdp`, organization `khazvscqabwvslnphbqp`, region
-`eu-central-1`, PostgreSQL 17, and `ACTIVE_HEALTHY`. A functional known-good
-Worker still requires the first functional `main` deployment and recorded smoke
-evidence.
+`eu-central-1`, PostgreSQL 17, and `ACTIVE_HEALTHY`. The first functional
+`main` deployment and its recorded smoke evidence are listed below. The
+environment remains an internal backend baseline, not a usable beta.
 
-### First functional backend-baseline receipts — pending operator completion
+### First functional backend-baseline receipts
 
-Do not replace these placeholders with estimates or an earlier run. The parent
-operator fills them only after the baseline code is on `main`, its quality
-workflow is green, and that exact SHA is deployed and smoked. These fields
-intentionally describe the deployment immediately before the receipt-only
-documentation commit.
+These fields intentionally describe the deployment immediately before the
+receipt-only documentation commit.
 
 | Receipt | Value |
 |---|---|
-| Baseline code `main` Git SHA | `PENDING_BASELINE_MAIN_GIT_SHA` |
-| Quality workflow run ID | `PENDING_QUALITY_WORKFLOW_RUN_ID` |
-| Quality application job ID | `PENDING_QUALITY_APPLICATION_JOB_ID` |
-| Quality database job ID | `PENDING_QUALITY_DATABASE_JOB_ID` |
-| First functional staging deploy run ID | `PENDING_STAGING_DEPLOY_RUN_ID` |
-| First functional Worker version ID | `PENDING_FIRST_WORKER_VERSION_ID` |
-| First functional Worker deployment ID | `PENDING_FIRST_WORKER_DEPLOYMENT_ID` |
-| First hosted HTTP smoke receipt | `PENDING_HOSTED_SMOKE_RECEIPT` |
+| Baseline code `main` Git SHA | `39867216c0440077476ce13f89bd1f40505bef8e` |
+| Quality workflow run ID | `30343704378` |
+| Quality application job ID | `90224876706` |
+| Quality database job ID | `90224876599` |
+| First functional staging deploy run ID | `30343975074` |
+| First functional Worker version ID | `9024d848-dcd7-4894-b6da-d2f2453b2df0` |
+| First functional Worker deployment ID | `0ce71c4c-4e9e-4118-b813-62e4fb6a5260` |
+| First hosted HTTP smoke receipt | `13/13 passed`; exact Git SHA and Frankfurt backend catalogue attestation passed; rollback steps were correctly skipped |
 
 After this table is committed, deploy that new documentation SHA once more.
 The immutable GitHub Actions run and Cloudflare deployment records are the
