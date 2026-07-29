@@ -30,6 +30,8 @@ jobs:
         run: pnpm validate:catalog
       - name: Run unit and contract tests
         run: pnpm test:unit
+      - name: Run Node database operator contracts
+        run: pnpm test:db:contracts
       - name: Run Svelte checks
         run: pnpm check
       - run: pnpm exec playwright install --with-deps chromium webkit
@@ -59,5 +61,7 @@ jobs:
       - run: pnpm db:reset
       - run: pnpm db:lint
       - run: pnpm db:test
+      - name: Run Node database operator contracts
+        run: pnpm test:db:contracts
       - if: always()
         run: pnpm db:stop --no-backup

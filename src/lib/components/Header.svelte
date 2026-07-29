@@ -1,10 +1,22 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { Bell, ClipboardCheck, LogIn, LogOut, Menu, MessageCircle, Phone, Plus, Search, UserRound, X } from '@lucide/svelte';
+  import {
+    Bell,
+    ClipboardCheck,
+    LogIn,
+    LogOut,
+    Menu,
+    MessageCircle,
+    Phone,
+    Plus,
+    Search,
+    UserRound,
+    X
+  } from '@lucide/svelte';
   import ScentMark from './ScentMark.svelte';
 
   interface HeaderAuth {
-    user: { id: string; email: string | null; phone: string | null } | null;
+    user: { id: string } | null;
     profile: {
       username: string;
       role: 'user' | 'moderator' | 'admin';
@@ -71,9 +83,17 @@
 
 <header class="site-header">
   <div class="header-inner container">
-    <a class="mark" href={homeHref} aria-label={hasBetaAccess ? 'Начална страница' : 'Към входа'} onclick={closeMenu}>
-      <ScentMark size={42} />
-      <span class="beta">BG · BETA</span>
+    <a
+      class="mark"
+      href={homeHref}
+      aria-label={hasBetaAccess ? 'Начална страница' : 'Към входа'}
+      onclick={closeMenu}
+    >
+      <span class="mark-symbol"><ScentMark size={34} /></span>
+      <span class="brand-lockup">
+        <strong>Парфюмен marketplace</strong>
+        <small>България · Beta</small>
+      </span>
     </a>
 
     <nav class="desktop-nav" aria-label="Основна навигация">
@@ -89,13 +109,23 @@
         <a class="icon-action desktop-action" href="/notifications" aria-label="Известия"><Bell size={19} /></a>
         <a class="icon-action desktop-action" href="/dashboard" aria-label="Моят профил"><UserRound size={19} /></a>
         {#if needsPhoneVerification}
-          <a class="icon-action phone-action desktop-action" href="/phone-verification?next=%2Fpublish" aria-label="Потвърди телефон"><Phone size={19} /></a>
+          <a
+            class="icon-action phone-action desktop-action"
+            href="/phone-verification?next=%2Fpublish"
+            aria-label="Потвърди телефон"
+          ><Phone size={19} /></a>
         {/if}
-        <a class="button primary publish desktop-action" href="/publish"><Plus size={18} /> Публикувай</a>
+        <a class="button primary publish desktop-action" href="/publish">
+          <Plus size={17} /> Публикувай обява
+        </a>
       {:else if needsOnboarding}
-        <a class="button primary account-cta desktop-action" href="/onboarding"><ClipboardCheck size={18} /> Завърши профила</a>
+        <a class="button primary account-cta desktop-action" href="/onboarding">
+          <ClipboardCheck size={17} /> Завърши профила
+        </a>
       {:else}
-        <a class="button primary account-cta desktop-action" href="/login"><LogIn size={18} /> Вход</a>
+        <a class="button primary account-cta desktop-action" href="/login">
+          <LogIn size={17} /> Вход
+        </a>
       {/if}
 
       {#if isAuthenticated && !demoMode}
@@ -103,6 +133,7 @@
           <button class="icon-action" type="submit" aria-label="Изход"><LogOut size={19} /></button>
         </form>
       {/if}
+
       <button
         class="menu-button"
         type="button"
@@ -111,7 +142,7 @@
         aria-controls="mobile-navigation"
         onclick={() => (open = !open)}
       >
-        {#if open}<X size={23} />{:else}<Menu size={23} />{/if}
+        {#if open}<X size={22} />{:else}<Menu size={22} />{/if}
       </button>
     </div>
   </div>
@@ -125,9 +156,11 @@
             <div><small>Влязъл профил</small><strong>@{auth.profile.username}</strong></div>
           </div>
         {/if}
+
         {#each links as link}
           <a class:active={isActive(link.href)} href={link.href} onclick={closeMenu}>{link.label}</a>
         {/each}
+
         {#if hasBetaAccess}
           <a href="/messages" onclick={closeMenu}>Съобщения</a>
           <a href="/notifications" onclick={closeMenu}>Известия</a>
@@ -135,12 +168,19 @@
           {#if needsPhoneVerification}
             <a href="/phone-verification?next=%2Fpublish" onclick={closeMenu}>Потвърди телефон</a>
           {/if}
-          <a class="button primary" href="/publish" onclick={closeMenu}><Plus size={18} /> Публикувай</a>
+          <a class="button primary" href="/publish" onclick={closeMenu}>
+            <Plus size={18} /> Публикувай обява
+          </a>
         {:else if needsOnboarding}
-          <a class="button primary" href="/onboarding" onclick={closeMenu}><ClipboardCheck size={18} /> Към onboarding</a>
+          <a class="button primary" href="/onboarding" onclick={closeMenu}>
+            <ClipboardCheck size={18} /> Към onboarding
+          </a>
         {:else}
-          <a class="button primary" href="/login" onclick={closeMenu}><LogIn size={18} /> Вход с покана</a>
+          <a class="button primary" href="/login" onclick={closeMenu}>
+            <LogIn size={18} /> Вход с покана
+          </a>
         {/if}
+
         {#if isAuthenticated && !demoMode}
           <form class="mobile-logout" method="POST" action="/auth/logout">
             <button class="button logout-button" type="submit"><LogOut size={18} /> Изход</button>
@@ -157,9 +197,8 @@
     top: 0;
     z-index: 50;
     min-height: var(--header-height);
-    border-bottom: 1px solid rgb(138 121 103 / 22%);
-    background: rgb(244 236 225 / 88%);
-    backdrop-filter: blur(22px) saturate(1.2);
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
   }
 
   .header-inner {
@@ -172,45 +211,68 @@
 
   .mark {
     display: flex;
+    min-width: max-content;
     align-items: center;
     gap: 10px;
+    color: var(--ink);
+  }
+
+  .mark-symbol {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    border: 1px solid var(--action);
+    border-radius: var(--radius-sm);
     color: var(--action);
   }
 
-  .beta {
-    padding-left: 10px;
-    border-left: 1px solid var(--line);
-    color: var(--ink-soft);
-    font-size: 0.63rem;
+  .brand-lockup {
+    display: grid;
+    line-height: 1.1;
+  }
+
+  .brand-lockup strong {
+    font-size: 0.81rem;
     font-weight: 700;
-    letter-spacing: 0.16em;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .brand-lockup small {
+    margin-top: 4px;
+    color: var(--ink-faint);
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .desktop-nav {
     display: flex;
     align-items: center;
-    gap: clamp(16px, 2.2vw, 32px);
+    gap: clamp(16px, 2vw, 30px);
     margin-left: auto;
   }
 
   .desktop-nav a {
     position: relative;
-    padding-block: 26px;
+    display: grid;
+    min-height: var(--header-height);
+    align-items: center;
     color: var(--ink-soft);
-    font-size: 0.9rem;
-    font-weight: 700;
+    font-size: 0.84rem;
+    font-weight: 600;
   }
 
   .desktop-nav a::after {
     position: absolute;
     right: 50%;
-    bottom: 18px;
+    bottom: 0;
     left: 50%;
     height: 2px;
-    border-radius: 2px;
     background: var(--action);
     content: '';
-    transition: inset 180ms ease;
+    transition: inset 180ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .desktop-nav a:hover,
@@ -227,7 +289,7 @@
   .header-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 5px;
   }
 
   .icon-action,
@@ -237,35 +299,28 @@
     height: 44px;
     place-items: center;
     border: 0;
-    border-radius: 50%;
+    border-radius: var(--radius-sm);
     background: transparent;
     cursor: pointer;
   }
 
   .icon-action:hover,
   .menu-button:hover {
-    background: rgb(214 202 186 / 50%);
+    color: var(--action);
+    background: var(--action-soft);
   }
 
-  .publish {
-    min-height: 44px;
-    margin-left: 4px;
-    padding: 10px 17px;
-  }
-
+  .publish,
   .account-cta {
     min-height: 44px;
-    margin-left: 4px;
-    padding-inline: 17px;
+    margin-left: 6px;
+    padding: 9px 15px;
+    font-size: 0.78rem;
   }
 
   .logout-form,
   .mobile-logout {
     margin: 0;
-  }
-
-  .logout-form .icon-action {
-    color: var(--ink-soft);
   }
 
   .phone-action {
@@ -275,13 +330,13 @@
 
   .phone-action::after {
     position: absolute;
-    top: 7px;
-    right: 7px;
+    top: 6px;
+    right: 6px;
     width: 7px;
     height: 7px;
-    border: 2px solid var(--brand-secondary);
+    border: 2px solid var(--paper);
     border-radius: 50%;
-    background: var(--warning, #b56f2d);
+    background: var(--warning);
     content: '';
   }
 
@@ -290,7 +345,7 @@
     display: none;
   }
 
-  @media (max-width: 1020px) {
+  @media (max-width: 1160px) {
     .desktop-nav,
     .desktop-action {
       display: none;
@@ -302,21 +357,21 @@
 
     .mobile-nav {
       display: block;
-      border-top: 1px solid rgb(138 121 103 / 22%);
-      background: var(--brand-secondary);
+      border-top: 1px solid var(--line);
+      background: var(--paper-strong);
       box-shadow: var(--shadow-lg);
     }
 
     .mobile-nav .container {
       display: grid;
-      padding-block: 16px 24px;
+      padding-block: 14px 22px;
     }
 
     .mobile-nav a:not(.button) {
       min-height: 48px;
       padding: 13px 4px;
-      border-bottom: 1px solid rgb(138 121 103 / 18%);
-      font-weight: 700;
+      border-bottom: 1px solid var(--line);
+      font-weight: 600;
     }
 
     .mobile-nav a.active {
@@ -324,7 +379,7 @@
     }
 
     .mobile-nav .button {
-      margin-top: 18px;
+      margin-top: 16px;
     }
 
     .mobile-account {
@@ -335,9 +390,9 @@
       gap: 8px;
       margin-bottom: 8px;
       padding: 9px 12px;
-      border: 1px solid rgb(138 121 103 / 24%);
-      border-radius: 10px;
-      background: rgb(255 253 249 / 46%);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--paper);
     }
 
     .mobile-account > span {
@@ -355,14 +410,14 @@
     }
 
     .mobile-account small {
-      color: var(--ink-soft);
-      font-size: 0.6rem;
+      color: var(--ink-faint);
+      font-size: 0.62rem;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
-      letter-spacing: 0.1em;
     }
 
     .mobile-account strong {
-      font-size: 0.78rem;
+      font-size: 0.8rem;
     }
 
     .mobile-logout {
@@ -372,11 +427,19 @@
     .mobile-logout .logout-button {
       width: 100%;
       min-height: 44px;
-      justify-content: center;
       margin-top: 0;
       border: 1px solid var(--line);
-      color: var(--ink);
       background: transparent;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .brand-lockup strong {
+      font-size: 0.7rem;
+    }
+
+    .brand-lockup small {
+      display: none;
     }
   }
 </style>

@@ -6,6 +6,7 @@ import {
 	assignReportCase,
 	createBetaInviteAndSendEmail,
 	decideModerationReport,
+	inspectModerationConversation,
 	loadModerationDashboard,
 	ModerationWorkflowError,
 	reviewMerchantApplication
@@ -191,10 +192,9 @@ describe('report workflow', () => {
 		expect(assigned.is).toHaveBeenCalledWith('assigned_to', null);
 	});
 
-	it('runs listing decisions through moderate_listing before closing the report', async () => {
+	it('runs listing decisions through the report-bound atomic moderation RPC', async () => {
 		const fetched = query({ data: report('listing'), error: null });
-		const closed = query({ data: { id: caseId, status: 'resolved' }, error: null });
-		const from = vi.fn().mockReturnValueOnce(fetched).mockReturnValueOnce(closed);
+		const from = vi.fn(() => fetched);
 		const rpc = vi.fn(async () => ({ data: null, error: null }));
 		const client = { from, rpc } as unknown as SupabaseClient;
 
@@ -212,11 +212,7 @@ describe('report workflow', () => {
 			corrected_segments: null,
 			moderated_status: 'removed'
 		});
-		expect(closed.update).toHaveBeenCalledWith({
-			status: 'resolved',
-			resolution_code: 'content_removed',
-			resolution_notes: 'Доказано подвеждащо съдържание в приложените снимки.'
-		});
+		expect(from).toHaveBeenCalledTimes(1);
 	});
 
 	it.each([
@@ -282,8 +278,72 @@ describe('report workflow', () => {
 		expect(from).toHaveBeenCalledTimes(1);
 	});
 
+	it('loads only report-bound conversation messages and redacts deleted bodies', async () => {
+		const rpc = vi.fn(async () => ({
+			data: [
+				{
+					id: '77777777-7777-4777-8777-777777777777',
+					conversation_id: targetId,
+					sender_id: reporterId,
+					body: 'Reported content',
+					reply_to_id: null,
+					created_at: '2026-07-22T10:00:00.000Z',
+					edited_at: null,
+					deleted_at: '2026-07-22T10:05:00.000Z'
+				}
+			],
+			error: null
+		}));
+
+		await expect(
+			inspectModerationConversation({ rpc } as unknown as SupabaseClient, { caseId })
+		).resolves.toEqual({
+			caseId,
+			messages: [
+				{
+					id: '77777777-7777-4777-8777-777777777777',
+					conversationId: targetId,
+					senderId: reporterId,
+					body: null,
+					createdAt: '2026-07-22T10:00:00.000Z'
+				}
+			]
+		});
+		expect(rpc).toHaveBeenCalledWith('moderator_read_messages', {
+			report_case_id: caseId,
+			page_size: 50
+		});
+	});
+
+	it.each([
+		{ targetType: 'message', decision: 'hide', expectedDecision: 'remove' },
+		{ targetType: 'conversation', decision: 'remove', expectedDecision: 'block' },
+		{ targetType: 'conversation', decision: 'keep', expectedDecision: 'keep' }
+	])(
+		'resolves inspected $targetType reports through the atomic conversation RPC',
+		async ({ targetType, decision, expectedDecision }) => {
+			const fetched = query({ data: report(targetType), error: null });
+			const rpc = vi.fn(async () => ({ data: {}, error: null }));
+			const client = {
+				from: vi.fn(() => fetched),
+				rpc
+			} as unknown as SupabaseClient;
+
+			await decideModerationReport(client, { id: actorId, role: 'moderator' }, {
+				caseId,
+				decision,
+				rationale: 'Разговорът е прегледан в рамките на присвоения сигнал.'
+			});
+			expect(rpc).toHaveBeenCalledWith('resolve_conversation_report', {
+				report_case_id: caseId,
+				decision: expectedDecision,
+				moderation_rationale: 'Разговорът е прегледан в рамките на присвоения сигнал.'
+			});
+		}
+	);
+
 	it('leaves targets without an exact decision RPC untouched', async () => {
-		const fetched = query({ data: report('message'), error: null });
+		const fetched = query({ data: report('offer'), error: null });
 		const rpc = vi.fn();
 		const client = { from: vi.fn(() => fetched), rpc } as unknown as SupabaseClient;
 

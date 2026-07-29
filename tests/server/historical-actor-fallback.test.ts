@@ -83,7 +83,9 @@ function query(result: QueryResult): unknown {
 
 function clientWith(results: Readonly<Record<string, QueryResult>>): MarketplaceSupabaseClient {
 	return {
-		from: (table: string) => query(results[table] ?? { data: [], error: null })
+		from: (table: string) => query(results[table] ?? { data: [], error: null }),
+		rpc: (name: string) =>
+			Promise.resolve(results[`rpc:${name}`] ?? { data: [], error: null })
 	} as unknown as MarketplaceSupabaseClient;
 }
 
@@ -103,6 +105,7 @@ describe('historical actor fallback', () => {
 			id: dealId,
 			listing_id: listingId,
 			offered_listing_id: null,
+			accepted_offer_id: offerId,
 			party_a_id: ownerId,
 			party_b_id: removedId,
 			status: 'completed',
@@ -116,7 +119,11 @@ describe('historical actor fallback', () => {
 			deals: { data: row, error: null },
 			listings: { data: [listing], error: null },
 			public_profiles: { data: [], error: null },
-			deal_confirmations: { data: [], error: null }
+			deal_confirmations: { data: [], error: null },
+			conversations: {
+				data: [{ id: conversationId, accepted_offer_id: offerId }],
+				error: null
+			}
 		}), dealId);
 
 		expect(item?.listing.id).toBe(listingId);
@@ -223,7 +230,7 @@ describe('historical actor fallback', () => {
 			conversations: { data: [conversation], error: null },
 			offers: { data: [{ id: offerId, offerer_id: removedId }], error: null },
 			listings: { data: [{ id: listingId, title: 'Historical listing', seller_id: ownerId }], error: null },
-			messages: { data: [message], error: null },
+			'rpc:latest_messages_for_conversations': { data: [message], error: null },
 			public_profiles: { data: [], error: null }
 		}), ownerId, { limit: 20, offset: 0 });
 

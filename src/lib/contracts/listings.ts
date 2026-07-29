@@ -83,6 +83,7 @@ export interface ListingCardDto {
 	readonly seller: ActorSummaryDto;
 	readonly primaryPhoto: ListingPhotoDto | null;
 	readonly authenticityReviewed: boolean;
+	readonly isFavorite?: boolean;
 	readonly createdAt: string;
 }
 
@@ -103,7 +104,9 @@ export interface ListingDetailDto extends ListingCardDto {
 }
 
 export interface ListingCursorDto {
-	readonly activatedAt: string;
+	readonly sort: 'newest' | 'price_asc' | 'price_desc';
+	readonly activatedAt: string | null;
+	readonly priceMinor: number | null;
 	readonly id: string;
 }
 
@@ -125,6 +128,7 @@ export const listingSearchInputSchema = optionalPageSchema.extend({
 	minPriceMinor: z.coerce.number().int().positive().optional(),
 	maxPriceMinor: z.coerce.number().int().positive().optional(),
 	cursorActivatedAt: z.string().datetime({ offset: true }).optional(),
+	cursorPriceMinor: z.coerce.number().int().min(-1).max(2_147_483_647).optional(),
 	cursorId: uuidSchema.optional(),
 	sort: z.enum(['newest', 'price_asc', 'price_desc']).default('newest')
 }).superRefine((value, context) => {
@@ -139,17 +143,31 @@ export const listingSearchInputSchema = optionalPageSchema.extend({
 			message: 'Maximum price must be greater than or equal to minimum price.'
 		});
 	}
-	if ((value.cursorActivatedAt && !value.cursorId) || (!value.cursorActivatedAt && value.cursorId)) {
+	const hasNewestCursor = value.cursorActivatedAt !== undefined;
+	const hasPriceCursor = value.cursorPriceMinor !== undefined;
+	const hasId = value.cursorId !== undefined;
+	const invalidNewestCursor =
+		value.sort === 'newest' && (hasPriceCursor || hasNewestCursor !== hasId);
+	const invalidPriceCursor =
+		value.sort !== 'newest' && (hasNewestCursor || hasPriceCursor !== hasId);
+	if (invalidNewestCursor || invalidPriceCursor) {
 		context.addIssue({
 			code: 'custom',
 			path: ['cursorId'],
-			message: 'Both cursor fields are required.'
+			message: 'Cursor fields must match the selected sort order.'
 		});
 	}
 });
 
 const nullablePositiveMinorSchema = z.number().int().positive().nullable().optional();
-const nullablePositiveVolumeSchema = z.number().positive().max(500).nullable().optional();
+const nullablePositiveVolumeSchema = z.number().positive().max(500).refine(
+	(value) => Number.isInteger(value * 10),
+	'Volume must use 0.1 ml precision.'
+).nullable().optional();
+const nullableRemainingVolumeSchema = z.number().min(0).max(500).refine(
+	(value) => Number.isInteger(value * 10),
+	'Volume must use 0.1 ml precision.'
+).nullable().optional();
 
 export const listingDraftInputSchema = z
 	.object({
@@ -176,7 +194,7 @@ export const listingDraftInputSchema = z
 		description: z.string().trim().max(5000).default(''),
 		city: z.string().trim().min(2).max(100),
 		bottleVolumeMl: nullablePositiveVolumeSchema,
-		remainingMl: z.number().min(0).max(500).nullable().optional(),
+		remainingMl: nullableRemainingVolumeSchema,
 		isSealed: z.boolean().default(false),
 		priceMinor: nullablePositiveMinorSchema,
 		estimatedValueMinor: nullablePositiveMinorSchema,
@@ -206,11 +224,20 @@ export const listingDraftInputSchema = z
 				context.addIssue({ code: 'custom', path: ['maxBudgetMinor'], message: 'Offer listings cannot have a buyer budget.' });
 			}
 		} else {
-			if (value.maxBudgetMinor == null && value.dealMode !== 'swap') {
-				context.addIssue({ code: 'custom', path: ['maxBudgetMinor'], message: 'A maximum budget is required.' });
-			}
 			if (value.priceMinor != null || value.estimatedValueMinor != null) {
 				context.addIssue({ code: 'custom', path: ['priceMinor'], message: 'Wanted listings use only a maximum budget.' });
+			}
+			if (
+				value.productFormat != null ||
+				value.bottleVolumeMl != null ||
+				value.remainingMl != null ||
+				value.isSealed
+			) {
+				context.addIssue({
+					code: 'custom',
+					path: ['productFormat'],
+					message: 'Wanted listings cannot describe a physical item.'
+				});
 			}
 		}
 	});

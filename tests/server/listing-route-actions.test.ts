@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
 	listingDraftInputSchema,
+	listingSearchInputSchema,
 	openDealDisputeInputSchema
 } from '../../src/lib/contracts';
 import { searchCatalog } from '../../src/lib/server/repositories/catalog';
@@ -46,6 +47,19 @@ describe('listing route query and offer action helpers', () => {
 		expect(partial.cursorActivatedAt).toBeUndefined();
 	});
 
+	it('enforces sort-specific cursor components at the contract boundary', () => {
+		expect(listingSearchInputSchema.safeParse({
+			sort: 'price_asc',
+			cursorPriceMinor: 5000,
+			cursorId: uuid
+		}).success).toBe(true);
+		expect(listingSearchInputSchema.safeParse({
+			sort: 'price_asc',
+			cursorActivatedAt: '2026-07-22T10:00:00.000Z',
+			cursorId: uuid
+		}).success).toBe(false);
+	});
+
 	it('enforces offer kinds from the persisted listing deal mode', () => {
 		expect(offerKindAllowed({ dealMode: 'sale' }, 'cash')).toBe(true);
 		expect(offerKindAllowed({ dealMode: 'sale' }, 'swap')).toBe(false);
@@ -74,20 +88,23 @@ describe('listing route query and offer action helpers', () => {
 });
 
 describe('RPC-backed marketplace boundaries', () => {
-	it('uses search_listings even for an empty search query', async () => {
+	it('uses the sort-aware keyset search RPC even for an empty search query', async () => {
 		const rpc = vi.fn(async () => ({ data: [], error: null }));
 		const client = { rpc } as unknown as MarketplaceSupabaseClient;
 		const result = await searchListings(client, {
 			query: '', segments: [], sort: 'newest', limit: 12, offset: 0
 		});
-		expect(rpc).toHaveBeenCalledWith('search_listings', { page_size: 13 });
+		expect(rpc).toHaveBeenCalledWith('search_listings_v2', {
+			page_size: 13,
+			sort_mode: 'newest'
+		});
 		expect(result).toMatchObject({ items: [], nextCursor: null, totalIsExact: true });
 	});
 
 	it('omits absent search defaults and sends only populated RPC filters', async () => {
 		const rpc = vi.fn(async () => ({ data: [], error: null }));
 		const client = { rpc } as unknown as MarketplaceSupabaseClient;
-		await searchListings(client, {
+		const result = await searchListings(client, {
 			query: 'oud',
 			audience: 'unisex',
 			segments: ['niche'],
@@ -101,7 +118,7 @@ describe('RPC-backed marketplace boundaries', () => {
 			limit: 12,
 			offset: 0
 		});
-		expect(rpc).toHaveBeenCalledWith('search_listings', {
+		expect(rpc).toHaveBeenCalledWith('search_listings_v2', {
 			search_query: 'oud',
 			filter_audience: 'unisex',
 			filter_segments: ['niche'],
@@ -110,9 +127,11 @@ describe('RPC-backed marketplace boundaries', () => {
 			min_price_minor: 1000,
 			max_price_minor: 5000,
 			page_size: 13,
+			sort_mode: 'newest',
 			cursor_activated_at: '2026-07-22T10:00:00.000Z',
 			cursor_id: uuid
 		});
+		expect(result.totalIsExact).toBe(false);
 	});
 
 	it('supplies the trigger placeholder on insert and never sends it during an update', async () => {
@@ -200,7 +219,15 @@ describe('RPC-backed marketplace boundaries', () => {
 		updateChain.in.mockReturnValue(updateChain);
 		const update = vi.fn((_payload: unknown) => updateChain);
 		const client = {
-			from: vi.fn(() => ({ insert, update }))
+			from: vi.fn((table: string) =>
+				table === 'favorites'
+					? {
+							select: vi.fn(() => ({
+								in: vi.fn(async () => ({ data: [], error: null }))
+							}))
+						}
+					: { insert, update }
+			)
 		} as unknown as MarketplaceSupabaseClient;
 
 		await createListingDraft(client, uuid, input);
@@ -213,11 +240,15 @@ describe('RPC-backed marketplace boundaries', () => {
 		expect(updatePayload).not.toHaveProperty('status');
 	});
 
-	it('uses alias-aware search_catalog for non-empty catalog queries', async () => {
+	it('uses paginated alias-aware catalog search for non-empty queries', async () => {
 		const rpc = vi.fn(async () => ({ data: [], error: null }));
 		const client = { rpc } as unknown as MarketplaceSupabaseClient;
 		await searchCatalog(client, { query: 'ysl', limit: 10, offset: 0 });
-		expect(rpc).toHaveBeenCalledWith('search_catalog', { search_query: 'ysl', page_size: 10 });
+		expect(rpc).toHaveBeenCalledWith('search_catalog_v2', {
+			search_query: 'ysl',
+			page_size: 10,
+			page_offset: 0
+		});
 	});
 
 	it('validates dispute detail and delegates the atomic transition to one RPC', async () => {
@@ -232,5 +263,54 @@ describe('RPC-backed marketplace boundaries', () => {
 		);
 		expect(rpc).toHaveBeenCalledTimes(1);
 		expect(result.reportId).toBe('22222222-2222-4222-8222-222222222222');
+	});
+});
+
+describe('listing draft parsing boundary', () => {
+	const baseDraft = {
+		kind: 'wanted' as const,
+		dealMode: 'sale' as const,
+		productFormat: null,
+		audience: 'unisex' as const,
+		segments: ['niche' as const],
+		brandId: uuid,
+		fragranceId: null,
+		fragranceName: 'Wanted fragrance',
+		concentration: 'EDP' as const,
+		concentrationLabel: null,
+		referenceUrl: null,
+		title: 'Wanted fragrance listing',
+		description: '',
+		city: 'Sofia',
+		bottleVolumeMl: null,
+		remainingMl: null,
+		isSealed: false,
+		priceMinor: null,
+		estimatedValueMinor: null,
+		maxBudgetMinor: null
+	};
+
+	it('allows a wanted listing without a budget and rejects physical item state', () => {
+		expect(listingDraftInputSchema.safeParse(baseDraft).success).toBe(true);
+		expect(listingDraftInputSchema.safeParse({
+			...baseDraft,
+			productFormat: 'retail_bottle',
+			bottleVolumeMl: 100
+		}).success).toBe(false);
+	});
+
+	it('accepts only 0.1 ml precision for offer volumes', () => {
+		const offer = {
+			...baseDraft,
+			kind: 'offer' as const,
+			productFormat: 'retail_bottle' as const,
+			bottleVolumeMl: 100,
+			remainingMl: 90,
+			priceMinor: 5000
+		};
+		expect(listingDraftInputSchema.safeParse(offer).success).toBe(true);
+		expect(listingDraftInputSchema.safeParse({ ...offer, remainingMl: 89.95 }).success).toBe(
+			false
+		);
 	});
 });

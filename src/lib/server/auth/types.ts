@@ -49,8 +49,6 @@ export interface RequestLocalsAuthState extends RequestAuthContext {
 
 export interface PublicAuthUser {
 	id: string;
-	email: string | null;
-	phone: string | null;
 }
 
 export interface PublicAuthState {
@@ -62,11 +60,9 @@ export interface PublicAuthState {
 
 export function toPublicAuthState(context: RequestAuthContext): PublicAuthState {
 	return {
-		user: context.user
+	user: context.user
 			? {
-					id: context.user.id,
-					email: context.user.email ?? null,
-					phone: context.user.phone ?? null
+					id: context.user.id
 				}
 			: null,
 		profile: context.profile,
@@ -74,4 +70,3 @@ export function toPublicAuthState(context: RequestAuthContext): PublicAuthState 
 		currentAal: context.currentAal
 	};
 }
-

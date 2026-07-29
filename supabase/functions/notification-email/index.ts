@@ -19,8 +19,13 @@ type InsertWebhook = {
 
 type EmailDelivery = {
 	status: 'pending' | 'processing' | 'sent' | 'failed';
-	worker_request_id: string | null;
+	claimed_worker_request_id: string | null;
 	provider_message_id: string | null;
+	profile_id: string;
+	kind: string;
+	title: string;
+	body: string;
+	action_url: string | null;
 };
 
 const json = (body: unknown, status = 200) =>
@@ -77,11 +82,24 @@ function deliveryRow(value: unknown): EmailDelivery | null {
 	if (!candidate || typeof candidate !== 'object') return null;
 	const row = candidate as Partial<EmailDelivery>;
 	if (!['pending', 'processing', 'sent', 'failed'].includes(row.status ?? '')) return null;
+	if (
+		typeof row.profile_id !== 'string' ||
+		typeof row.kind !== 'string' ||
+		typeof row.title !== 'string' ||
+		typeof row.body !== 'string' ||
+		(row.action_url !== null && typeof row.action_url !== 'string')
+	) return null;
 	return {
 		status: row.status as EmailDelivery['status'],
-		worker_request_id: typeof row.worker_request_id === 'string' ? row.worker_request_id : null,
+		claimed_worker_request_id:
+			typeof row.claimed_worker_request_id === 'string' ? row.claimed_worker_request_id : null,
 		provider_message_id:
-			typeof row.provider_message_id === 'string' ? row.provider_message_id : null
+			typeof row.provider_message_id === 'string' ? row.provider_message_id : null,
+		profile_id: row.profile_id,
+		kind: row.kind,
+		title: row.title,
+		body: row.body,
+		action_url: row.action_url
 	};
 }
 
@@ -115,7 +133,7 @@ Deno.serve(async (request) => {
 			auth: { autoRefreshToken: false, persistSession: false }
 		});
 		const { data: claimData, error: claimError } = await supabase.rpc(
-			'claim_notification_email_delivery',
+			'claim_notification_email_delivery_v2',
 			{
 				target_notification_id: payload.record.id,
 				worker_request_id: workerRequestId
@@ -135,13 +153,6 @@ Deno.serve(async (request) => {
 		}
 		const claim = deliveryRow(claimData);
 		if (!claim) return json({ error: 'invalid_delivery_claim', requestId }, 503);
-		if (claim.status === 'sent') {
-			return json({ ok: true, duplicate: true, notificationId: payload.record.id, requestId }, 200);
-		}
-		if (claim.status !== 'processing' || claim.worker_request_id !== workerRequestId) {
-			return json({ error: 'delivery_claim_mismatch', requestId }, 409);
-		}
-
 		const markFailed = async (errorCode: string) => {
 			const { error } = await supabase.rpc('mark_notification_email_failed', {
 				target_notification_id: payload.record.id,
@@ -157,7 +168,38 @@ Deno.serve(async (request) => {
 				}));
 			}
 		};
-		const { data: authUser, error: authError } = await supabase.auth.admin.getUserById(payload.record.profile_id);
+		const payloadMatchesCanonical =
+			payload.record.profile_id === claim.profile_id &&
+			payload.record.kind === claim.kind &&
+			payload.record.title === claim.title &&
+			payload.record.body === claim.body &&
+			(payload.record.action_url ?? null) === claim.action_url;
+		if (!payloadMatchesCanonical) {
+			if (claim.status === 'processing' && claim.claimed_worker_request_id === workerRequestId) {
+				await markFailed('payload_mismatch');
+			}
+			console.error(JSON.stringify({
+				event: 'notification_email_payload_mismatch',
+				notificationId: payload.record.id,
+				requestId
+			}));
+			return json({ error: 'payload_mismatch', requestId }, 409);
+		}
+		if (claim.status === 'sent') {
+			return json({ ok: true, duplicate: true, notificationId: payload.record.id, requestId }, 200);
+		}
+		if (claim.status !== 'processing' || claim.claimed_worker_request_id !== workerRequestId) {
+			return json({ error: 'delivery_claim_mismatch', requestId }, 409);
+		}
+
+		// The comparison above protects the webhook boundary; all downstream
+		// work is explicitly rebound to the canonical database values.
+		payload.record.profile_id = claim.profile_id;
+		payload.record.kind = claim.kind;
+		payload.record.title = claim.title;
+		payload.record.body = claim.body;
+		payload.record.action_url = claim.action_url;
+		const { data: authUser, error: authError } = await supabase.auth.admin.getUserById(claim.profile_id);
 		if (authError || !authUser.user?.email) {
 			await markFailed('recipient_unavailable');
 			console.error(JSON.stringify({ event: 'notification_email_recipient_unavailable', notificationId: payload.record.id, requestId }));

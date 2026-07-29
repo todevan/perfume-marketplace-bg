@@ -96,8 +96,9 @@ test.describe('publish wizard', () => {
 		await expect(page.getByText('Това е обява „Търся“')).toBeVisible();
 		await page.getByRole('button', { name: 'Продължи' }).click();
 
-		await expect(page.getByRole('heading', { name: 'Опиши физическия продукт' })).toBeVisible();
-		await expect(page.getByLabel('Предпочитан оригинален обем')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Опиши какво търсиш' })).toBeVisible();
+		await expect(page.getByText('Без конкретен физически артикул')).toBeVisible();
+		await expect(page.getByLabel('Предпочитан оригинален обем')).toHaveCount(0);
 		await expect(page.getByRole('link', { name: /Провери в batch-code.com/ })).toHaveAttribute(
 			'target',
 			'_blank'

@@ -1,6 +1,11 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
+import {
+  acknowledgeServiceRoleClient,
+  claimListingUpload,
+  finalizeListingUpload,
+  rejectListingUpload
+} from '$lib/server/services';
 import { createServiceRoleSupabaseClient } from '$lib/server/supabase';
 import {
   ACCEPTED_SOURCE_MIME_TYPES,
@@ -29,14 +34,6 @@ interface UploadAllocation {
   storage_path: string;
 }
 
-interface ClaimedUpload {
-  id: string;
-  uploader_id: string;
-  listing_id: string;
-  bucket_id: string;
-  quarantine_path: string;
-}
-
 function imagesBinding(platform: App.Platform | undefined): CloudflareImagesBinding | undefined {
   return (platform?.env as unknown as { IMAGES?: CloudflareImagesBinding } | undefined)?.IMAGES;
 }
@@ -44,17 +41,6 @@ function imagesBinding(platform: App.Platform | undefined): CloudflareImagesBind
 function stringField(formData: FormData, key: string): string {
   const value = formData.get(key);
   return typeof value === 'string' ? value.trim() : '';
-}
-
-async function rejectUpload(
-  serviceClient: SupabaseClient,
-  uploadId: string,
-  code: string
-): Promise<void> {
-  await serviceClient.rpc('reject_listing_upload', {
-    target_upload_id: uploadId,
-    rejection_code: code.slice(0, 80)
-  });
 }
 
 export const POST: RequestHandler = async (event) => {
@@ -119,6 +105,7 @@ export const POST: RequestHandler = async (event) => {
     PUBLIC_SUPABASE_URL: locals.runtime.publicSupabaseUrl,
     SUPABASE_SECRET_KEY: locals.runtime.supabaseSecretKey
   });
+  const privilegedClient = acknowledgeServiceRoleClient(serviceClient);
   let finalPath: string | null = null;
   let finalized = false;
 
@@ -131,18 +118,16 @@ export const POST: RequestHandler = async (event) => {
       });
     if (sourceUploadError) throw new Error('quarantine_upload_failed', { cause: sourceUploadError });
 
-    const { data: claimData, error: claimError } = await serviceClient
-      .rpc('claim_listing_upload', {
-        target_upload_id: allocation.upload_id,
-        processor_request_id: locals.requestId
-      })
-      .single();
-    if (claimError || !claimData) throw new Error('upload_claim_failed', { cause: claimError });
-    const claim = claimData as unknown as ClaimedUpload;
+    const claimResult = await claimListingUpload(privilegedClient, {
+      uploadId: allocation.upload_id,
+      processorRequestId: locals.requestId
+    });
+    if (!claimResult.ok) throw new Error('upload_claim_failed');
+    const claim = claimResult.data;
 
     const { data: sourceBlob, error: downloadError } = await serviceClient.storage
-      .from(claim.bucket_id)
-      .download(claim.quarantine_path);
+      .from(allocation.bucket_id)
+      .download(claim.quarantinePath);
     if (downloadError || !sourceBlob) {
       throw new Error('quarantine_download_failed', { cause: downloadError });
     }
@@ -154,7 +139,7 @@ export const POST: RequestHandler = async (event) => {
       sourceBytes,
       file.type
     );
-    finalPath = `${claim.uploader_id}/${claim.listing_id}/${claim.id}.webp`;
+    finalPath = `${claim.uploaderId}/${claim.listingId}/${claim.id}.webp`;
 
     const { error: finalUploadError } = await serviceClient.storage
       .from('listing-images')
@@ -164,24 +149,22 @@ export const POST: RequestHandler = async (event) => {
       });
     if (finalUploadError) throw new Error('sanitized_upload_failed', { cause: finalUploadError });
 
-    const { data: photo, error: finalizeError } = await serviceClient
-      .rpc('finalize_listing_upload', {
-        target_upload_id: allocation.upload_id,
-        final_storage_path: finalPath,
-        actual_content_hash: sanitized.contentHash,
-        actual_mime_type: sanitized.mimeType,
-        actual_byte_size: sanitized.bytes.byteLength,
-        actual_width_px: sanitized.width,
-        actual_height_px: sanitized.height
-      })
-      .single();
-    if (finalizeError || !photo) throw new Error('upload_finalize_failed', { cause: finalizeError });
+    const finalizeResult = await finalizeListingUpload(privilegedClient, {
+      uploadId: allocation.upload_id,
+      finalStoragePath: finalPath,
+      contentHash: sanitized.contentHash,
+      mimeType: sanitized.mimeType,
+      byteSize: sanitized.bytes.byteLength,
+      widthPx: sanitized.width,
+      heightPx: sanitized.height
+    });
+    if (!finalizeResult.ok) throw new Error('upload_finalize_failed');
     finalized = true;
 
     return json({
       ok: true,
       photo: {
-        id: (photo as { id: string }).id,
+        id: finalizeResult.data.id,
         role,
         mimeType: sanitized.mimeType,
         width: sanitized.width,
@@ -191,7 +174,35 @@ export const POST: RequestHandler = async (event) => {
   } catch (cause) {
     const rejectionCode =
       cause instanceof ImageProcessingError ? cause.code : 'processing_failed';
-    if (!finalized) await rejectUpload(serviceClient, allocation.upload_id, rejectionCode);
+    if (!finalized) {
+      try {
+        const rejectionResult = await rejectListingUpload(privilegedClient, {
+          uploadId: allocation.upload_id,
+          rejectionCode
+        });
+        if (!rejectionResult.ok) {
+          console.error(
+            JSON.stringify({
+              event: 'listing_upload_rejection_ledger_failed',
+              requestId: locals.requestId,
+              uploadId: allocation.upload_id,
+              code: rejectionResult.error.code
+            })
+          );
+        }
+      } catch (rejectionCause) {
+        console.error(
+          JSON.stringify({
+            event: 'listing_upload_rejection_ledger_failed',
+            requestId: locals.requestId,
+            uploadId: allocation.upload_id,
+            code: 'unexpected_failure',
+            errorType:
+              rejectionCause instanceof Error ? rejectionCause.name : typeof rejectionCause
+          })
+        );
+      }
+    }
     if (finalPath && !finalized) await serviceClient.storage.from('listing-images').remove([finalPath]);
     console.error(
       JSON.stringify({

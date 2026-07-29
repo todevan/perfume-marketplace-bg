@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { GET as getRobots } from '../../src/routes/robots.txt/+server';
 import { GET as getSitemap } from '../../src/routes/sitemap.xml/+server';
 
@@ -11,6 +14,35 @@ const deploymentWorkflowPath = resolve(workspace, '.github/workflows/deploy.yml'
 const qualityWorkflowPath = resolve(workspace, '.github/workflows/ci.yml');
 const packageJsonPath = resolve(workspace, 'package.json');
 const svelteConfigPath = resolve(workspace, 'svelte.config.js');
+type WorkflowStep = {
+	name?: string;
+	id?: string;
+	if?: string;
+	uses?: string;
+	run?: string;
+	env?: Record<string, string>;
+};
+type WorkflowJob = {
+	if?: string;
+	environment?: unknown;
+	env?: Record<string, string>;
+	steps: WorkflowStep[];
+};
+type Workflow = {
+	on: Record<string, unknown>;
+	permissions?: Record<string, string>;
+	concurrency?: {
+		group?: string;
+		'cancel-in-progress'?: boolean;
+	};
+	jobs: Record<string, WorkflowJob>;
+};
+const deploymentWorkflow = parse(readFileSync(deploymentWorkflowPath, 'utf8')) as Workflow;
+const qualityWorkflow = parse(readFileSync(qualityWorkflowPath, 'utf8')) as Workflow;
+
+function runCommands(job: WorkflowJob): string[] {
+	return job.steps.flatMap((step) => (step.run ? [step.run] : []));
+}
 const billingFlags = [
 	'FEATURE_BILLING_ENABLED',
 	'FEATURE_LISTING_FEES_ENABLED',
@@ -33,24 +65,35 @@ const validReleaseEnvironment: NodeJS.ProcessEnv = {
 	IMAGE_PROCESSOR_MODE: 'cloudflare-images',
 	PUBLIC_APP_URL: 'https://perfume.example.com',
 	PUBLIC_SUPABASE_URL: 'https://example.supabase.co',
-	PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-test-key',
-	SUPABASE_SECRET_KEY: 'secret-test-key',
+	EXPECTED_PRODUCTION_APP_HOST: 'perfume.example.com',
+	EXPECTED_SUPABASE_PROJECT_REF: 'example',
+	RELEASE_COMMIT_SHA: 'c'.repeat(40),
+	PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_release_test_key',
+	SUPABASE_SECRET_KEY: 'sb_secret_release_test_key',
 	TERMS_VERSION: '2026-07-26',
 	PRIVACY_VERSION: '2026-07-26',
 	MARKETPLACE_RULES_VERSION: '2026-07-26',
 	INCIDENT_CONTACT_EMAIL: 'incidents@example.com',
+	LEGAL_CONTROLLER_NAME: 'Perfume Marketplace Bulgaria AD',
+	LEGAL_CONTROLLER_REGISTRATION: 'BG123456789',
+	LEGAL_CONTROLLER_ADDRESS: 'Sofia 1000, Bulgaria',
+	PRIVACY_CONTACT_EMAIL: 'privacy@perfume-market.bg',
+	APPEALS_CONTACT_EMAIL: 'appeals@perfume-market.bg',
+	LEGAL_APPROVAL_REFERENCE: 'BG-LEGAL-2026-07-29',
 	RESEND_API_KEY: 're_test_key',
 	RESEND_FROM_EMAIL: 'Marketplace <notifications@example.com>',
-	TURNSTILE_SECRET_KEY: 'turnstile-secret',
-	PUBLIC_TURNSTILE_SITE_KEY: 'turnstile-site-key',
+	TURNSTILE_SECRET_KEY: 'turnstile-secret-key-production',
+	PUBLIC_TURNSTILE_SITE_KEY: 'turnstile-site-key-production',
 	TURNSTILE_EXPECTED_HOSTNAME: 'perfume.example.com',
-	SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID: 'ACtest',
-	SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID: 'MGtest',
-	SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN: 'twilio-token',
-	CLOUDFLARE_ACCOUNT_ID: 'cloudflare-account',
-	CLOUDFLARE_IMAGES_API_TOKEN: 'cloudflare-images-token',
+	SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID: `AC${'1'.repeat(32)}`,
+	SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID: `MG${'2'.repeat(32)}`,
+	SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN: 't'.repeat(32),
+	CLOUDFLARE_ACCOUNT_ID: '3'.repeat(32),
+	CLOUDFLARE_IMAGES_API_TOKEN: 'cloudflare-images-token-production',
 	NOTIFICATION_WEBHOOK_SECRET: 'n'.repeat(32),
-	UPLOAD_CLEANUP_SECRET: 'u'.repeat(32)
+	UPLOAD_CLEANUP_SECRET: 'u'.repeat(32),
+	HOSTED_CRON_INVENTORY_SHA256: 'a'.repeat(64),
+	PROVIDER_ATTESTATION_SHA256: 'b'.repeat(64)
 };
 
 for (const flag of billingFlags) {
@@ -67,40 +110,48 @@ function runReadiness(environment: NodeJS.ProcessEnv = validReleaseEnvironment) 
 
 describe('closed beta deployment hardening', () => {
 	it('keeps deployment manual, staging-only, and guarded to main', () => {
-		const workflow = readFileSync(deploymentWorkflowPath, 'utf8');
-		const triggerBlock = workflow.match(/^on:\r?\n([\s\S]*?)^permissions:/m)?.[1];
-		expect(triggerBlock?.trim()).toBe('workflow_dispatch:');
-
-		const jobsBlock = workflow.slice(workflow.indexOf('\njobs:') + '\njobs:'.length);
-		const jobNames = [...jobsBlock.matchAll(/^  ([a-z0-9_-]+):\r?$/gim)].map(
-			(match) => match[1]
+		expect(Object.keys(deploymentWorkflow.on)).toEqual(['workflow_dispatch']);
+		expect(Object.keys(deploymentWorkflow.jobs)).toEqual(['staging']);
+		expect(deploymentWorkflow.permissions).toEqual({ contents: 'read', checks: 'read' });
+		expect(deploymentWorkflow.concurrency).toEqual({
+			group: 'deploy-staging',
+			'cancel-in-progress': false
+		});
+		expect(deploymentWorkflow.jobs.staging.if).toBe("github.ref == 'refs/heads/main'");
+		expect(deploymentWorkflow.jobs.staging).not.toHaveProperty('environment');
+		expect(runCommands(deploymentWorkflow.jobs.staging)).not.toContain(
+			expect.stringContaining('--env=""')
 		);
-		expect(jobNames).toEqual(['staging']);
-		expect(workflow).toContain("if: github.ref == 'refs/heads/main'");
-		expect(workflow).not.toMatch(/^\s+environment:/m);
-		expect(workflow).not.toContain('--env=""');
 	});
 
 	it('uses repository secrets and validates staging before the only deploy step', () => {
-		const workflow = readFileSync(deploymentWorkflowPath, 'utf8');
-		expect(workflow).toContain('group: deploy-staging');
-		expect(workflow).toContain('cancel-in-progress: false');
-		expect(workflow).toContain(
-			'CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}'
+		const job = deploymentWorkflow.jobs.staging;
+		const commands = runCommands(job);
+		const ciGate = job.steps.find(
+			(step) => step.name === 'Require successful complete CI for the exact SHA'
 		);
-		expect(workflow).toContain(
-			'CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}'
+		const installStep = job.steps.findIndex(
+			(step) => step.run === 'pnpm install --frozen-lockfile'
 		);
-		expect(workflow).not.toContain('${{ vars.');
+		expect(job.env).toMatchObject({ EXPECTED_GIT_SHA: '${{ github.sha }}' });
+		expect(JSON.stringify(deploymentWorkflow)).not.toContain('${{ vars.');
+		expect(ciGate).toMatchObject({
+			run: 'node scripts/verify-ci-checks.mjs',
+			env: { GITHUB_TOKEN: '${{ github.token }}' }
+		});
+		expect(job.steps.indexOf(ciGate!)).toBeLessThan(installStep);
+		const deployStep = job.steps.find((step) => step.id === 'deploy');
+		expect(deployStep?.env).toEqual({
+			CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}',
+			CLOUDFLARE_ACCOUNT_ID: '${{ secrets.CLOUDFLARE_ACCOUNT_ID }}'
+		});
 
-		const install = workflow.indexOf('run: pnpm install --frozen-lockfile');
-		const productionAudit = workflow.indexOf('run: pnpm audit --prod');
-		const highAudit = workflow.indexOf('run: pnpm audit --audit-level high');
-		const tests = workflow.indexOf('run: pnpm test');
-		const dryRun = workflow.indexOf(
-			'run: pnpm exec wrangler deploy --dry-run --env staging'
-		);
-		const deploy = workflow.indexOf('run: pnpm exec wrangler deploy --env staging');
+		const install = commands.indexOf('pnpm install --frozen-lockfile');
+		const productionAudit = commands.indexOf('pnpm audit --prod');
+		const highAudit = commands.indexOf('pnpm audit --audit-level high');
+		const tests = commands.indexOf('pnpm test');
+		const dryRun = commands.indexOf('pnpm exec wrangler deploy --dry-run --env staging');
+		const deploy = commands.indexOf('pnpm exec wrangler deploy --env staging');
 
 		expect(install).toBeGreaterThan(-1);
 		expect(productionAudit).toBeGreaterThan(install);
@@ -108,12 +159,21 @@ describe('closed beta deployment hardening', () => {
 		expect(tests).toBeGreaterThan(highAudit);
 		expect(dryRun).toBeGreaterThan(tests);
 		expect(deploy).toBeGreaterThan(dryRun);
-		expect(workflow.match(/run: pnpm exec wrangler deploy --env staging/g)).toHaveLength(1);
+		expect(commands.filter((command) => command === 'pnpm exec wrangler deploy --env staging')).toHaveLength(
+			1
+		);
+	});
+
+	it('accepts exact-SHA quality checks only from GitHub Actions', () => {
+		const verifier = readFileSync(resolve(workspace, 'scripts/verify-ci-checks.mjs'), 'utf8');
+		expect(verifier).toContain("check?.app?.slug === 'github-actions'");
+		expect(verifier).toContain("check?.head_sha === sha");
+		expect(verifier).toContain("check?.status === 'completed'");
+		expect(verifier).toContain("check?.conclusion === 'success'");
 	});
 
 	it('installs every browser engine used by the Playwright project matrix', () => {
-		const workflow = readFileSync(qualityWorkflowPath, 'utf8');
-		expect(workflow).toContain(
+		expect(runCommands(qualityWorkflow.jobs.app)).toContain(
 			'pnpm exec playwright install --with-deps chromium webkit'
 		);
 	});
@@ -195,10 +255,74 @@ describe('closed beta deployment hardening', () => {
 		expect(variables).not.toHaveProperty('SUPABASE_SERVICE_ROLE_KEY');
 	});
 
-	it('passes the release contract only with demo mode and every billing flag disabled', () => {
+	it('blocks release while legal routes still contain draft markers', () => {
 		const result = runReadiness();
-		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout).toContain('Production readiness checks passed');
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain('still contains draft or placeholder legal copy');
+	});
+
+	it('rejects opaque hashes unless fresh, identity-bound receipt files are present', () => {
+		const receiptDirectory = mkdtempSync(join(tmpdir(), 'release-receipts-'));
+		const hostedPath = join(receiptDirectory, 'hosted.json');
+		const providerPath = join(receiptDirectory, 'providers.json');
+		const checkedAt = new Date().toISOString();
+		const hostedContents = `${JSON.stringify({
+			schemaVersion: 1,
+			kind: 'hosted-runtime-inventory',
+			checkedAt,
+			commitSha: 'd'.repeat(40),
+			projectRef: 'example',
+			inventory: {}
+		})}\n`;
+		const checkResult = {
+			passed: true,
+			checkedAt,
+			evidenceSha256: 'e'.repeat(64)
+		};
+		const providerContents = `${JSON.stringify({
+			schemaVersion: 1,
+			kind: 'production-provider-attestation',
+			checkedAt,
+			commitSha: 'd'.repeat(40),
+			productionAppHost: 'perfume.example.com',
+			supabaseProjectRef: 'example',
+			cloudflareAccountId: '3'.repeat(32),
+			checks: {
+				cloudflareImages: checkResult,
+				notificationWebhook: checkResult,
+				resendEmail: checkResult,
+				supabaseAuth: checkResult,
+				turnstile: checkResult,
+				twilioSms: checkResult,
+				uploadCleanup: checkResult
+			}
+		})}\n`;
+
+		try {
+			writeFileSync(hostedPath, hostedContents);
+			writeFileSync(providerPath, providerContents);
+			const result = runReadiness({
+				...validReleaseEnvironment,
+				HOSTED_RUNTIME_INVENTORY_RECEIPT_PATH: hostedPath,
+				HOSTED_CRON_INVENTORY_SHA256: createHash('sha256')
+					.update(hostedContents)
+					.digest('hex'),
+				PROVIDER_ATTESTATION_RECEIPT_PATH: providerPath,
+				PROVIDER_ATTESTATION_SHA256: createHash('sha256')
+					.update(providerContents)
+					.digest('hex')
+			});
+
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain(
+				'hosted runtime receipt commitSha does not match RELEASE_COMMIT_SHA'
+			);
+			expect(result.stderr).toContain(
+				'provider attestation commitSha does not match RELEASE_COMMIT_SHA'
+			);
+		} finally {
+			rmSync(receiptDirectory, { recursive: true, force: true });
+		}
 	});
 
 	it('fails closed when production demo mode is enabled', () => {

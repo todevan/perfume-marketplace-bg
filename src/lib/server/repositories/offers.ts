@@ -81,33 +81,37 @@ async function hydrateOffers(
 	});
 }
 
-async function receivedListingIds(
-	client: MarketplaceSupabaseClient,
-	profileId: string
-): Promise<readonly string[]> {
-	const { data, error } = await client.from('listings').select('id').eq('seller_id', profileId);
-	throwIfError('offers.receivedListingIds', error);
-	return (data ?? []).map((row) => row.id);
-}
-
 export async function listOffers(
 	client: MarketplaceSupabaseClient,
 	profileId: string,
 	input: OfferListInput
 ): Promise<OfferPageDto> {
+	if (input.direction === 'received') {
+		const { data, error } = await client.rpc('list_received_offers', {
+			page_size: Math.min(51, input.limit + 1),
+			page_offset: input.offset,
+			...(input.status ? { filter_status: input.status } : {})
+		});
+		throwIfError('offers.listReceived', error);
+		const rows = (data ?? []) as OfferRow[];
+		const hasMore = rows.length > input.limit;
+		const items = await hydrateOffers(client, rows.slice(0, input.limit));
+		return {
+			items,
+			total: input.offset + items.length + (hasMore ? 1 : 0),
+			limit: input.limit,
+			offset: input.offset,
+			hasMore
+		};
+	}
+
 	let query = client
 		.from('offers')
 		.select('*', { count: 'exact' })
 		.order('created_at', { ascending: false })
 		.range(input.offset, input.offset + input.limit - 1);
 
-	if (input.direction === 'sent') {
-		query = query.eq('offerer_id', profileId);
-	} else {
-		const listingIds = await receivedListingIds(client, profileId);
-		if (listingIds.length === 0) return pageDto([], 0, input.limit, input.offset);
-		query = query.in('listing_id', [...listingIds]);
-	}
+	query = query.eq('offerer_id', profileId);
 	if (input.status) query = query.eq('status', input.status);
 
 	const { data, error, count } = await query;

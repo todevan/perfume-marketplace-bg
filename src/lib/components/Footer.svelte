@@ -45,18 +45,16 @@
 
 <style>
   .footer {
-    padding: 68px 0 22px;
+    padding: 58px 0 20px;
     color: var(--brand-secondary);
-    background:
-      radial-gradient(circle at 18% 22%, rgb(243 223 191 / 12%), transparent 20rem),
-      var(--ink);
+    background: #2b201a;
   }
 
   .footer-grid {
     display: grid;
     grid-template-columns: 1.5fr repeat(3, 1fr);
-    gap: 40px;
-    padding-bottom: 56px;
+    gap: 42px;
+    padding-bottom: 48px;
   }
 
   .footer-intro {
@@ -65,21 +63,21 @@
 
   .footer-intro p {
     margin: 20px 0 12px;
-    color: rgb(244 236 225 / 76%);
+    color: rgb(248 243 235 / 78%);
     font-size: 1.08rem;
   }
 
   .footer-intro span,
   .footer-note p {
-    color: rgb(244 236 225 / 50%);
+    color: rgb(248 243 235 / 54%);
     font-size: 0.76rem;
   }
 
   h2 {
     margin-bottom: 18px;
-    color: rgb(244 236 225 / 50%);
+    color: rgb(248 243 235 / 54%);
     font-size: 0.72rem;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
 
@@ -94,7 +92,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    color: rgb(244 236 225 / 82%);
+    color: rgb(248 243 235 / 84%);
     font-size: 0.88rem;
   }
 
@@ -112,8 +110,8 @@
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    border-top: 1px solid rgb(244 236 225 / 14%);
-    color: rgb(244 236 225 / 42%);
+    border-top: 1px solid rgb(248 243 235 / 16%);
+    color: rgb(248 243 235 / 48%);
     font-size: 0.73rem;
   }
 

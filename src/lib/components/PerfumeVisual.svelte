@@ -15,34 +15,40 @@
 
   $: path = shapePath[visual.shape];
   $: liquidY = 208 - (Math.max(4, percent) / 100) * 130;
+  $: safeLabel = label.replaceAll(' ', '-').replace(/[^a-zA-Z0-9_-]/g, '');
 </script>
 
-<div class:compact class="visual" style={`--backdrop:${visual.backdrop}; --glass:${visual.glass}; --liquid:${visual.liquid}; --cap:${visual.cap}`}>
+<div
+  class:compact
+  class="visual"
+  style={`--backdrop:${visual.backdrop}; --glass:${visual.glass}; --liquid:${visual.liquid}; --cap:${visual.cap}`}
+>
   <svg viewBox="0 0 240 260" role="img" aria-label={`Илюстрация на ${label}`}>
     <defs>
-      <linearGradient id={`glass-${label.replaceAll(' ', '-')}`} x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="white" stop-opacity=".62" />
-        <stop offset=".35" stop-color={visual.glass} stop-opacity=".86" />
-        <stop offset="1" stop-color={visual.glass} />
-      </linearGradient>
-      <clipPath id={`bottle-${label.replaceAll(' ', '-')}`}><path d={path} /></clipPath>
-      <filter id={`shadow-${label.replaceAll(' ', '-')}`} x="-30%" y="-30%" width="160%" height="180%">
-        <feDropShadow dx="0" dy="12" stdDeviation="9" flood-color="#2b1c16" flood-opacity=".23" />
-      </filter>
+      <clipPath id={`bottle-${safeLabel}`}><path d={path} /></clipPath>
     </defs>
-    <ellipse cx="120" cy="221" rx="72" ry="12" fill="#2b1c16" opacity=".12" />
-    <g filter={`url(#shadow-${label.replaceAll(' ', '-')})`}>
+    <ellipse cx="120" cy="221" rx="68" ry="8" fill="var(--ink)" opacity=".12" />
+    <g>
       <path d="M96 38 H144 V59 H96Z" fill={visual.cap} />
       <path d="M101 30 Q101 25 106 25 H134 Q139 25 139 30 V42 H101Z" fill={visual.cap} opacity=".82" />
-      <path d={path} fill={`url(#glass-${label.replaceAll(' ', '-')})`} stroke="#fff" stroke-opacity=".5" stroke-width="2" />
-      <rect x="40" y={liquidY} width="160" height="150" fill={visual.liquid} opacity=".55" clip-path={`url(#bottle-${label.replaceAll(' ', '-')})`} />
-      <path d="M77 70 Q84 61 96 61" fill="none" stroke="white" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" />
-      <rect x="82" y="108" width="76" height="58" rx="2" fill="#f7f0e6" opacity=".91" />
-      <path d="M96 124 H144 M101 134 H139 M108 146 H132" stroke="#4a3126" stroke-width="2" opacity=".68" />
-      <circle cx="120" cy="118" r="4" fill="#4a3126" opacity=".75" />
+      <path d={path} fill={visual.glass} stroke="var(--paper-strong)" stroke-opacity=".58" stroke-width="2" />
+      <rect
+        x="40"
+        y={liquidY}
+        width="160"
+        height="150"
+        fill={visual.liquid}
+        opacity=".72"
+        clip-path={`url(#bottle-${safeLabel})`}
+      />
+      <path d="M77 70 Q84 61 96 61" fill="none" stroke="var(--paper-strong)" stroke-opacity=".66" stroke-width="3" stroke-linecap="round" />
+      <rect x="82" y="108" width="76" height="58" rx="2" fill="var(--paper-strong)" opacity=".94" />
+      <path d="M96 124 H144 M101 134 H139 M108 146 H132" stroke="var(--ink)" stroke-width="2" opacity=".68" />
+      <circle cx="120" cy="118" r="4" fill="var(--ink)" opacity=".75" />
     </g>
   </svg>
-  <span class="scent-ring ring-one"></span><span class="scent-ring ring-two"></span>
+  <span class="scent-ring ring-one"></span>
+  <span class="scent-ring ring-two"></span>
 </div>
 
 <style>
@@ -52,28 +58,30 @@
     min-height: 280px;
     place-items: center;
     overflow: hidden;
-    background:
-      radial-gradient(circle at 55% 30%, rgb(255 255 255 / 72%), transparent 34%),
-      var(--backdrop);
+    background: var(--backdrop);
     isolation: isolate;
   }
 
-  .visual::after {
+  .visual::before {
     position: absolute;
-    inset: 0;
-    z-index: -1;
-    background: linear-gradient(125deg, transparent 40%, rgb(255 255 255 / 22%) 40.4%, transparent 41%);
+    top: 12%;
+    right: 8%;
+    width: 32%;
+    aspect-ratio: 1;
+    border: 1px solid var(--paper-strong);
     content: '';
+    opacity: 0.42;
+    transform: rotate(14deg);
   }
 
   svg {
     width: min(72%, 240px);
-    transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition: transform 260ms ease;
   }
 
   :global(a:hover) .visual svg,
   .visual:hover svg {
-    transform: translateY(-5px) rotate(-1deg) scale(1.03);
+    transform: translateY(-3px) scale(1.018);
   }
 
   .scent-ring {
@@ -81,8 +89,9 @@
     z-index: -1;
     width: 210px;
     height: 210px;
-    border: 1px solid rgb(74 49 38 / 14%);
+    border: 1px solid var(--ink);
     border-radius: 50%;
+    opacity: 0.12;
     transform: rotateX(66deg) rotateZ(-10deg);
   }
 
@@ -104,5 +113,11 @@
 
   .compact svg {
     width: min(70%, 190px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    svg {
+      transition: none;
+    }
   }
 </style>

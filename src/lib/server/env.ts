@@ -115,6 +115,12 @@ export function getRuntimeConfiguration(
 	);
 
 	if (demoMode) {
+		if (configuredAppEnvironment !== 'development') {
+			throw new RuntimeConfigurationError(
+				['PUBLIC_DEMO_MODE'],
+				'PUBLIC_DEMO_MODE=true is allowed only when APP_ENV=development.'
+			);
+		}
 		return {
 			mode: 'demo',
 			demoMode: true,

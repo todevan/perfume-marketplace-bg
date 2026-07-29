@@ -14,6 +14,7 @@ const demoDeal: DealDto = {
   id: '00000000-0000-4000-8000-000000000701', listing, offeredListing: null,
   partyA: listing.seller,
   partyB: { id: '00000000-0000-4000-8000-000000000301', username: 'amber_room', avatarUrl: null, accountKind: 'private', merchantVerified: false },
+  conversationId: '00000000-0000-4000-8000-000000000801',
   status: 'pending_confirmation', confirmedBy: [], completedAt: null, disputedAt: null, cancelledAt: null,
   cancellationReason: null, createdAt: '2026-07-20T14:32:00.000Z'
 };

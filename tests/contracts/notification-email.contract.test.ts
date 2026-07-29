@@ -14,13 +14,16 @@ describe('transactional notification email contract', () => {
 	});
 
 	it('claims, finalizes and records failed delivery attempts through service-role RPCs', () => {
-		expect(edgeFunction).toContain("'claim_notification_email_delivery'");
+		expect(edgeFunction).toContain("'claim_notification_email_delivery_v2'");
 		expect(edgeFunction).toContain("'mark_notification_email_sent'");
 		expect(edgeFunction).toContain("'mark_notification_email_failed'");
 		expect(edgeFunction).toContain("claim.status === 'sent'");
 	});
 
-	it('uses the immutable notification UUID as the provider idempotency key', () => {
+	it('uses the canonical claimed notification as the provider source of truth', () => {
+		expect(edgeFunction).toContain('payloadMatchesCanonical');
+		expect(edgeFunction).toContain("await markFailed('payload_mismatch')");
+		expect(edgeFunction).toContain('payload.record.title = claim.title');
 		expect(edgeFunction).toContain("'Idempotency-Key': payload.record.id");
 		expect(edgeFunction).not.toContain('Idempotency-Key\': `');
 	});

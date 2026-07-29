@@ -19,6 +19,19 @@ export class ServiceError extends Error {
 	}
 }
 
+export class UnexpectedServiceError extends Error {
+	readonly errorType: string;
+
+	constructor(
+		readonly operation: string,
+		cause: unknown
+	) {
+		super('Unexpected service action failure.', { cause });
+		this.name = 'UnexpectedServiceError';
+		this.errorType = cause instanceof Error ? cause.name : typeof cause;
+	}
+}
+
 function zodActionError(error: z.ZodError): ActionError {
 	const fieldErrors: Record<string, string[]> = {};
 	for (const issue of error.issues) {
@@ -64,14 +77,25 @@ export function toActionError(error: unknown): ActionError {
 export async function runAction<TSchema extends z.ZodType, TResult>(
 	schema: TSchema,
 	rawInput: unknown,
-	handler: (input: z.output<TSchema>) => Promise<TResult>
+	handler: (input: z.output<TSchema>) => Promise<TResult>,
+	context: { operation?: string; requestId?: string } = {}
 ): Promise<ActionResult<TResult>> {
 	const parsed = schema.safeParse(rawInput);
 	if (!parsed.success) return actionFailure(zodActionError(parsed.error));
 	try {
 		return actionSuccess(await handler(parsed.data));
 	} catch (error) {
-		return actionFailure(toActionError(error));
+		if (
+			error instanceof z.ZodError ||
+			error instanceof ServiceError ||
+			error instanceof RepositoryError
+		) {
+			return actionFailure(toActionError(error));
+		}
+		throw new UnexpectedServiceError(
+			context.operation ?? handler.name ?? 'anonymous_service_action',
+			error
+		);
 	}
 }
 

@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parse } from 'yaml';
 import {
 	runStagingRollbackSmoke,
 	runStagingSmoke,
@@ -13,6 +14,21 @@ const workflowPath = resolve(workspace, '.github/workflows/deploy.yml');
 const expectedOrigin =
 	'https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev';
 const expectedGitSha = 'a'.repeat(40);
+type WorkflowStep = {
+	id?: string;
+	if?: string;
+	run?: string;
+};
+type WorkflowJob = {
+	if?: string;
+	environment?: unknown;
+	env?: Record<string, string>;
+	steps: WorkflowStep[];
+};
+type Workflow = {
+	on: Record<string, unknown>;
+	jobs: Record<string, WorkflowJob>;
+};
 
 type StartedServer = {
 	origin: string;
@@ -282,30 +298,42 @@ describe('hosted staging rollback smoke runner', () => {
 
 describe('manual staging deploy workflow smoke contract', () => {
 	it('runs the hosted smoke after deploy and restores the safe version on failure', () => {
-		const workflow = readFileSync(workflowPath, 'utf8');
-		const deploy = workflow.indexOf('run: pnpm exec wrangler deploy --env staging');
-		const smoke = workflow.indexOf('run: node scripts/smoke-staging.mjs\n');
-		const rollback = workflow.indexOf('pnpm exec wrangler versions deploy "$SAFE_ROLLBACK_VERSION"');
-		const rollbackSmoke = workflow.indexOf(
-			'run: node scripts/smoke-staging.mjs --mode rollback'
+		const workflow = parse(readFileSync(workflowPath, 'utf8')) as Workflow;
+		const job = workflow.jobs.staging;
+		const commands = job.steps.flatMap((step) => (step.run ? [step.run] : []));
+		const deploy = commands.indexOf('pnpm exec wrangler deploy --env staging');
+		const smoke = commands.indexOf('node scripts/smoke-staging.mjs');
+		const rollback = commands.findIndex((command) =>
+			command.includes('pnpm exec wrangler versions deploy "$SAFE_ROLLBACK_VERSION"')
 		);
+		const rollbackSmoke = commands.indexOf('node scripts/smoke-staging.mjs --mode rollback');
 
-		expect(workflow).toContain('workflow_dispatch:');
-		expect(workflow).toContain("if: github.ref == 'refs/heads/main'");
-		expect(workflow).toContain(`STAGING_ORIGIN: ${expectedOrigin}`);
-		expect(workflow).toContain('EXPECTED_GIT_SHA: ${{ github.sha }}');
-		expect(workflow).not.toMatch(/^\s+environment:/m);
-		expect(workflow).not.toMatch(/wrangler deploy --env production/);
+		expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+		expect(job.if).toBe("github.ref == 'refs/heads/main'");
+		expect(job.env).toMatchObject({
+			STAGING_ORIGIN: expectedOrigin,
+			EXPECTED_GIT_SHA: '${{ github.sha }}',
+			SAFE_ROLLBACK_VERSION: '75593db4-12fd-486d-ae8a-bdf9ebbb3ece'
+		});
+		expect(job).not.toHaveProperty('environment');
+		expect(commands.some((command) => command.includes('wrangler deploy --env production'))).toBe(
+			false
+		);
 		expect(deploy).toBeGreaterThan(-1);
 		expect(smoke).toBeGreaterThan(deploy);
 		expect(rollback).toBeGreaterThan(smoke);
 		expect(rollbackSmoke).toBeGreaterThan(rollback);
-		expect(workflow).toContain(
-			'SAFE_ROLLBACK_VERSION: 75593db4-12fd-486d-ae8a-bdf9ebbb3ece'
+		expect(job.steps.find((step) => step.id === 'rollback')?.if).toBe(
+			"failure() && steps.deploy.outcome == 'success'"
 		);
-		expect(workflow).toContain("if: failure() && steps.deploy.outcome == 'success'");
-		expect(workflow).toContain("if: failure() && steps.rollback.outcome == 'success'");
-		expect(workflow.match(/run: pnpm exec wrangler deploy --env staging/g)).toHaveLength(1);
-		expect(workflow.match(/run: node scripts\/smoke-staging\.mjs(?:\s|$)/g)).toHaveLength(2);
+		expect(
+			job.steps.find((step) => step.run === 'node scripts/smoke-staging.mjs --mode rollback')?.if
+		).toBe("failure() && steps.rollback.outcome == 'success'");
+		expect(commands.filter((command) => command === 'pnpm exec wrangler deploy --env staging')).toHaveLength(
+			1
+		);
+		expect(commands.filter((command) => command.startsWith('node scripts/smoke-staging.mjs'))).toHaveLength(
+			2
+		);
 	});
 });

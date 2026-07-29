@@ -1,0 +1,519 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-29T08:39:21.1293159Z",
+  "title": "Design System: Парфюмен community marketplace",
+  "extensions": {
+    "colorMeta": {
+      "brand-main": {
+        "role": "secondary",
+        "displayName": "Warm Sand",
+        "tonalRamp": [
+          "oklch(15% 0.048 79.6)",
+          "oklch(26% 0.048 79.6)",
+          "oklch(37% 0.048 79.6)",
+          "oklch(48% 0.048 79.6)",
+          "oklch(59% 0.048 79.6)",
+          "oklch(70% 0.048 79.6)",
+          "oklch(82% 0.048 79.6)",
+          "oklch(95% 0.048 79.6)"
+        ]
+      },
+      "brand-secondary": {
+        "role": "neutral",
+        "displayName": "Cream Wash",
+        "tonalRamp": [
+          "oklch(15% 0.017 76.1)",
+          "oklch(26% 0.017 76.1)",
+          "oklch(37% 0.017 76.1)",
+          "oklch(48% 0.017 76.1)",
+          "oklch(59% 0.017 76.1)",
+          "oklch(70% 0.017 76.1)",
+          "oklch(82% 0.017 76.1)",
+          "oklch(95% 0.017 76.1)"
+        ]
+      },
+      "brand-tertiary": {
+        "role": "neutral",
+        "displayName": "Taupe Field",
+        "tonalRamp": [
+          "oklch(15% 0.026 75.2)",
+          "oklch(26% 0.026 75.2)",
+          "oklch(37% 0.026 75.2)",
+          "oklch(48% 0.026 75.2)",
+          "oklch(59% 0.026 75.2)",
+          "oklch(70% 0.026 75.2)",
+          "oklch(82% 0.026 75.2)",
+          "oklch(95% 0.026 75.2)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Ivory Paper",
+        "tonalRamp": [
+          "oklch(15% 0.012 79.8)",
+          "oklch(26% 0.012 79.8)",
+          "oklch(37% 0.012 79.8)",
+          "oklch(48% 0.012 79.8)",
+          "oklch(59% 0.012 79.8)",
+          "oklch(70% 0.012 79.8)",
+          "oklch(82% 0.012 79.8)",
+          "oklch(95% 0.012 79.8)"
+        ]
+      },
+      "paper-strong": {
+        "role": "neutral",
+        "displayName": "Porcelain Paper",
+        "tonalRamp": [
+          "oklch(15% 0.006 84.6)",
+          "oklch(26% 0.006 84.6)",
+          "oklch(37% 0.006 84.6)",
+          "oklch(48% 0.006 84.6)",
+          "oklch(59% 0.006 84.6)",
+          "oklch(70% 0.006 84.6)",
+          "oklch(82% 0.006 84.6)",
+          "oklch(95% 0.006 84.6)"
+        ]
+      },
+      "paper-deep": {
+        "role": "neutral",
+        "displayName": "Deep Parchment",
+        "tonalRamp": [
+          "oklch(15% 0.020 77.3)",
+          "oklch(26% 0.020 77.3)",
+          "oklch(37% 0.020 77.3)",
+          "oklch(48% 0.020 77.3)",
+          "oklch(59% 0.020 77.3)",
+          "oklch(70% 0.020 77.3)",
+          "oklch(82% 0.020 77.3)",
+          "oklch(95% 0.020 77.3)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Dark Walnut",
+        "tonalRamp": [
+          "oklch(15% 0.020 50.0)",
+          "oklch(26% 0.020 50.0)",
+          "oklch(37% 0.020 50.0)",
+          "oklch(48% 0.020 50.0)",
+          "oklch(59% 0.020 50.0)",
+          "oklch(70% 0.020 50.0)",
+          "oklch(82% 0.020 50.0)",
+          "oklch(95% 0.020 50.0)"
+        ]
+      },
+      "ink-soft": {
+        "role": "neutral",
+        "displayName": "Soft Walnut",
+        "tonalRamp": [
+          "oklch(15% 0.024 57.6)",
+          "oklch(26% 0.024 57.6)",
+          "oklch(37% 0.024 57.6)",
+          "oklch(48% 0.024 57.6)",
+          "oklch(59% 0.024 57.6)",
+          "oklch(70% 0.024 57.6)",
+          "oklch(82% 0.024 57.6)",
+          "oklch(95% 0.024 57.6)"
+        ]
+      },
+      "ink-faint": {
+        "role": "neutral",
+        "displayName": "Faded Walnut",
+        "tonalRamp": [
+          "oklch(15% 0.024 55.8)",
+          "oklch(26% 0.024 55.8)",
+          "oklch(37% 0.024 55.8)",
+          "oklch(48% 0.024 55.8)",
+          "oklch(59% 0.024 55.8)",
+          "oklch(70% 0.024 55.8)",
+          "oklch(82% 0.024 55.8)",
+          "oklch(95% 0.024 55.8)"
+        ]
+      },
+      "action": {
+        "role": "primary",
+        "displayName": "Deep Burgundy",
+        "tonalRamp": [
+          "oklch(15% 0.121 16.3)",
+          "oklch(26% 0.121 16.3)",
+          "oklch(37% 0.121 16.3)",
+          "oklch(48% 0.121 16.3)",
+          "oklch(59% 0.121 16.3)",
+          "oklch(70% 0.121 16.3)",
+          "oklch(82% 0.121 16.3)",
+          "oklch(95% 0.121 16.3)"
+        ]
+      },
+      "action-hover": {
+        "role": "primary",
+        "displayName": "Pressed Burgundy",
+        "tonalRamp": [
+          "oklch(15% 0.101 15.8)",
+          "oklch(26% 0.101 15.8)",
+          "oklch(37% 0.101 15.8)",
+          "oklch(48% 0.101 15.8)",
+          "oklch(59% 0.101 15.8)",
+          "oklch(70% 0.101 15.8)",
+          "oklch(82% 0.101 15.8)",
+          "oklch(95% 0.101 15.8)"
+        ]
+      },
+      "action-soft": {
+        "role": "primary",
+        "displayName": "Burgundy Blush",
+        "tonalRamp": [
+          "oklch(15% 0.018 13.1)",
+          "oklch(26% 0.018 13.1)",
+          "oklch(37% 0.018 13.1)",
+          "oklch(48% 0.018 13.1)",
+          "oklch(59% 0.018 13.1)",
+          "oklch(70% 0.018 13.1)",
+          "oklch(82% 0.018 13.1)",
+          "oklch(95% 0.018 13.1)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Taupe Line",
+        "tonalRamp": [
+          "oklch(15% 0.024 73.6)",
+          "oklch(26% 0.024 73.6)",
+          "oklch(37% 0.024 73.6)",
+          "oklch(48% 0.024 73.6)",
+          "oklch(59% 0.024 73.6)",
+          "oklch(70% 0.024 73.6)",
+          "oklch(82% 0.024 73.6)",
+          "oklch(95% 0.024 73.6)"
+        ]
+      },
+      "line-strong": {
+        "role": "neutral",
+        "displayName": "Strong Taupe Line",
+        "tonalRamp": [
+          "oklch(15% 0.032 70.6)",
+          "oklch(26% 0.032 70.6)",
+          "oklch(37% 0.032 70.6)",
+          "oklch(48% 0.032 70.6)",
+          "oklch(59% 0.032 70.6)",
+          "oklch(70% 0.032 70.6)",
+          "oklch(82% 0.032 70.6)",
+          "oklch(95% 0.032 70.6)"
+        ]
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "Evidence Green",
+        "tonalRamp": [
+          "oklch(15% 0.065 159.4)",
+          "oklch(26% 0.065 159.4)",
+          "oklch(37% 0.065 159.4)",
+          "oklch(48% 0.065 159.4)",
+          "oklch(59% 0.065 159.4)",
+          "oklch(70% 0.065 159.4)",
+          "oklch(82% 0.065 159.4)",
+          "oklch(95% 0.065 159.4)"
+        ]
+      },
+      "success-soft": {
+        "role": "tertiary",
+        "displayName": "Evidence Mist",
+        "tonalRamp": [
+          "oklch(15% 0.013 152.6)",
+          "oklch(26% 0.013 152.6)",
+          "oklch(37% 0.013 152.6)",
+          "oklch(48% 0.013 152.6)",
+          "oklch(59% 0.013 152.6)",
+          "oklch(70% 0.013 152.6)",
+          "oklch(82% 0.013 152.6)",
+          "oklch(95% 0.013 152.6)"
+        ]
+      },
+      "warning": {
+        "role": "tertiary",
+        "displayName": "Amber Warning",
+        "tonalRamp": [
+          "oklch(15% 0.098 66.2)",
+          "oklch(26% 0.098 66.2)",
+          "oklch(37% 0.098 66.2)",
+          "oklch(48% 0.098 66.2)",
+          "oklch(59% 0.098 66.2)",
+          "oklch(70% 0.098 66.2)",
+          "oklch(82% 0.098 66.2)",
+          "oklch(95% 0.098 66.2)"
+        ]
+      },
+      "warning-soft": {
+        "role": "tertiary",
+        "displayName": "Amber Wash",
+        "tonalRamp": [
+          "oklch(15% 0.030 80.7)",
+          "oklch(26% 0.030 80.7)",
+          "oklch(37% 0.030 80.7)",
+          "oklch(48% 0.030 80.7)",
+          "oklch(59% 0.030 80.7)",
+          "oklch(70% 0.030 80.7)",
+          "oklch(82% 0.030 80.7)",
+          "oklch(95% 0.030 80.7)"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Report Red",
+        "tonalRamp": [
+          "oklch(15% 0.143 20.9)",
+          "oklch(26% 0.143 20.9)",
+          "oklch(37% 0.143 20.9)",
+          "oklch(48% 0.143 20.9)",
+          "oklch(59% 0.143 20.9)",
+          "oklch(70% 0.143 20.9)",
+          "oklch(82% 0.143 20.9)",
+          "oklch(95% 0.143 20.9)"
+        ]
+      },
+      "danger-soft": {
+        "role": "tertiary",
+        "displayName": "Report Blush",
+        "tonalRamp": [
+          "oklch(15% 0.021 13.9)",
+          "oklch(26% 0.021 13.9)",
+          "oklch(37% 0.021 13.9)",
+          "oklch(48% 0.021 13.9)",
+          "oklch(59% 0.021 13.9)",
+          "oklch(70% 0.021 13.9)",
+          "oklch(82% 0.021 13.9)",
+          "oklch(95% 0.021 13.9)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Large page and product titles with compressed editorial rhythm."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section headings and key trust statements."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Fragrance names, cards and panel titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Descriptions, instructions and working copy."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Eyebrows, status markers and compact navigation labels."
+      }
+    },
+    "shadows": [
+      {
+        "name": "mobile-disclosure",
+        "value": "0 18px 48px rgb(69 47 35 / 11%)",
+        "purpose": "Separates the open mobile navigation disclosure from page content."
+      }
+    ],
+    "motion": [
+      {
+        "name": "duration-fast",
+        "value": "160ms",
+        "purpose": "Input, card-border and icon state changes."
+      },
+      {
+        "name": "duration-standard",
+        "value": "180ms",
+        "purpose": "Buttons, navigation underline and primary control states."
+      },
+      {
+        "name": "duration-media",
+        "value": "260ms",
+        "purpose": "Restrained image crop and card-arrow movement."
+      },
+      {
+        "name": "ease-emphasized",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "Confident action and navigation transitions."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-card",
+        "value": "420px"
+      },
+      {
+        "name": "phone",
+        "value": "640px"
+      },
+      {
+        "name": "mobile-stack",
+        "value": "760px"
+      },
+      {
+        "name": "listing-grid-two",
+        "value": "1024px"
+      },
+      {
+        "name": "member-rail-collapse",
+        "value": "1080px"
+      },
+      {
+        "name": "header-disclosure",
+        "value": "1160px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The dominant decision in a header, form step or marketplace action region.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Публикувай обява <svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 12h14M13 6l6 6-6 6\"/></svg></button>",
+      "css": ".ds-btn-primary { display:inline-flex; min-height:46px; align-items:center; justify-content:center; gap:9px; padding:11px 18px; border:1px solid transparent; border-radius:var(--radius-sm); color:var(--paper-strong); background:var(--action); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; font-size:0.92rem; font-weight:700; cursor:pointer; transition:background-color 180ms cubic-bezier(0.22,1,0.36,1),transform 180ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-primary svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; } .ds-btn-primary:hover { background:var(--action-hover); transform:translateY(-1px); } .ds-btn-primary:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-btn-primary:active { transform:translateY(0); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A bounded alternative that stays quieter than the dominant burgundy action.",
+      "html": "<button class=\"ds-btn-secondary\" type=\"button\">Назад</button>",
+      "css": ".ds-btn-secondary { display:inline-flex; min-height:46px; align-items:center; justify-content:center; padding:11px 18px; border:1px solid var(--line-strong); border-radius:var(--radius-sm); color:var(--ink); background:var(--paper-strong); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; font-size:0.92rem; font-weight:700; cursor:pointer; transition:border-color 180ms cubic-bezier(0.22,1,0.36,1),color 180ms cubic-bezier(0.22,1,0.36,1),background-color 180ms cubic-bezier(0.22,1,0.36,1); } .ds-btn-secondary:hover { border-color:var(--action); color:var(--action); background:var(--action-soft); } .ds-btn-secondary:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-btn-secondary:active { background:var(--brand-secondary); }"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Combined marketplace search with a leading icon and a 44px submit target.",
+      "html": "<form class=\"ds-search\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"m20 20-3.5-3.5\"/></svg><label class=\"ds-search-label\" for=\"ds-search-input\">Търси аромат или марка</label><input id=\"ds-search-input\" placeholder=\"Кой аромат търсиш?\"/><button type=\"submit\">Търси</button></form>",
+      "css": ".ds-search { display:grid; min-height:58px; align-items:center; grid-template-columns:auto 1fr auto; gap:12px; padding:7px 7px 7px 18px; border:1px solid var(--line-strong); border-radius:var(--radius-sm); background:var(--paper-strong); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; transition:border-color 160ms ease,box-shadow 160ms ease; } .ds-search:focus-within { border-color:var(--action); box-shadow:0 0 0 3px rgb(117 29 43 / 12%); } .ds-search > svg { width:22px; height:22px; fill:none; stroke:var(--ink); stroke-width:1.8; stroke-linecap:round; } .ds-search-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; } .ds-search input { min-width:0; border:0; outline:0; color:var(--ink); background:transparent; font:inherit; } .ds-search input::placeholder { color:var(--ink-soft); } .ds-search button { min-width:86px; min-height:44px; border:0; border-radius:var(--radius-xs); color:var(--paper-strong); background:var(--action); font:inherit; font-size:0.78rem; font-weight:700; cursor:pointer; transition:background 180ms ease; } .ds-search button:hover { background:var(--action-hover); } .ds-search button:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-search button:active { background:var(--action-hover); }"
+    },
+    {
+      "name": "Category Chip",
+      "kind": "chip",
+      "refersTo": "pill",
+      "description": "A compact category or status selector; filled burgundy is reserved for the selected state.",
+      "html": "<button class=\"ds-chip\" type=\"button\" aria-pressed=\"true\">Унисекс</button>",
+      "css": ".ds-chip { display:inline-flex; min-height:44px; align-items:center; justify-content:center; padding:8px 14px; border:1px solid var(--line); border-radius:var(--radius-xs); color:var(--ink-soft); background:var(--paper-strong); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; font-size:0.76rem; font-weight:700; cursor:pointer; transition:border-color 160ms ease,color 160ms ease,background 160ms ease; } .ds-chip:hover { border-color:var(--action); color:var(--action); } .ds-chip[aria-pressed=\"true\"] { border-color:var(--action); color:var(--paper-strong); background:var(--action); } .ds-chip:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-chip:active { background:var(--action-hover); }"
+    },
+    {
+      "name": "Listing Card",
+      "kind": "card",
+      "refersTo": "listing-card",
+      "description": "The signature marketplace unit: bottle media, exact remaining quantity, deal mode, seller and evidence.",
+      "html": "<article class=\"ds-listing-card\"><div class=\"ds-listing-card-media\" aria-label=\"Място за потребителска снимка\"><span class=\"ds-listing-card-label\">ПРОДАЖБА</span><svg viewBox=\"0 0 96 120\" aria-hidden=\"true\"><path d=\"M35 12h26v18H35zM26 30h44v78H26z\"/><path d=\"M34 50h28v34H34z\"/></svg></div><div class=\"ds-listing-card-content\"><span class=\"ds-listing-card-brand\">Dior</span><h3>Sauvage</h3><p>EDP · 100 ml</p><div class=\"ds-listing-card-fact\"><span>Остатък</span><strong>82 ml (82%)</strong></div><div class=\"ds-listing-card-value\"><strong>76,00 €</strong><span>Продажба</span></div><p class=\"ds-listing-card-seller\">София · @north_notes · Частно лице</p><p class=\"ds-listing-card-trust\">✓ Доказателствата са прегледани</p><a href=\"#\">Виж обявата <span aria-hidden=\"true\">→</span></a></div></article>",
+      "css": ".ds-listing-card { display:grid; overflow:hidden; max-width:360px; border:1px solid var(--line); border-radius:var(--radius-sm); color:var(--ink); background:var(--paper-strong); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; transition:border-color 180ms ease; } .ds-listing-card:hover { border-color:var(--line-strong); } .ds-listing-card-media { position:relative; display:grid; min-height:210px; place-items:center; overflow:hidden; background:var(--brand-tertiary); } .ds-listing-card-media > svg { width:82px; height:104px; fill:var(--paper-strong); stroke:var(--ink); stroke-width:2; } .ds-listing-card-label { position:absolute; top:12px; left:12px; padding:5px 8px; color:var(--paper-strong); background:var(--action); font-size:0.64rem; font-weight:700; letter-spacing:0.035em; } .ds-listing-card-content { display:flex; flex-direction:column; padding:18px; } .ds-listing-card-brand { color:var(--ink-soft); font-size:0.78rem; } .ds-listing-card h3 { margin:2px 0 0; font-size:1.25rem; line-height:1.13; letter-spacing:-0.02em; } .ds-listing-card p { margin:6px 0 0; color:var(--ink-soft); font-size:0.72rem; } .ds-listing-card-fact,.ds-listing-card-value { display:flex; justify-content:space-between; gap:10px; margin-top:11px; padding-top:10px; border-top:1px solid var(--line); } .ds-listing-card-fact { font-size:0.72rem; } .ds-listing-card-value > strong { font-size:1.18rem; } .ds-listing-card-value > span { color:var(--action); font-size:0.7rem; font-weight:700; } .ds-listing-card .ds-listing-card-seller { color:var(--ink-soft); } .ds-listing-card .ds-listing-card-trust { padding-top:10px; border-top:1px solid var(--line); color:var(--success); font-weight:700; } .ds-listing-card a { display:flex; min-height:44px; align-items:center; justify-content:space-between; margin-top:8px; color:var(--action); font-size:0.72rem; font-weight:700; text-decoration:none; } .ds-listing-card a:hover span { transform:translateX(3px); } .ds-listing-card a:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-listing-card a:active { color:var(--action-hover); }"
+    },
+    {
+      "name": "Choice Card",
+      "kind": "custom",
+      "refersTo": "choice-card",
+      "description": "Wizard option that makes hover, selected and keyboard focus states visible across the full card.",
+      "html": "<label class=\"ds-choice-card\"><input type=\"radio\" name=\"audience\" checked/><span><strong>Унисекс</strong><small>Представен за всички</small></span></label>",
+      "css": ".ds-choice-card { display:flex; min-height:84px; align-items:flex-start; gap:11px; padding:14px; border:1px solid var(--line-strong); border-radius:var(--radius-sm); color:var(--ink); background:var(--paper-strong); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; cursor:pointer; transition:border-color 160ms ease,background 160ms ease; } .ds-choice-card:hover { border-color:var(--action); } .ds-choice-card:has(input:checked) { border-color:var(--action); background:var(--action-soft); } .ds-choice-card:has(input:focus-visible) { outline:3px solid var(--action); outline-offset:3px; } .ds-choice-card input { width:18px; height:18px; margin-top:2px; accent-color:var(--action); } .ds-choice-card strong,.ds-choice-card small { display:block; } .ds-choice-card small { margin-top:5px; color:var(--ink-soft); line-height:1.35; } .ds-choice-card:active { background:var(--brand-secondary); }"
+    },
+    {
+      "name": "Header Navigation",
+      "kind": "nav",
+      "refersTo": "header-navigation",
+      "description": "Compact sticky navigation with quiet links, burgundy active underline and one dominant publish action.",
+      "html": "<nav class=\"ds-header-nav\" aria-label=\"Основна навигация\"><a class=\"ds-header-mark\" href=\"#\">ПАРФЮМЕН MARKETPLACE</a><div class=\"ds-header-links\"><a class=\"ds-header-active\" href=\"#\">Обяви</a><a href=\"#\">Категории</a><a href=\"#\">Безопасност</a></div><a class=\"ds-header-cta\" href=\"#\">+ Публикувай обява</a></nav>",
+      "css": ".ds-header-nav { display:flex; min-height:68px; align-items:center; gap:24px; padding:0 18px; border-bottom:1px solid var(--line); color:var(--ink); background:var(--paper); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; } .ds-header-nav a { color:inherit; text-decoration:none; } .ds-header-mark { margin-right:auto; font-size:0.81rem; font-weight:700; letter-spacing:0.04em; } .ds-header-links { display:flex; align-items:center; gap:24px; } .ds-header-links a { position:relative; display:grid; min-height:68px; align-items:center; color:var(--ink-soft); font-size:0.84rem; font-weight:600; } .ds-header-links a::after { position:absolute; right:50%; bottom:0; left:50%; height:2px; background:var(--action); content:\"\"; transition:inset 180ms cubic-bezier(0.22,1,0.36,1); } .ds-header-links a:hover,.ds-header-links .ds-header-active { color:var(--ink); } .ds-header-links a:hover::after,.ds-header-links .ds-header-active::after { right:0; left:0; } .ds-header-links a:focus-visible,.ds-header-cta:focus-visible,.ds-header-mark:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-header-cta { display:inline-flex; min-height:44px; align-items:center; padding:9px 15px; border-radius:var(--radius-sm); color:var(--paper-strong) !important; background:var(--action); font-size:0.78rem; font-weight:700; transition:background 180ms ease; } .ds-header-cta:hover { background:var(--action-hover); } .ds-header-cta:active { background:var(--action-hover); }"
+    },
+    {
+      "name": "Trust Status",
+      "kind": "custom",
+      "refersTo": "trust-status",
+      "description": "Evidence language that reports a reviewed process without promising authenticity.",
+      "html": "<div class=\"ds-trust-status\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m9 12 2 2 4-5\"/><circle cx=\"12\" cy=\"12\" r=\"9\"/></svg><span>Доказателствата са прегледани</span></div>",
+      "css": ".ds-trust-status { display:inline-flex; min-height:44px; align-items:center; gap:7px; padding:10px; border:1px solid var(--success); border-radius:var(--radius-sm); color:var(--success); background:var(--success-soft); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; font-size:0.72rem; font-weight:700; } .ds-trust-status svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; } .ds-trust-status:hover { border-color:var(--success); } .ds-trust-status:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-trust-status:active { color:var(--success); }"
+    },
+    {
+      "name": "Member Rail",
+      "kind": "nav",
+      "refersTo": "member-rail",
+      "description": "Dark member navigation that turns the active destination into a porcelain inset.",
+      "html": "<nav class=\"ds-member-rail\" aria-label=\"Потребителска зона\"><a class=\"ds-member-active\" href=\"#\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 19h16M6 16V8M12 16V4M18 16v-5\"/></svg>Преглед</a><a href=\"#\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 7h14v12H5zM8 4h8v3\"/></svg>Моите обяви</a><a class=\"ds-member-publish\" href=\"#\">+ Нова обява</a></nav>",
+      "css": ".ds-member-rail { display:grid; width:246px; gap:2px; padding:12px; border:1px solid #3d3028; border-radius:var(--radius-md); color:var(--paper-strong); background:var(--ink); font-family:\"Manrope\",Arial,\"Helvetica Neue\",Helvetica,sans-serif; } .ds-member-rail a { display:grid; min-height:44px; align-items:center; grid-template-columns:22px 1fr; gap:9px; padding:9px 11px; border-radius:var(--radius-xs); color:rgb(255 253 249 / 70%); font-size:0.74rem; font-weight:650; text-decoration:none; } .ds-member-rail svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; } .ds-member-rail a:hover { color:var(--paper-strong); background:rgb(255 253 249 / 8%); } .ds-member-rail a:focus-visible { outline:3px solid var(--action); outline-offset:3px; } .ds-member-rail .ds-member-active { color:var(--ink); background:var(--paper-strong); } .ds-member-rail .ds-member-publish { display:flex; justify-content:center; color:var(--paper-strong); background:var(--action); } .ds-member-rail .ds-member-publish:active { background:var(--action-hover); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Community Bottle Ledger",
+    "overview": "Системата се държи като подреден общностен регистър на реални флакони: ivory хартия, тъмнокафяво мастило, taupe разграфяване и burgundy действия. Premium усещането идва от плътната фотография, стегнатата типография и точната информационна йерархия, а не от storefront театър или декоративен лукс.\n\nФлаконът, остатъкът, продавачът и статусът на доказателствата се възприемат като една единица. Повърхностите остават спокойни и плоски, за да може потребителската снимка да носи характера; контролите са ясни, компактни и физически достатъчно големи.",
+    "keyCharacteristics": [
+      "Ivory paper canvas with porcelain cards and taupe rules.",
+      "Deep burgundy reserved for decisions, active state and concise labels.",
+      "Dense user photography paired with precise bottle and seller facts.",
+      "One self-hosted sans-serif voice with compressed display hierarchy.",
+      "Flat-by-default surfaces with restrained disclosure-only depth."
+    ],
+    "rules": [
+      {
+        "name": "The Burgundy Decision Rule",
+        "body": "Burgundy означава действие, избор или пазарен статус; не се използва като общ декоративен фон.",
+        "section": "colors"
+      },
+      {
+        "name": "The Paper Before Chrome Rule",
+        "body": "Йерархията първо се строи с paper тонове и taupe линии, а не с ефекти.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Voice Rule",
+        "body": "Manrope е единственият визуален глас; йерархията идва от 400–700 тежести, мащаб и ритъм.",
+        "section": "typography"
+      },
+      {
+        "name": "The Compressed Display Rule",
+        "body": "Големите заглавия използват стегнат line-height и отрицателно letter-spacing, докато body текстът остава отворен и лесен за четене.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-by-Default Rule",
+        "body": "Resting cards, fields and panels use borders and tone, never a decorative shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Disclosure Depth Rule",
+        "body": "Drop shadow се появява само когато временен слой се отваря над съществуващото съдържание.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Six-Eight-Twelve Rule",
+        "body": "Durable controls and cards live primarily at 6px, 8px and 12px; 16px is an exception for larger containers, not a default.",
+        "section": "shapes"
+      },
+      {
+        "name": "The Bottle-plus-Seller Rule",
+        "body": "Marketplace cards never separate the physical bottle facts from seller identity and available evidence.",
+        "section": "components"
+      },
+      {
+        "name": "The Forty-Four Rule",
+        "body": "Every essential icon, link row and form action keeps at least a 44px interactive target.",
+        "section": "components"
+      },
+      {
+        "name": "The Evidence Language Rule",
+        "body": "Green означава прегледани доказателства или завършен процес, никога гарантирана автентичност.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do use real user photography as the densest visual material and preserve its character through consistent crop.",
+      "Do pair bottle volume and remaining quantity with price or swap mode, seller identity and evidence status.",
+      "Do keep surfaces flat with taupe borders and tonal paper layering.",
+      "Do reserve burgundy for the dominant decision, selected state or concise marketplace label.",
+      "Do keep visible keyboard focus, reduced-motion behavior and at least 44px touch targets.",
+      "Do label every synthetic demo image „СИНТЕТИЧНА СНИМКА“."
+    ],
+    "donts": [
+      "Don't use gradients, glassmorphism, backdrop blur or ornamental shadows.",
+      "Don't use italic headings or introduce a decorative display font.",
+      "Don't turn the system into a checkout storefront with cart-first or price-first hero logic.",
+      "Don't use evidence green as an authenticity guarantee.",
+      "Don't promote a page-specific featured-card topology into a system-wide layout rule.",
+      "Don't invent seller metrics, deal counts or testimonials to fill empty states."
+    ]
+  }
+}

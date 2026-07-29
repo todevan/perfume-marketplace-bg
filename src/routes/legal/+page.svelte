@@ -51,14 +51,14 @@
   .hero-copy h1 { max-width: 800px; }
   .hero-copy h1 em { display: block; color: var(--action); }
   .hero-copy > p { max-width: 700px; color: var(--ink-soft); font-size: 1.05rem; }
-  .legal-mark { position: relative; display: grid; width: min(100%, 350px); min-height: 400px; place-items: center; align-content: center; gap: 22px; justify-self: end; border: 1px solid rgb(74 49 38 / 23%); background: var(--brand-main); box-shadow: 25px 27px 0 rgb(214 202 186 / 53%); transform: rotate(1.5deg); }
+  .legal-mark { position: relative; display: grid; width: min(100%, 350px); min-height: 400px; place-items: center; align-content: center; gap: 22px; justify-self: end; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--paper-deep); }
   .legal-mark::before { position: absolute; inset: 16px; border: 1px solid rgb(74 49 38 / 16%); content: ''; }
   .legal-mark > span { position: absolute; top: 31px; left: 34px; color: var(--ink-faint); font-size: .63rem; font-weight: 700; letter-spacing: .16em; }
   .legal-mark strong { font-size: .85rem; letter-spacing: .18em; }
   .legal-mark i { color: var(--ink-soft); font-size: .7rem; }
   .document-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 17px; }
-  .document-card { position: relative; display: flex; min-height: 390px; flex-direction: column; overflow: hidden; padding: 27px; border: 1px solid rgb(138 121 103 / 28%); border-radius: var(--radius-md); background: rgb(255 253 249 / 75%); box-shadow: var(--shadow-sm); transition: transform 220ms ease, box-shadow 220ms ease; }
-  .document-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-5px); }
+  .document-card { position: relative; display: flex; min-height: 390px; flex-direction: column; overflow: hidden; padding: 27px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-strong); transition: border-color 180ms ease; }
+  .document-card:hover { border-color: var(--line-strong); }
   .document-card::before { position: absolute; top: -70px; right: -60px; width: 190px; height: 190px; border-radius: 50%; background: var(--brand-tertiary); content: ''; opacity: .45; }
   .document-card.privacy::before { background: #b9c8c4; }
   .document-card.safety::before { background: var(--brand-main); }
@@ -66,7 +66,7 @@
   .doc-icon { position: relative; display: grid; width: 61px; height: 61px; place-items: center; margin: 50px 0 25px; border: 1px solid rgb(74 49 38 / 22%); border-radius: 50%; background: rgb(255 253 249 / 62%); }
   .document-card h2 { margin-bottom: 14px; font-size: 1.75rem; }
   .document-card p { flex: 1; color: var(--ink-soft); font-size: .8rem; }
-  .document-card > span { display: inline-flex; min-height: 44px; align-items: center; gap: 7px; color: var(--action); font-size: .76rem; font-weight: 700; font-style: italic; }
+  .document-card > span { display: inline-flex; min-height: 44px; align-items: center; gap: 7px; color: var(--action); font-size: .76rem; font-weight: 700; }
   .launch-gates { color: var(--paper-strong); background: var(--ink); }
   .gate-grid { display: grid; align-items: start; grid-template-columns: .72fr 1.28fr; gap: clamp(50px, 8vw, 120px); }
   .gate-grid > div .eyebrow { color: rgb(244 236 225 / 48%); }

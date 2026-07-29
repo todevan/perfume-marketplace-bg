@@ -96,21 +96,11 @@
     overflow: hidden;
     padding: 60px;
     color: var(--brand-secondary);
-    background:
-      radial-gradient(circle at 22% 20%, rgb(243 223 191 / 18%), transparent 22rem),
-      var(--ink);
+    background: #2b201a;
   }
 
   .auth-art::after {
-    position: absolute;
-    right: -240px;
-    bottom: -260px;
-    width: 620px;
-    height: 620px;
-    border: 1px solid rgb(243 223 191 / 18%);
-    border-radius: 50%;
-    box-shadow: 0 0 0 55px rgb(243 223 191 / 3%), 0 0 0 120px rgb(243 223 191 / 3%);
-    content: '';
+    display: none;
   }
 
   .art-inner {
@@ -127,7 +117,8 @@
 
   .art-inner h1 {
     margin-bottom: 38px;
-    font-size: clamp(3.2rem, 6vw, 6rem);
+    color: var(--paper-strong);
+    font-size: clamp(2.8rem, 5vw, 5rem);
   }
 
   .trust-points {
@@ -154,6 +145,7 @@
     display: grid;
     place-items: center;
     padding: 50px 30px;
+    background: var(--paper);
   }
 
   .auth-form {
@@ -170,14 +162,15 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     padding: 4px;
-    border-radius: 999px;
-    background: var(--brand-tertiary);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--paper-deep);
   }
 
   .mode-tabs button {
     min-height: 44px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 6px;
     background: transparent;
     cursor: pointer;
     font-size: 0.78rem;
@@ -186,7 +179,7 @@
 
   .mode-tabs button.active {
     background: var(--paper-strong);
-    box-shadow: var(--shadow-sm);
+    color: var(--action);
   }
 
   .invite-only {
@@ -197,9 +190,9 @@
     gap: 8px;
     margin: 0;
     border: 1px solid var(--line);
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     color: var(--ink-soft);
-    background: var(--brand-tertiary);
+    background: var(--paper-strong);
     font-size: 0.76rem;
     font-weight: 700;
   }
@@ -257,7 +250,7 @@
 
   .account-types label.active {
     border: 2px solid var(--action);
-    background: var(--brand-main);
+    background: var(--action-soft);
   }
 
   .account-types label:has(input:focus-visible) {
@@ -343,7 +336,7 @@
     border: 1px solid var(--line);
     border-radius: 10px;
     color: var(--ink-soft);
-    background: rgb(243 223 191 / 32%);
+    background: var(--paper-deep);
   }
 
   .phone-note p {

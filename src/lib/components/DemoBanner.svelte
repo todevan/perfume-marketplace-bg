@@ -10,9 +10,9 @@
 	.demo-banner {
 		position: relative;
 		z-index: 40;
-		border-bottom: 1px solid rgb(74 49 38 / 18%);
-		color: var(--ink);
-		background: var(--brand-main);
+		border-bottom: 1px solid #a9bcae;
+		color: var(--success);
+		background: var(--success-soft);
 		font-size: 0.75rem;
 	}
 
@@ -27,7 +27,7 @@
 	}
 
 	.demo-banner strong {
-		font-style: italic;
+		font-weight: 700;
 	}
 
 	@media (max-width: 560px) {

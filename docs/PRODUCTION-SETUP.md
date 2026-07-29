@@ -89,9 +89,54 @@ Run the fail-closed gate before deployment:
 pnpm check:release -- --env-file=.env.production
 ```
 
-The command checks secrets/configuration, disabled monetisation, the eight
-forward-only migrations `003`–`010` and required legal routes. It intentionally
-fails on a fresh checkout.
+The command checks secrets/configuration, disabled monetisation, the nine
+forward-only migrations `003`–`011`, required legal routes, and two fresh
+release receipts. It intentionally fails on a fresh checkout.
+
+Both receipts must identify the exact 40-character `RELEASE_COMMIT_SHA`, the
+approved production host/project/account, and a check time no more than 24
+hours old. The configured SHA-256 values are calculated over the exact receipt
+file bytes; a bare or invented hash is not accepted.
+
+Generate the hosted runtime receipt only after querying the target Supabase
+project with the service role:
+
+```bash
+RELEASE_COMMIT_SHA="$(git rev-parse HEAD)" \
+  node scripts/verify-hosted-runtime-inventory.mjs \
+  --receipt-file=.release/hosted-runtime-inventory.json
+```
+
+Set `HOSTED_RUNTIME_INVENTORY_RECEIPT_PATH` to that JSON file and
+`HOSTED_CRON_INVENTORY_SHA256` to the value printed by the command. The
+production provider acceptance run must similarly write
+`PROVIDER_ATTESTATION_RECEIPT_PATH`. Its top-level shape is:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "production-provider-attestation",
+  "checkedAt": "2026-07-29T12:00:00.000Z",
+  "commitSha": "40-character-release-commit",
+  "productionAppHost": "market.example.bg",
+  "supabaseProjectRef": "target-project-ref",
+  "cloudflareAccountId": "32-character-account-id",
+  "checks": {
+    "cloudflareImages": {
+      "passed": true,
+      "checkedAt": "2026-07-29T12:00:00.000Z",
+      "evidenceSha256": "64-character-evidence-hash"
+    }
+  }
+}
+```
+
+`checks` must contain exactly `cloudflareImages`, `notificationWebhook`,
+`resendEmail`, `supabaseAuth`, `turnstile`, `twilioSms`, and `uploadCleanup`;
+every check uses the same three-field result shape shown above. Hash the exact
+provider receipt file into `PROVIDER_ATTESTATION_SHA256`. Regenerate both
+receipts after any commit, target, provider configuration, or 24-hour window
+changes.
 
 ## Migration and catalogue order
 

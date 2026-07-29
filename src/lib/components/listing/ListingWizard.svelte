@@ -12,7 +12,8 @@
 	import EvidencePhotos from './EvidencePhotos.svelte';
 	import LinkedVolumeControl from './LinkedVolumeControl.svelte';
 	import { getEvidenceRoles, uniqueSelectedEvidenceCount } from './evidence';
-	import type { Concentration, ListingDraft, ListingKind, PhotoMap, ProductFormat } from './types';
+	import { concentrationLabels } from './presentation';
+	import type { ListingDraft, ListingKind, PhotoMap, ProductFormat } from './types';
 
 	interface TurnstileApi {
 		render: (element: HTMLElement, options: Record<string, unknown>) => string;
@@ -62,15 +63,6 @@
 		'Благоевград',
 		'Велико Търново'
 	];
-
-	const concentrationLabels: Record<Concentration, string> = {
-		EDT: 'Eau de Toilette (EDT)',
-		EDP: 'Eau de Parfum (EDP)',
-		PARFUM: 'Parfum',
-		EXTRAIT: 'Extrait de Parfum',
-		EDC: 'Eau de Cologne (EDC)',
-		OTHER_NOT_STATED: 'Друга / не е отбелязано'
-	};
 
 	const formatLabels: Record<ProductFormat, string> = {
 		retail_bottle: 'Оригинален флакон',
@@ -245,12 +237,20 @@
 		}
 
 		if (step === 2) {
-			if (!Number.isFinite(draft.bottleVolumeMl) || draft.bottleVolumeMl <= 0) {
-				nextErrors.volume = 'Оригиналният обем трябва да е над 0 ml.';
-			}
 			if (draft.listingKind === 'offer') {
-				if (!Number.isFinite(draft.remainingMl) || draft.remainingMl <= 0) {
-					nextErrors.volume = 'Активна обява не може да е за празен флакон.';
+				if (
+					!Number.isFinite(draft.bottleVolumeMl) ||
+					draft.bottleVolumeMl <= 0 ||
+					!Number.isInteger(draft.bottleVolumeMl * 10)
+				) {
+					nextErrors.volume = 'Оригиналният обем трябва да е над 0 ml и с точност 0,1 ml.';
+				}
+				if (
+					!Number.isFinite(draft.remainingMl) ||
+					draft.remainingMl <= 0 ||
+					!Number.isInteger(draft.remainingMl * 10)
+				) {
+					nextErrors.volume = 'Остатъкът трябва да е над 0 ml и с точност 0,1 ml.';
 				} else if (draft.remainingMl > draft.bottleVolumeMl) {
 					nextErrors.volume = 'Остатъкът не може да надвишава оригиналния обем.';
 				}
@@ -275,8 +275,12 @@
 			if (draft.dealMode === 'swap' && draft.estimatedValue && !validPositiveMoney(draft.estimatedValue)) {
 				nextErrors.estimatedValue = 'Ориентировъчната стойност трябва да е над €0.';
 			}
-			if (draft.listingKind === 'wanted' && !validPositiveMoney(draft.maxBudget)) {
-				nextErrors.maxBudget = 'Въведи максимален бюджет над €0.';
+			if (
+				draft.listingKind === 'wanted' &&
+				draft.maxBudget.trim() &&
+				!validPositiveMoney(draft.maxBudget)
+			) {
+				nextErrors.maxBudget = 'Ако посочиш бюджет, той трябва да е над €0.';
 			}
 			if (draft.city.trim().length < 2) nextErrors.city = 'Посочи град.';
 			if (draft.description.trim().length < 30) {
@@ -289,6 +293,22 @@
 
 		errors = nextErrors;
 		return Object.keys(nextErrors).length === 0;
+	}
+
+	function firstInvalidStep(): number | null {
+		for (const step of [0, 2, 3, 4]) {
+			if (!validateStep(step)) return step;
+		}
+		return null;
+	}
+
+	function stepForServerErrors(): number | null {
+		const fields = Object.keys(errors);
+		if (fields.some((field) => /brand|fragrance|concentration|audience|segment/i.test(field))) return 0;
+		if (fields.some((field) => /volume|remaining|sealed|productFormat/i.test(field))) return 2;
+		if (fields.some((field) => /photo|upload/i.test(field))) return 3;
+		if (fields.some((field) => /price|budget|value|city|description|reference|fragrantica/i.test(field))) return 4;
+		return null;
 	}
 
 	async function focusStepHeading(): Promise<void> {
@@ -331,6 +351,8 @@
 				await uploadSelectedPhotos();
 			} catch {
 				liveMessage = serverError || 'Черновата не можа да бъде записана.';
+				const errorStep = stepForServerErrors();
+				if (errorStep !== null) currentStep = errorStep;
 				await focusFirstError();
 				return;
 			} finally {
@@ -339,6 +361,13 @@
 		}
 
 		if (currentStep === steps.length - 1) {
+			const invalidStep = firstInvalidStep();
+			if (invalidStep !== null) {
+				currentStep = invalidStep;
+				liveMessage = Object.values(errors)[0] ?? 'Провери въведените данни.';
+				await focusFirstError();
+				return;
+			}
 			if (demoMode) {
 				submitted = true;
 				publishedSlug = null;
@@ -359,6 +388,11 @@
 				} catch {
 					saveState = 'error';
 					liveMessage = serverError || 'Обявата не можа да бъде публикувана.';
+					const errorStep = stepForServerErrors();
+					if (errorStep !== null) {
+						currentStep = errorStep;
+						await focusFirstError();
+					}
 					return;
 				} finally {
 					busy = false;
@@ -372,7 +406,7 @@
 		currentStep += 1;
 		furthestStep = Math.max(furthestStep, currentStep);
 		errors = {};
-		liveMessage = `${steps[currentStep].kicker}: ${steps[currentStep].title}`;
+		liveMessage = `${steps[currentStep].kicker}: ${currentStepTitle()}`;
 		await focusStepHeading();
 	}
 
@@ -380,8 +414,14 @@
 		if (currentStep === 0) return;
 		currentStep -= 1;
 		errors = {};
-		liveMessage = `${steps[currentStep].kicker}: ${steps[currentStep].title}`;
+		liveMessage = `${steps[currentStep].kicker}: ${currentStepTitle()}`;
 		await focusStepHeading();
+	}
+
+	function currentStepTitle(): string {
+		return currentStep === 2 && draft.listingKind === 'wanted'
+			? 'Опиши какво търсиш'
+			: steps[currentStep].title;
 	}
 
 	function submitStep(event: SubmitEvent): void {
@@ -554,7 +594,7 @@
 		return {
 			kind: draft.listingKind,
 			dealMode: draft.dealMode,
-			productFormat: draft.productFormat,
+			productFormat: draft.listingKind === 'offer' ? draft.productFormat : null,
 			audience: draft.audience,
 			segments: [draft.niche ? 'niche' as const : null, draft.arabic ? 'arabic' as const : null].filter((segment): segment is 'niche' | 'arabic' => segment !== null),
 			brandId,
@@ -566,7 +606,7 @@
 			title: `${resolvedBrand()} ${draft.fragranceName}`.trim(),
 			description: draft.description.trim(),
 			city: draft.city.trim(),
-			bottleVolumeMl: draft.bottleVolumeMl,
+			bottleVolumeMl: draft.listingKind === 'offer' ? draft.bottleVolumeMl : null,
 			remainingMl: draft.listingKind === 'offer' ? draft.remainingMl : null,
 			isSealed: draft.listingKind === 'offer' && draft.sealed,
 			priceMinor: draft.listingKind === 'offer' && draft.dealMode !== 'swap' ? priceMinor : null,
@@ -705,7 +745,7 @@
 		<form onsubmit={submitStep} novalidate>
 			<div class="form-heading">
 				<p>{steps[currentStep].kicker}</p>
-				<h2 bind:this={stepHeading} tabindex="-1">{steps[currentStep].title}</h2>
+				<h2 bind:this={stepHeading} tabindex="-1">{currentStepTitle()}</h2>
 			</div>
 			{#if serverError}<p class="server-error" role="alert">{serverError}</p>{/if}
 
@@ -882,23 +922,30 @@
 					<div><strong>Офертата не е плащане</strong><p>Приета оферта само резервира обявата. Цената, доставката и плащането се уточняват между профилите в чата.</p></div>
 				</div>
 			{:else if currentStep === 2}
-				<fieldset class="choice-fieldset first-fieldset">
-					<legend>{draft.listingKind === 'wanted' ? 'Желан формат' : 'Формат на продукта'}</legend>
-					<div class="choice-grid three">
-						{#each (Object.keys(formatLabels) as ProductFormat[]) as format}
-							<label class="choice-card">
-								<input
-									type="radio"
-									name="format"
-									value={format}
-									checked={draft.productFormat === format}
-									onchange={() => chooseProductFormat(format)}
-								/>
-								<span><strong>{formatLabels[format]}</strong><small>{format === 'retail_bottle' ? 'Стандартно търговско издание' : format === 'tester' ? 'Оригинален тестер, с или без капачка' : 'Фабрично произведена мостра'}</small></span>
-							</label>
-						{/each}
+				{#if draft.listingKind === 'offer'}
+					<fieldset class="choice-fieldset first-fieldset">
+						<legend>Формат на продукта</legend>
+						<div class="choice-grid three">
+							{#each (Object.keys(formatLabels) as ProductFormat[]) as format}
+								<label class="choice-card">
+									<input
+										type="radio"
+										name="format"
+										value={format}
+										checked={draft.productFormat === format}
+										onchange={() => chooseProductFormat(format)}
+									/>
+									<span><strong>{formatLabels[format]}</strong><small>{format === 'retail_bottle' ? 'Стандартно търговско издание' : format === 'tester' ? 'Оригинален тестер, с или без капачка' : 'Фабрично произведена мостра'}</small></span>
+								</label>
+							{/each}
+						</div>
+					</fieldset>
+				{:else}
+					<div class="info-panel first-fieldset">
+						<strong>Без конкретен физически артикул</strong>
+						<p>Предпочитан формат, обем и състояние можеш да уточниш в описанието.</p>
 					</div>
-				</fieldset>
+				{/if}
 
 				<div class="field concentration-field">
 					<label for="concentration">Концентрация</label>
@@ -918,13 +965,6 @@
 						errorId="volume-error"
 					/>
 					{#if errors.volume}<p id="volume-error" class="error standalone">{errors.volume}</p>{/if}
-				{:else}
-					<div class="field wanted-volume">
-						<label for="wanted-volume">Предпочитан оригинален обем</label>
-						<div class="input-unit"><input id="wanted-volume" type="number" min="0.1" max="500" step="0.1" inputmode="decimal" bind:value={draft.bottleVolumeMl} aria-invalid={errors.volume ? 'true' : undefined} /><span>ml</span></div>
-						<p class="hint">Посочи размера на изданието, което търсиш.</p>
-						{#if errors.volume}<p class="error">{errors.volume}</p>{/if}
-					</div>
 				{/if}
 
 				<div class="batch-panel">
@@ -974,7 +1014,7 @@
 					<div class="field span-two">
 						<div class="label-row"><label for="description">Описание</label><span class:limit-near={draft.description.length > 1800}>{draft.description.length} / 2000</span></div>
 						<textarea id="description" rows="7" maxlength="2000" placeholder={draft.listingKind === 'offer' ? 'История, произход, кога е отворен, съхранение, забележки по флакона или кутията…' : 'Кое издание търсиш, приемливо състояние, предпочитания за кутия и година…'} bind:value={draft.description} aria-invalid={errors.description ? 'true' : undefined} aria-describedby="description-hint description-error"></textarea>
-						<p id="description-hint" class="hint">Arial Regular се използва за четимост. Не добавяй телефон, имейл или външен начин за контакт.</p>
+						<p id="description-hint" class="hint">Опиши продукта ясно и конкретно. Не добавяй телефон, имейл или външен начин за контакт.</p>
 						{#if errors.description}<p id="description-error" class="error">{errors.description}</p>{/if}
 					</div>
 
@@ -992,7 +1032,10 @@
 						<div>
 							<p class="overline">{resolvedBrand()}</p>
 							<h3>{draft.fragranceName}</h3>
-							<p>{concentrationLabels[draft.concentration]} · {formatLabels[draft.productFormat]}</p>
+							<p>
+								{concentrationLabels[draft.concentration]}
+								{#if draft.listingKind === 'offer'} · {formatLabels[draft.productFormat]}{/if}
+							</p>
 							<div class="tag-row">
 								<span>{draft.audience === 'men' ? 'Мъжки' : draft.audience === 'women' ? 'Дамски' : 'Унисекс'}</span>
 								{#if draft.niche}<span>Нишов</span>{/if}
@@ -1012,9 +1055,13 @@
 						</section>
 						<section class="review-card">
 							<div class="review-title"><span>Продукт</span><button class="edit-button" type="button" onclick={() => goToStep(2)}>Редактирай</button></div>
-							<strong>{formatLabels[draft.productFormat]}</strong>
-							<p>{draft.listingKind === 'offer' ? `${draft.remainingMl} от ${draft.bottleVolumeMl} ml · ${percentage()}%` : `${draft.bottleVolumeMl} ml предпочитан обем`}</p>
-							{#if draft.listingKind === 'offer'}<small>{conditionLabel()}</small>{/if}
+							<strong>{draft.listingKind === 'offer' ? formatLabels[draft.productFormat] : 'Без конкретен физически артикул'}</strong>
+							{#if draft.listingKind === 'offer'}
+								<p>{draft.remainingMl} от {draft.bottleVolumeMl} ml · {percentage()}%</p>
+								<small>{conditionLabel()}</small>
+							{:else}
+								<p>Форматът и обемът се уточняват в описанието.</p>
+							{/if}
 						</section>
 						<section class="review-card">
 							<div class="review-title"><span>Снимки</span><button class="edit-button" type="button" onclick={() => goToStep(3)}>Редактирай</button></div>
@@ -1030,7 +1077,7 @@
 
 					<div class="publish-note">
 						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7v5c0 4.5 3.2 8 8 9 4.8-1 8-4.5 8-9V7z" /><path d="M9 12.5 11 14l4-4" /></svg>
-						<div><strong>Преди публикуване</strong><p>{phoneVerified || demoMode ? 'Телефонът е потвърден. ' : 'Ще се изисква потвърден телефон. '}Модератор може да поиска допълнителни доказателства, но платформата никога не означава продукта като „гарантирано оригинален“.</p></div>
+						<div><strong>Преди публикуване</strong><p>{phoneVerified || demoMode ? 'Телефонът е потвърден. ' : 'Ще се изисква потвърден телефон. '}Модератор може да поиска допълнителни доказателства, но прегледът им не е гаранция за автентичност.</p></div>
 					</div>
 				</div>
 			{/if}
@@ -1056,51 +1103,53 @@
 	:global(*) { box-sizing: border-box; }
 
 	.wizard-shell {
-		--surface: var(--paper-strong, #fffaf3);
-		--accent-soft: var(--brand-main, #f3dfbf);
-		--panel: var(--brand-tertiary, #d6caba);
-		--text: var(--ink, #241c16);
-		--text-muted: var(--ink-soft, #67584d);
-		--cta: var(--action, #4a3126);
-		--border: var(--line, #d8cbbb);
-		--border-strong: var(--line-strong, #b7a58f);
-		--focus: #1f5c73;
-		--success: #276749;
-		--warning-text: #6c4100;
+		--surface: var(--paper-strong, #fffdf9);
+		--surface-soft: var(--paper, #f8f3eb);
+		--accent-soft: var(--action-soft, #f4e4e5);
+		--panel: var(--brand-secondary, #f4ece1);
+		--text: var(--ink, #2b201a);
+		--text-muted: var(--ink-soft, #66584e);
+		--cta: var(--action, #751d2b);
+		--cta-hover: var(--action-hover, #59131f);
+		--border: var(--line, #d8ccbd);
+		--border-strong: var(--line-strong, #ad9d8b);
+		--focus: var(--action, #751d2b);
+		--warning-text: var(--warning, #8b591e);
 		width: min(100%, 72rem);
 		margin: 0 auto;
 		color: var(--text);
-		font: 400 1rem/1.5 Arial, sans-serif;
+		font-size: 1rem;
+		line-height: 1.5;
 	}
 
 	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 	.wizard-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 2rem; margin-bottom: 1.75rem; }
 	.overline { margin: 0 0 0.35rem; color: var(--cta); font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
-	.wizard-intro h1 { max-width: 45rem; margin: 0; font: italic 700 clamp(2rem, 5vw, 3.75rem)/1.02 Arial, sans-serif; letter-spacing: -0.035em; }
+	.wizard-intro h1 { max-width: 45rem; margin: 0; font-size: clamp(2rem, 5vw, 3.75rem); font-weight: 700; letter-spacing: -0.035em; line-height: 1.02; }
 	.wizard-intro p:last-child { max-width: 40rem; margin: 0.75rem 0 0; color: var(--text-muted); }
-	.draft-badge { display: flex; flex: 0 0 auto; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0.55rem 0.8rem; border: 1px solid var(--border-strong); border-radius: 999px; background: color-mix(in srgb, var(--surface) 78%, transparent); color: var(--text-muted); font-size: 0.8rem; }
+	.draft-badge { display: flex; flex: 0 0 auto; align-items: center; gap: 0.5rem; min-height: 2.75rem; padding: 0.55rem 0.8rem; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); color: var(--text-muted); font-size: 0.8rem; }
 	.draft-badge svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 
 	.progress { overflow-x: auto; margin-bottom: 1.2rem; padding: 0.15rem; scrollbar-width: thin; }
 	.progress ol { position: relative; display: grid; grid-template-columns: repeat(6, minmax(5.25rem, 1fr)); min-width: 36rem; margin: 0; padding: 0; list-style: none; }
 	.progress ol::before { position: absolute; z-index: 0; top: 1.35rem; right: 8%; left: 8%; height: 1px; background: var(--border-strong); content: ''; }
 	.progress li { position: relative; z-index: 1; text-align: center; }
-	.progress button { display: inline-flex; flex-direction: column; align-items: center; gap: 0.35rem; min-width: 4.75rem; min-height: 3.75rem; padding: 0; border: 0; background: transparent; color: var(--text-muted); font: 700 0.76rem Arial, sans-serif; cursor: pointer; }
+	.progress button { display: inline-flex; flex-direction: column; align-items: center; gap: 0.35rem; min-width: 4.75rem; min-height: 3.75rem; padding: 0; border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 0.76rem; font-weight: 700; cursor: pointer; }
 	.progress button:disabled { cursor: not-allowed; opacity: 0.58; }
 	.progress button:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 0.6rem; }
 	.step-number { display: grid; place-items: center; width: 2.7rem; height: 2.7rem; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface); color: var(--text-muted); }
 	.step-number svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
-	.progress li.active .step-number { border-color: var(--cta); background: var(--cta); color: #fffaf3; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-soft) 65%, transparent); }
+	.progress li.active .step-number { border-color: var(--cta); background: var(--cta); color: var(--surface); outline: 3px solid var(--accent-soft); outline-offset: 1px; }
 	.progress li.active .step-label { color: var(--text); }
 	.progress li.done .step-number { border-color: var(--success); color: var(--success); }
 	.turnstile-wrap { display: flex; justify-content: flex-end; min-height: 4.1rem; margin: -0.35rem 0 0.8rem; }
 
-	form, .success-card { border: 1px solid var(--border); border-radius: clamp(1.1rem, 3vw, 1.75rem); background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: 0 20px 60px rgb(54 38 29 / 0.09); }
+	form, .success-card { border: 1px solid var(--border); border-radius: var(--radius-md, 12px); background: var(--surface); }
 	form { padding: clamp(1.15rem, 4vw, 2.25rem); }
 	.form-heading { margin-bottom: 1.75rem; }
 	.form-heading p { margin: 0 0 0.35rem; color: var(--cta); font-size: 0.75rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
-	.form-heading h2 { margin: 0; outline: none; font: italic 700 clamp(1.65rem, 4vw, 2.45rem)/1.1 Arial, sans-serif; letter-spacing: -0.025em; }
+	.form-heading h2 { margin: 0; outline: none; font-size: clamp(1.65rem, 4vw, 2.45rem); font-weight: 700; letter-spacing: -0.025em; line-height: 1.1; }
 
 	.form-grid { display: grid; gap: 1.15rem; }
 	.form-grid.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1110,84 +1159,83 @@
 	.field label span { color: var(--text-muted); font-size: 0.82rem; font-weight: 400; }
 	.label-row > span { color: var(--text-muted); font-size: 0.78rem; }
 	.label-row > span.limit-near { color: var(--warning-text); font-weight: 700; }
-	.field input, .field select, .field textarea { width: 100%; min-height: 2.9rem; border: 1px solid var(--border-strong); border-radius: 0.75rem; background: var(--surface); color: var(--text); font: 400 1rem Arial, sans-serif; }
+	.field input, .field select, .field textarea { width: 100%; min-height: 2.9rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm, 8px); background: var(--surface); color: var(--text); font: inherit; }
 	.field input, .field select { padding: 0 0.85rem; }
 	.field textarea { display: block; min-height: 9rem; padding: 0.85rem; line-height: 1.55; resize: vertical; }
-	.field input::placeholder, .field textarea::placeholder { color: #78695e; opacity: 1; }
-	.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--focus); outline: 3px solid color-mix(in srgb, var(--focus) 35%, transparent); outline-offset: 1px; }
-	.field input[aria-invalid='true'], .field textarea[aria-invalid='true'] { border-color: #a83232; }
+	.field input::placeholder, .field textarea::placeholder { color: var(--ink-faint, #7d6f64); opacity: 1; }
+	.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+	.field input[aria-invalid='true'], .field textarea[aria-invalid='true'] { border-color: var(--danger, #9c3037); }
 	.brand-combobox { position: relative; }
 	.brand-combobox > input { padding-right: 2.8rem; }
 	.combobox-caret { position: absolute; top: 1.1rem; right: 1.05rem; width: 0.55rem; height: 0.55rem; border-right: 1.5px solid var(--text-muted); border-bottom: 1.5px solid var(--text-muted); transform: rotate(45deg); pointer-events: none; }
-	.brand-options { position: absolute; z-index: 20; top: calc(100% + 0.4rem); right: 0; left: 0; display: grid; overflow-y: auto; max-height: min(25rem, 55vh); padding: 0.35rem; border: 1px solid var(--border-strong); border-radius: 0.85rem; background: var(--surface); box-shadow: 0 18px 45px rgb(54 38 29 / 0.18); }
-	.brand-options button { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; min-height: 3.35rem; padding: 0.6rem 0.75rem; border: 0; border-radius: 0.58rem; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+	.brand-options { position: absolute; z-index: 20; top: calc(100% + 0.4rem); right: 0; left: 0; display: grid; overflow-y: auto; max-height: min(25rem, 55vh); padding: 0.35rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm, 8px); background: var(--surface); }
+	.brand-options button { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; min-height: 3.35rem; padding: 0.6rem 0.75rem; border: 1px solid transparent; border-radius: var(--radius-sm, 8px); background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 	.brand-options button:hover, .brand-options button.active { background: var(--accent-soft); }
-	.brand-options button[aria-selected='true'] { box-shadow: inset 3px 0 0 var(--cta); }
+	.brand-options button[aria-selected='true'] { border-color: var(--cta); background: var(--accent-soft); color: var(--cta); }
 	.brand-options button strong { font-size: 0.92rem; line-height: 1.25; }
 	.brand-options button small { margin-top: 0.18rem; color: var(--text-muted); font-size: 0.75rem; line-height: 1.3; }
-	.brand-options .other-option { margin-top: 0.25rem; border-top: 1px solid var(--border); border-radius: 0 0 0.58rem 0.58rem; }
+	.brand-options .other-option { margin-top: 0.25rem; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-sm, 8px) var(--radius-sm, 8px); }
 	.hint, .error { margin: 0.4rem 0 0; font-size: 0.8rem; line-height: 1.4; }
 	.hint { color: var(--text-muted); }
-	.error { color: #8d2525; font-weight: 700; }
-	.server-error { margin: -0.7rem 0 1.25rem; padding: 0.8rem 0.9rem; border-left: 3px solid #a83232; border-radius: 0 0.5rem 0.5rem 0; color: #8d2525; background: #fff2ef; font-size: 0.86rem; font-weight: 700; }
-	.upload-note { margin: 1rem 0 0; padding: 0.85rem 1rem; border-radius: 0.75rem; color: var(--text-muted); background: var(--accent-soft); font-size: 0.82rem; }
-	.error.standalone { margin-top: 0.75rem; padding: 0.75rem; border-left: 3px solid #a83232; background: #fff2ef; }
-	.text-button, .edit-button { min-height: 2.75rem; padding: 0 0.25rem; border: 0; background: transparent; color: var(--cta); font: 700 0.82rem Arial, sans-serif; text-decoration: underline; text-underline-offset: 0.2rem; cursor: pointer; }
+	.error { color: var(--danger, #9c3037); font-weight: 700; }
+	.server-error { margin: -0.7rem 0 1.25rem; padding: 0.8rem 0.9rem; border: 1px solid var(--danger, #9c3037); border-radius: var(--radius-sm, 8px); color: var(--danger, #9c3037); background: var(--danger-soft, #f8e5e6); font-size: 0.86rem; font-weight: 700; }
+	.upload-note { margin: 1rem 0 0; padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); color: var(--text-muted); background: var(--surface-soft); font-size: 0.82rem; }
+	.error.standalone { margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--danger, #9c3037); border-radius: var(--radius-sm, 8px); background: var(--danger-soft, #f8e5e6); }
+	.text-button, .edit-button { min-height: 2.75rem; padding: 0 0.25rem; border: 0; background: transparent; color: var(--cta); font: inherit; font-size: 0.82rem; font-weight: 700; text-decoration: underline; text-underline-offset: 0.2rem; cursor: pointer; }
 	.text-button:hover, .edit-button:hover { color: var(--text); }
 	.text-button:focus-visible, .edit-button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 0.3rem; }
-	.custom-brand-panel { padding: 1rem; border-left: 3px solid var(--cta); border-radius: 0 0.8rem 0.8rem 0; background: var(--accent-soft); }
-	.custom-brand-panel code { padding: 0.08rem 0.25rem; border-radius: 0.25rem; background: color-mix(in srgb, var(--surface) 70%, transparent); color: var(--text); font: 700 0.75rem/1.4 Arial, sans-serif; }
+	.custom-brand-panel { padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); background: var(--surface-soft); }
+	.custom-brand-panel code { padding: 0.08rem 0.25rem; border-radius: 4px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.75rem; font-weight: 700; line-height: 1.4; }
 
 	.choice-fieldset { min-width: 0; margin: 1.5rem 0 0; padding: 1.1rem 0 0; border: 0; border-top: 1px solid var(--border); }
 	.choice-fieldset.first-fieldset { margin-top: 0; }
-	.choice-fieldset legend { padding: 0 0.4rem 0 0; font: italic 700 1.05rem Arial, sans-serif; }
+	.choice-fieldset legend { padding: 0 0.4rem 0 0; font-size: 1.05rem; font-weight: 700; }
 	.legend-hint { margin: 0.2rem 0 0.8rem; color: var(--text-muted); font-size: 0.8rem; }
 	.choice-grid { display: grid; gap: 0.75rem; }
 	.choice-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.choice-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-	.choice-card { position: relative; display: flex; gap: 0.7rem; align-items: flex-start; min-height: 5.2rem; padding: 0.9rem; border: 1px solid var(--border-strong); border-radius: 0.9rem; background: var(--surface); cursor: pointer; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+	.choice-card { position: relative; display: flex; gap: 0.7rem; align-items: flex-start; min-height: 5.2rem; padding: 0.9rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm, 8px); background: var(--surface); cursor: pointer; transition: border-color 160ms ease, background 160ms ease; }
 	.choice-card.large { align-items: center; min-height: 7rem; }
-	.choice-card:hover { border-color: var(--cta); box-shadow: 0 8px 22px rgb(54 38 29 / 0.07); }
-	.choice-card:has(input:checked) { border-color: var(--cta); background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface)); box-shadow: inset 0 0 0 1px var(--cta); }
+	.choice-card:hover { border-color: var(--cta); }
+	.choice-card:has(input:checked) { border-color: var(--cta); background: var(--accent-soft); }
 	.choice-card:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 3px; }
 	.choice-card input { flex: 0 0 auto; width: 1.15rem; height: 1.15rem; margin: 0.15rem 0 0; accent-color: var(--cta); }
 	.choice-card strong, .choice-card small { display: block; }
 	.choice-card strong { line-height: 1.25; }
 	.choice-card small { margin-top: 0.35rem; color: var(--text-muted); line-height: 1.35; }
-	.choice-icon { display: grid; flex: 0 0 auto; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: 0.75rem; background: var(--accent-soft); color: var(--cta); }
+	.choice-icon { display: grid; flex: 0 0 auto; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: var(--radius-sm, 8px); background: var(--accent-soft); color: var(--cta); }
 	.choice-icon svg { width: 1.35rem; height: 1.35rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 	.compact-fieldset { padding-bottom: 0; }
 	.checkbox-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
-	.checkbox-row label { display: flex; gap: 0.7rem; align-items: flex-start; min-height: 4.5rem; padding: 0.85rem; border: 1px solid var(--border-strong); border-radius: 0.85rem; cursor: pointer; }
+	.checkbox-row label { display: flex; gap: 0.7rem; align-items: flex-start; min-height: 4.5rem; padding: 0.85rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm, 8px); background: var(--surface); cursor: pointer; }
 	.checkbox-row label:has(input:checked) { border-color: var(--cta); background: var(--accent-soft); }
 	.checkbox-row label:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
 	.checkbox-row input { width: 1.2rem; height: 1.2rem; accent-color: var(--cta); }
 	.checkbox-row strong, .checkbox-row small { display: block; }
 	.checkbox-row small { margin-top: 0.2rem; color: var(--text-muted); line-height: 1.35; }
 
-	.info-panel, .trust-panel, .batch-panel, .publish-note { display: flex; gap: 0.85rem; align-items: flex-start; margin-top: 1.4rem; padding: 1rem; border-radius: 0.9rem; }
-	.info-panel { display: block; background: var(--accent-soft); }
-	.trust-panel, .publish-note { border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); background: color-mix(in srgb, var(--success) 6%, var(--surface)); }
-	.batch-panel { align-items: center; justify-content: space-between; border: 1px solid var(--border); background: var(--panel); }
+	.info-panel, .trust-panel, .batch-panel, .publish-note { display: flex; gap: 0.85rem; align-items: flex-start; margin-top: 1.4rem; padding: 1rem; border-radius: var(--radius-sm, 8px); }
+	.info-panel { display: block; border: 1px solid var(--border); background: var(--surface-soft); }
+	.trust-panel, .publish-note { border: 1px solid var(--success, #315f47); background: var(--success-soft, #e7f0e9); }
+	.batch-panel { align-items: center; justify-content: space-between; border: 1px solid var(--border); background: var(--surface-soft); }
 	.info-panel p, .trust-panel p, .batch-panel p, .publish-note p { margin: 0.25rem 0 0; color: var(--text-muted); line-height: 1.5; }
 	.trust-panel svg, .publish-note svg { flex: 0 0 auto; width: 1.5rem; height: 1.5rem; fill: none; stroke: var(--success); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 	.batch-panel a { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 2.75rem; color: var(--cta); font-weight: 700; }
 	.batch-panel a:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 0.3rem; }
 	.concentration-field { max-width: 32rem; margin: 1.4rem 0; }
-	.wanted-volume { max-width: 28rem; margin-top: 1.3rem; }
-	.input-unit { display: flex; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 0.75rem; background: var(--surface); }
-	.input-unit:focus-within { border-color: var(--focus); outline: 3px solid color-mix(in srgb, var(--focus) 35%, transparent); outline-offset: 1px; }
+	.input-unit { display: flex; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-sm, 8px); background: var(--surface); }
+	.input-unit:focus-within { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 	.input-unit input { min-width: 0; border: 0; border-radius: 0; outline: 0; }
 	.input-unit span { display: grid; place-items: center; min-width: 3.4rem; padding: 0 0.7rem; border-left: 1px solid var(--border); color: var(--text-muted); font-size: 0.8rem; font-weight: 700; }
 
 	.review-layout { display: grid; gap: 0.9rem; }
-	.review-card { position: relative; min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); }
-	.hero-review { display: grid; grid-template-columns: auto 1fr auto; gap: 1rem; align-items: center; background: linear-gradient(135deg, var(--accent-soft), var(--surface)); }
+	.review-card { position: relative; min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); background: var(--surface); }
+	.hero-review { display: grid; grid-template-columns: auto 1fr auto; gap: 1rem; align-items: center; background: var(--surface-soft); }
 	.bottle-visual { position: relative; display: grid; place-items: end center; width: 5.2rem; height: 6.5rem; }
-	.bottle-visual::before { position: absolute; bottom: 0; width: 4.4rem; height: 5rem; border: 1px solid var(--cta); border-radius: 1rem 1rem 0.6rem 0.6rem; background: color-mix(in srgb, var(--surface) 68%, transparent); content: ''; }
+	.bottle-visual::before { position: absolute; bottom: 0; width: 4.4rem; height: 5rem; border: 1px solid var(--cta); border-radius: var(--radius-md, 12px) var(--radius-md, 12px) var(--radius-sm, 8px) var(--radius-sm, 8px); background: var(--surface); content: ''; }
 	.bottle-visual::after { position: absolute; top: 0; width: 2.1rem; height: 1.8rem; border-radius: 0.25rem; background: var(--cta); content: ''; }
 	.bottle-visual span { z-index: 1; width: 3.2rem; height: 2.1rem; margin-bottom: 0.65rem; border-radius: 0.25rem; background: var(--panel); }
-	.hero-review h3 { margin: 0; font: italic 700 clamp(1.35rem, 3vw, 1.9rem)/1.15 Arial, sans-serif; }
+	.hero-review h3 { margin: 0; font-size: clamp(1.35rem, 3vw, 1.9rem); font-weight: 700; line-height: 1.15; }
 	.hero-review p:not(.overline) { margin: 0.3rem 0 0; color: var(--text-muted); }
 	.tag-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.75rem; }
 	.tag-row span { padding: 0.3rem 0.55rem; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); font-size: 0.72rem; font-weight: 700; }
@@ -1201,22 +1249,22 @@
 	.form-actions { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
 	.action-copy { display: flex; align-items: center; gap: 0.8rem; }
 	.action-copy > span { color: var(--text-muted); font-size: 0.78rem; font-weight: 700; }
-	.primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.55rem; min-height: 3rem; padding: 0 1.15rem; border-radius: 0.75rem; font: italic 700 0.92rem Arial, sans-serif; cursor: pointer; transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease; }
-	.primary-button { border: 1px solid var(--cta); background: var(--cta); color: #fffaf3; }
-	.primary-button:hover { background: var(--text); box-shadow: 0 8px 18px rgb(36 28 22 / 0.16); }
+	.primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.55rem; min-height: 3rem; padding: 0 1.15rem; border-radius: var(--radius-sm, 8px); font: inherit; font-size: 0.92rem; font-weight: 700; cursor: pointer; transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }
+	.primary-button { border: 1px solid var(--cta); background: var(--cta); color: var(--surface); }
+	.primary-button:hover { border-color: var(--cta-hover); background: var(--cta-hover); }
 	.primary-button:disabled { cursor: wait; opacity: 0.62; }
-	.secondary-button { border: 1px solid var(--border-strong); background: transparent; color: var(--text); }
+	.secondary-button { border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); }
 	.secondary-button:hover:not(:disabled) { border-color: var(--cta); background: var(--accent-soft); }
 	.secondary-button:disabled { cursor: not-allowed; opacity: 0.45; }
 	.primary-button:focus-visible, .secondary-button:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 	.primary-button svg, .secondary-button svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 
 	.success-card { display: grid; justify-items: center; padding: clamp(2rem, 7vw, 4.5rem); text-align: center; }
-	.success-icon { display: grid; place-items: center; width: 4.5rem; height: 4.5rem; margin-bottom: 1rem; border-radius: 50%; background: color-mix(in srgb, var(--success) 12%, var(--surface)); color: var(--success); }
+	.success-icon { display: grid; place-items: center; width: 4.5rem; height: 4.5rem; margin-bottom: 1rem; border-radius: 50%; background: var(--success-soft, #e7f0e9); color: var(--success, #315f47); }
 	.success-icon svg { width: 2.2rem; height: 2.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-	.success-card h2 { margin: 0; outline: none; font: italic 700 clamp(1.8rem, 5vw, 3rem)/1.1 Arial, sans-serif; }
+	.success-card h2 { margin: 0; outline: none; font-size: clamp(1.8rem, 5vw, 3rem); font-weight: 700; line-height: 1.1; }
 	.success-card > p:not(.overline) { max-width: 38rem; margin: 0.8rem auto 0; color: var(--text-muted); }
-	.success-summary { display: grid; gap: 0.15rem; min-width: min(100%, 22rem); margin: 1.5rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: 0.9rem; background: var(--accent-soft); }
+	.success-summary { display: grid; gap: 0.15rem; min-width: min(100%, 22rem); margin: 1.5rem 0; padding: 1rem; border: 1px solid var(--success, #315f47); border-radius: var(--radius-sm, 8px); background: var(--success-soft, #e7f0e9); }
 	.success-summary span { color: var(--text-muted); font-size: 0.85rem; }
 	.success-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.7rem; }
 

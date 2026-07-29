@@ -20,6 +20,7 @@
   const reviews = $derived(data.reviews.items);
   const displayKind = $derived(profile.merchantVerified ? 'Проверен търговец' : 'Частно лице');
   const rating = $derived(profile.ratingCount > 0 ? profile.ratingAverage.toLocaleString('bg-BG', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '—');
+  const ratingRounded = $derived(profile.ratingCount > 0 ? Math.round(profile.ratingAverage) : 0);
   const since = $derived(new Date(profile.memberSince).toLocaleDateString('bg-BG', { month: 'long', year: 'numeric' }));
   const initials = $derived(profile.username.split(/[\s_.-]+/).filter(Boolean).slice(0, 2).map((part: string) => part[0]?.toLocaleUpperCase('bg-BG')).join('') || 'P');
   const tone = $derived(profile.merchantVerified ? '#d0b08a' : '#c6b5a5');
@@ -44,7 +45,7 @@
     </div>
 
     <aside class="profile-score surface reveal" style="animation-delay: 120ms">
-      <div class="score-top"><span>Рейтинг от сделки</span><strong>{rating}</strong><div class="stars" aria-label={`${rating} от 5`}><Star size={16} fill="currentColor" /><Star size={16} fill="currentColor" /><Star size={16} fill="currentColor" /><Star size={16} fill="currentColor" /><Star size={16} fill="currentColor" /></div></div>
+      <div class="score-top"><span>Рейтинг от сделки</span><strong>{rating}</strong><div class="stars" aria-label={profile.ratingCount > 0 ? `${rating} от 5` : 'Все още няма оценки'}>{#each Array(5) as _, index}<Star size={16} fill={index < ratingRounded ? 'currentColor' : 'none'} />{/each}</div></div>
       <div class="score-stats"><div><PackageCheck size={20} /><strong>{profile.completedDealsCount}</strong><span>потвърдени сделки</span></div><div><ShieldCheck size={20} /><strong>{profile.merchantVerified ? 'Проверен' : 'Активен'}</strong><span>{displayKind}</span></div></div>
       <p><Check size={16} /> Звездите са само от взаимно потвърдени сделки.</p>
     </aside>
@@ -62,7 +63,7 @@
   <div class="container">
     {#if activeTab === 'listings'}
       <div class="content-heading"><div><span class="eyebrow">Активна колекция</span><h2>Обяви от {profile.username}</h2></div></div>
-      {#if profileListings.length}<div class="listing-grid">{#each profileListings as listing}<ListingCard {listing} />{/each}</div>{:else}<div class="empty-state"><div><Store size={34} /><h2>Няма активни обяви.</h2><p class="muted">Публикуваните обяви на този профил ще се появят тук.</p></div></div>{/if}
+      {#if profileListings.length}<div class="listing-grid">{#each profileListings as listing}<ListingCard {listing} variant="catalog" />{/each}</div>{:else}<div class="empty-state"><div><Store size={34} /><h2>Няма активни обяви.</h2><p class="muted">Публикуваните обяви на този профил ще се появят тук.</p></div></div>{/if}
     {:else}
       <div class="content-heading"><div><span class="eyebrow">Потвърдени сделки</span><h2>Отзиви, които изграждат рейтинга.</h2></div><p>Само двамата участници в приключена и взаимно потвърдена сделка могат да дадат звезди.</p></div>
       <div class="review-list">
@@ -77,27 +78,25 @@
 </section>
 
 <style>
-  .profile-hero { position: relative; overflow: hidden; border-bottom: 1px solid rgb(138 121 103 / 22%); background: linear-gradient(120deg, rgb(255 253 249 / 50%), transparent 60%); }
-  .profile-hero::after { position: absolute; top: -240px; right: -200px; width: 630px; height: 630px; border: 1px solid rgb(74 49 38 / 11%); border-radius: 50%; content: ''; }
-  .profile-grid { position: relative; z-index: 1; display: grid; min-height: 600px; align-items: center; grid-template-columns: 1.15fr .55fr; gap: clamp(40px, 7vw, 95px); padding-block: 68px; }
-  .identity-block { display: grid; align-items: center; grid-template-columns: 210px 1fr; gap: 38px; }
-  .avatar { position: relative; display: grid; width: 210px; height: 250px; place-items: center; overflow: hidden; border: 1px solid rgb(74 49 38 / 20%); border-radius: 48% 48% 30% 30% / 42% 42% 18% 18%; background: linear-gradient(145deg, rgb(255 255 255 / 48%), transparent), var(--profile-tone); box-shadow: 22px 23px 0 rgb(214 202 186 / 47%); }
+  .profile-hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); background: var(--paper); }
+  .profile-hero::after { display: none; }
+  .profile-grid { position: relative; z-index: 1; display: grid; min-height: 550px; align-items: center; grid-template-columns: 1.15fr .55fr; gap: clamp(40px, 7vw, 95px); padding-block: 64px; }
+  .identity-block { display: grid; align-items: center; grid-template-columns: 190px 1fr; gap: 38px; }
+  .avatar { position: relative; display: grid; width: 190px; height: 220px; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--profile-tone); }
   .avatar::before,
-  .avatar::after { position: absolute; border: 1px solid rgb(74 49 38 / 13%); border-radius: 50%; content: ''; }
-  .avatar::before { width: 170px; height: 170px; }
-  .avatar::after { width: 120px; height: 120px; }
-  .avatar > span { z-index: 1; font-size: 3rem; font-weight: 700; font-style: italic; letter-spacing: -.08em; }
-  .avatar i { position: absolute; right: 24px; bottom: 27px; left: 24px; height: 1px; background: rgb(74 49 38 / 21%); }
+  .avatar::after { display: none; }
+  .avatar > span { z-index: 1; font-size: 2.8rem; font-weight: 700; font-style: normal; letter-spacing: -.07em; }
+  .avatar i { position: absolute; right: 22px; bottom: 24px; left: 22px; height: 3px; background: var(--action); }
   .name-line { display: flex; align-items: center; gap: 12px; }
-  .name-line h1 { margin-bottom: 15px; font-size: clamp(2.8rem, 5.2vw, 5rem); overflow-wrap: anywhere; }
+  .name-line h1 { margin-bottom: 15px; font-size: clamp(2.8rem, 5.2vw, 5rem); font-style: normal; letter-spacing: -.055em; overflow-wrap: anywhere; }
   .name-line > :global(svg) { flex: 0 0 auto; margin-bottom: 12px; color: var(--success); }
   .identity-meta { display: flex; flex-wrap: wrap; gap: 11px 18px; }
   .identity-meta span { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-faint); font-size: .71rem; font-weight: 700; }
   .identity-copy > p { max-width: 650px; margin: 25px 0; color: var(--ink-soft); }
   .profile-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-  .profile-score { padding: 28px; }
+  .profile-score { padding: 28px; border-color: var(--line); border-radius: 6px; background: var(--paper-strong); }
   .score-top > span { color: var(--ink-faint); font-size: .67rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .score-top > strong { display: block; margin: 12px 0 4px; font-size: 4.5rem; font-style: italic; line-height: .9; letter-spacing: -.08em; }
+  .score-top > strong { display: block; margin: 12px 0 4px; font-size: 4.2rem; font-style: normal; line-height: .9; letter-spacing: -.07em; }
   .stars { display: flex; gap: 2px; color: var(--warning); }
   .score-stats { display: grid; gap: 0; margin-top: 24px; border-block: 1px solid var(--line); }
   .score-stats > div { display: grid; align-items: center; grid-template-columns: 26px auto 1fr; gap: 8px; padding: 15px 0; border-bottom: 1px solid rgb(138 121 103 / 18%); }
@@ -107,7 +106,7 @@
   .score-stats span { color: var(--ink-faint); font-size: .67rem; text-align: right; }
   .profile-score > p { display: flex; align-items: flex-start; gap: 7px; margin: 18px 0 0; color: var(--ink-soft); font-size: .69rem; }
   .profile-score > p :global(svg) { flex: 0 0 auto; color: var(--success); }
-  .profile-tabs { position: sticky; top: var(--header-height); z-index: 25; border-bottom: 1px solid var(--line); background: rgb(244 236 225 / 93%); backdrop-filter: blur(18px); }
+  .profile-tabs { position: sticky; top: var(--header-height); z-index: 25; border-bottom: 1px solid var(--line); background: var(--paper-strong); }
   .profile-tabs .container { display: flex; overflow-x: auto; scrollbar-width: none; }
   .profile-tabs button { position: relative; display: inline-flex; min-height: 59px; align-items: center; gap: 7px; flex: 1 0 auto; justify-content: center; padding: 10px 20px; border: 0; border-right: 1px solid var(--line); color: var(--ink-soft); background: transparent; cursor: pointer; font-size: .75rem; font-weight: 700; }
   .profile-tabs button::after { position: absolute; right: 50%; bottom: 0; left: 50%; height: 3px; background: var(--action); content: ''; transition: inset 180ms ease; }
@@ -117,7 +116,7 @@
   .content-heading { display: flex; align-items: end; justify-content: space-between; gap: 30px; margin-bottom: 32px; }
   .content-heading h2 { max-width: 780px; margin-bottom: 0; }
   .content-heading > p { max-width: 410px; margin: 0; color: var(--ink-soft); }
-  .listing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+  .listing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
   .review-list { border-top: 1px solid var(--line-strong); }
   .review-list article { display: grid; grid-template-columns: 48px 180px 1fr; gap: 24px; padding: 28px 0; border-bottom: 1px solid var(--line); }
   .review-number { color: var(--ink-faint); font-size: .64rem; font-weight: 700; letter-spacing: .15em; }
@@ -133,7 +132,7 @@
   .trust-inner { display: grid; align-items: center; grid-template-columns: 35px 1fr auto; gap: 17px; }
   .trust-inner strong { font-size: .8rem; }
   .trust-inner p { margin: 3px 0 0; color: var(--ink-soft); font-size: .73rem; }
-  .trust-inner a { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; font-size: .74rem; font-weight: 700; font-style: italic; }
+  .trust-inner a { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; font-size: .74rem; font-weight: 700; font-style: normal; }
 
   @media (max-width: 1000px) {
     .profile-grid { grid-template-columns: 1fr; }
@@ -143,7 +142,7 @@
   @media (max-width: 720px) {
     .profile-grid { min-height: auto; padding-block: 55px; }
     .identity-block { grid-template-columns: 1fr; }
-    .avatar { width: 170px; height: 200px; }
+    .avatar { width: 160px; height: 184px; }
     .content-heading { align-items: flex-start; flex-direction: column; }
     .listing-grid { grid-template-columns: 1fr; }
     .review-list article { grid-template-columns: 35px 1fr; gap: 12px; }

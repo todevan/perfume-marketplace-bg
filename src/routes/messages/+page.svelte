@@ -128,17 +128,21 @@
 <style>
   .messages-shell {
     display: grid;
-    height: calc(100vh - var(--header-height) - 42px);
-    min-height: 650px;
-    grid-template-columns: 340px minmax(0, 1fr);
-    gap: 16px;
-    padding-block: 20px 22px;
+    height: calc(100vh - var(--header-height) - 58px);
+    height: calc(100dvh - var(--header-height) - 58px);
+    min-height: 610px;
+    grid-template-columns: 330px minmax(0, 1fr);
+    gap: 14px;
+    padding-block: 14px 18px;
+    font-family: inherit;
   }
 
   .conversation-list,
   .chat {
     min-height: 0;
     overflow: hidden;
+    border-color: var(--line-strong);
+    background: var(--paper-strong);
     box-shadow: none;
   }
 
@@ -160,7 +164,7 @@
 
   .list-head h1 {
     margin: 0;
-    font-size: 2.2rem;
+    font-size: 2rem;
   }
 
   .list-head > button,
@@ -175,6 +179,7 @@
     border-radius: 50%;
     background: transparent;
     cursor: pointer;
+    font: inherit;
   }
 
   .list-head > button:hover,
@@ -192,7 +197,7 @@
     gap: 8px;
     margin: 0 14px 10px;
     padding: 7px 11px;
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-strong);
     border-radius: 10px;
     background: var(--paper-strong);
   }
@@ -202,6 +207,7 @@
     border: 0;
     outline: 0;
     background: transparent;
+    font: inherit;
   }
 
   .conversation-items {
@@ -226,12 +232,13 @@
     border-top: 1px solid rgb(138 121 103 / 18%);
     background: transparent;
     cursor: pointer;
+    font: inherit;
     text-align: left;
   }
 
   .conversation-items > button:hover,
   .conversation-items > button.active {
-    background: rgb(243 223 191 / 56%);
+    background: var(--brand-main);
   }
 
   .avatar {
@@ -240,10 +247,9 @@
     height: 44px;
     place-items: center;
     border-radius: 50%;
-    color: white;
+    color: var(--paper-strong);
     background: var(--action);
     font-weight: 700;
-    font-style: italic;
   }
 
   .conversation-copy,
@@ -344,7 +350,7 @@
     gap: 11px;
     padding: 8px 17px;
     border-bottom: 1px solid var(--line);
-    background: rgb(243 223 191 / 35%);
+    background: var(--brand-main);
   }
 
   .bottle-mini {
@@ -385,9 +391,7 @@
     gap: 10px;
     padding: 20px;
     overflow-y: auto;
-    background:
-      radial-gradient(circle at 80% 10%, rgb(243 223 191 / 35%), transparent 23rem),
-      rgb(255 253 249 / 35%);
+    background: var(--paper);
   }
 
   .date-divider {
@@ -413,7 +417,6 @@
     border: 1px solid var(--line);
     border-radius: 5px 16px 16px 16px;
     background: var(--paper-strong);
-    box-shadow: 0 5px 14px rgb(36 28 22 / 5%);
   }
 
   .message.mine {
@@ -462,12 +465,13 @@
     outline: 0;
     resize: none;
     background: var(--brand-secondary);
+    font: inherit;
   }
 
   .composer .send {
     width: 48px;
     height: 48px;
-    color: white;
+    color: var(--paper-strong);
     background: var(--action);
   }
 
@@ -511,7 +515,8 @@
 
   @media (max-width: 800px) {
     .messages-shell {
-      height: calc(100vh - var(--header-height));
+      height: calc(100vh - var(--header-height) - 58px);
+      height: calc(100dvh - var(--header-height) - 58px);
       min-height: 560px;
       grid-template-columns: 1fr;
       width: 100%;

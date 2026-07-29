@@ -1,5 +1,11 @@
 import type { ListingCardDto } from '$lib/contracts';
-import type { Audience, DealMode, ListingStatus, ProductFormat } from '$domain/types';
+import type {
+	Audience,
+	Concentration,
+	DealMode,
+	ListingStatus,
+	ProductFormat
+} from '$domain/types';
 
 export interface PerfumeVisualTheme {
 	glass: string;
@@ -10,12 +16,48 @@ export interface PerfumeVisualTheme {
 }
 
 const VISUAL_THEMES: readonly PerfumeVisualTheme[] = [
-	{ glass: '#263743', liquid: '#16242c', cap: '#11191e', backdrop: '#d7d8d5', shape: 'square' },
-	{ glass: '#a66a2c', liquid: '#6b3518', cap: '#bd8845', backdrop: '#ead4b4', shape: 'square' },
-	{ glass: '#32261f', liquid: '#1e1713', cap: '#19110e', backdrop: '#cbb6a4', shape: 'wide' },
-	{ glass: '#e4c4b5', liquid: '#d99d85', cap: '#d7c8bf', backdrop: '#f1ded4', shape: 'square' },
-	{ glass: '#a53232', liquid: '#701d21', cap: '#c1a06b', backdrop: '#ead2c8', shape: 'tall' },
-	{ glass: '#6e5c8f', liquid: '#4c3a70', cap: '#b5a365', backdrop: '#dcd4e5', shape: 'round' }
+	{
+		glass: 'var(--ink-soft)',
+		liquid: 'var(--ink)',
+		cap: 'var(--ink)',
+		backdrop: 'var(--brand-tertiary)',
+		shape: 'square'
+	},
+	{
+		glass: 'var(--action)',
+		liquid: 'var(--action-hover)',
+		cap: 'var(--ink)',
+		backdrop: 'var(--brand-main)',
+		shape: 'square'
+	},
+	{
+		glass: 'var(--ink)',
+		liquid: 'var(--action)',
+		cap: 'var(--ink)',
+		backdrop: 'var(--paper-deep)',
+		shape: 'wide'
+	},
+	{
+		glass: 'var(--line-strong)',
+		liquid: 'var(--action)',
+		cap: 'var(--ink-soft)',
+		backdrop: 'var(--paper-strong)',
+		shape: 'square'
+	},
+	{
+		glass: 'var(--action)',
+		liquid: 'var(--action-hover)',
+		cap: 'var(--line-strong)',
+		backdrop: 'var(--action-soft)',
+		shape: 'tall'
+	},
+	{
+		glass: 'var(--ink-soft)',
+		liquid: 'var(--action)',
+		cap: 'var(--line-strong)',
+		backdrop: 'var(--brand-secondary)',
+		shape: 'round'
+	}
 ];
 
 export const dealModeLabels: Readonly<Record<DealMode, string>> = {
@@ -29,6 +71,19 @@ export const productFormatLabels: Readonly<Record<ProductFormat, string>> = {
 	tester: 'Тестер',
 	official_sample: 'Официална мостра'
 };
+
+export const concentrationLabels: Readonly<Record<Concentration, string>> = {
+	EDT: 'Eau de Toilette (EDT)',
+	EDP: 'Eau de Parfum (EDP)',
+	PARFUM: 'Parfum',
+	EXTRAIT: 'Extrait de Parfum',
+	EDC: 'Eau de Cologne (EDC)',
+	OTHER_NOT_STATED: 'Концентрацията не е посочена'
+};
+
+export function formatConcentration(concentration: Concentration): string {
+	return concentrationLabels[concentration];
+}
 
 export const listingStatusLabels: Readonly<Record<ListingStatus, string>> = {
 	draft: 'Чернова',

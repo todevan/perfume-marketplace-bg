@@ -171,7 +171,7 @@ describe('payment adapter boundary', () => {
 	it('refuses enabled myPOS without an explicitly injected audited gateway', () => {
 		const adapter = createPaymentAdapter(
 			'mypos',
-			flags({ billing: true, myposPayments: true })
+			flags({ billing: true, myposPayments: true, listingFees: true })
 		);
 
 		expect(adapter.enabled).toBe(true);
@@ -193,7 +193,7 @@ describe('payment adapter boundary', () => {
 		};
 		const adapter = createPaymentAdapter(
 			'mypos',
-			flags({ billing: true, myposPayments: true }),
+			flags({ billing: true, myposPayments: true, listingFees: true }),
 			{ mypos: gateway }
 		);
 
@@ -206,6 +206,25 @@ describe('payment adapter boundary', () => {
 		expect(createCheckout).toHaveBeenCalledWith(
 			expect.objectContaining({ idempotencyKey: 'checkout:payment-1:v1' })
 		);
+	});
+
+	it('fails closed when the checkout purpose feature is disabled', async () => {
+		const createCheckout = vi.fn();
+		const adapter = createPaymentAdapter(
+			'mypos',
+			flags({ billing: true, myposPayments: true }),
+			{
+				mypos: {
+					createCheckout,
+					verifyCallback: vi.fn(),
+					getPaymentStatus: vi.fn(),
+					refund: vi.fn()
+				}
+			}
+		);
+
+		expect(() => adapter.createCheckout(checkoutRequest)).toThrow(PaymentsDisabledError);
+		expect(createCheckout).not.toHaveBeenCalled();
 	});
 
 	it('keeps Stripe fallback disabled unless its dedicated flag is enabled', () => {

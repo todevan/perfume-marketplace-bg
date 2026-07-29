@@ -16,7 +16,7 @@
 
 <section class="offers-page">
   <div class="container">
-    <header class="page-head"><div><span class="eyebrow">Структурирани намерения</span><h1>Оферти</h1><p>Приемането резервира обявата и отключва частен чат. То не е плащане или checkout.</p></div><BadgeEuro size={52} strokeWidth={1.2} /></header>
+    <header class="page-head"><div><span class="eyebrow">Структурирани намерения</span><h1>Оферти</h1><p>Приемането резервира обявата и отключва частен чат. Плащането и доставката се уговарят между профилите.</p></div><BadgeEuro size={52} strokeWidth={1.2} /></header>
     <nav class="tabs" aria-label="Вид оферти"><a class:active={data.direction === 'received'} href="/offers?direction=received">Получени</a><a class:active={data.direction === 'sent'} href="/offers?direction=sent">Изпратени</a></nav>
 
     {#if form?.error}<p class="action-error" role="alert">{form.error.message}</p>{/if}
@@ -47,18 +47,18 @@
 </section>
 
 <style>
-  .offers-page { min-height: 75vh; padding: clamp(2.5rem, 7vw, 6rem) 0; }
-  .page-head { display: flex; align-items: end; justify-content: space-between; gap: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--line); }
-  .page-head h1 { margin: .3rem 0; }
+  .offers-page { min-height: 72vh; padding: 6px 0 0; font-family: inherit; }
+  .page-head { display: flex; align-items: end; justify-content: space-between; gap: 2rem; padding-bottom: 1.6rem; border-bottom: 1px solid var(--line-strong); }
+  .page-head h1 { margin: .25rem 0 .5rem; font-size: clamp(2.45rem, 5vw, 4.4rem); }
   .page-head p { max-width: 650px; color: var(--ink-soft); }
   .page-head > :global(svg) { color: var(--action); }
-  .tabs { display: flex; gap: .5rem; padding: 1.25rem 0; }
-  .tabs a { min-height: 44px; padding: .72rem 1rem; border: 1px solid var(--line); border-radius: 999px; font-size: .78rem; font-weight: 700; }
-  .tabs a.active { color: white; background: var(--action); }
+  .tabs { display: flex; gap: .45rem; padding: 1.15rem 0; }
+  .tabs a { min-height: 44px; padding: .72rem 1rem; border: 1px solid var(--line-strong); border-radius: var(--radius-xs); color: var(--ink-soft); background: var(--paper-strong); font-size: .76rem; font-weight: 700; }
+  .tabs a.active { border-color: var(--action); color: var(--paper-strong); background: var(--action); }
   .offer-list { display: grid; gap: 1rem; }
-  .offer-card { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(230px, .7fr); gap: 1.2rem; padding: clamp(1.1rem, 3vw, 1.8rem); }
+  .offer-card { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(230px, .7fr); gap: 1.2rem; padding: clamp(1.1rem, 3vw, 1.8rem); border-color: var(--line-strong); }
   .offer-main { display: grid; grid-template-columns: 46px 1fr; gap: .85rem; }
-  .avatar { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; color: white; background: var(--action); font-weight: 700; }
+  .avatar { display: grid; width: 46px; height: 46px; place-items: center; border-radius: 50%; color: var(--paper-strong); background: var(--action); font-weight: 700; }
   .offer-main span, dt { color: var(--ink-faint); font-size: .66rem; text-transform: uppercase; letter-spacing: .07em; }
   .offer-main h2 { margin: .25rem 0; font-size: 1.35rem; }
   .offer-main p { margin: 0; color: var(--ink-soft); }
@@ -66,16 +66,16 @@
   dl div { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-bottom: .45rem; border-bottom: 1px solid var(--line); }
   dd { display: flex; align-items: center; gap: .35rem; margin: 0; font-size: .78rem; font-weight: 700; }
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: .5rem; grid-column: 1 / -1; padding-top: .8rem; border-top: 1px solid var(--line); }
-  .actions a, .actions button { display: inline-flex; min-height: 44px; align-items: center; gap: .4rem; padding: .65rem .9rem; border-radius: 8px; font-size: .72rem; font-weight: 700; }
+  .actions a, .actions button { display: inline-flex; min-height: 44px; align-items: center; gap: .4rem; padding: .65rem .9rem; border-radius: var(--radius-xs); font: inherit; font-size: .72rem; font-weight: 700; }
   .actions a { margin-right: auto; color: var(--action); }
-  .actions button { border: 1px solid var(--line); cursor: pointer; background: white; }
-  .actions .accept { border-color: var(--success); color: white; background: var(--success); }
+  .actions button { border: 1px solid var(--line-strong); cursor: pointer; background: var(--paper-strong); }
+  .actions .accept { border-color: var(--success); color: var(--paper-strong); background: var(--success); }
   .actions .decline { color: var(--danger); }
   .action-error, .action-success { padding: .9rem; border-radius: 8px; }
-  .action-error { color: var(--danger); background: rgb(141 47 54 / 8%); }
-  .action-success { color: var(--success); background: rgb(47 107 79 / 8%); }
-  .empty { display: grid; min-height: 340px; place-items: center; align-content: center; gap: .7rem; padding: 2rem; text-align: center; }
+  .action-error { color: var(--danger); background: var(--danger-soft); }
+  .action-success { color: var(--success); background: var(--success-soft); }
+  .empty { display: grid; min-height: 340px; place-items: center; align-content: center; gap: .7rem; padding: 2rem; border-color: var(--line-strong); text-align: center; }
   .empty h2, .empty p { margin: 0; }
   .empty p { color: var(--ink-soft); }
-  @media (max-width: 760px) { .offer-card { grid-template-columns: 1fr; } .actions { justify-content: flex-start; flex-wrap: wrap; } .actions a { width: 100%; } }
+  @media (max-width: 760px) { .page-head > :global(svg) { display: none; } .offer-card { grid-template-columns: 1fr; } .actions { justify-content: flex-start; flex-wrap: wrap; } .actions a { width: 100%; } }
 </style>

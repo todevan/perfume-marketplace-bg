@@ -2364,6 +2364,19 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      claim_notification_email_delivery_v2: {
+        Args: { target_notification_id: string; worker_request_id: string }
+        Returns: {
+          action_url: string | null
+          body: string
+          claimed_worker_request_id: string | null
+          kind: string
+          profile_id: string
+          provider_message_id: string | null
+          status: Database["public"]["Enums"]["notification_email_delivery_status"]
+          title: string
+        }[]
+      }
       claim_upload_cleanup: {
         Args: { target_limit: number; worker_request_id: string }
         Returns: {
@@ -2479,6 +2492,7 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      get_hosted_runtime_inventory: { Args: never; Returns: Json }
       get_my_beta_access: {
         Args: never
         Returns: {
@@ -2505,6 +2519,27 @@ export type Database = {
         Returns: boolean
       }
       is_staff: { Args: { check_user_id?: string }; Returns: boolean }
+      latest_messages_for_conversations: {
+        Args: { target_conversation_ids: string[] }
+        Returns: {
+          body: string
+          conversation_id: string
+          created_at: string
+          deleted_at: string | null
+          edited_at: string | null
+          id: string
+          reply_to_id: string | null
+          sender_id: string
+        }[]
+      }
+      list_received_offers: {
+        Args: {
+          filter_status?: Database["public"]["Enums"]["offer_status"]
+          page_offset?: number
+          page_size?: number
+        }
+        Returns: Database["public"]["Tables"]["offers"]["Row"][]
+      }
       mark_notification_email_failed: {
         Args: {
           error_code: string
@@ -2690,6 +2725,14 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      resolve_conversation_report: {
+        Args: {
+          decision: string
+          moderation_rationale: string
+          report_case_id: string
+        }
+        Returns: Json
+      }
       review_listing_authenticity: {
         Args: {
           report_case_id: string
@@ -2757,6 +2800,18 @@ export type Database = {
           slug: string
         }[]
       }
+      search_catalog_v2: {
+        Args: { page_offset?: number; page_size?: number; search_query: string }
+        Returns: {
+          brand_id: string
+          entity_type: string
+          id: string
+          label: string
+          relevance: number
+          secondary_label: string | null
+          slug: string
+        }[]
+      }
       search_listings: {
         Args: {
           cursor_activated_at?: string
@@ -2775,6 +2830,33 @@ export type Database = {
           listing_id: string
           relevance: number
           slug: string
+        }[]
+      }
+      search_listings_v2: {
+        Args: {
+          cursor_activated_at?: string
+          cursor_id?: string
+          cursor_price_minor?: number
+          filter_audience?: Database["public"]["Enums"]["audience"]
+          filter_brand_id?: string
+          filter_city?: string
+          filter_deal_mode?: Database["public"]["Enums"]["deal_mode"]
+          filter_fragrance_id?: string
+          filter_kind?: Database["public"]["Enums"]["listing_kind"]
+          filter_product_format?: Database["public"]["Enums"]["product_format"]
+          filter_segments?: Database["public"]["Enums"]["segment"][]
+          max_price_minor?: number
+          min_price_minor?: number
+          page_size?: number
+          search_query?: string
+          sort_mode?: string
+        }
+        Returns: {
+          activated_at: string
+          listing_id: string
+          relevance: number
+          slug: string
+          sort_price_minor: number | null
         }[]
       }
       slugify_marketplace: { Args: { value: string }; Returns: string }

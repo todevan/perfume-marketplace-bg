@@ -44,17 +44,23 @@ async function hydrateDeals(
 	];
 	const profileIds = [...new Set(rows.flatMap((row) => [row.party_a_id, row.party_b_id]))];
 	const dealIds = rows.map((row) => row.id);
-	const [listingsResult, profilesResult, confirmationsResult] = await Promise.all([
+	const acceptedOfferIds = rows.map((row) => row.accepted_offer_id);
+	const [listingsResult, profilesResult, confirmationsResult, conversationsResult] = await Promise.all([
 		client.from('listings').select(LISTING_PROJECTION).in('id', listingIds),
 		client
 			.from('public_profiles')
 			.select('id,username,avatar_path,account_kind,is_merchant_verified')
 			.in('id', profileIds),
-		client.from('deal_confirmations').select('*').in('deal_id', dealIds)
+		client.from('deal_confirmations').select('*').in('deal_id', dealIds),
+		client
+			.from('conversations')
+			.select('id,accepted_offer_id')
+			.in('accepted_offer_id', acceptedOfferIds)
 	]);
 	throwIfError('deals.listings', listingsResult.error);
 	throwIfError('deals.profiles', profilesResult.error);
 	throwIfError('deals.confirmations', confirmationsResult.error);
+	throwIfError('deals.conversations', conversationsResult.error);
 
 	const listings = await hydrateListingCards(
 		client,
@@ -68,18 +74,26 @@ async function hydrateDeals(
 		})
 	);
 	const confirmations = (confirmationsResult.data ?? []) as ConfirmationRow[];
+	const conversationByOffer = new Map(
+		(conversationsResult.data ?? []).map((conversation) => [
+			conversation.accepted_offer_id,
+			conversation.id
+		])
+	);
 
 	return rows.flatMap((row) => {
 		const listing = listingById.get(row.listing_id);
 		const partyA = profileById.get(row.party_a_id) ?? removedActor(row.party_a_id);
 		const partyB = profileById.get(row.party_b_id) ?? removedActor(row.party_b_id);
-		if (!listing) return [];
+		const conversationId = conversationByOffer.get(row.accepted_offer_id);
+		if (!listing || !conversationId) return [];
 		return [{
 			id: row.id,
 			listing,
 			offeredListing: row.offered_listing_id ? listingById.get(row.offered_listing_id) ?? null : null,
 			partyA,
 			partyB,
+			conversationId,
 			status: row.status,
 			confirmedBy: confirmations
 				.filter((confirmation) => confirmation.deal_id === row.id)

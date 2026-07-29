@@ -68,12 +68,13 @@ export async function searchCatalog(
 	input: CatalogSearchInput
 ): Promise<CatalogSearchDto> {
 	if (input.query) {
-		const { data: matches, error: searchError } = await client.rpc('search_catalog', {
+		const { data: matches, error: searchError } = await client.rpc('search_catalog_v2', {
 			search_query: input.query,
-			page_size: Math.min(50, input.limit + input.offset)
+			page_size: input.limit,
+			page_offset: input.offset
 		});
 		throwIfError('catalog.searchRpc', searchError);
-		const pageMatches = (matches ?? []).slice(input.offset, input.offset + input.limit);
+		const pageMatches = matches ?? [];
 		const brandIds = [...new Set(pageMatches.filter((row) => row.entity_type === 'brand').map((row) => row.id))];
 		const fragranceIds = [...new Set(pageMatches.filter((row) => row.entity_type === 'fragrance').map((row) => row.id))];
 		const brandRows = new Map<string, BrandSummaryDto>();

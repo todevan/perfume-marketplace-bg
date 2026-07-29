@@ -23,7 +23,7 @@ invitations.
 |---|---|
 | GitHub | `todevan/perfume-marketplace-bg` exists as the new canonical private repository. The older `todevan/remix-of-scent-exchange` repository remains untouched. |
 | Quality CI | Workflow run `30343704378` is green on `main` commit `39867216c0440077476ce13f89bd1f40505bef8e`: application job `90224876706` and database job `90224876599` both passed. |
-| Local database | The disposable local stack matches hosted PostgreSQL major version 17. Migrations `001`–`010` apply locally, SQL lint is clean, and all 111 pgTAP assertions pass. |
+| Local database | The disposable local stack matches hosted PostgreSQL major version 17. Migrations `001`–`011` apply locally, SQL lint is clean, and all 132 pgTAP assertions pass. |
 | Local catalogue | The atomic seed contains 196 brands, 48 aliases, and 335 editorial memberships. Membership counts are exactly 80 men, 80 women, 80 unisex, 80 niche, and 15 Arabic. |
 | Cloudflare account | Account ID `0cb7373563c400a08bd46564320dd747` owns the staging Worker. |
 | Cloudflare Worker | `perfume-marketplace-bg-staging` is available at `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev`. |

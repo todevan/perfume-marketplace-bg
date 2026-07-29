@@ -117,6 +117,9 @@
       <div class="main-visual">
         {#if listing.photos[selectedPhoto]}
           <img class="main-photo" src={listing.photos[selectedPhoto].imageUrl} alt={`${listing.brandName} ${listing.fragranceName} — ${photoRoleLabels[listing.photos[selectedPhoto].role] ?? 'снимка'}`} />
+          {#if data.demoMode && listing.photos[selectedPhoto].imageUrl.startsWith('/demo/')}
+            <span class="synthetic-label main-synthetic">СИНТЕТИЧНА СНИМКА</span>
+          {/if}
         {:else}
           <PerfumeVisual {visual} {percent} label={`${listing.brandName}-${listing.id}-detail`} />
         {/if}
@@ -127,7 +130,11 @@
         {#if listing.photos.length}
           {#each listing.photos as photo, index (photo.id)}
             <button class:active={index === selectedPhoto} aria-label={`Покажи ${photoRoleLabels[photo.role] ?? 'снимката'}`} onclick={() => (selectedPhoto = index)}>
-              <img class="thumb-photo" src={photo.imageUrl} alt="" loading="lazy" /><span>{photoRoleLabels[photo.role] ?? 'Снимка'}</span>
+              <img class="thumb-photo" src={photo.imageUrl} alt="" loading="lazy" />
+              {#if data.demoMode && photo.imageUrl.startsWith('/demo/')}
+                <span class="synthetic-label thumb-synthetic">СИНТЕТИЧНА СНИМКА</span>
+              {/if}
+              <span class="photo-role">{photoRoleLabels[photo.role] ?? 'Снимка'}</span>
             </button>
           {/each}
         {:else}
@@ -160,7 +167,7 @@
       {/if}
 
       <div class="primary-actions">
-        <button bind:this={offerTrigger} class="button primary" aria-haspopup="dialog" aria-expanded={offerOpen} onclick={openOffer}>{listing.dealMode === 'swap' ? 'Предложи размяна' : 'Изпрати оферта'} <ArrowRight size={18} /></button>
+        <button bind:this={offerTrigger} class="button primary" aria-haspopup="dialog" aria-expanded={offerOpen} onclick={openOffer}>{listing.kind === 'wanted' ? 'Имам този аромат' : listing.dealMode === 'swap' ? 'Предложи размяна' : 'Изпрати оферта'} <ArrowRight size={18} /></button>
         <form method="POST" action={favorite ? '?/unfavorite' : '?/favorite'}><input type="hidden" name="listingId" value={listing.id} /><button type="submit" class:active={favorite} class="favorite" aria-label={favorite ? 'Премахни от любими' : 'Добави в любими'} aria-pressed={favorite}><Heart size={20} fill={favorite ? 'currentColor' : 'none'} /></button></form>
       </div>
       {#if form?.favoriteError}<p class="favorite-error" role="alert">{form.favoriteError}</p>{/if}
@@ -201,14 +208,14 @@
   <section class="similar section">
     <div class="container">
       <div class="section-heading"><div><span class="eyebrow">Още от общността</span><h2>Може да ти допаднат.</h2></div></div>
-      <div class="similar-grid">{#each data.similar as item (item.id)}<ListingCard listing={item} compact />{/each}</div>
+      <div class="similar-grid">{#each data.similar as item (item.id)}<ListingCard listing={item} variant="compact" />{/each}</div>
     </div>
   </section>
 
   {#if offerOpen}
     <button class="offer-scrim" aria-label="Затвори офертата" onclick={closeOffer}></button>
     <div class="offer-panel" role="dialog" aria-modal="true" aria-labelledby="offer-title" tabindex="-1" onkeydown={handleOfferKeydown}>
-      <div class="offer-head"><div><span>Неподвързващо намерение</span><h2 id="offer-title">Твоята оферта</h2></div><button bind:this={offerCloseButton} aria-label="Затвори" onclick={closeOffer}><X size={22} /></button></div>
+      <div class="offer-head"><div><span>Неподвързващо намерение</span><h2 id="offer-title">{listing.kind === 'wanted' ? 'Предложи своя флакон' : 'Твоята оферта'}</h2></div><button bind:this={offerCloseButton} aria-label="Затвори" onclick={closeOffer}><X size={22} /></button></div>
       {#if form?.offerResult?.ok}
         <div class="offer-success" role="status"><div><Check size={32} /></div><h3>Офертата е изпратена.</h3><p>Продавачът трябва първо да я приеме. Едва тогава може да бъде създадена защитена нишка за уточняване на сделката.</p><a class="button primary" href="/offers?direction=sent">Виж изпратените оферти <ArrowRight size={17} /></a></div>
       {:else}
@@ -235,7 +242,7 @@
 <style>
   .breadcrumbs {
     display: flex;
-    min-height: 64px;
+    min-height: 58px;
     align-items: center;
     gap: 7px;
     overflow: hidden;
@@ -259,9 +266,9 @@
   .listing-detail {
     display: grid;
     align-items: start;
-    grid-template-columns: minmax(0, 1.08fr) minmax(390px, 0.92fr);
-    gap: clamp(36px, 6vw, 80px);
-    padding-bottom: 70px;
+    grid-template-columns: minmax(0, 1.06fr) minmax(380px, 0.94fr);
+    gap: clamp(34px, 5vw, 72px);
+    padding-bottom: 76px;
   }
 
   .gallery {
@@ -272,15 +279,16 @@
   .main-visual {
     position: relative;
     overflow: hidden;
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--paper-strong);
   }
 
   .main-photo {
     display: block;
     width: 100%;
-    height: min(67vh, 680px);
-    min-height: 480px;
+    height: min(68vh, 660px);
+    min-height: 460px;
     object-fit: cover;
     background: var(--brand-tertiary);
   }
@@ -290,7 +298,8 @@
   }
 
   .photo-count,
-  .main-visual > .evidence {
+  .main-visual > .evidence,
+  .main-synthetic {
     position: absolute;
     z-index: 2;
   }
@@ -299,18 +308,37 @@
     right: 18px;
     bottom: 18px;
     padding: 7px 10px;
-    border-radius: 999px;
+    border: 1px solid rgb(255 253 249 / 42%);
+    border-radius: 4px;
     color: var(--paper-strong);
-    background: rgb(36 28 22 / 72%);
+    background: rgb(36 28 22 / 88%);
     font-size: 0.7rem;
-    backdrop-filter: blur(8px);
   }
 
   .main-visual > .evidence {
     top: 18px;
     left: 18px;
     color: var(--success);
-    background: rgb(255 253 249 / 90%);
+    background: var(--paper-strong);
+  }
+
+  .synthetic-label {
+    display: inline-flex;
+    min-height: 20px;
+    align-items: center;
+    padding: 3px 6px;
+    border: 1px solid var(--paper-strong);
+    color: var(--paper-strong);
+    background: var(--ink);
+    font-size: 0.55rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.03em;
+  }
+
+  .main-synthetic {
+    bottom: 18px;
+    left: 18px;
   }
 
   .thumbs {
@@ -326,13 +354,15 @@
     padding: 0;
     overflow: hidden;
     border: 1px solid transparent;
-    border-radius: 10px;
-    background: transparent;
+    border-radius: 4px;
+    background: var(--paper-strong);
     cursor: pointer;
   }
 
   .thumbs button.active {
     border-color: var(--action);
+    outline: 1px solid var(--action);
+    outline-offset: 2px;
   }
 
   :global(.thumbs .visual) {
@@ -346,20 +376,34 @@
     object-fit: cover;
   }
 
-  .thumbs span {
+  .thumbs .photo-role {
     position: absolute;
     right: 4px;
     bottom: 4px;
     left: 4px;
     padding: 4px;
-    border-radius: 5px;
+    border-radius: 2px;
     color: white;
     background: rgb(36 28 22 / 65%);
     font-size: 0.62rem;
   }
 
+  .thumbs .thumb-synthetic {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    left: 4px;
+    min-height: 0;
+    justify-content: center;
+    padding: 3px;
+    font-size: 0.44rem;
+    line-height: 1.1;
+    text-align: center;
+  }
+
   .detail-copy {
-    padding-top: 18px;
+    padding: 28px 0 0;
+    border-top: 4px solid var(--action);
   }
 
   .listing-flags {
@@ -381,7 +425,9 @@
 
   h1 {
     margin-bottom: 10px;
-    font-size: clamp(3rem, 6vw, 5.4rem);
+    font-size: clamp(2.75rem, 5.4vw, 4.8rem);
+    font-style: normal;
+    letter-spacing: -0.06em;
   }
 
   .variant {
@@ -397,7 +443,7 @@
 
   .price-line strong {
     font-size: 2rem;
-    font-style: italic;
+    font-style: normal;
   }
 
   .price-line span {
@@ -407,13 +453,15 @@
 
   .quantity {
     padding: 18px;
-    box-shadow: none;
+    border-color: var(--line);
+    border-radius: 6px;
+    background: var(--paper-strong);
   }
 
   .fill-track {
     height: 8px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: 2px;
     background: var(--brand-tertiary);
   }
 
@@ -482,8 +530,8 @@
     height: 48px;
     place-items: center;
     border: 1px solid var(--line-strong);
-    border-radius: 50%;
-    background: transparent;
+    border-radius: 4px;
+    background: var(--paper-strong);
     cursor: pointer;
   }
 
@@ -509,7 +557,9 @@
     grid-template-columns: 48px 1fr 42px;
     gap: 13px;
     padding: 18px;
-    box-shadow: none;
+    border-color: var(--line);
+    border-radius: 6px;
+    background: var(--paper-strong);
   }
 
   .avatar {
@@ -517,11 +567,11 @@
     width: 48px;
     height: 48px;
     place-items: center;
-    border-radius: 50%;
+    border-radius: 4px;
     color: var(--paper-strong);
     background: var(--action);
     font-weight: 700;
-    font-style: italic;
+    font-style: normal;
   }
 
   .seller-info {
@@ -553,7 +603,8 @@
     width: 44px;
     height: 44px;
     place-items: center;
-    border-radius: 50%;
+    border: 1px solid var(--line);
+    border-radius: 4px;
     background: var(--brand-main);
   }
 
@@ -577,8 +628,8 @@
   .info-grid {
     display: grid;
     grid-template-columns: 1fr 360px;
-    gap: 80px;
-    padding-block: 65px 100px;
+    gap: clamp(42px, 7vw, 84px);
+    padding-block: 64px 96px;
     border-top: 1px solid var(--line);
   }
 
@@ -617,8 +668,8 @@
     margin-top: 22px;
     padding: 14px 17px;
     border: 1px solid var(--line);
-    border-radius: 10px;
-    background: rgb(255 253 249 / 56%);
+    border-radius: 4px;
+    background: var(--paper-strong);
   }
 
   .external-reference span {
@@ -631,7 +682,7 @@
 
   .safety-note {
     padding: 28px;
-    border-radius: var(--radius-md);
+    border-radius: 6px;
     color: var(--brand-secondary);
     background: var(--ink);
   }
@@ -677,13 +728,14 @@
   }
 
   .similar {
-    background: rgb(243 223 191 / 38%);
+    border-top: 1px solid var(--line);
+    background: var(--brand-secondary);
   }
 
   .similar-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 17px;
+    gap: 14px;
   }
 
   .offer-scrim {
@@ -692,7 +744,6 @@
     z-index: 80;
     border: 0;
     background: rgb(36 28 22 / 52%);
-    backdrop-filter: blur(5px);
   }
 
   .offer-panel {
@@ -703,9 +754,9 @@
     z-index: 90;
     width: min(92vw, 520px);
     padding: 28px;
+    border-left: 1px solid var(--line);
     overflow-y: auto;
-    background: var(--brand-secondary);
-    box-shadow: var(--shadow-lg);
+    background: var(--paper-strong);
   }
 
   .offer-head {
@@ -735,7 +786,8 @@
     height: 44px;
     place-items: center;
     border: 0;
-    border-radius: 50%;
+    border: 1px solid var(--line);
+    border-radius: 4px;
     background: var(--brand-tertiary);
     cursor: pointer;
   }
@@ -753,7 +805,7 @@
     gap: 10px;
     padding: 14px;
     border: 1px solid rgb(138 91 22 / 30%);
-    border-radius: 10px;
+    border-radius: 4px;
     color: var(--warning);
     background: rgb(138 91 22 / 7%);
   }
@@ -789,7 +841,7 @@
     place-items: center;
     padding: 7px;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 4px;
     background: var(--paper-strong);
     cursor: pointer;
     font-size: 0.72rem;
@@ -816,7 +868,7 @@
     display: grid;
     grid-template-columns: auto 1fr;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 4px;
     background: var(--paper-strong);
   }
 

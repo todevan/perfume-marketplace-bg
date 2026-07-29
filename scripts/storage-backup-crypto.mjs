@@ -34,8 +34,8 @@ export function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-/** @param {Buffer} salt @param {number} fileCount */
-export function createDescriptor(salt, fileCount) {
+/** @param {Buffer} salt @param {number} fileCount @param {Record<string, unknown>} [metadata] */
+export function createDescriptor(salt, fileCount, metadata = {}) {
   return {
     format: 'perfume-marketplace-storage-backup',
     version: FORMAT_VERSION,
@@ -43,7 +43,8 @@ export function createDescriptor(salt, fileCount) {
     kdf: 'scrypt-N32768-r8-p1',
     salt: salt.toString('base64'),
     files: fileCount,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    ...metadata
   };
 }
 
@@ -60,4 +61,55 @@ export function validateDescriptor(descriptor) {
   ) {
     throw new Error('Unsupported storage backup format');
   }
+  if (
+    value.kdf !== 'scrypt-N32768-r8-p1' ||
+    !Number.isInteger(value.files) ||
+    Number(value.files) < 0 ||
+    typeof value.createdAt !== 'string' ||
+    Number.isNaN(Date.parse(value.createdAt)) ||
+    typeof value.salt !== 'string' ||
+    Buffer.from(value.salt, 'base64').length !== 32
+  ) {
+    throw new Error('Invalid storage backup descriptor');
+  }
+}
+
+/** @param {unknown} manifest @param {number} expectedFiles */
+export function validateManifest(manifest, expectedFiles) {
+  const value =
+    manifest && typeof manifest === 'object'
+      ? /** @type {Record<string, unknown>} */ (manifest)
+      : {};
+  if (value.bucket !== 'listing-images' || !Array.isArray(value.files)) {
+    throw new Error('Invalid storage backup manifest');
+  }
+  if (value.files.length !== expectedFiles) {
+    throw new Error('Backup manifest file count mismatch');
+  }
+  const paths = new Set();
+  const backupNames = new Set();
+  for (const rawFile of value.files) {
+    const file =
+      rawFile && typeof rawFile === 'object'
+        ? /** @type {Record<string, unknown>} */ (rawFile)
+        : {};
+    if (
+      typeof file.path !== 'string' ||
+      !/^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(?:jpg|webp|avif)$/iu.test(file.path) ||
+      typeof file.backupName !== 'string' ||
+      !/^[a-f0-9]{64}\.bin$/u.test(file.backupName) ||
+      typeof file.sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(file.sha256) ||
+      !Number.isSafeInteger(file.bytes) ||
+      Number(file.bytes) < 1 ||
+      !['image/jpeg', 'image/webp', 'image/avif'].includes(String(file.contentType)) ||
+      paths.has(file.path) ||
+      backupNames.has(file.backupName)
+    ) {
+      throw new Error('Invalid storage backup manifest entry');
+    }
+    paths.add(file.path);
+    backupNames.add(file.backupName);
+  }
+  return /** @type {{bucket: 'listing-images'; files: Array<{path:string; backupName:string; sha256:string; bytes:number; contentType:string}>}} */ (value);
 }

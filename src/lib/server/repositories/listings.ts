@@ -36,7 +36,7 @@ type AuthenticityRelation = Pick<
 	Tables<'listing_authenticity_reviews'>,
 	'status' | 'public_note'
 >;
-type SearchListingsArgs = Database['public']['Functions']['search_listings']['Args'];
+type SearchListingsArgs = Database['public']['Functions']['search_listings_v2']['Args'];
 
 const SERVER_MANAGED_SLUG_PLACEHOLDER = 'server-managed';
 
@@ -91,7 +91,8 @@ function photoDtos(
 
 export function toListingCardDto(
 	row: ListingJoinedRow,
-	imageUrls: ReadonlyMap<string, string> = new Map()
+	imageUrls: ReadonlyMap<string, string> = new Map(),
+	favoriteListingIds: ReadonlySet<string> = new Set()
 ): ListingCardDto {
 	const brand = oneRelation(row.brand);
 	const seller = oneRelation(row.seller) ?? removedSeller(row.seller_id);
@@ -119,18 +120,20 @@ export function toListingCardDto(
 		seller: actorDto(seller),
 		primaryPhoto: photos[0] ?? null,
 		authenticityReviewed: authenticity?.status === 'evidence_reviewed',
+		isFavorite: favoriteListingIds.has(row.id),
 		createdAt: row.created_at
 	};
 }
 
 export function toListingDetailDto(
 	row: ListingJoinedRow,
-	imageUrls: ReadonlyMap<string, string> = new Map()
+	imageUrls: ReadonlyMap<string, string> = new Map(),
+	favoriteListingIds: ReadonlySet<string> = new Set()
 ): ListingDetailDto {
 	const photos = photoDtos(row.photos, imageUrls);
 	const authenticity = oneRelation(row.authenticity);
 	return {
-		...toListingCardDto(row, imageUrls),
+		...toListingCardDto(row, imageUrls, favoriteListingIds),
 		productFormat: row.product_format,
 		audience: row.audience,
 		segments: row.segments,
@@ -172,16 +175,32 @@ async function attachPublicSellers(
 	}));
 }
 
+async function favoriteListingIds(
+	client: MarketplaceSupabaseClient,
+	listingIds: readonly string[]
+): Promise<ReadonlySet<string>> {
+	if (listingIds.length === 0) return new Set();
+	const { data, error } = await client
+		.from('favorites')
+		.select('listing_id')
+		.in('listing_id', [...new Set(listingIds)]);
+	throwIfError('listings.favorites', error);
+	return new Set((data ?? []).map((row) => row.listing_id));
+}
+
 export async function hydrateListingCards(
 	client: MarketplaceSupabaseClient,
 	rows: readonly ListingJoinedRow[]
 ): Promise<readonly ListingCardDto[]> {
 	const hydratedRows = await attachPublicSellers(client, rows);
-	const urls = await signedListingImageUrls(
-		client,
-		hydratedRows.flatMap((row) => (row.photos ?? []).map((photo) => photo.storage_path))
-	);
-	return hydratedRows.map((row) => toListingCardDto(row, urls));
+	const [urls, favorites] = await Promise.all([
+		signedListingImageUrls(
+			client,
+			hydratedRows.flatMap((row) => (row.photos ?? []).map((photo) => photo.storage_path))
+		),
+		favoriteListingIds(client, hydratedRows.map((row) => row.id))
+	]);
+	return hydratedRows.map((row) => toListingCardDto(row, urls, favorites));
 }
 
 export async function hydrateListingDetails(
@@ -189,33 +208,40 @@ export async function hydrateListingDetails(
 	rows: readonly ListingJoinedRow[]
 ): Promise<readonly ListingDetailDto[]> {
 	const hydratedRows = await attachPublicSellers(client, rows);
-	const urls = await signedListingImageUrls(
-		client,
-		hydratedRows.flatMap((row) => (row.photos ?? []).map((photo) => photo.storage_path))
-	);
-	return hydratedRows.map((row) => toListingDetailDto(row, urls));
+	const [urls, favorites] = await Promise.all([
+		signedListingImageUrls(
+			client,
+			hydratedRows.flatMap((row) => (row.photos ?? []).map((photo) => photo.storage_path))
+		),
+		favoriteListingIds(client, hydratedRows.map((row) => row.id))
+	]);
+	return hydratedRows.map((row) => toListingDetailDto(row, urls, favorites));
 }
 
 export async function searchListings(
 	client: MarketplaceSupabaseClient,
 	input: ListingSearchInput
 ): Promise<ListingPageDto> {
-	const needsPostFilter = Boolean(input.kind || input.productFormat || input.brandId || input.fragranceId);
-	const rpcPageSize = needsPostFilter ? 60 : Math.min(60, input.limit + 1);
 	const searchArgs: SearchListingsArgs = {
-		page_size: rpcPageSize,
+		page_size: Math.min(60, input.limit + 1),
+		sort_mode: input.sort,
 		...(input.query ? { search_query: input.query } : {}),
 		...(input.audience ? { filter_audience: input.audience } : {}),
 		...(input.segments.length ? { filter_segments: [...input.segments] } : {}),
 		...(input.dealMode ? { filter_deal_mode: input.dealMode } : {}),
 		...(input.city ? { filter_city: input.city } : {}),
+		...(input.kind ? { filter_kind: input.kind } : {}),
+		...(input.productFormat ? { filter_product_format: input.productFormat } : {}),
+		...(input.brandId ? { filter_brand_id: input.brandId } : {}),
+		...(input.fragranceId ? { filter_fragrance_id: input.fragranceId } : {}),
 		...(input.minPriceMinor !== undefined ? { min_price_minor: input.minPriceMinor } : {}),
 		...(input.maxPriceMinor !== undefined ? { max_price_minor: input.maxPriceMinor } : {}),
 		...(input.cursorActivatedAt ? { cursor_activated_at: input.cursorActivatedAt } : {}),
+		...(input.cursorPriceMinor !== undefined ? { cursor_price_minor: input.cursorPriceMinor } : {}),
 		...(input.cursorId ? { cursor_id: input.cursorId } : {})
 	};
 	const { data: searchRows, error: searchError } = await client.rpc(
-		'search_listings',
+		'search_listings_v2',
 		searchArgs
 	);
 	throwIfError('listings.searchRpc', searchError);
@@ -228,18 +254,19 @@ export async function searchListings(
 			offset: input.offset,
 			hasMore: false,
 			nextCursor: null,
-			totalIsExact: input.offset === 0
+			totalIsExact:
+				input.offset === 0 &&
+				input.cursorActivatedAt === undefined &&
+				input.cursorPriceMinor === undefined
 		};
 	}
 
-	let detailsQuery = client
+	const hasMore = candidates.length > input.limit;
+	const visibleCandidates = candidates.slice(0, input.limit);
+	const detailsQuery = client
 		.from('listings')
 		.select(LISTING_PROJECTION)
-		.in('id', candidates.map((row) => row.listing_id));
-	if (input.kind) detailsQuery = detailsQuery.eq('kind', input.kind);
-	if (input.productFormat) detailsQuery = detailsQuery.eq('product_format', input.productFormat);
-	if (input.brandId) detailsQuery = detailsQuery.eq('brand_id', input.brandId);
-	if (input.fragranceId) detailsQuery = detailsQuery.eq('fragrance_id', input.fragranceId);
+		.in('id', visibleCandidates.map((row) => row.listing_id));
 	const { data: listingRows, error: listingError } = await detailsQuery;
 	throwIfError('listings.searchHydrate', listingError);
 	const hydrated = await hydrateListingCards(
@@ -247,43 +274,30 @@ export async function searchListings(
 		(listingRows ?? []) as unknown as ListingJoinedRow[]
 	);
 	const byId = new Map(hydrated.map((listing) => [listing.id, listing]));
-	let ordered = candidates.flatMap((candidate) => {
+	const items = visibleCandidates.flatMap((candidate) => {
 		const listing = byId.get(candidate.listing_id);
 		return listing ? [listing] : [];
 	});
-	if (input.sort === 'price_asc' || input.sort === 'price_desc') {
-		ordered = [...ordered].sort((left, right) => {
-			const leftPrice = left.price?.amountMinor ?? left.maxBudget?.amountMinor ?? Number.POSITIVE_INFINITY;
-			const rightPrice = right.price?.amountMinor ?? right.maxBudget?.amountMinor ?? Number.POSITIVE_INFINITY;
-			return input.sort === 'price_asc' ? leftPrice - rightPrice : rightPrice - leftPrice;
-		});
-	}
-	const items = ordered.slice(0, input.limit);
-	const lastVisibleId = input.sort === 'newest' ? items.at(-1)?.id : null;
-	const lastVisibleIndex = lastVisibleId
-		? candidates.findIndex((candidate) => candidate.listing_id === lastVisibleId)
-		: -1;
-	const exhaustedCandidateWindow = candidates.length < rpcPageSize;
-	const hasMore = input.sort === 'newest'
-		? lastVisibleIndex >= 0
-			? lastVisibleIndex < candidates.length - 1 || !exhaustedCandidateWindow
-			: !exhaustedCandidateWindow
-		: !exhaustedCandidateWindow || ordered.length > input.limit;
-	const cursorRow = hasMore
-		? input.sort === 'newest' && lastVisibleIndex >= 0
-			? candidates[lastVisibleIndex]
-			: candidates.at(-1)
-		: null;
+	const cursorRow = hasMore ? visibleCandidates.at(-1) : null;
 	return {
 		items,
 		total: input.offset + items.length + (hasMore ? 1 : 0),
 		limit: input.limit,
 		offset: input.offset,
 		hasMore,
-		nextCursor: cursorRow?.activated_at
-			? { activatedAt: cursorRow.activated_at, id: cursorRow.listing_id }
+		nextCursor: cursorRow
+			? {
+					sort: input.sort,
+					activatedAt: input.sort === 'newest' ? cursorRow.activated_at : null,
+					priceMinor: input.sort === 'newest' ? null : cursorRow.sort_price_minor,
+					id: cursorRow.listing_id
+				}
 			: null,
-		totalIsExact: !hasMore && input.offset === 0
+		totalIsExact:
+			!hasMore &&
+			input.offset === 0 &&
+			input.cursorActivatedAt === undefined &&
+			input.cursorPriceMinor === undefined
 	};
 }
 

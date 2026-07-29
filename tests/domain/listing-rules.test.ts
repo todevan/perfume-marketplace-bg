@@ -142,7 +142,8 @@ describe('photo evidence contracts', () => {
 		expect([...requiredPhotoRoles(makeListing({ productFormat: 'official_sample' }))]).toEqual([
 			'product_full',
 			'manufacturer_label',
-			'manufacturer_markings'
+			'manufacturer_markings',
+			'seal'
 		]);
 	});
 
