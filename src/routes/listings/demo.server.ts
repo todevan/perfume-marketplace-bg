@@ -7,6 +7,16 @@ import type {
 import { demoListings, type DemoListing } from '$lib/data/demo';
 
 const UUID_PREFIX = '00000000-0000-4000-8000-';
+const DEMO_IMAGE_PATHS = [
+	'/demo/listings/sauvage-dark-bottle.webp',
+	'/demo/listings/khamrah-amber-bottle.webp',
+	'/demo/listings/oud-wood-smoky-bottle.webp',
+	'/demo/listings/coco-rose-bottle.webp',
+	'/demo/listings/baccarat-ruby-bottle.webp',
+	'/demo/listings/libre-honey-bottle.webp',
+	'/demo/listings/interlude-blue-bottle.webp',
+	'/demo/listings/erba-violet-bottle.webp'
+] as const;
 
 function uuidFor(index: number, group = 0): string {
 	return `${UUID_PREFIX}${String(group * 1000 + index + 1).padStart(12, '0')}`;
@@ -52,8 +62,13 @@ function demoCard(item: DemoListing, index: number): ListingCardDto {
 			accountKind: item.sellerKind === 'Проверен търговец' ? 'merchant' : 'private',
 			merchantVerified: item.sellerKind === 'Проверен търговец'
 		},
-		primaryPhoto: null,
-		authenticityReviewed: item.verifiedEvidence === true,
+		primaryPhoto: {
+			id: uuidFor(index, 3),
+			imageUrl: DEMO_IMAGE_PATHS[index],
+			role: 'product_full',
+			sortOrder: 0
+		},
+		authenticityReviewed: false,
 		createdAt: new Date(Date.UTC(2026, 6, 22, 12 - index)).toISOString()
 	};
 }
@@ -74,8 +89,8 @@ export function getDemoListingBySlug(slug: string): ListingDetailDto | null {
 		description: source.description,
 		estimatedValue: null,
 		referenceUrl: source.fragranticaUrl ?? null,
-		photos: [],
-		authenticityNote: source.verifiedEvidence ? 'Доказателствените снимки са прегледани.' : null,
+		photos: cards[index].primaryPhoto ? [cards[index].primaryPhoto] : [],
+		authenticityNote: null,
 		activatedAt: cards[index].createdAt,
 		expiresAt: null,
 		updatedAt: cards[index].createdAt

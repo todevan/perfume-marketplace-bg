@@ -37,9 +37,28 @@
 <style>
 	.publish-page {
 		min-height: 100vh;
-		padding: clamp(1.25rem, 4vw, 3.5rem) clamp(0.75rem, 3vw, 2rem) clamp(3rem, 8vw, 6rem);
-		background:
-			radial-gradient(circle at 8% 4%, rgb(243 223 191 / 0.72), transparent 28rem),
-			linear-gradient(180deg, var(--brand-secondary, #f4ece1), color-mix(in srgb, #f4ece1 72%, #ffffff));
+		padding: clamp(1.5rem, 4vw, 3.25rem) clamp(0.75rem, 3vw, 2rem) clamp(3rem, 8vw, 6rem);
+		background: var(--brand-secondary, #f4ece1);
+		font-family: inherit;
+		font-style: normal;
+	}
+
+	.publish-page :global(.wizard-shell),
+	.publish-page :global(.wizard-shell *) {
+		font-family: inherit !important;
+		font-style: normal !important;
+	}
+
+	.publish-page :global(.wizard-shell form),
+	.publish-page :global(.success-card),
+	.publish-page :global(.brand-options),
+	.publish-page :global(.choice-card),
+	.publish-page :global(.photo-card),
+	.publish-page :global(.primary-button) {
+		box-shadow: none !important;
+	}
+
+	.publish-page :global(.hero-review) {
+		background: var(--paper, #f8f3eb) !important;
 	}
 </style>

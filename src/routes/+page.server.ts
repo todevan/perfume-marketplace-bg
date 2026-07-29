@@ -20,7 +20,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	if (locals.runtime.mode === 'demo') {
 		return {
-			latest: browseDemoListings({ ...common, kind: 'offer', limit: 4 }),
+			latest: browseDemoListings({ ...common, kind: 'offer', limit: 7 }),
 			wanted: EMPTY_PAGE,
 			demoMode: true
 		};
@@ -29,7 +29,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.supabase) error(503, 'Каталогът временно не е достъпен.');
 	const client = locals.supabase as MarketplaceSupabaseClient;
 	const [latest, wanted] = await Promise.all([
-		browseListings(client, { ...common, kind: 'offer', limit: 4 }),
+		browseListings(client, { ...common, kind: 'offer', limit: 7 }),
 		browseListings(client, { ...common, kind: 'wanted', limit: 3 })
 	]);
 	if (!latest.ok || !wanted.ok) {

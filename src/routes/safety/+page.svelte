@@ -118,33 +118,33 @@
 </section>
 
 <style>
-  .safety-hero { color: var(--paper-strong); background: radial-gradient(circle at 78% 20%, rgb(243 223 191 / 13%), transparent 25rem), var(--ink); }
+  .safety-hero { color: var(--paper-strong); background: #2b201a; }
   .hero-grid { display: grid; min-height: 670px; align-items: center; grid-template-columns: 1.08fr .62fr; gap: clamp(55px, 9vw, 130px); padding-block: 75px; }
   .hero-copy .eyebrow { color: rgb(244 236 225 / 52%); }
-  .hero-copy h1 { max-width: 820px; }
-  .hero-copy h1 em { display: block; color: var(--brand-main); }
+  .hero-copy h1 { max-width: 820px; color: var(--paper-strong); }
+  .hero-copy h1 em { display: block; color: #d8aab1; font-style: normal; }
   .hero-copy > p { max-width: 690px; color: rgb(244 236 225 / 65%); font-size: 1.07rem; }
   .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
   .button.light { color: var(--ink); background: var(--brand-main); }
   .button.outline { border-color: rgb(244 236 225 / 45%); color: var(--paper-strong); background: transparent; }
-  .risk-card { position: relative; overflow: hidden; padding: 30px; border: 1px solid rgb(244 236 225 / 22%); border-radius: var(--radius-md); background: rgb(244 236 225 / 8%); box-shadow: 28px 28px 0 rgb(243 223 191 / 8%); }
+  .risk-card { position: relative; overflow: hidden; padding: 30px; border: 1px solid rgb(244 236 225 / 22%); border-radius: var(--radius-md); background: #352923; }
   .risk-card::before { position: absolute; top: -60px; right: -60px; width: 180px; height: 180px; border: 1px solid rgb(243 223 191 / 19%); border-radius: 50%; content: ''; }
   .risk-head { display: flex; align-items: center; justify-content: space-between; color: var(--brand-main); }
   .risk-head span { color: rgb(244 236 225 / 45%); font-size: .61rem; font-weight: 700; letter-spacing: .15em; }
   .risk-status { display: grid; gap: 4px; margin: 48px 0 25px; }
   .risk-status span { color: rgb(244 236 225 / 43%); font-size: .67rem; letter-spacing: .12em; text-transform: uppercase; }
-  .risk-status strong { max-width: 300px; color: var(--brand-main); font-size: 1.25rem; font-style: italic; line-height: 1.2; }
+  .risk-status strong { max-width: 300px; color: #e1b8bd; font-size: 1.25rem; line-height: 1.2; }
   .risk-card ul { display: grid; gap: 10px; margin: 0; padding: 18px 0; border-block: 1px solid rgb(244 236 225 / 15%); list-style: none; }
   .risk-card li { display: flex; align-items: center; gap: 8px; color: rgb(244 236 225 / 73%); font-size: .76rem; }
   .risk-card > p { display: flex; align-items: flex-start; gap: 7px; margin: 20px 0 0; color: rgb(244 236 225 / 48%); font-size: .7rem; }
   .risk-card > p :global(svg) { flex: 0 0 auto; }
-  .safety-nav { position: sticky; top: var(--header-height); z-index: 30; border-bottom: 1px solid var(--line); background: rgb(244 236 225 / 92%); backdrop-filter: blur(18px); }
+  .safety-nav { position: sticky; top: var(--header-height); z-index: 30; border-bottom: 1px solid var(--line); background: var(--paper); }
   .safety-nav .container { display: flex; overflow-x: auto; scrollbar-width: none; }
   .safety-nav a { display: inline-flex; min-height: 54px; align-items: center; flex: 1 0 auto; justify-content: center; padding-inline: 18px; border-right: 1px solid var(--line); color: var(--ink-soft); font-size: .68rem; font-weight: 700; letter-spacing: .05em; }
   .safety-nav a:hover { color: var(--ink); background: rgb(255 253 249 / 60%); }
   .evidence-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
   .evidence-grid article { min-width: 0; }
-  .photo-placeholder { position: relative; display: grid; min-height: 225px; place-items: center; overflow: hidden; border: 1px solid rgb(74 49 38 / 17%); border-radius: var(--radius-md); color: var(--action); background: linear-gradient(140deg, rgb(255 253 249 / 62%), transparent), var(--brand-tertiary); }
+  .photo-placeholder { position: relative; display: grid; min-height: 225px; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--action); background: var(--paper-deep); }
   .photo-placeholder::before,
   .photo-placeholder::after { position: absolute; border: 1px solid rgb(74 49 38 / 13%); border-radius: 50%; content: ''; }
   .photo-placeholder::before { width: 180px; height: 180px; }
@@ -192,7 +192,7 @@
   .rule-list article > div:first-child { display: flex; align-items: flex-start; justify-content: space-between; color: var(--danger); }
   .rule-list article.positive > div:first-child { color: var(--success); }
   .rule-list article > div:first-child span { color: var(--ink-faint); font-size: .62rem; font-weight: 700; letter-spacing: .12em; }
-  .rule-list strong { font-size: .78rem; font-style: italic; text-transform: uppercase; }
+  .rule-list strong { font-size: .78rem; text-transform: uppercase; }
   .rule-list p { margin: 5px 0 0; color: var(--ink-soft); font-size: .82rem; }
   .report { border-top: 1px solid var(--line); background: rgb(255 253 249 / 40%); }
   .report-grid { display: grid; align-items: start; grid-template-columns: .8fr 1.1fr; gap: clamp(45px, 8vw, 110px); }

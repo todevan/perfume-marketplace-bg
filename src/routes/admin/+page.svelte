@@ -659,8 +659,8 @@
   }
 
   .case-list > a.active {
-    background: #fff;
-    box-shadow: inset 3px 0 #4a3126;
+    color: #751d2b;
+    background: #f4ece1;
   }
 
   .risk-dot {
@@ -756,7 +756,7 @@
     padding: 10px;
     border: 1px solid #d8d0c7;
     border-radius: 7px;
-    background: linear-gradient(#ded8d0, #eee8e0);
+    background: #eee8e0;
   }
 
   .evidence-strip img {

@@ -37,12 +37,12 @@
 </div></section>
 
 <style>
-  .deals-page { min-height: 75vh; padding: clamp(2.5rem, 7vw, 6rem) 0; }
-  header { padding-bottom: 2rem; border-bottom: 1px solid var(--line); }
-  header h1 { margin: .3rem 0; }
+  .deals-page { min-height: 72vh; padding: 6px 0 0; font-family: inherit; }
+  header { padding-bottom: 1.6rem; border-bottom: 1px solid var(--line-strong); }
+  header h1 { margin: .25rem 0 .5rem; font-size: clamp(2.45rem, 5vw, 4.4rem); }
   header p { max-width: 700px; color: var(--ink-soft); }
   .deal-list { display: grid; gap: 1rem; margin-top: 1.5rem; }
-  .deal-card { padding: clamp(1.2rem, 3vw, 2rem); }
+  .deal-card { padding: clamp(1.2rem, 3vw, 2rem); border-color: var(--line-strong); }
   .deal-card.highlighted { outline: 2px solid var(--action); outline-offset: 3px; }
   .deal-head { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
   .deal-head span { color: var(--ink-faint); font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
@@ -51,25 +51,25 @@
   .deal-head > :global(svg) { color: var(--action); }
   .confirmations { display: grid; align-items: center; grid-template-columns: 1fr minmax(30px, 1fr) 1fr; margin: 1.6rem 0; }
   .confirmations > div { display: flex; min-height: 44px; align-items: center; justify-content: center; gap: .45rem; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-soft); font-size: .75rem; }
-  .confirmations > div.done { border-color: var(--success); color: var(--success); background: rgb(47 107 79 / 7%); }
+  .confirmations > div.done { border-color: var(--success); color: var(--success); background: var(--success-soft); }
   .confirmations > span { height: 1px; background: var(--line); }
   .deal-actions { display: flex; align-items: flex-start; gap: .55rem; flex-wrap: wrap; padding-top: 1rem; border-top: 1px solid var(--line); }
-  .deal-actions > a, .deal-actions button, summary, .review button { display: inline-flex; min-height: 44px; align-items: center; gap: .4rem; padding: .65rem .85rem; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; font-size: .72rem; font-weight: 700; }
+  .deal-actions > a, .deal-actions button, summary, .review button { display: inline-flex; min-height: 44px; align-items: center; gap: .4rem; padding: .65rem .85rem; border: 1px solid var(--line-strong); border-radius: var(--radius-xs); background: var(--paper-strong); cursor: pointer; font: inherit; font-size: .72rem; font-weight: 700; }
   .dispute-details summary { color: var(--warning); }
   .deal-actions form:last-child { margin-left: auto; }
-  .deal-actions .confirm { border-color: var(--success); color: white; background: var(--success); }
+  .deal-actions .confirm { border-color: var(--success); color: var(--paper-strong); background: var(--success); }
   details { position: relative; }
   summary { list-style: none; color: var(--danger); }
-  details form { position: absolute; z-index: 5; top: 50px; left: 0; display: grid; width: min(82vw, 340px); gap: .7rem; padding: 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-strong); box-shadow: var(--shadow-lg); }
+  details form { position: absolute; z-index: 5; top: 50px; left: 0; display: grid; width: min(82vw, 340px); gap: .7rem; padding: 1rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--paper-strong); }
   details form p { margin: 0; color: var(--ink-soft); font-size: .7rem; line-height: 1.45; }
   details label, .review label { display: grid; gap: .35rem; color: var(--ink-soft); font-size: .7rem; font-weight: 700; }
-  textarea, select { min-height: 44px; padding: .7rem; border: 1px solid var(--line); border-radius: 7px; background: white; }
+  textarea, select { min-height: 44px; padding: .7rem; border: 1px solid var(--line-strong); border-radius: var(--radius-xs); background: var(--paper-strong); font: inherit; }
   textarea { min-height: 80px; resize: vertical; }
   .review { display: grid; grid-template-columns: auto 180px 1fr auto; align-items: end; gap: .8rem; padding-top: 1rem; border-top: 1px solid var(--line); }
   .review > div { display: flex; align-items: center; gap: .45rem; color: var(--action); }
-  .review button { color: white; background: var(--action); }
-  .closed-note { padding: 1rem; color: var(--ink-soft); background: var(--brand-tertiary); }
-  .notice { padding: .9rem; border-radius: 8px; }.notice.error { color: var(--danger); background: rgb(141 47 54 / 8%); }.notice.success { color: var(--success); background: rgb(47 107 79 / 8%); }
-  .empty { display: grid; min-height: 340px; place-items: center; align-content: center; gap: .7rem; margin-top: 1.5rem; padding: 2rem; text-align: center; }.empty h2,.empty p{margin:0}.empty p{color:var(--ink-soft)}
+  .review button { color: var(--paper-strong); background: var(--action); }
+  .closed-note { padding: 1rem; border: 1px solid var(--line); color: var(--ink-soft); background: var(--paper-deep); }
+  .notice { padding: .9rem; border-radius: var(--radius-sm); }.notice.error { color: var(--danger); background: var(--danger-soft); }.notice.success { color: var(--success); background: var(--success-soft); }
+  .empty { display: grid; min-height: 340px; place-items: center; align-content: center; gap: .7rem; margin-top: 1.5rem; padding: 2rem; border-color: var(--line-strong); text-align: center; }.empty h2,.empty p{margin:0}.empty p{color:var(--ink-soft)}
   @media (max-width: 780px) { .review { grid-template-columns: 1fr; }.deal-actions form:last-child{margin-left:0}.confirmations{grid-template-columns:1fr}.confirmations>span{width:1px;height:20px;justify-self:center} }
 </style>

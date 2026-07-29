@@ -102,7 +102,7 @@
       <a class="button secondary" href="/listings?merchant=true">Всички търговски обяви <ArrowRight size={17} /></a>
     </div>
     {#if data.merchantListings.length}
-      <div class="listing-grid">{#each data.merchantListings as listing}<ListingCard {listing} />{/each}</div>
+      <div class="listing-grid">{#each data.merchantListings as listing}<ListingCard {listing} variant="catalog" />{/each}</div>
     {:else}
       <div class="empty-state"><div><PackageCheck size={34} /><h2>Няма активни търговски обяви.</h2><p class="muted">Проверените витрини ще се появят тук след публикуване.</p></div></div>
     {/if}
@@ -126,44 +126,41 @@
 </section>
 
 <section class="merchant-note">
-  <div class="container note-inner"><ShieldCheck size={28} /><div><strong>Важно разграничение</strong><p>„Проверен търговец“ не означава „гарантирано оригинален“. Преглеждай доказателствата към всяка обява и подай сигнал при съмнение.</p></div><a href="/safety#authenticity">Научи повече <ArrowRight size={16} /></a></div>
+  <div class="container note-inner"><ShieldCheck size={28} /><div><strong>Важно разграничение</strong><p>Статусът „Проверен търговец“ не удостоверява автентичността на всеки продукт. Преглеждай доказателствата към обявата и подай сигнал при съмнение.</p></div><a href="/safety#authenticity">Научи повече <ArrowRight size={16} /></a></div>
 </section>
 
 <style>
-  .merchant-hero { overflow: hidden; border-bottom: 1px solid rgb(138 121 103 / 22%); }
-  .hero-grid { display: grid; min-height: 650px; align-items: center; grid-template-columns: 1.15fr .75fr; gap: clamp(50px, 8vw, 120px); padding-block: 72px; }
-  .hero-copy h1 { max-width: 780px; margin-bottom: 25px; }
-  .hero-copy h1 em { display: block; color: var(--action); }
+  .merchant-hero { overflow: hidden; border-bottom: 1px solid var(--line); background: var(--paper); }
+  .hero-grid { display: grid; min-height: 590px; align-items: center; grid-template-columns: 1.15fr .72fr; gap: clamp(50px, 8vw, 120px); padding-block: 68px; }
+  .hero-copy h1 { max-width: 780px; margin-bottom: 25px; font-style: normal; letter-spacing: -.055em; }
+  .hero-copy h1 em { display: block; color: var(--action); font-style: normal; }
   .hero-copy > p { max-width: 680px; color: var(--ink-soft); font-size: 1.08rem; }
   .hero-actions { display: flex; flex-wrap: wrap; gap: 11px; margin-top: 31px; }
 
-  .seal-stage { position: relative; display: grid; min-height: 450px; place-items: center; }
-  .seal-stage::before { position: absolute; width: 410px; height: 410px; border: 1px solid rgb(74 49 38 / 12%); border-radius: 50%; content: ''; }
-  .seal-orbit { position: absolute; width: 355px; height: 355px; border: 1px dashed rgb(74 49 38 / 27%); border-radius: 50%; animation: spin 38s linear infinite; }
-  .seal-orbit span { position: absolute; padding: 3px 7px; color: var(--ink-faint); background: var(--brand-secondary); font-size: .58rem; font-weight: 700; letter-spacing: .14em; }
-  .seal-orbit span:nth-child(1) { top: 17px; left: 64px; }
-  .seal-orbit span:nth-child(2) { top: 48%; right: -24px; }
-  .seal-orbit span:nth-child(3) { bottom: 22px; left: 55px; }
-  .seal { z-index: 1; display: grid; width: 245px; height: 245px; place-items: center; align-content: center; gap: 7px; border: 1px solid var(--action); border-radius: 50%; outline: 4px double rgb(74 49 38 / 28%); outline-offset: 10px; color: var(--action); background: var(--brand-main); box-shadow: var(--shadow-lg); transform: rotate(-6deg); }
-  .seal strong { margin-top: 6px; font-size: 1rem; font-style: italic; letter-spacing: .16em; }
+  .seal-stage { position: relative; display: grid; min-height: 390px; place-items: center; border: 1px solid var(--line); border-radius: 6px; background: var(--paper-strong); }
+  .seal-stage::before { display: none; }
+  .seal-orbit { position: absolute; inset: 18px; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 13px; border: 1px solid var(--line); border-radius: 3px; }
+  .seal-orbit span { position: static; padding: 3px 5px; color: var(--ink-faint); background: var(--paper-strong); font-size: .58rem; font-weight: 700; letter-spacing: .14em; }
+  .seal { z-index: 1; display: grid; width: 230px; min-height: 210px; place-items: center; align-content: center; gap: 7px; border: 1px solid var(--action); border-radius: 4px; color: var(--paper-strong); background: var(--action); }
+  .seal strong { margin-top: 6px; font-size: 1rem; font-style: normal; letter-spacing: .14em; }
   .seal span { font-size: .67rem; font-weight: 700; letter-spacing: .05em; }
   .seal-stage > p { position: absolute; bottom: 14px; color: var(--ink-faint); font-size: .63rem; font-weight: 700; letter-spacing: .19em; }
 
-  .directory { background: rgb(255 253 249 / 38%); }
-  .directory-tools { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; padding: 13px; }
+  .directory { background: var(--paper); }
+  .directory-tools { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; padding: 13px; border-color: var(--line); border-radius: 6px; background: var(--paper-strong); }
   .search-box { display: grid; min-width: 310px; min-height: 50px; align-items: center; grid-template-columns: 25px 1fr; padding: 4px 12px; border-right: 1px solid var(--line); }
   .search-box > span { position: absolute; opacity: 0; pointer-events: none; }
   .search-box input { width: 100%; min-height: 44px; border: 0; background: transparent; outline: 0; font-weight: 700; }
   .merchant-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 19px; }
-  .merchant-card { display: grid; overflow: hidden; grid-template-columns: 180px 1fr; border: 1px solid rgb(138 121 103 / 28%); border-radius: var(--radius-md); background: rgb(255 253 249 / 83%); box-shadow: var(--shadow-sm); animation: reveal-up 650ms cubic-bezier(.22, 1, .36, 1) both; animation-delay: var(--delay); transition: transform 220ms ease, box-shadow 220ms ease; }
-  .merchant-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-4px); }
-  .storefront { position: relative; display: flex; min-height: 340px; align-items: center; flex-direction: column; justify-content: flex-end; overflow: hidden; padding: 24px 15px 32px; border-right: 1px solid rgb(74 49 38 / 16%); background: linear-gradient(155deg, rgb(255 255 255 / 45%), transparent 50%), var(--merchant); }
-  .storefront::before { position: absolute; top: 0; right: 16px; left: 16px; height: 115px; border: 1px solid rgb(74 49 38 / 18%); border-top: 0; background: repeating-linear-gradient(90deg, rgb(255 253 249 / 68%) 0 16px, rgb(74 49 38 / 8%) 16px 27px); content: ''; clip-path: polygon(0 0,100% 0,100% 75%,92% 100%,84% 75%,76% 100%,68% 75%,60% 100%,52% 75%,44% 100%,36% 75%,28% 100%,20% 75%,12% 100%,0 75%); }
+  .merchant-card { display: grid; overflow: hidden; grid-template-columns: 180px 1fr; border: 1px solid var(--line); border-radius: 6px; background: var(--paper-strong); animation: reveal-up 650ms cubic-bezier(.22, 1, .36, 1) both; animation-delay: var(--delay); transition: border-color 180ms ease; }
+  .merchant-card:hover { border-color: var(--action); }
+  .storefront { position: relative; display: flex; min-height: 340px; align-items: center; flex-direction: column; justify-content: flex-end; overflow: hidden; padding: 24px 15px 32px; border-right: 1px solid rgb(74 49 38 / 16%); background: var(--merchant); }
+  .storefront::before { position: absolute; top: 0; right: 16px; left: 16px; height: 92px; border: 1px solid rgb(74 49 38 / 18%); border-top: 0; background: var(--paper-strong); content: ''; }
   .store-number { position: absolute; top: 15px; left: 15px; z-index: 1; color: var(--ink-soft); font-size: .57rem; font-weight: 700; letter-spacing: .12em; }
-  .store-sign { position: absolute; top: 103px; display: grid; width: 80px; height: 80px; place-items: center; border: 1px solid rgb(74 49 38 / 21%); border-radius: 50%; background: rgb(255 253 249 / 86%); box-shadow: var(--shadow-sm); }
-  .store-sign span { font-weight: 700; font-style: italic; }
-  .shelf { display: flex; width: 100%; height: 105px; align-items: flex-end; justify-content: center; gap: 11px; border-bottom: 7px solid rgb(74 49 38 / 38%); }
-  .bottle { position: relative; display: block; width: 31px; height: 68px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 5px 5px 3px 3px; background: rgb(74 49 38 / 55%); box-shadow: 0 7px 10px rgb(74 49 38 / 18%); }
+  .store-sign { position: absolute; top: 86px; display: grid; width: 78px; height: 78px; place-items: center; border: 1px solid rgb(74 49 38 / 24%); border-radius: 4px; background: var(--paper-strong); }
+  .store-sign span { font-weight: 700; font-style: normal; }
+  .shelf { display: flex; width: 100%; height: 105px; align-items: flex-end; justify-content: center; gap: 11px; border-bottom: 2px solid rgb(74 49 38 / 38%); }
+  .bottle { position: relative; display: block; width: 31px; height: 68px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 5px 5px 3px 3px; background: rgb(74 49 38 / 55%); }
   .bottle::before { position: absolute; top: -12px; left: 8px; width: 14px; height: 13px; background: var(--ink); content: ''; }
   .bottle::after { position: absolute; top: 23px; right: 5px; left: 5px; height: 20px; background: rgb(255 253 249 / 70%); content: ''; }
   .b-2 { width: 38px; height: 83px; border-radius: 17px 17px 5px 5px; background: rgb(119 73 48 / 65%); }
@@ -178,10 +175,10 @@
   .merchant-meta span { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-soft); font-size: .69rem; font-weight: 700; }
   .store-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 14px; }
   .store-bottom > span { color: var(--ink-faint); font-size: .63rem; }
-  .store-bottom a { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; color: var(--action); font-size: .71rem; font-weight: 700; font-style: italic; white-space: nowrap; }
+  .store-bottom a { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; color: var(--action); font-size: .71rem; font-weight: 700; font-style: normal; white-space: nowrap; }
 
   .featured-section { border-top: 1px solid rgb(138 121 103 / 22%); }
-  .listing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+  .listing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .verification-section { color: var(--paper-strong); background: var(--ink); }
   .verification-grid { display: grid; grid-template-columns: .8fr 1.2fr; gap: clamp(45px, 8vw, 110px); }
   .verification-intro { position: sticky; top: calc(var(--header-height) + 35px); align-self: start; }
@@ -191,7 +188,7 @@
   .verification-steps { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
   .verification-steps li { display: grid; align-items: start; grid-template-columns: 34px 54px 1fr 24px; gap: 16px; padding: 29px 0; border-bottom: 1px solid rgb(244 236 225 / 15%); }
   .verification-steps li > span { color: rgb(244 236 225 / 38%); font-size: .65rem; font-weight: 700; letter-spacing: .12em; }
-  .step-icon { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid rgb(244 236 225 / 25%); border-radius: 50%; color: var(--brand-main); }
+  .step-icon { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid rgb(244 236 225 / 25%); border-radius: 4px; color: var(--brand-main); }
   .verification-steps h3 { margin-bottom: 7px; color: var(--brand-main); font-size: 1.25rem; }
   .verification-steps p { margin: 0; color: rgb(244 236 225 / 60%); font-size: .84rem; }
   .verification-steps li > :global(svg) { color: var(--brand-main); }
@@ -199,9 +196,8 @@
   .note-inner { display: grid; align-items: center; grid-template-columns: 35px 1fr auto; gap: 18px; }
   .note-inner strong { font-size: .8rem; }
   .note-inner p { margin: 3px 0 0; color: var(--ink-soft); font-size: .75rem; }
-  .note-inner a { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; font-size: .75rem; font-weight: 700; font-style: italic; }
+  .note-inner a { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; font-size: .75rem; font-weight: 700; font-style: normal; }
 
-  @keyframes spin { to { transform: rotate(360deg); } }
   @media (max-width: 1080px) { .merchant-card { grid-template-columns: 145px 1fr; } .storefront { min-height: 370px; } }
   @media (max-width: 900px) {
     .hero-grid,
