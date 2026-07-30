@@ -1,0 +1,18 @@
+# Normalize line endings and mark binaries
+* text=auto
+
+# Docs
+*.md text
+
+# Shell scripts use LF
+*.sh text eol=lf
+
+# PowerShell and batch use CRLF on Windows
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# Images and fonts are binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
