@@ -63,6 +63,62 @@
     };
   };
 
+  function profileKindLabel(card: ListingCardDto): string {
+    if (card.seller.merchantVerified) return 'Проверен търговец';
+    return card.seller.accountKind === 'merchant' ? 'Търговец' : 'Частно лице';
+  }
+
+  function bottleVolumeLabel(card: ListingCardDto): string {
+    if (card.bottleVolumeMl == null) {
+      return card.kind === 'wanted' ? 'Желан обем не е посочен' : 'Обемът не е посочен';
+    }
+    return `${card.bottleVolumeMl} ml`;
+  }
+
+  function remainingLabel(card: ListingCardDto, percent: number): string {
+    if (card.remainingMl == null) {
+      return card.kind === 'wanted' ? 'Желан остатък не е посочен' : 'Остатъкът не е посочен';
+    }
+    return `${card.remainingMl} ml (${percent}%)`;
+  }
+
+  type FavoriteActionData = {
+    favoriteState?: boolean;
+    favoriteError?: string;
+  };
+
+  let favoriteState = false;
+  let favoritePending = false;
+  let favoriteError: string | null = null;
+
+  const enhanceFavorite: SubmitFunction<FavoriteActionData, FavoriteActionData> = ({ cancel }) => {
+    if (favoritePending) {
+      cancel();
+      return;
+    }
+
+    const requestedState = !favoriteState;
+    favoritePending = true;
+    favoriteError = null;
+
+    return async ({ result }) => {
+      favoritePending = false;
+
+      if (result.type === 'success') {
+        favoriteState = result.data?.favoriteState ?? requestedState;
+        return;
+      }
+
+      if (result.type === 'failure') {
+        favoriteError =
+          result.data?.favoriteError ?? 'Не успяхме да обновим любимите. Опитай отново.';
+        return;
+      }
+
+      favoriteError = 'Не успяхме да обновим любимите. Опитай отново.';
+    };
+  };
+
   $: card = normalizeListing(listing);
   $: resolvedVariant = variant ?? (compact ? 'compact' : 'catalog');
   $: percent = remainingPercent(card);

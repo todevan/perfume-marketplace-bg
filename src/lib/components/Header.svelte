@@ -295,8 +295,8 @@
   .icon-action,
   .menu-button {
     display: grid;
-    width: 44px;
-    height: 44px;
+    width: 42px;
+    height: 42px;
     place-items: center;
     border: 0;
     border-radius: var(--radius-sm);
@@ -313,9 +313,8 @@
   .publish,
   .account-cta {
     min-height: 44px;
-    margin-left: 6px;
-    padding: 9px 15px;
-    font-size: 0.78rem;
+    margin-left: 4px;
+    padding-inline: 17px;
   }
 
   .logout-form,
