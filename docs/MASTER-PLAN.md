@@ -2,7 +2,7 @@ Perfume Marketplace — Master Plan
 
 Purpose of this document: This is the single source of truth for the project. Any AI agent (Hermes or otherwise) working on this codebase should read this file first, every session, before doing anything else. It exists because agent sessions compact, reset, and drift — this file doesn't.
 
-Owner: [your name] — the only person who can approve business/legal decisions and authorize new phases of work.
+Owner: [Tedi] — the only person who can approve business/legal decisions and authorize new phases of work.
 
 Last updated: [update this date every time the doc changes]
 
