@@ -186,9 +186,11 @@ describe('safe redirects and runtime mode', () => {
 
 	it('enables demo only for the exact explicit value', () => {
 		expect(getRuntimeConfiguration({ PUBLIC_DEMO_MODE: 'true' }).mode).toBe('demo');
-		expect(() => getRuntimeConfiguration({ PUBLIC_DEMO_MODE: '1' })).toThrow(
-			RuntimeConfigurationError
-		);
+		for (const value of ['1', 'true ', ' true', 'false ', ' false', 'TRUE', 'FALSE', 'yes', '']) {
+			expect(() => getRuntimeConfiguration({ PUBLIC_DEMO_MODE: value })).toThrow(
+				RuntimeConfigurationError
+			);
+		}
 	});
 
 	it('requires Supabase values in production mode', () => {

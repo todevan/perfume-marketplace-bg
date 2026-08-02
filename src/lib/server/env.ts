@@ -42,14 +42,22 @@ export class RuntimeConfigurationError extends Error {
 	}
 }
 
+function firstRawValue(
+	key: string,
+	platformEnvironment?: RuntimeEnvironmentSource
+): string | undefined {
+	return (
+		platformEnvironment?.[key] ??
+		(publicEnvironment as RuntimeEnvironmentSource)[key] ??
+		(privateEnvironment as RuntimeEnvironmentSource)[key]
+	);
+}
+
 function firstValue(
 	key: string,
 	platformEnvironment?: RuntimeEnvironmentSource
 ): string | undefined {
-	const value =
-		platformEnvironment?.[key] ??
-		(publicEnvironment as RuntimeEnvironmentSource)[key] ??
-		(privateEnvironment as RuntimeEnvironmentSource)[key];
+	const value = firstRawValue(key, platformEnvironment);
 	return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
@@ -103,7 +111,14 @@ function appEnvironment(platformEnvironment?: RuntimeEnvironmentSource): AppEnvi
 export function getRuntimeConfiguration(
 	platformEnvironment?: RuntimeEnvironmentSource
 ): RuntimeConfiguration {
-	const demoMode = firstValue('PUBLIC_DEMO_MODE', platformEnvironment) === 'true';
+	const demoModeValue = firstRawValue('PUBLIC_DEMO_MODE', platformEnvironment);
+	if (demoModeValue !== undefined && demoModeValue !== 'true' && demoModeValue !== 'false') {
+		throw new RuntimeConfigurationError(
+			['PUBLIC_DEMO_MODE'],
+			'Invalid PUBLIC_DEMO_MODE: expected "true" or "false".'
+		);
+	}
+	const demoMode = demoModeValue === 'true';
 	const configuredAppEnvironment = appEnvironment(platformEnvironment);
 	const publicAppUrl = optionalHttpUrl(
 		firstValue('PUBLIC_APP_URL', platformEnvironment),

@@ -33,3 +33,19 @@ Guide changes for this SvelteKit, TypeScript, Supabase and Cloudflare Worker mar
 - Reuse existing patterns instead of introducing new abstractions.
 - Keep UI components presentation-oriented and push business logic to server-side modules.
 - If a change affects auth, privacy, uploads, migrations or release gates, review the relevant docs before editing.
+## Session start protocol
+
+At the start of every session on this repository, before doing anything else:
+1. Read `docs/MASTER-PLAN.md` in full.
+2. Read `docs/PROJECT-STATUS.md` in full.
+3. State which phase is currently active and what's currently blocking, based on those files.
+4. Wait for instructions — do not begin work until told to.
+
+## Session end protocol
+
+Before ending a work session or completing a phase:
+1. Update `docs/PROJECT-STATUS.md` to reflect what changed, what's now done, and what's next.
+2. If any business/legal/product decision was surfaced that only the project owner can answer, add it to the "Open Questions" section of `docs/MASTER-PLAN.md` — do not guess or assume an answer.
+3. If a decision from that list was answered during the session, move it to the "Decisions Made" section of `docs/MASTER-PLAN.md` with the date and reasoning.
+
+These protocols apply regardless of which phase is active and do not require the user to repeat them.
