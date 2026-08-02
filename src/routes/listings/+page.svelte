@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { ChevronDown, Grid2X2, ListFilter, RotateCcw, SlidersHorizontal, X } from '@lucide/svelte';
   import ListingCard from '$components/ListingCard.svelte';
   import SearchBar from '$components/SearchBar.svelte';
 
   let { data } = $props();
   let filterOpen = $state(false);
+  let filterPanel: HTMLFormElement | undefined;
+  let filterOpener: HTMLButtonElement | undefined;
   const categories = [
     { slug: 'men', label: 'Мъжки' },
     { slug: 'women', label: 'Дамски' },
@@ -16,11 +19,39 @@
   function categoryHref(category: string): string {
     const params = new URLSearchParams();
     if (data.filters.q) params.set('q', data.filters.q);
+    if (data.filters.kind !== 'all') params.set('kind', data.filters.kind);
+    if (data.filters.mode !== 'all') params.set('mode', data.filters.mode);
+    if (data.filters.format !== 'all') params.set('format', data.filters.format);
+    if (data.filters.city) params.set('city', data.filters.city);
+    if (data.filters.minPrice) params.set('minPrice', data.filters.minPrice);
+    if (data.filters.maxPrice) params.set('maxPrice', data.filters.maxPrice);
+    if (data.filters.sort !== 'newest') params.set('sort', data.filters.sort);
     if (category !== 'all') params.set('category', category);
     const query = params.toString();
     return query ? `/listings?${query}` : '/listings';
   }
+
+  async function openFilters(): Promise<void> {
+    filterOpen = true;
+    await tick();
+    filterPanel?.querySelector<HTMLElement>('.filter-close')?.focus();
+  }
+
+  async function closeFilters(): Promise<void> {
+    filterOpen = false;
+    await tick();
+    filterOpener?.focus();
+  }
+
+  function handleFilterKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && filterOpen) {
+      event.preventDefault();
+      void closeFilters();
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleFilterKeydown} />
 
 <svelte:head>
   <title>Обяви за парфюми · продажба и размяна</title>
@@ -42,10 +73,10 @@
 </section>
 
 <section class="catalog-body container">
-  <button class="mobile-filter button secondary" onclick={() => (filterOpen = true)}><SlidersHorizontal size={17} /> Филтри</button>
+  <button bind:this={filterOpener} class="mobile-filter button secondary" type="button" onclick={openFilters} aria-expanded={filterOpen}><SlidersHorizontal size={17} /> Филтри</button>
 
-  <form method="GET" class:open={filterOpen} class="filters" aria-label="Филтри">
-    <div class="filter-head"><div><ListFilter size={19} /><strong>Филтри</strong></div><button onclick={() => (filterOpen = false)} aria-label="Затвори филтрите"><X size={21} /></button></div>
+  <form bind:this={filterPanel} method="GET" class:open={filterOpen} class="filters" aria-label="Филтри">
+    <div class="filter-head"><div><ListFilter size={19} /><strong>Филтри</strong></div><button class="filter-close" type="button" onclick={closeFilters} aria-label="Затвори филтрите"><X size={21} /></button></div>
     <input type="hidden" name="q" value={data.filters.q} />
     <input type="hidden" name="category" value={data.filters.category === 'all' ? '' : data.filters.category} />
     <div class="filter-block">
@@ -72,7 +103,7 @@
     <a class="reset" href="/listings"><RotateCcw size={15} /> Изчисти филтрите</a>
   </form>
 
-  {#if filterOpen}<button class="filter-scrim" aria-label="Затвори филтрите" onclick={() => (filterOpen = false)}></button>{/if}
+  {#if filterOpen}<button class="filter-scrim" type="button" aria-label="Затвори филтрите" onclick={closeFilters}></button>{/if}
 
   <div class="results">
     <div class="results-head">
@@ -92,7 +123,7 @@
 
     {#if data.listings.items.length}
       <div class="results-grid">
-        {#each data.listings.items as listing (listing.id)}<ListingCard {listing} compact />{/each}
+        {#each data.listings.items as listing (listing.id)}<ListingCard {listing} variant="catalog" />{/each}
       </div>
       {#if data.previousHref || data.nextHref}
         <nav class="pagination" aria-label="Страници с обяви">
@@ -109,40 +140,45 @@
 
 <style>
   .catalog-hero {
-    padding: 64px 0 28px;
+    padding: clamp(42px, 6vw, 76px) 0 28px;
     border-bottom: 1px solid var(--line);
-    background: linear-gradient(180deg, rgb(243 223 191 / 42%), transparent);
+    background: var(--paper);
   }
 
   .catalog-title {
     display: flex;
-    align-items: baseline;
+    align-items: end;
     justify-content: space-between;
     gap: 20px;
-    margin-bottom: 28px;
+    margin-bottom: 26px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--line);
   }
 
   h1 {
     margin-bottom: 0;
-    font-size: clamp(3.4rem, 9vw, 7rem);
+    font-size: clamp(2.8rem, 6vw, 5.25rem);
+    font-style: normal;
+    letter-spacing: -0.055em;
   }
 
   .catalog-title > span {
-    color: var(--ink-faint);
-    font-size: 0.72rem;
+    padding-bottom: 6px;
+    color: var(--ink-soft);
+    font-size: 0.7rem;
     font-weight: 700;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   :global(.catalog-hero .search-shell) {
-    max-width: 760px;
+    max-width: none;
   }
 
   .quick-categories {
     display: flex;
-    gap: 9px;
-    padding-top: 24px;
+    gap: 8px;
+    padding-top: 18px;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -151,11 +187,17 @@
     display: inline-flex;
     align-items: center;
     min-height: 44px;
-    padding: 9px 16px;
+    padding: 9px 15px;
     border: 1px solid var(--line);
-    border-radius: 999px;
-    background: rgb(255 253 249 / 58%);
+    border-radius: 4px;
+    background: var(--paper-strong);
     white-space: nowrap;
+    transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+  }
+
+  .quick-categories a:hover {
+    border-color: var(--action);
+    color: var(--action);
   }
 
   .quick-categories a.active {
@@ -168,9 +210,9 @@
   .catalog-body {
     display: grid;
     align-items: start;
-    grid-template-columns: 245px 1fr;
-    gap: 35px;
-    padding-block: 42px 90px;
+    grid-template-columns: 258px minmax(0, 1fr);
+    gap: clamp(28px, 4vw, 52px);
+    padding-block: 36px 96px;
   }
 
   .filters {
@@ -178,14 +220,18 @@
     top: calc(var(--header-height) + 24px);
     display: grid;
     gap: 0;
+    padding: 0 18px 18px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--paper-strong);
   }
 
   .filter-head {
     display: flex;
-    min-height: 50px;
+    min-height: 58px;
     align-items: center;
     justify-content: space-between;
-    border-bottom: 1px solid var(--line-strong);
+    border-bottom: 1px solid var(--line);
   }
 
   .filter-head > div {
@@ -205,7 +251,7 @@
   }
 
   .filter-block {
-    padding-block: 20px;
+    padding-block: 17px;
     border-bottom: 1px solid var(--line);
   }
 
@@ -214,9 +260,17 @@
     min-height: 44px;
     padding: 9px 11px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 4px;
     color: var(--ink);
     background: var(--paper-strong);
+  }
+
+  .filter-input:focus-visible,
+  .select-wrap select:focus-visible,
+  .results-head select:focus-visible {
+    border-color: var(--action);
+    outline: 2px solid var(--action);
+    outline-offset: 2px;
   }
 
   .price-pair > div {
@@ -252,7 +306,7 @@
     min-height: 44px;
     padding: 9px 34px 9px 11px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 4px;
     appearance: none;
     color: var(--ink);
     background: var(--paper-strong);
@@ -291,8 +345,8 @@
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    margin-bottom: 18px;
-    border-bottom: 1px solid var(--line-strong);
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
   }
 
   .results-head p {
@@ -325,7 +379,7 @@
   .results-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 17px;
+    gap: 14px;
   }
 
   .pagination {
@@ -375,15 +429,18 @@
       z-index: 90;
       width: min(88vw, 380px);
       padding: 18px 22px 28px;
+      border-width: 0 0 0 1px;
+      border-radius: 0;
       overflow-y: auto;
-      background: var(--brand-secondary);
-      box-shadow: var(--shadow-lg);
+      background: var(--paper-strong);
       transform: translateX(110%);
+      visibility: hidden;
       transition: transform 220ms ease;
     }
 
     .filters.open {
       transform: translateX(0);
+      visibility: visible;
     }
 
     .filter-head button {
@@ -397,7 +454,6 @@
       display: block;
       border: 0;
       background: rgb(36 28 22 / 42%);
-      backdrop-filter: blur(3px);
     }
 
     .results-grid {
@@ -406,6 +462,18 @@
   }
 
   @media (max-width: 540px) {
+    .quick-categories {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      overflow: visible;
+    }
+
+    .quick-categories a {
+      justify-content: center;
+      padding-inline: 6px;
+      text-align: center;
+    }
+
     .results-grid {
       grid-template-columns: 1fr;
     }

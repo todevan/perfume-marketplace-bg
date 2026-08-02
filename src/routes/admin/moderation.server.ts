@@ -100,6 +100,16 @@ const auditRowSchema = z.object({
 	rationale: z.string().min(1).max(4000),
 	created_at: z.string()
 });
+const moderatorMessageRowSchema = z.object({
+	id: uuidSchema,
+	conversation_id: uuidSchema,
+	sender_id: uuidSchema,
+	body: z.string().max(4000),
+	reply_to_id: uuidSchema.nullable(),
+	created_at: z.string(),
+	edited_at: z.string().nullable(),
+	deleted_at: z.string().nullable()
+});
 const assignInputSchema = z.object({ caseId: uuidSchema });
 const decisionInputSchema = z.object({
 	caseId: uuidSchema,
@@ -283,7 +293,15 @@ function safeExternalUrl(value: string | null): string | null {
 }
 
 function supportsDecision(targetType: ReportTargetType): boolean {
-	return ['listing', 'profile', 'review', 'profile_comment', 'deal'].includes(targetType);
+	return [
+		'listing',
+		'profile',
+		'review',
+		'profile_comment',
+		'deal',
+		'conversation',
+		'message'
+	].includes(targetType);
 }
 
 function genericTargetTitle(report: ReportRow): string {
@@ -557,38 +575,44 @@ export async function assignReportCase(
 
 const listingDecisionMapping: Record<
 	Extract<ModerationDecision, 'keep' | 'hide' | 'remove'>,
-	{ listingStatus: 'active' | 'paused' | 'removed'; resolutionCode: string }
+	{ listingStatus: 'active' | 'paused' | 'removed' }
 > = {
-	keep: { listingStatus: 'active', resolutionCode: 'no_violation' },
-	hide: { listingStatus: 'paused', resolutionCode: 'content_hidden' },
-	remove: { listingStatus: 'removed', resolutionCode: 'content_removed' }
+	keep: { listingStatus: 'active' },
+	hide: { listingStatus: 'paused' },
+	remove: { listingStatus: 'removed' }
 };
 
-async function closeReportCase(
+export async function inspectModerationConversation(
 	client: SupabaseClient,
-	reportId: string,
-	resolutionCode: string,
-	rationale: string
-): Promise<void> {
-	const { data, error } = await client
-		.from('reports')
-		.update({
-			status: 'resolved',
-			resolution_code: resolutionCode,
-			resolution_notes: rationale
-		})
-		.eq('id', reportId)
-		.eq('status', 'investigating')
-		.select('id, status')
-		.maybeSingle();
+	rawInput: unknown
+): Promise<{
+	caseId: string;
+	messages: readonly {
+		id: string;
+		conversationId: string;
+		senderId: string;
+		body: string | null;
+		createdAt: string;
+	}[];
+}> {
+	const parsed = assignInputSchema.safeParse(rawInput);
+	if (!parsed.success) throw new ModerationWorkflowError('VALIDATION', 'Невалиден номер на сигнал.');
+	const { data, error } = await client.rpc('moderator_read_messages', {
+		report_case_id: parsed.data.caseId,
+		page_size: 50
+	});
 	if (error) throw workflowErrorFromDatabase(error);
-	const closed = z.object({ id: uuidSchema, status: z.literal('resolved') }).safeParse(data);
-	if (!closed.success) {
-		throw new ModerationWorkflowError(
-			'CONFLICT',
-			'Решението е одитирано, но случаят остана отворен за проверка.'
-		);
-	}
+	const rows = parseRows(data, moderatorMessageRowSchema);
+	return {
+		caseId: parsed.data.caseId,
+		messages: rows.map((row) => ({
+			id: row.id,
+			conversationId: row.conversation_id,
+			senderId: row.sender_id,
+			body: row.deleted_at ? null : row.body,
+			createdAt: row.created_at
+		}))
+	};
 }
 
 export async function decideModerationReport(
@@ -624,7 +648,6 @@ export async function decideModerationReport(
 		throw new ModerationWorkflowError('FORBIDDEN', 'Сигналът е присвоен на друг модератор.');
 	}
 
-	let resolutionCode: string | null = null;
 	let rpcName: string;
 	let rpcArguments: Record<string, unknown>;
 
@@ -645,7 +668,6 @@ export async function decideModerationReport(
 				corrected_segments: null,
 				moderated_status: decision.listingStatus
 			};
-			resolutionCode = decision.resolutionCode;
 			break;
 		}
 		case 'profile': {
@@ -659,7 +681,6 @@ export async function decideModerationReport(
 				suspend_profile: parsed.data.decision === 'suspend',
 				moderation_rationale: parsed.data.rationale
 			};
-			resolutionCode = parsed.data.decision === 'suspend' ? 'user_suspended' : 'user_restored';
 			break;
 		}
 		case 'review':
@@ -681,7 +702,6 @@ export async function decideModerationReport(
 				moderated_status: status,
 				moderation_rationale: parsed.data.rationale
 			};
-			resolutionCode = `content_${status}`;
 			break;
 		}
 		case 'deal': {
@@ -698,6 +718,22 @@ export async function decideModerationReport(
 			};
 			break;
 		}
+		case 'message':
+		case 'conversation': {
+			if (!['keep', 'hide', 'remove'].includes(parsed.data.decision)) {
+				throw new ModerationWorkflowError('VALIDATION', 'Невалидно решение за разговор.');
+			}
+			rpcName = 'resolve_conversation_report';
+			rpcArguments = {
+				report_case_id: report.id,
+				decision:
+					report.target_type === 'message'
+						? parsed.data.decision === 'keep' ? 'keep' : 'remove'
+						: parsed.data.decision === 'keep' ? 'keep' : 'block',
+				moderation_rationale: parsed.data.rationale
+			};
+			break;
+		}
 		default:
 			throw new ModerationWorkflowError(
 				'UNSUPPORTED',
@@ -707,9 +743,6 @@ export async function decideModerationReport(
 
 	const { error: moderationError } = await client.rpc(rpcName, rpcArguments);
 	if (moderationError) throw workflowErrorFromDatabase(moderationError);
-	if (report.target_type !== 'deal' && resolutionCode) {
-		await closeReportCase(client, report.id, resolutionCode, parsed.data.rationale);
-	}
 
 	return { caseId: report.id, status: 'resolved', decision: parsed.data.decision };
 }

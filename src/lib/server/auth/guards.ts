@@ -8,10 +8,20 @@ import type {
 	RequestAuthContext
 } from './types';
 
-export type RouteAccessPolicy = 'public' | 'authenticated' | 'beta' | 'staff';
+export type RouteAccessPolicy = 'public' | 'authenticated' | 'beta' | 'staff' | 'staff-aal1';
 
-const PUBLIC_ROUTE_PREFIXES = ['/auth', '/legal'];
-const PUBLIC_EXACT_ROUTES = new Set(['/login', '/safety', '/robots.txt', '/sitemap.xml']);
+const PUBLIC_ROUTE_PREFIXES = ['/legal'];
+const PUBLIC_EXACT_ROUTES = new Set([
+	'/login',
+	'/safety',
+	'/robots.txt',
+	'/sitemap.xml',
+	'/auth/callback',
+	'/auth/confirm',
+	'/auth/error',
+	'/auth/reset-password'
+]);
+const AUTHENTICATED_EXACT_ROUTES = new Set(['/auth/logout', '/auth/update-password']);
 const AUTHENTICATED_ROUTE_PREFIXES = ['/onboarding', '/phone-verification'];
 const STAFF_ROUTE_PREFIXES = ['/admin'];
 
@@ -21,16 +31,19 @@ function isWithin(pathname: string, prefix: string): boolean {
 
 /** Production access is default-deny: an unclassified application route is private beta. */
 export function routeAccessPolicy(pathname: string): RouteAccessPolicy {
+	const normalizedPath = pathname.length > 1 ? pathname.replace(/\/+$/u, '') : pathname;
 	if (
-		PUBLIC_EXACT_ROUTES.has(pathname) ||
-		PUBLIC_ROUTE_PREFIXES.some((prefix) => isWithin(pathname, prefix))
+		PUBLIC_EXACT_ROUTES.has(normalizedPath) ||
+		PUBLIC_ROUTE_PREFIXES.some((prefix) => isWithin(normalizedPath, prefix))
 	) {
 		return 'public';
 	}
-	if (AUTHENTICATED_ROUTE_PREFIXES.some((prefix) => isWithin(pathname, prefix))) {
+	if (normalizedPath === '/auth/mfa') return 'staff-aal1';
+	if (AUTHENTICATED_EXACT_ROUTES.has(normalizedPath)) return 'authenticated';
+	if (AUTHENTICATED_ROUTE_PREFIXES.some((prefix) => isWithin(normalizedPath, prefix))) {
 		return 'authenticated';
 	}
-	if (STAFF_ROUTE_PREFIXES.some((prefix) => isWithin(pathname, prefix))) return 'staff';
+	if (STAFF_ROUTE_PREFIXES.some((prefix) => isWithin(normalizedPath, prefix))) return 'staff';
 	return 'beta';
 }
 
@@ -101,6 +114,9 @@ export function enforceRoutePolicy(context: RequestAuthContext, url: URL): void 
 		case 'staff':
 			requireRole(context, url, ['moderator', 'admin']);
 			requireMfa(context, url);
+			return;
+		case 'staff-aal1':
+			requireRole(context, url, ['moderator', 'admin']);
 			return;
 		case 'beta':
 			requireBetaAccess(context, url);

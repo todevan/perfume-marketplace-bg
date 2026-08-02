@@ -22,7 +22,7 @@ describe('listing wizard evidence guidance', () => {
 			'product_full',
 			'manufacturer_label',
 			'manufacturer_markings',
-			'fill_level'
+			'seal'
 		]);
 	});
 

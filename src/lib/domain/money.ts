@@ -8,7 +8,11 @@ export function eurosToMoney(euros: number): Money {
 		throw new RangeError('Euro amount must be a finite non-negative number.');
 	}
 
-	return { amountMinor: Math.round((euros + Number.EPSILON) * 100), currency: EUR };
+	const amountMinor = Math.round((euros + Number.EPSILON) * 100);
+	if (!Number.isSafeInteger(amountMinor)) {
+		throw new RangeError('Euro amount exceeds the safe cent range.');
+	}
+	return { amountMinor, currency: EUR };
 }
 
 export function moneyToEuros(money: Money): number {

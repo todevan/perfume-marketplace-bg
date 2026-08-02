@@ -35,7 +35,7 @@
   <div class="container">
     <div class="section-heading"><div><span class="eyebrow">Заявки от общността</span><h2>Намерени {data.listings.total}</h2></div><p><BellRing size={17} /> Заявката не е поръчка и не задължава никого към сделка.</p></div>
     {#if data.listings.items.length}
-      <div class="listing-grid">{#each data.listings.items as listing}<ListingCard {listing} />{/each}</div>
+      <div class="listing-grid">{#each data.listings.items as listing}<ListingCard {listing} variant="compact" />{/each}</div>
       <nav class="pagination" aria-label="Страници с търсения">
         {#if data.previousHref}<a class="button secondary" href={data.previousHref}><ArrowLeft size={17} /> Назад</a>{/if}
         <span>Страница {data.filters.page}</span>
@@ -48,27 +48,29 @@
 </section>
 
 <style>
-  .wanted-hero { overflow: hidden; border-bottom: 1px solid var(--line); background: linear-gradient(135deg, rgb(255 253 249 / 58%), transparent 62%); }
-  .hero-grid { display: grid; min-height: 590px; align-items: center; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .55fr); gap: clamp(42px, 8vw, 110px); padding-block: 70px 95px; }
-  h1 { max-width: 760px; margin-bottom: 23px; }
-  h1 em { display: block; color: var(--action); }
-  .hero-grid > div > p { max-width: 670px; color: var(--ink-soft); font-size: 1.06rem; }
+  .wanted-hero { overflow: hidden; border-bottom: 1px solid var(--line); background: var(--paper); }
+  .hero-grid { display: grid; min-height: 520px; align-items: center; grid-template-columns: minmax(0, 1.15fr) minmax(300px, .58fr); gap: clamp(42px, 8vw, 110px); padding-block: 68px 86px; }
+  h1 { max-width: 760px; margin-bottom: 23px; font-style: normal; letter-spacing: -.055em; }
+  h1 em { display: block; color: var(--action); font-style: normal; }
+  .hero-grid > div > p { max-width: 670px; color: var(--ink-soft); font-size: 1.02rem; }
   .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
-  .request-note { display: grid; min-height: 350px; align-content: center; gap: 18px; padding: 38px; border: 1px solid rgb(74 49 38 / 24%); background: var(--brand-main); box-shadow: 22px 25px 0 rgb(214 202 186 / 58%); transform: rotate(1.5deg); }
-  .request-note > span { color: var(--ink-faint); font-size: .65rem; font-weight: 700; letter-spacing: .15em; }
-  .request-note > strong { font-size: clamp(1.45rem, 3vw, 2.2rem); font-style: italic; }
+  .request-note { display: grid; min-height: 310px; align-content: center; gap: 17px; padding: clamp(28px, 4vw, 42px); border: 1px solid var(--line-strong); border-radius: 6px; background: var(--paper-strong); }
+  .request-note > :global(svg) { color: var(--action); }
+  .request-note > span { color: var(--action); font-size: .65rem; font-weight: 800; letter-spacing: .14em; }
+  .request-note > strong { font-size: clamp(1.35rem, 2.6vw, 2rem); font-style: normal; line-height: 1.25; }
   .request-note > p { margin: 0; color: var(--ink-soft); }
-  .filters { position: relative; z-index: 2; margin-top: -35px; }
-  .filters form { display: grid; align-items: end; grid-template-columns: 1.3fr .75fr auto; gap: 13px; padding: 18px; }
+  .filters { position: relative; z-index: 2; margin-top: -28px; }
+  .filters form { display: grid; align-items: end; grid-template-columns: 1.3fr .75fr auto; gap: 13px; padding: 18px; border-color: var(--line); border-radius: 6px; background: var(--paper-strong); }
   .filters label { display: grid; gap: 7px; color: var(--ink-faint); font-size: .66rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
   .filters label > div { position: relative; }
   .filters label > div :global(svg) { position: absolute; top: 14px; left: 13px; }
-  .filters input { width: 100%; min-height: 46px; padding: 10px 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); }
+  .filters input { width: 100%; min-height: 46px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--paper); }
+  .filters input:focus-visible { border-color: var(--action); outline: 2px solid var(--action); outline-offset: 2px; }
   .filters label > div input { padding-left: 42px; }
   .section-heading > p { display: flex; max-width: 400px; align-items: flex-start; gap: 8px; color: var(--ink-soft); }
-  .listing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+  .listing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
   .pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 32px; }
   .pagination span { color: var(--ink-faint); font-size: .75rem; font-weight: 700; }
   @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } .request-note { max-width: 480px; } .listing-grid { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 680px) { .hero-grid { min-height: auto; padding-block: 56px 86px; } .request-note { min-height: 290px; padding: 28px; box-shadow: 14px 16px 0 rgb(214 202 186 / 58%); } .filters form { grid-template-columns: 1fr; } .listing-grid { grid-template-columns: 1fr; } .pagination { flex-wrap: wrap; } }
+  @media (max-width: 680px) { .hero-grid { min-height: auto; padding-block: 52px 72px; } .request-note { min-height: 260px; padding: 26px; } .filters form { grid-template-columns: 1fr; } .listing-grid { grid-template-columns: 1fr; } .pagination { flex-wrap: wrap; } }
 </style>

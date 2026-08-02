@@ -6,13 +6,14 @@ import {
 	assignReportCase,
 	createBetaInviteAndSendEmail,
 	decideModerationReport,
+	inspectModerationConversation,
 	loadModerationDashboard,
 	ModerationWorkflowError,
 	reviewMerchantApplication,
 	workflowHttpStatus
 } from './moderation.server';
 
-function actionFailure(action: 'assign' | 'decide' | 'invite' | 'merchant', cause: unknown) {
+function actionFailure(action: 'assign' | 'decide' | 'inspect' | 'invite' | 'merchant', cause: unknown) {
 	const workflowError =
 		cause instanceof ModerationWorkflowError
 			? cause
@@ -68,6 +69,19 @@ export const actions: Actions = {
 			return { ok: true as const, action: 'decide' as const, ...result };
 		} catch (cause) {
 			return actionFailure('decide', cause);
+		}
+	},
+
+	inspect: async ({ request, locals, url }) => {
+		const { client } = requireStaffRequest(locals, url);
+		const formData = await request.formData();
+		try {
+			const result = await inspectModerationConversation(client, {
+				caseId: formData.get('caseId')
+			});
+			return { ok: true as const, action: 'inspect' as const, ...result };
+		} catch (cause) {
+			return actionFailure('inspect', cause);
 		}
 	},
 

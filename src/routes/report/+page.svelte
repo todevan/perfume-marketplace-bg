@@ -2,6 +2,13 @@
   import { ArrowLeft, Check, Flag, ShieldCheck } from '@lucide/svelte';
   import type { ActionData, PageData } from './$types';
   let { data, form }: { data: PageData; form: ActionData } = $props();
+  const reasonLabels = {
+    counterfeit_suspected: 'Съмнение за фалшификат',
+    misleading_content: 'Невярно описание или снимки',
+    harassment: 'Тормоз или натиск',
+    spam_fraud: 'Спам или опит за измама',
+    other_violation: 'Друго нарушение'
+  } as const;
 </script>
 
 <svelte:head><title>Подай сигнал · Marketplace beta</title><meta name="robots" content="noindex,nofollow" />{#if data.turnstileSiteKey && !data.demoMode}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{/if}</svelte:head>
@@ -9,7 +16,7 @@
 <section class="report-page"><div class="container narrow"><a class="back" href="/safety"><ArrowLeft size={16} /> Безопасност</a><header><Flag size={38} /><span class="eyebrow">NOTICE & ACTION / BETA</span><h1>Подай конкретен сигнал.</h1><p>Опиши проверими факти. Не добавяй пароли, картови данни, лични документи или несвързани лични данни.</p></header>
   {#if form?.ok}<div class="success" role="status"><Check size={28} /><h2>Сигналът е приет.</h2><p>Номер: <code>{form.reportId ?? 'DEMO'}</code>. Ще получиш известие при промяна.</p><a class="button primary" href="/dashboard">Към профила</a></div>
   {:else if !data.targetType || !data.targetId}<div class="missing surface"><ShieldCheck size={34} /><h2>Избери конкретно съдържание.</h2><p>Сигналът трябва да започне от обява, профил, разговор, сделка или отзив, за да запазим точна одитна следа.</p><a class="button primary" href="/listings">Към обявите</a></div>
-  {:else}<form class="surface" method="POST"><input type="hidden" name="targetType" value={data.targetType} /><input type="hidden" name="targetId" value={data.targetId} />{#if form?.error}<p class="error" role="alert">{form.error.message}</p>{/if}<div class="target"><span>Обект</span><strong>{data.targetType} · {data.targetId}</strong></div><label>Причина<select name="reasonCode" required><option value="counterfeit_suspected">Съмнение за фалшификат</option><option value="misleading_content">Невярно описание или снимки</option><option value="harassment">Тормоз или натиск</option><option value="spam_fraud">Спам или опит за измама</option><option value="deal_dispute">Спор по сделка</option><option value="other_violation">Друго нарушение</option></select></label><label>Факти и контекст<textarea name="details" minlength="20" maxlength="4000" required placeholder="Какво се случи, кога и кои видими детайли го подкрепят?"></textarea></label><label class="confirm"><input type="checkbox" required /> Подавам сигнала добросъвестно и информацията е точна според знанието ми.</label>{#if data.turnstileSiteKey && !data.demoMode}<div class="cf-turnstile" data-sitekey={data.turnstileSiteKey} data-action="report_submit"></div>{/if}<button class="button primary" type="submit"><Flag size={17} /> Изпрати сигнала</button></form>{/if}
+  {:else}<form class="surface" method="POST" enctype="multipart/form-data"><input type="hidden" name="targetType" value={data.targetType} /><input type="hidden" name="targetId" value={data.targetId} />{#if form?.error}<p class="error" role="alert">{form.error.message}</p>{/if}<div class="target"><span>Обект</span><strong>{data.targetType} · {data.targetId}</strong></div><label>Причина<select name="reasonCode" required>{#each data.reasonCodes as reason}<option value={reason}>{reasonLabels[reason]}</option>{/each}</select></label><label>Факти и контекст<textarea name="details" minlength="20" maxlength="4000" required placeholder="Какво се случи, кога и кои видими детайли го подкрепят?"></textarea></label><label>Доказателства (до 4 файла, по 10 MB)<input name="evidence" type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" /></label><label class="confirm"><input type="checkbox" required /> Подавам сигнала добросъвестно и информацията е точна според знанието ми.</label>{#if data.turnstileSiteKey && !data.demoMode}<div class="cf-turnstile" data-sitekey={data.turnstileSiteKey} data-action="report_submit"></div>{/if}<button class="button primary" type="submit"><Flag size={17} /> Изпрати сигнала</button></form>{/if}
 </div></section>
 
 <style>

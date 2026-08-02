@@ -14,6 +14,7 @@ export interface ListingRouteFilters {
 	sort: 'newest' | 'price-asc' | 'price-desc';
 	page: number;
 	cursorActivatedAt: string;
+	cursorPriceMinor: string;
 	cursorId: string;
 }
 
@@ -48,6 +49,7 @@ export function parseListingRouteQuery(url: URL): {
 		sort: oneOf(url.searchParams.get('sort'), ['newest', 'price-asc', 'price-desc'], 'newest'),
 		page: pageNumber(url.searchParams.get('page')),
 		cursorActivatedAt: (url.searchParams.get('cursorAt') ?? '').trim(),
+		cursorPriceMinor: (url.searchParams.get('cursorPrice') ?? '').trim(),
 		cursorId: (url.searchParams.get('cursorId') ?? '').trim()
 	};
 
@@ -67,14 +69,30 @@ export function parseListingRouteQuery(url: URL): {
 	const maxPriceMinor = euroToMinor(filters.maxPrice);
 	if (minPriceMinor !== undefined) input.minPriceMinor = minPriceMinor;
 	if (maxPriceMinor !== undefined) input.maxPriceMinor = maxPriceMinor;
-	if (
-		filters.cursorActivatedAt &&
-		!Number.isNaN(Date.parse(filters.cursorActivatedAt)) &&
-		/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(filters.cursorId)
-	) {
-		input.cursorActivatedAt = filters.cursorActivatedAt;
-		input.cursorId = filters.cursorId;
-		input.offset = 0;
+	const cursorIdIsValid =
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+			.test(filters.cursorId);
+	if (cursorIdIsValid) {
+		if (
+			input.sort === 'newest' &&
+			filters.cursorActivatedAt &&
+			!Number.isNaN(Date.parse(filters.cursorActivatedAt))
+		) {
+			input.cursorActivatedAt = filters.cursorActivatedAt;
+			input.cursorId = filters.cursorId;
+			input.offset = 0;
+		} else if (input.sort !== 'newest') {
+			const cursorPriceMinor = Number(filters.cursorPriceMinor);
+			if (
+				Number.isInteger(cursorPriceMinor) &&
+				cursorPriceMinor >= -1 &&
+				cursorPriceMinor <= 2_147_483_647
+			) {
+				input.cursorPriceMinor = cursorPriceMinor;
+				input.cursorId = filters.cursorId;
+				input.offset = 0;
+			}
+		}
 	}
 
 	return { filters, input };
@@ -82,11 +100,22 @@ export function parseListingRouteQuery(url: URL): {
 
 export function listingCursorHref(
 	url: URL,
-	cursor: { readonly activatedAt: string; readonly id: string }
+	cursor: {
+		readonly sort?: 'newest' | 'price_asc' | 'price_desc';
+		readonly activatedAt?: string | null;
+		readonly priceMinor?: number | null;
+		readonly id: string;
+	}
 ): string {
 	const params = new URLSearchParams(url.searchParams);
 	params.delete('page');
-	params.set('cursorAt', cursor.activatedAt);
+	params.delete('cursorAt');
+	params.delete('cursorPrice');
+	if ((cursor.sort ?? 'newest') === 'newest' && cursor.activatedAt) {
+		params.set('cursorAt', cursor.activatedAt);
+	} else if (cursor.priceMinor !== null && cursor.priceMinor !== undefined) {
+		params.set('cursorPrice', String(cursor.priceMinor));
+	}
 	params.set('cursorId', cursor.id);
 	return `/listings?${params.toString()}`;
 }
@@ -95,6 +124,7 @@ export function listingStartHref(url: URL): string {
 	const params = new URLSearchParams(url.searchParams);
 	params.delete('page');
 	params.delete('cursorAt');
+	params.delete('cursorPrice');
 	params.delete('cursorId');
 	const query = params.toString();
 	return query ? `/listings?${query}` : '/listings';

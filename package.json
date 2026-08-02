@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "vite dev",
     "dev:worker": "vite build && wrangler dev",
@@ -13,6 +16,7 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "node scripts/validate-catalog.mjs && vitest run && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && vite build",
     "test:unit": "vitest run",
+    "test:db:contracts": "node --test supabase/tests/*.contract.test.mjs",
     "test:unit:watch": "vitest",
     "test:e2e": "vite build && playwright test",
     "check:release": "node scripts/check-production-readiness.mjs",
@@ -28,6 +32,7 @@
     "db:staging:push": "node scripts/staging-db-operator.mjs push",
     "db:staging:types": "node scripts/generate-hosted-types.mjs",
     "db:staging:types:check": "node scripts/generate-hosted-types.mjs --check",
+    "db:staging:runtime:check": "node scripts/verify-hosted-runtime-inventory.mjs --check",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "seed:catalog": "node scripts/seed-catalog.mjs",
     "seed:staging": "node scripts/staging-db-operator.mjs seed",
@@ -53,7 +58,8 @@
     "typescript": "^5.9.3",
     "vite": "^8.1.5",
     "vitest": "^4.1.10",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.114.0",
+    "yaml": "^2.9.0"
   },
   "packageManager": "pnpm@11.9.0"
 }

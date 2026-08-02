@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { ArrowRight, Search, Sparkles } from '@lucide/svelte';
+  import { Search } from '@lucide/svelte';
   export let value = '';
   export let compact = false;
   export let action = '/listings';
 </script>
 
 <form class:compact class="search-shell" method="GET" {action}>
-  <Search size={compact ? 20 : 24} aria-hidden="true" />
+  <Search size={compact ? 19 : 22} aria-hidden="true" />
   <label class="sr-only" for={compact ? 'catalog-search' : 'hero-search'}>Търси аромат или марка</label>
   <input
     id={compact ? 'catalog-search' : 'hero-search'}
@@ -15,8 +15,8 @@
     autocomplete="off"
     placeholder="Кой аромат търсиш?"
   />
-  {#if !compact}<span class="hint"><Sparkles size={14} /> кирилица или латиница</span>{/if}
-  <button type="submit" aria-label="Търси"><ArrowRight size={21} /></button>
+  {#if !compact}<span class="hint">кирилица или латиница</span>{/if}
+  <button type="submit" aria-label="Търси">Търси</button>
 </form>
 
 <style>
@@ -24,14 +24,13 @@
     position: relative;
     display: grid;
     grid-template-columns: auto 1fr auto auto;
-    min-height: 76px;
+    min-height: 58px;
     align-items: center;
-    gap: 14px;
-    padding: 10px 11px 10px 24px;
-    border: 1px solid rgb(74 49 38 / 34%);
-    border-radius: 999px;
-    background: rgb(255 253 249 / 92%);
-    box-shadow: 0 18px 52px rgb(74 49 38 / 16%);
+    gap: 12px;
+    padding: 7px 7px 7px 18px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--paper-strong);
   }
 
   input {
@@ -40,7 +39,7 @@
     outline: 0;
     color: var(--ink);
     background: transparent;
-    font-size: clamp(1rem, 2vw, 1.2rem);
+    font-size: clamp(0.94rem, 1.5vw, 1.06rem);
   }
 
   input::placeholder {
@@ -48,40 +47,38 @@
   }
 
   .hint {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
     color: var(--ink-faint);
-    font-size: 0.72rem;
+    font-size: 0.68rem;
   }
 
   button {
-    display: grid;
-    width: 54px;
-    height: 54px;
-    place-items: center;
+    display: inline-flex;
+    min-width: 86px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
     border: 0;
-    border-radius: 50%;
+    border-radius: 6px;
     color: var(--paper-strong);
     background: var(--action);
     cursor: pointer;
-    transition: transform 180ms ease, background 180ms ease;
+    font-size: 0.78rem;
+    font-weight: 700;
+    transition: background 180ms ease;
   }
 
   button:hover {
     background: var(--action-hover);
-    transform: rotate(-8deg) scale(1.04);
   }
 
   .compact {
-    min-height: 56px;
-    padding: 6px 7px 6px 16px;
+    min-height: 50px;
+    padding: 4px 5px 4px 14px;
     border-color: var(--line);
-    box-shadow: none;
   }
 
   .compact button {
-    width: 44px;
+    min-width: 74px;
     height: 44px;
   }
 
@@ -98,8 +95,8 @@
 
   @media (max-width: 640px) {
     .search-shell {
-      min-height: 64px;
-      padding-left: 18px;
+      min-height: 54px;
+      padding-left: 14px;
     }
 
     .hint {
@@ -107,7 +104,7 @@
     }
 
     button {
-      width: 48px;
+      min-width: 72px;
       height: 48px;
     }
   }

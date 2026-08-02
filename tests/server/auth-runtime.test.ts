@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 import { describe, expect, it, vi } from 'vitest';
+import { handleError } from '../../src/hooks.server';
 import { loadRequestAuthContext } from '../../src/lib/server/auth/context';
 import {
 	requireBetaAccess,
@@ -14,6 +15,7 @@ import {
 	getRuntimeConfiguration,
 	RuntimeConfigurationError
 } from '../../src/lib/server/env';
+import { UnexpectedServiceError } from '../../src/lib/server/services/action';
 
 const activeContext: RequestAuthContext = {
 	user: { id: 'user-1' } as User,
@@ -184,9 +186,11 @@ describe('safe redirects and runtime mode', () => {
 
 	it('enables demo only for the exact explicit value', () => {
 		expect(getRuntimeConfiguration({ PUBLIC_DEMO_MODE: 'true' }).mode).toBe('demo');
-		expect(() => getRuntimeConfiguration({ PUBLIC_DEMO_MODE: '1' })).toThrow(
-			RuntimeConfigurationError
-		);
+		for (const value of ['1', 'true ', ' true', 'false ', ' false', 'TRUE', 'FALSE', 'yes', '']) {
+			expect(() => getRuntimeConfiguration({ PUBLIC_DEMO_MODE: value })).toThrow(
+				RuntimeConfigurationError
+			);
+		}
 	});
 
 	it('requires Supabase values in production mode', () => {
@@ -268,6 +272,41 @@ describe('safe redirects and runtime mode', () => {
 				PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'key'
 			})
 		).toThrow(RuntimeConfigurationError);
+	});
+});
+
+describe('global request error logging', () => {
+	it('records sanitized request metadata and preserves the request ID', () => {
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const result = handleError({
+			error: new UnexpectedServiceError(
+				'listings.search',
+				new Error('database password must never be logged')
+			),
+			event: {
+				locals: { requestId: 'request-123' },
+				route: { id: '/listings' },
+				request: new Request('https://market.example/listings'),
+				url: new URL('https://market.example/listings')
+			},
+			status: 500,
+			message: 'Internal Error'
+		} as never);
+
+		expect(result).toMatchObject({ requestId: 'request-123' });
+		const logged = String(consoleError.mock.calls[0]?.[0]);
+		expect(JSON.parse(logged)).toMatchObject({
+			event: 'request_unexpected_failure',
+			requestId: 'request-123',
+			routeId: '/listings',
+			method: 'GET',
+			path: '/listings',
+			status: 500,
+			errorType: 'Error',
+			operation: 'listings.search'
+		});
+		expect(logged).not.toContain('database password');
+		consoleError.mockRestore();
 	});
 });
 

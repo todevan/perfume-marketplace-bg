@@ -2,6 +2,7 @@ import type { FeatureFlags } from '../feature-flags';
 import { DisabledPaymentAdapter } from './disabled';
 import { MyPosPaymentAdapter, type MyPosCheckoutGateway } from './mypos';
 import { StripePaymentAdapter, type StripeGateway } from './stripe';
+import { PurposeGatedPaymentAdapter } from './purpose-gated';
 import type { PaymentAdapter, PaymentProvider } from './types';
 
 export interface PaymentAdapterDependencies {
@@ -16,10 +17,13 @@ export function createPaymentAdapter(
 ): PaymentAdapter {
 	if (!flags.billing || !provider || provider === 'disabled') return new DisabledPaymentAdapter();
 	if (provider === 'mypos') {
-		return new MyPosPaymentAdapter({
+		return new PurposeGatedPaymentAdapter(new MyPosPaymentAdapter({
 			enabled: flags.myposPayments,
 			gateway: dependencies.mypos
-		});
+		}), flags);
 	}
-	return new StripePaymentAdapter(dependencies.stripe, flags.stripeFallback);
+	return new PurposeGatedPaymentAdapter(
+		new StripePaymentAdapter(dependencies.stripe, flags.stripeFallback),
+		flags
+	);
 }

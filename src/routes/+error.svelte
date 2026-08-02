@@ -24,7 +24,7 @@
     color: rgb(74 49 38 / 13%);
     font-size: clamp(9rem, 25vw, 24rem);
     font-weight: 700;
-    font-style: italic;
+    font-weight: 700;
     letter-spacing: -.12em;
     line-height: .7;
   }

@@ -70,41 +70,38 @@ export async function listConversations(
 	profileId: string,
 	input: ConversationListInput
 ): Promise<ConversationPageDto> {
-	const { data: memberships, error: membershipError, count } = await client
-		.from('conversation_members')
-		.select('*', { count: 'exact' })
-		.eq('profile_id', profileId)
-		.order('joined_at', { ascending: false })
-		.range(input.offset, input.offset + input.limit - 1);
-	throwIfError('conversations.memberships', membershipError);
-	const memberRows = (memberships ?? []) as MemberRow[];
-	if (memberRows.length === 0) return pageDto([], count, input.limit, input.offset);
-
-	const conversationIds = memberRows.map((row) => row.conversation_id);
-	const { data: conversations, error: conversationError } = await client
+	const { data: conversations, error: conversationError, count } = await client
 		.from('conversations')
-		.select('*')
-		.in('id', conversationIds)
-		.order('updated_at', { ascending: false });
+		.select('*', { count: 'exact' })
+		.order('updated_at', { ascending: false })
+		.order('id', { ascending: false })
+		.range(input.offset, input.offset + input.limit - 1);
 	throwIfError('conversations.list', conversationError);
 	const conversationRows = (conversations ?? []) as ConversationRow[];
+	if (conversationRows.length === 0) return pageDto([], count, input.limit, input.offset);
+
+	const conversationIds = conversationRows.map((row) => row.id);
 	const offerIds = conversationRows.map((row) => row.accepted_offer_id);
 	const listingIds = conversationRows.map((row) => row.listing_id);
 
-	const [offersResult, listingsResult, messagesResult] = await Promise.all([
+	const [membershipResult, offersResult, listingsResult, messagesResult] = await Promise.all([
+		client
+			.from('conversation_members')
+			.select('*')
+			.eq('profile_id', profileId)
+			.in('conversation_id', conversationIds),
 		client.from('offers').select('id,offerer_id').in('id', offerIds),
 		client.from('listings').select('id,title,seller_id').in('id', listingIds),
-		client
-			.from('messages')
-			.select('*')
-			.in('conversation_id', conversationIds)
-			.order('created_at', { ascending: false })
-			.limit(Math.max(100, conversationIds.length * 10))
+		client.rpc('latest_messages_for_conversations', {
+			target_conversation_ids: conversationIds
+		})
 	]);
+	throwIfError('conversations.memberships', membershipResult.error);
 	throwIfError('conversations.offers', offersResult.error);
 	throwIfError('conversations.listings', listingsResult.error);
 	throwIfError('conversations.lastMessages', messagesResult.error);
 
+	const memberRows = (membershipResult.data ?? []) as MemberRow[];
 	const offers = (offersResult.data ?? []) as Pick<OfferRow, 'id' | 'offerer_id'>[];
 	const listings = (listingsResult.data ?? []) as Array<
 		Pick<Tables<'listings'>, 'id' | 'title' | 'seller_id'>

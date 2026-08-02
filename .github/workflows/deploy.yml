@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
 
 concurrency:
   group: deploy-staging
@@ -31,12 +32,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Require successful complete CI for the exact SHA
+        run: node scripts/verify-ci-checks.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - run: pnpm install --frozen-lockfile
       - name: Audit production dependencies
         run: pnpm audit --prod
       - name: Audit all dependencies at high severity
         run: pnpm audit --audit-level high
       - run: pnpm test
+      - run: pnpm test:db:contracts
       - name: Validate staging Cloudflare bundle
         run: pnpm exec wrangler deploy --dry-run --env staging
       - name: Deploy staging Worker

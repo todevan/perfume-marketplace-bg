@@ -12,6 +12,7 @@ import {
 import {
 	runAction,
 	runAuthenticatedAction,
+	UnexpectedServiceError,
 	toActionError
 } from '../../src/lib/server/services/action';
 
@@ -155,5 +156,22 @@ describe('service action boundary', () => {
 	it('maps database authorization and conflict codes consistently', () => {
 		expect(toActionError(new RepositoryError('test', '42501', 'denied')).code).toBe('FORBIDDEN');
 		expect(toActionError(new RepositoryError('test', '23505', 'duplicate')).code).toBe('CONFLICT');
+	});
+
+	it('surfaces unexpected failures to the global request error boundary', async () => {
+		const failure = runAction(
+			z.object({ value: z.string() }),
+			{ value: 'ok' },
+			async () => {
+				throw new TypeError('sensitive backend detail');
+			},
+			{ operation: 'listings.search' }
+		);
+		await expect(failure).rejects.toBeInstanceOf(UnexpectedServiceError);
+		await expect(failure).rejects.toMatchObject({
+			name: 'UnexpectedServiceError',
+			operation: 'listings.search',
+			errorType: 'TypeError'
+		});
 	});
 });

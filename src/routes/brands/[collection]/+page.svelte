@@ -183,11 +183,11 @@
 	.collection-hero {
 		position: relative;
 		display: grid;
-		min-height: 470px;
+		min-height: 450px;
 		align-items: center;
 		overflow: hidden;
 		border-bottom: 1px solid var(--line);
-		background: linear-gradient(135deg, rgb(243 223 191 / 84%), rgb(214 202 186 / 36%));
+		background: var(--paper);
 	}
 
 	.hero-grid {
@@ -201,6 +201,8 @@
 	.hero-copy {
 		position: relative;
 		z-index: 1;
+		display: grid;
+		justify-items: start;
 	}
 
 	.back-link {
@@ -216,8 +218,10 @@
 
 	.collection-hero h1 {
 		margin-block: 12px 18px;
-		font-size: clamp(4.5rem, 13vw, 9rem);
-		line-height: 0.84;
+		font-size: clamp(3.5rem, 8vw, 6.25rem);
+		font-style: normal;
+		line-height: 0.92;
+		letter-spacing: -0.06em;
 	}
 
 	.collection-hero p {
@@ -231,34 +235,33 @@
 		position: relative;
 		display: grid;
 		width: 290px;
-		height: 290px;
+		height: 310px;
 		place-items: center;
-		border: 1px solid rgb(74 49 38 / 26%);
-		border-radius: 50%;
+		border: 1px solid var(--action);
+		border-radius: 6px;
+		color: var(--paper-strong);
+		background: var(--action);
 		justify-self: end;
-		box-shadow: inset 0 0 0 24px rgb(255 253 249 / 20%), inset 0 0 0 25px rgb(74 49 38 / 10%);
 	}
 
 	.hero-mark span {
-		font-size: 7rem;
+		font-size: 6rem;
 		font-weight: 700;
-		font-style: italic;
+		font-style: normal;
 	}
 
 	.hero-mark small {
 		position: absolute;
-		right: -25px;
-		color: var(--ink-soft);
+		right: 18px;
+		bottom: 17px;
+		color: rgb(255 253 249 / 70%);
 		font-size: 0.62rem;
 		font-weight: 700;
 		letter-spacing: 0.17em;
-		transform: rotate(90deg);
 	}
 
 	.hero-ring {
-		position: absolute;
-		border: 1px solid rgb(74 49 38 / 10%);
-		border-radius: 50%;
+		display: none;
 	}
 
 	.ring-one {
@@ -280,8 +283,7 @@
 		top: var(--header-height);
 		z-index: 8;
 		border-bottom: 1px solid var(--line);
-		background: rgb(244 236 225 / 92%);
-		backdrop-filter: blur(16px);
+		background: var(--paper-strong);
 	}
 
 	.collection-nav .container {
@@ -305,13 +307,13 @@
 		color: var(--ink-soft);
 		font-size: 0.8rem;
 		font-weight: 700;
-		font-style: italic;
+		font-style: normal;
 	}
 
 	.collection-nav a[aria-current='page'] {
 		border-color: var(--action);
 		color: var(--action);
-		background: rgb(243 223 191 / 52%);
+		background: var(--brand-secondary);
 	}
 
 	.collection-nav a span {
@@ -342,6 +344,9 @@
 		display: grid;
 		gap: 26px;
 		padding: clamp(20px, 4vw, 34px);
+		border-color: var(--line);
+		border-radius: 6px;
+		background: var(--paper-strong);
 	}
 
 	.search-field,
@@ -377,10 +382,16 @@
 		min-height: 52px;
 		padding: 12px 16px 12px 48px;
 		border: 1px solid var(--line-strong);
-		border-radius: var(--radius-sm);
+		border-radius: 4px;
 		color: var(--ink);
-		background: rgb(255 253 249 / 76%);
+		background: var(--paper);
 		font: inherit;
+	}
+
+	.search-input input:focus-visible {
+		border-color: var(--action);
+		outline: 2px solid var(--action);
+		outline-offset: 2px;
 	}
 
 	.letter-filter > div {
@@ -394,10 +405,12 @@
 		min-height: 44px;
 		padding-inline: 12px;
 		border: 1px solid var(--line);
-		border-radius: 999px;
+		border-radius: 4px;
 		color: var(--ink-soft);
-		background: rgb(255 253 249 / 55%);
-		font: 700 0.72rem Arial, sans-serif;
+		background: var(--paper);
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 700;
 		cursor: pointer;
 	}
 
@@ -420,7 +433,7 @@
 	.result-line strong {
 		color: var(--ink);
 		font-size: 1.2rem;
-		font-style: italic;
+		font-style: normal;
 	}
 
 	.brand-grid {
@@ -437,15 +450,14 @@
 		padding: 19px;
 		overflow: hidden;
 		border: 1px solid var(--line);
-		border-radius: var(--radius-md);
-		background: linear-gradient(145deg, rgb(255 253 249 / 78%), rgb(214 202 186 / 28%));
-		transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+		border-radius: 6px;
+		background: var(--paper-strong);
+		transition: border-color 180ms ease, background 180ms ease;
 	}
 
 	.brand-card:hover {
-		border-color: rgb(74 49 38 / 36%);
-		box-shadow: var(--shadow-md);
-		transform: translateY(-3px);
+		border-color: var(--action);
+		background: var(--paper);
 	}
 
 	.brand-index {
@@ -463,7 +475,7 @@
 		color: rgb(74 49 38 / 8%);
 		font-size: 5rem;
 		font-weight: 700;
-		font-style: italic;
+		font-style: normal;
 		line-height: 0.9;
 		text-transform: uppercase;
 	}
@@ -478,7 +490,7 @@
 
 	.brand-copy strong {
 		font-size: 1.05rem;
-		font-style: italic;
+		font-style: normal;
 		line-height: 1.2;
 	}
 
@@ -517,7 +529,7 @@
 		height: 54px;
 		place-items: center;
 		border: 1px solid rgb(244 236 225 / 20%);
-		border-radius: 50%;
+		border-radius: 4px;
 		color: var(--brand-main);
 	}
 

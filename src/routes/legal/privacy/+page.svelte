@@ -85,7 +85,7 @@
   .draft-pill { display: inline-flex; align-items: center; gap: 7px; margin-bottom: 19px; padding: 6px 10px; border: 1px solid rgb(141 47 54 / 32%); border-radius: 999px; color: var(--danger); background: rgb(141 47 54 / 6%); font-size: .67rem; font-weight: 700; }
   h1 { max-width: 920px; margin-bottom: 20px; font-size: clamp(3rem, 6.7vw, 6.1rem); }
   .hero-grid > div:first-child > p { max-width: 770px; margin: 0; color: var(--ink-soft); }
-  .privacy-mark { position: relative; display: grid; width: min(100%, 320px); min-height: 330px; place-items: center; align-content: center; gap: 15px; justify-self: end; overflow: hidden; border: 1px solid rgb(74 49 38 / 20%); border-radius: 50% 50% 24% 24%; color: var(--action); background: linear-gradient(145deg, rgb(255 255 255 / 48%), transparent), #b9c8c4; box-shadow: 20px 23px 0 rgb(214 202 186 / 48%); }
+  .privacy-mark { position: relative; display: grid; width: min(100%, 320px); min-height: 330px; place-items: center; align-content: center; gap: 15px; justify-self: end; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); color: var(--action); background: var(--paper-deep); }
   .privacy-mark::before,
   .privacy-mark::after { position: absolute; border: 1px solid rgb(74 49 38 / 13%); border-radius: 50%; content: ''; }
   .privacy-mark::before { width: 260px; height: 260px; }

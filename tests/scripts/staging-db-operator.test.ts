@@ -64,6 +64,7 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 		],
 		createPinnedWorkdir: () => 'C:\\isolated\\perfume-marketplace-staging-test',
 		cleanupPinnedWorkdir: () => {},
+		verifyInventoryReceipt: () => {},
 		...overrides
 	};
 }

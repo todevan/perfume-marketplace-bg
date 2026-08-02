@@ -55,6 +55,16 @@ export const actions: Actions = {
 		if (!locals.supabase || !locals.profile || !locals.betaAccess) {
 			return fail(403, { success: false, message: 'Няма валидна покана за този профил.' });
 		}
+		if (
+			locals.profile.isSuspended ||
+			locals.betaAccess.status === 'suspended' ||
+			locals.betaAccess.status === 'revoked'
+		) {
+			return fail(403, {
+				success: false,
+				message: 'Този профил няма право да променя onboarding данни.'
+			});
+		}
 
 		const username = formData.get('username')?.toString().trim() ?? '';
 		const cityValue = formData.get('city')?.toString().trim() ?? '';

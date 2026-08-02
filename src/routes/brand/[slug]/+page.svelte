@@ -24,7 +24,7 @@
 <section class="section">
   <div class="container">
     <div class="section-heading"><div><span class="eyebrow">Налични сега</span><h2>Флакони от {brand}.</h2></div><div class="mini-search"><SearchBar compact /></div></div>
-    {#if listings.length}<div class="listing-grid">{#each listings as listing}<ListingCard {listing} />{/each}</div>{:else}<div class="empty-state"><div><Search size={30} /><h2>Все още няма активен флакон.</h2><p class="muted">Запази търсенето и ще получиш известие при нова обява.</p></div></div>{/if}
+    {#if listings.length}<div class="listing-grid">{#each listings as listing}<ListingCard {listing} variant="catalog" />{/each}</div>{:else}<div class="empty-state"><div><Search size={30} /><h2>Все още няма активен флакон.</h2><p class="muted">Запази търсенето и ще получиш известие при нова обява.</p></div></div>{/if}
   </div>
 </section>
 
@@ -33,30 +33,32 @@
 <style>
   .brand-hero {
     position: relative;
-    min-height: 510px;
+    min-height: 480px;
     display: grid;
     align-items: center;
     overflow: hidden;
     border-bottom: 1px solid var(--line);
-    background: linear-gradient(145deg, rgb(243 223 191 / 72%), rgb(214 202 186 / 28%));
+    background: var(--paper);
   }
 
   .brand-grid {
     display: grid;
     align-items: center;
-    grid-template-columns: 1fr 360px;
-    gap: 60px;
-    padding-block: 60px;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: clamp(40px, 8vw, 104px);
+    padding-block: 64px;
   }
 
   h1 {
     margin-bottom: 18px;
+    font-style: normal;
+    letter-spacing: -0.06em;
   }
 
   .brand-grid p {
     max-width: 600px;
     color: var(--ink-soft);
-    font-size: 1.1rem;
+    font-size: 1.03rem;
   }
 
   .actions {
@@ -73,44 +75,39 @@
   .brand-monogram {
     position: relative;
     display: grid;
-    width: 330px;
+    width: 300px;
     height: 330px;
     place-items: center;
-    border: 1px solid rgb(74 49 38 / 22%);
-    border-radius: 50%;
+    border: 1px solid var(--action);
+    border-radius: 6px;
+    color: var(--paper-strong);
+    background: var(--action);
     justify-self: end;
-    box-shadow: inset 0 0 0 28px rgb(255 253 249 / 18%), inset 0 0 0 29px rgb(74 49 38 / 9%);
   }
 
   .brand-monogram span {
-    font-size: 6rem;
+    font-size: 5rem;
     font-weight: 700;
-    font-style: italic;
-    letter-spacing: -0.12em;
+    font-style: normal;
+    letter-spacing: -0.1em;
   }
 
   .brand-monogram small {
     position: absolute;
-    right: -16px;
-    color: var(--ink-soft);
+    right: 20px;
+    bottom: 18px;
+    color: rgb(255 253 249 / 70%);
     font-size: 0.62rem;
     letter-spacing: 0.18em;
-    transform: rotate(90deg);
   }
 
   .brand-orbit {
-    position: absolute;
-    top: -480px;
-    right: -250px;
-    width: 850px;
-    height: 850px;
-    border: 1px solid rgb(74 49 38 / 11%);
-    border-radius: 50%;
+    display: none;
   }
 
   .brand-stats {
     border-bottom: 1px solid var(--line);
-    background: rgb(255 253 249 / 45%);
+    background: var(--paper-strong);
   }
 
   .brand-stats .container {
@@ -132,7 +129,7 @@
 
   .brand-stats strong {
     font-size: 1.6rem;
-    font-style: italic;
+    font-style: normal;
   }
 
   .brand-stats span {
@@ -147,7 +144,7 @@
   .listing-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 18px;
+    gap: 14px;
   }
 
   .brand-note {
@@ -183,7 +180,7 @@
     gap: 7px;
     color: var(--brand-main);
     font-weight: 700;
-    font-style: italic;
+    font-style: normal;
     white-space: nowrap;
   }
 

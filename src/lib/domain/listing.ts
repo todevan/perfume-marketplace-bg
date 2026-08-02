@@ -57,7 +57,7 @@ export function isAllowedFragranticaUrl(value: string): boolean {
 
 export function requiredPhotoRoles(listing: ListingInput): ReadonlySet<PhotoRole> {
 	if (listing.productFormat === 'official_sample') {
-		return new Set(['product_full', 'manufacturer_label', 'manufacturer_markings']);
+		return new Set(['product_full', 'manufacturer_label', 'manufacturer_markings', 'seal']);
 	}
 
 	if (listing.amount?.isSealed) {

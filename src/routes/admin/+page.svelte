@@ -32,6 +32,32 @@
     }).format(new Date(value));
   }
 
+  function inspectedMessages(value: unknown, caseId: string): readonly {
+    id: string;
+    senderId: string;
+    body: string | null;
+    createdAt: string;
+  }[] {
+    if (!value || typeof value !== 'object') return [];
+    const result = value as Record<string, unknown>;
+    if (result.action !== 'inspect' || result.caseId !== caseId || !Array.isArray(result.messages)) {
+      return [];
+    }
+    return result.messages.filter((message): message is {
+      id: string;
+      senderId: string;
+      body: string | null;
+      createdAt: string;
+    } => Boolean(
+      message &&
+      typeof message === 'object' &&
+      typeof message.id === 'string' &&
+      typeof message.senderId === 'string' &&
+      (typeof message.body === 'string' || message.body === null) &&
+      typeof message.createdAt === 'string'
+    ));
+  }
+
   function actionFeedback(value: unknown): { kind: 'success' | 'error'; message: string } | null {
     if (!value || typeof value !== 'object') return null;
     const result = value as Record<string, unknown>;
@@ -162,6 +188,23 @@
               <button class="button primary claim-button" type="submit"><Check size={17} /> Поеми случая</button>
             </form>
           {:else if data.selected.canDecide}
+            {#if data.selected.targetType === 'conversation' || data.selected.targetType === 'message'}
+              <form method="POST" action="?/inspect">
+                <input type="hidden" name="caseId" value={data.selected.id} />
+                <button class="button secondary claim-button" type="submit">Прегледай одитираната кореспонденция</button>
+              </form>
+              {@const messages = inspectedMessages(form, data.selected.id)}
+              {#if messages.length}
+                <ol class="message-evidence" aria-label="Одитирана кореспонденция">
+                  {#each messages as message}
+                    <li>
+                      <small>{timestamp(message.createdAt)} · {message.senderId.slice(0, 8)}</small>
+                      <p>{message.body ?? '[премахнато съобщение]'}</p>
+                    </li>
+                  {/each}
+                </ol>
+              {/if}
+            {/if}
             <form method="POST" action="?/decide" class="decision-form">
               <input type="hidden" name="caseId" value={data.selected.id} />
               <label class="decision-note"><span>Мотиви към решението</span><textarea name="rationale" minlength="10" maxlength="4000" required placeholder="Опиши конкретните факти и приложеното правило..."></textarea></label>
@@ -180,6 +223,12 @@
                 {:else if data.selected.targetType === 'deal'}
                   <button class="approve" type="submit" name="decision" value="resume"><Check size={17} /> Върни за потвърждение</button>
                   <button class="remove" type="submit" name="decision" value="cancel"><X size={17} /> Отмени сделката</button>
+                {:else if data.selected.targetType === 'message'}
+                  <button class="approve" type="submit" name="decision" value="keep"><Check size={17} /> Без нарушение</button>
+                  <button class="remove" type="submit" name="decision" value="remove"><X size={17} /> Премахни съобщението</button>
+                {:else if data.selected.targetType === 'conversation'}
+                  <button class="approve" type="submit" name="decision" value="keep"><Check size={17} /> Без нарушение</button>
+                  <button class="remove" type="submit" name="decision" value="hide"><X size={17} /> Блокирай разговора</button>
                 {/if}
               </div>
             </form>
@@ -199,6 +248,33 @@
 </div>
 
 <style>
+  .message-evidence {
+    display: grid;
+    max-height: 360px;
+    gap: .55rem;
+    margin: 1rem 0;
+    padding: .75rem;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--paper-strong);
+  }
+
+  .message-evidence li {
+    padding: .65rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+  }
+
+  .message-evidence small {
+    color: var(--ink-faint);
+  }
+
+  .message-evidence p {
+    margin: .35rem 0 0;
+    white-space: pre-wrap;
+  }
+
   :global(.site-header),
   :global(.footer) {
     display: none;
@@ -659,8 +735,8 @@
   }
 
   .case-list > a.active {
-    background: #fff;
-    box-shadow: inset 3px 0 #4a3126;
+    color: #751d2b;
+    background: #f4ece1;
   }
 
   .risk-dot {
@@ -756,7 +832,7 @@
     padding: 10px;
     border: 1px solid #d8d0c7;
     border-radius: 7px;
-    background: linear-gradient(#ded8d0, #eee8e0);
+    background: #eee8e0;
   }
 
   .evidence-strip img {

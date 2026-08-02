@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
 	chmodSync,
 	copyFileSync,
@@ -54,6 +55,7 @@ import { seedCatalog } from './seed-catalog.mjs';
  *     serviceRoleKey: string;
  *     logger: Pick<Console, 'log'>;
  *   }) => Promise<unknown>;
+ *   verifyInventoryReceipt?: (environment: NodeJS.ProcessEnv) => void;
  * }} StagingDependencies
  *
  * @typedef {{
@@ -147,6 +149,65 @@ export class StagingTargetError extends Error {
 	constructor(message) {
 		super(message);
 		this.name = 'StagingTargetError';
+	}
+}
+
+const REQUIRED_INVENTORY_CATEGORIES = Object.freeze([
+	'application_rows',
+	'auth_configuration',
+	'auth_users',
+	'database_objects',
+	'edge_functions',
+	'extensions',
+	'migrations',
+	'realtime',
+	'scheduled_jobs',
+	'secrets',
+	'storage'
+]);
+
+/** @param {NodeJS.ProcessEnv} environment */
+export function verifyStagingInventoryReceipt(environment) {
+	const receiptPath = requiredEnvironmentValue(environment, 'STAGING_INVENTORY_RECEIPT_PATH');
+	const expectedHash = requiredEnvironmentValue(environment, 'STAGING_INVENTORY_RECEIPT_SHA256');
+	if (!isAbsolute(receiptPath) || !/^[a-f0-9]{64}$/iu.test(expectedHash)) {
+		throw new StagingTargetError('The staging inventory receipt path/hash is invalid.');
+	}
+	let bytes;
+	try {
+		bytes = readFileSync(receiptPath);
+	} catch {
+		throw new StagingTargetError('The staging inventory receipt cannot be read.');
+	}
+	const actualHash = createHash('sha256').update(bytes).digest('hex');
+	if (actualHash !== expectedHash.toLowerCase()) {
+		throw new StagingTargetError('The staging inventory receipt hash does not match.');
+	}
+	let receipt;
+	try {
+		receipt = JSON.parse(bytes.toString('utf8'));
+	} catch {
+		throw new StagingTargetError('The staging inventory receipt is not valid JSON.');
+	}
+	const age = Date.now() - Date.parse(receipt?.createdAt ?? '');
+	const categories = Array.isArray(receipt?.completeCategories)
+		? [...receipt.completeCategories].sort()
+		: [];
+	if (
+		receipt?.projectRef !== STAGING_PROJECT.ref ||
+		!Number.isFinite(age) ||
+		age < -5 * 60_000 ||
+		age > 30 * 60_000 ||
+		receipt?.stopConditionsClear !== true ||
+		receipt?.containsRealData !== false ||
+		receipt?.publicSignupEnabled !== false ||
+		!Array.isArray(receipt?.unexpectedObjects) ||
+		receipt.unexpectedObjects.length !== 0 ||
+		JSON.stringify(categories) !== JSON.stringify([...REQUIRED_INVENTORY_CATEGORIES].sort())
+	) {
+		throw new StagingTargetError(
+			'The staging inventory receipt is incomplete, stale, or reports a stop condition.'
+		);
 	}
 }
 
@@ -679,6 +740,9 @@ export async function runStagingCommand(
 		requireServiceRole,
 		dependencies
 	});
+	if (command !== 'verify-target') {
+		(dependencies.verifyInventoryReceipt ?? verifyStagingInventoryReceipt)(environment);
+	}
 
 	logger.info(
 		`Verified hosted target ${target.ref} (${target.region}, PostgreSQL ${target.postgresMajor}, ${target.status}).`
