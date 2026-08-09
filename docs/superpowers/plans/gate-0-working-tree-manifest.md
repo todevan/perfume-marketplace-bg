@@ -1,0 +1,375 @@
+# Gate 0 Working Tree Manifest
+
+Captured for `docs/superpowers/plans/gate-0-baseline.md` before any Gate 1 work.
+
+- HEAD: `fb3e644615c6bbe4895142d6fc4fabbce00e853f`
+- Command: `git status --short --untracked-files=all`
+- Status lines: 355
+- Status stream checksum: `git hash-object --stdin` = `2c56652000a0c1bb0bfc42271a8a986f44b1f40e`
+- Tracked diff command: `git diff --binary --full-index`
+- Tracked diff size: 4,088 lines / 197,773 characters as measured by PowerShell
+- Tracked diff checksum: `git hash-object --stdin` = `2995707581938e275325779f17316f7f2f7159ce`
+
+This manifest file is itself a Gate 0 documentation artifact, so it is intentionally
+absent from the captured pre-artifact status stream below. The already-existing
+`gate-0-baseline.md` path is present; Gate 0 changed its contents but did not add
+or remove any other pre-existing path.
+
+```text
+ M AGENTS.md
+ M DESIGN.md
+ M README.md
+ M docs/ARCHITECTURE.md
+ M docs/AUDIT-2026-08-02.md
+ M docs/MASTER-PLAN.md
+ M docs/PRODUCTION-SETUP.md
+ M docs/PROJECT-STATUS.md
+ M docs/STAGING-CREDENTIALS.md
+ M package.json
+ M pnpm-lock.yaml
+ D scripts/AGENTS.md
+ M scripts/bootstrap-first-admin.mjs
+ M scripts/check-production-readiness.mjs
+ M scripts/smoke-staging.mjs
+ M skills-lock.json
+ D src/AGENTS.md
+ M src/hooks.server.ts
+ M src/lib/components/Header.svelte
+ M src/lib/components/MemberShell.svelte
+ M src/lib/components/listing/ListingWizard.svelte
+ M src/lib/domain/listing.ts
+ M src/lib/domain/offers.ts
+ M src/lib/domain/types.ts
+ M src/lib/server/auth/context.ts
+ M src/lib/server/auth/guards.ts
+ M src/lib/server/database.types.ts
+ M src/lib/server/feature-flags.ts
+ M src/lib/server/payments/types.ts
+ M src/lib/server/repositories/offers.ts
+ M src/lib/server/uploads/image-processor.ts
+ M src/routes/admin/+page.server.ts
+ M src/routes/admin/+page.svelte
+ M src/routes/api/listing-uploads/+server.ts
+ M src/routes/auth/confirm/+server.ts
+ M src/routes/dashboard/+page.server.ts
+ M src/routes/dashboard/+page.svelte
+ M src/routes/listing/[slug]/+page.server.ts
+ M src/routes/listing/[slug]/+page.svelte
+ M src/routes/login/+page.server.ts
+ M src/routes/login/+page.svelte
+ M src/routes/merchant-application/+page.server.ts
+ M src/routes/offers/+page.server.ts
+ M src/routes/onboarding/+page.server.ts
+ M src/routes/onboarding/+page.svelte
+ D src/routes/phone-verification/+page.server.ts
+ D src/routes/phone-verification/+page.svelte
+ M src/routes/publish/+page.server.ts
+ M src/routes/publish/+page.svelte
+ M src/routes/report/+page.server.ts
+ M src/routes/report/+page.svelte
+ D supabase/AGENTS.md
+ M supabase/functions/notification-email/index.ts
+ M supabase/functions/upload-cleanup/index.ts
+ M supabase/tests/production_readiness_fixes.pgtap.sql
+ D tests/AGENTS.md
+ M tests/components/auth-shell.test.ts
+ M tests/components/member-shell.test.ts
+ M tests/contracts/deployment-hardening.contract.test.ts
+ M tests/contracts/notification-email.contract.test.ts
+ M tests/contracts/staging-smoke.contract.test.ts
+ M tests/contracts/upload-cleanup.contract.test.ts
+ M tests/domain/listing-rules.test.ts
+ M tests/e2e/real-beta.spec.ts
+ M tests/server/auth-runtime.test.ts
+ M tests/server/image-processor.test.ts
+ M tests/server/login-backend-attestation.test.ts
+ M wrangler.jsonc
+?? .agents/skills/ask-matt/PHASE-BOUNDARIES.md
+?? .agents/skills/ask-matt/SKILL.md
+?? .agents/skills/ask-matt/agents/openai.yaml
+?? .agents/skills/banner-design/SKILL.md
+?? .agents/skills/banner-design/references/banner-sizes-and-styles.md
+?? .agents/skills/brand/SKILL.md
+?? .agents/skills/brand/references/approval-checklist.md
+?? .agents/skills/brand/references/asset-organization.md
+?? .agents/skills/brand/references/brand-guideline-template.md
+?? .agents/skills/brand/references/color-palette-management.md
+?? .agents/skills/brand/references/consistency-checklist.md
+?? .agents/skills/brand/references/logo-usage-rules.md
+?? .agents/skills/brand/references/messaging-framework.md
+?? .agents/skills/brand/references/typography-specifications.md
+?? .agents/skills/brand/references/update.md
+?? .agents/skills/brand/references/visual-identity.md
+?? .agents/skills/brand/references/voice-framework.md
+?? .agents/skills/brand/scripts/extract-colors.cjs
+?? .agents/skills/brand/scripts/inject-brand-context.cjs
+?? .agents/skills/brand/scripts/sync-brand-to-tokens.cjs
+?? .agents/skills/brand/scripts/tests/test_sync_brand_to_tokens.py
+?? .agents/skills/brand/scripts/validate-asset.cjs
+?? .agents/skills/brand/templates/brand-guidelines-starter.md
+?? .agents/skills/claude-handoff/SKILL.md
+?? .agents/skills/claude-handoff/agents/openai.yaml
+?? .agents/skills/code-review/SKILL.md
+?? .agents/skills/code-review/agents/openai.yaml
+?? .agents/skills/codebase-design/DEEPENING.md
+?? .agents/skills/codebase-design/DESIGN-IT-TWICE.md
+?? .agents/skills/codebase-design/SKILL.md
+?? .agents/skills/codebase-design/agents/openai.yaml
+?? .agents/skills/design-system/SKILL.md
+?? .agents/skills/design-system/data/slide-backgrounds.csv
+?? .agents/skills/design-system/data/slide-charts.csv
+?? .agents/skills/design-system/data/slide-color-logic.csv
+?? .agents/skills/design-system/data/slide-copy.csv
+?? .agents/skills/design-system/data/slide-layout-logic.csv
+?? .agents/skills/design-system/data/slide-layouts.csv
+?? .agents/skills/design-system/data/slide-strategies.csv
+?? .agents/skills/design-system/data/slide-typography.csv
+?? .agents/skills/design-system/references/component-specs.md
+?? .agents/skills/design-system/references/component-tokens.md
+?? .agents/skills/design-system/references/primitive-tokens.md
+?? .agents/skills/design-system/references/semantic-tokens.md
+?? .agents/skills/design-system/references/states-and-variants.md
+?? .agents/skills/design-system/references/tailwind-integration.md
+?? .agents/skills/design-system/references/token-architecture.md
+?? .agents/skills/design-system/scripts/embed-tokens.cjs
+?? .agents/skills/design-system/scripts/fetch-background.py
+?? .agents/skills/design-system/scripts/generate-slide.py
+?? .agents/skills/design-system/scripts/generate-tokens.cjs
+?? .agents/skills/design-system/scripts/html-token-validator.py
+?? .agents/skills/design-system/scripts/search-slides.py
+?? .agents/skills/design-system/scripts/slide-token-validator.py
+?? .agents/skills/design-system/scripts/slide_search_core.py
+?? .agents/skills/design-system/scripts/tests/test_validate_tokens.py
+?? .agents/skills/design-system/scripts/validate-tokens.cjs
+?? .agents/skills/design-system/templates/design-tokens-starter.json
+?? .agents/skills/design/SKILL.md
+?? .agents/skills/design/data/cip/deliverables.csv
+?? .agents/skills/design/data/cip/industries.csv
+?? .agents/skills/design/data/cip/mockup-contexts.csv
+?? .agents/skills/design/data/cip/styles.csv
+?? .agents/skills/design/data/icon/styles.csv
+?? .agents/skills/design/data/logo/colors.csv
+?? .agents/skills/design/data/logo/industries.csv
+?? .agents/skills/design/data/logo/styles.csv
+?? .agents/skills/design/references/banner-sizes-and-styles.md
+?? .agents/skills/design/references/cip-deliverable-guide.md
+?? .agents/skills/design/references/cip-design.md
+?? .agents/skills/design/references/cip-prompt-engineering.md
+?? .agents/skills/design/references/cip-style-guide.md
+?? .agents/skills/design/references/design-routing.md
+?? .agents/skills/design/references/icon-design.md
+?? .agents/skills/design/references/logo-color-psychology.md
+?? .agents/skills/design/references/logo-design.md
+?? .agents/skills/design/references/logo-prompt-engineering.md
+?? .agents/skills/design/references/logo-style-guide.md
+?? .agents/skills/design/references/slides-copywriting-formulas.md
+?? .agents/skills/design/references/slides-create.md
+?? .agents/skills/design/references/slides-html-template.md
+?? .agents/skills/design/references/slides-layout-patterns.md
+?? .agents/skills/design/references/slides-strategies.md
+?? .agents/skills/design/references/slides.md
+?? .agents/skills/design/references/social-photos-design.md
+?? .agents/skills/design/scripts/cip/core.py
+?? .agents/skills/design/scripts/cip/generate.py
+?? .agents/skills/design/scripts/cip/render-html.py
+?? .agents/skills/design/scripts/cip/search.py
+?? .agents/skills/design/scripts/icon/generate.py
+?? .agents/skills/design/scripts/logo/core.py
+?? .agents/skills/design/scripts/logo/generate.py
+?? .agents/skills/design/scripts/logo/search.py
+?? .agents/skills/diagnosing-bugs/SKILL.md
+?? .agents/skills/diagnosing-bugs/agents/openai.yaml
+?? .agents/skills/diagnosing-bugs/scripts/hitl-loop.template.sh
+?? .agents/skills/domain-modeling/ADR-FORMAT.md
+?? .agents/skills/domain-modeling/CONTEXT-FORMAT.md
+?? .agents/skills/domain-modeling/SKILL.md
+?? .agents/skills/domain-modeling/agents/openai.yaml
+?? .agents/skills/git-guardrails-claude-code/SKILL.md
+?? .agents/skills/git-guardrails-claude-code/agents/openai.yaml
+?? .agents/skills/git-guardrails-claude-code/scripts/block-dangerous-git.sh
+?? .agents/skills/grill-me/SKILL.md
+?? .agents/skills/grill-me/agents/openai.yaml
+?? .agents/skills/grill-with-docs/SKILL.md
+?? .agents/skills/grill-with-docs/agents/openai.yaml
+?? .agents/skills/grilling/SKILL.md
+?? .agents/skills/grilling/agents/openai.yaml
+?? .agents/skills/handoff/SKILL.md
+?? .agents/skills/handoff/agents/openai.yaml
+?? .agents/skills/implement/SKILL.md
+?? .agents/skills/implement/agents/openai.yaml
+?? .agents/skills/improve-codebase-architecture/HTML-REPORT.md
+?? .agents/skills/improve-codebase-architecture/SKILL.md
+?? .agents/skills/improve-codebase-architecture/agents/openai.yaml
+?? .agents/skills/loop-me/SKILL.md
+?? .agents/skills/loop-me/agents/openai.yaml
+?? .agents/skills/migrate-to-shoehorn/SKILL.md
+?? .agents/skills/migrate-to-shoehorn/agents/openai.yaml
+?? .agents/skills/prototype/LOGIC.md
+?? .agents/skills/prototype/SKILL.md
+?? .agents/skills/prototype/UI.md
+?? .agents/skills/prototype/agents/openai.yaml
+?? .agents/skills/research/SKILL.md
+?? .agents/skills/research/agents/openai.yaml
+?? .agents/skills/resolving-merge-conflicts/SKILL.md
+?? .agents/skills/resolving-merge-conflicts/agents/openai.yaml
+?? .agents/skills/scaffold-exercises/SKILL.md
+?? .agents/skills/scaffold-exercises/agents/openai.yaml
+?? .agents/skills/setup-matt-pocock-skills/SKILL.md
+?? .agents/skills/setup-matt-pocock-skills/agents/openai.yaml
+?? .agents/skills/setup-matt-pocock-skills/domain.md
+?? .agents/skills/setup-matt-pocock-skills/issue-tracker-github.md
+?? .agents/skills/setup-matt-pocock-skills/issue-tracker-gitlab.md
+?? .agents/skills/setup-matt-pocock-skills/issue-tracker-local.md
+?? .agents/skills/setup-matt-pocock-skills/triage-labels.md
+?? .agents/skills/setup-pre-commit/SKILL.md
+?? .agents/skills/setup-pre-commit/agents/openai.yaml
+?? .agents/skills/setup-ts-deep-modules/SKILL.md
+?? .agents/skills/setup-ts-deep-modules/agents/openai.yaml
+?? .agents/skills/setup-ts-deep-modules/dependency-cruiser.config.cjs
+?? .agents/skills/slides/SKILL.md
+?? .agents/skills/slides/references/copywriting-formulas.md
+?? .agents/skills/slides/references/create.md
+?? .agents/skills/slides/references/html-template.md
+?? .agents/skills/slides/references/layout-patterns.md
+?? .agents/skills/slides/references/slide-strategies.md
+?? .agents/skills/tdd/SKILL.md
+?? .agents/skills/tdd/agents/openai.yaml
+?? .agents/skills/tdd/mocking.md
+?? .agents/skills/tdd/tests.md
+?? .agents/skills/teach/GLOSSARY-FORMAT.md
+?? .agents/skills/teach/LEARNING-RECORD-FORMAT.md
+?? .agents/skills/teach/MISSION-FORMAT.md
+?? .agents/skills/teach/RESOURCES-FORMAT.md
+?? .agents/skills/teach/SKILL.md
+?? .agents/skills/teach/agents/openai.yaml
+?? .agents/skills/to-questionnaire/SKILL.md
+?? .agents/skills/to-questionnaire/agents/openai.yaml
+?? .agents/skills/to-spec/SKILL.md
+?? .agents/skills/to-spec/agents/openai.yaml
+?? .agents/skills/to-tickets/SKILL.md
+?? .agents/skills/to-tickets/agents/openai.yaml
+?? .agents/skills/triage/AGENT-BRIEF.md
+?? .agents/skills/triage/OUT-OF-SCOPE.md
+?? .agents/skills/triage/SKILL.md
+?? .agents/skills/triage/agents/openai.yaml
+?? .agents/skills/ui-styling/LICENSE.txt
+?? .agents/skills/ui-styling/SKILL.md
+?? .agents/skills/ui-styling/references/canvas-design-system.md
+?? .agents/skills/ui-styling/references/shadcn-accessibility.md
+?? .agents/skills/ui-styling/references/shadcn-components.md
+?? .agents/skills/ui-styling/references/shadcn-theming.md
+?? .agents/skills/ui-styling/references/tailwind-customization.md
+?? .agents/skills/ui-styling/references/tailwind-responsive.md
+?? .agents/skills/ui-styling/references/tailwind-utilities.md
+?? .agents/skills/ui-styling/scripts/requirements.txt
+?? .agents/skills/ui-styling/scripts/shadcn_add.py
+?? .agents/skills/ui-styling/scripts/tailwind_config_gen.py
+?? .agents/skills/ui-styling/scripts/tests/coverage-ui.json
+?? .agents/skills/ui-styling/scripts/tests/requirements.txt
+?? .agents/skills/ui-styling/scripts/tests/test_shadcn_add.py
+?? .agents/skills/ui-styling/scripts/tests/test_tailwind_config_gen.py
+?? .agents/skills/ui-ux-pro-max/SKILL.md
+?? .agents/skills/ui-ux-pro-max/data/app-interface.csv
+?? .agents/skills/ui-ux-pro-max/data/charts.csv
+?? .agents/skills/ui-ux-pro-max/data/colors.csv
+?? .agents/skills/ui-ux-pro-max/data/google-fonts.csv
+?? .agents/skills/ui-ux-pro-max/data/icons.csv
+?? .agents/skills/ui-ux-pro-max/data/landing.csv
+?? .agents/skills/ui-ux-pro-max/data/motion.csv
+?? .agents/skills/ui-ux-pro-max/data/products.csv
+?? .agents/skills/ui-ux-pro-max/data/react-performance.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/angular.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/astro.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/avalonia.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/flutter.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/html-tailwind.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/javafx.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/jetpack-compose.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/laravel.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/nextjs.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/nuxt-ui.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/nuxtjs.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/react-native.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/react.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/shadcn.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/svelte.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/swiftui.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/threejs.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/uno.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/uwp.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/vue.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/winui.csv
+?? .agents/skills/ui-ux-pro-max/data/stacks/wpf.csv
+?? .agents/skills/ui-ux-pro-max/data/styles.csv
+?? .agents/skills/ui-ux-pro-max/data/typography.csv
+?? .agents/skills/ui-ux-pro-max/data/ui-reasoning.csv
+?? .agents/skills/ui-ux-pro-max/data/ux-guidelines.csv
+?? .agents/skills/ui-ux-pro-max/scripts/core.py
+?? .agents/skills/ui-ux-pro-max/scripts/design_system.py
+?? .agents/skills/ui-ux-pro-max/scripts/search.py
+?? .agents/skills/ui-ux-pro-max/scripts/tests/test_core.py
+?? .agents/skills/ui-ux-pro-max/scripts/tests/test_design_system_mode.py
+?? .agents/skills/ui-ux-pro-max/scripts/validate_data.py
+?? .agents/skills/wait-what/SKILL.md
+?? .agents/skills/wait-what/agents/openai.yaml
+?? .agents/skills/wayfinder/SKILL.md
+?? .agents/skills/wayfinder/agents/openai.yaml
+?? .agents/skills/wizard/SKILL.md
+?? .agents/skills/wizard/agents/openai.yaml
+?? .agents/skills/wizard/template.sh
+?? .agents/skills/writing-beats/SKILL.md
+?? .agents/skills/writing-beats/agents/openai.yaml
+?? .agents/skills/writing-for-agents/SKILL-MECHANICS.md
+?? .agents/skills/writing-for-agents/SKILL.md
+?? .agents/skills/writing-for-agents/agents/openai.yaml
+?? .agents/skills/writing-fragments/SKILL.md
+?? .agents/skills/writing-fragments/agents/openai.yaml
+?? .agents/skills/writing-shape/SKILL.md
+?? .agents/skills/writing-shape/agents/openai.yaml
+?? .claudian/claudian-settings.json
+?? NUL
+?? README-INSTALL-FIRST.txt
+?? docs/agents/AUTONOMY.md
+?? docs/agents/EXECUTION-LOOP.md
+?? docs/agents/HUMAN-GATES.md
+?? docs/agents/SKILL-ROUTER.md
+?? docs/agents/domain.md
+?? docs/agents/issue-tracker.md
+?? docs/superpowers/plans/2026-08-08-autonomous-engineering-repository-setup.md
+?? docs/superpowers/plans/2026-08-08-beta-readiness-master-plan.md
+?? docs/superpowers/plans/2026-08-08-combined-remediation.md
+?? docs/superpowers/plans/gate-0-baseline.md
+?? docs/superpowers/plans/gate-1-auth-remediation.md
+?? docs/superpowers/plans/gate-2-registration-turnstile.md
+?? docs/superpowers/plans/gate-3-beta-verification.md
+?? docs/superpowers/plans/post-beta-hardening.md
+?? docs/superpowers/specs/2026-08-08-autonomous-engineering-operating-model-design.md
+?? docs/superpowers/specs/2026-08-08-beta-readiness-design.md
+?? docs/superpowers/specs/autonomous-engineering-operating-model-design-2026-08-08.md
+?? docs/task-results/2026-08-02-task-result-automation.md
+?? docs/task-results/README.md
+?? docs/testing/AUTH-REFACTOR-CODE-REVIEW.md
+?? docs/testing/AUTH-REFACTOR-CONTRACT.md
+?? docs/testing/AUTH-REFACTOR-VERIFICATION.md
+?? docs/testing/AUTH-ROUTE-POLICY-TEST-MATRIX.md
+?? docs/testing/README.md
+?? myrepo.zip
+?? scripts/AGENTS1.md
+?? "src/AGENTS 4.md"
+?? src/lib/server/http/request-body.ts
+?? "supabase/AGENTS 2.md"
+?? supabase/migrations/202608020012_open_email_password_registration.sql
+?? supabase/migrations/202608020013_staff_mfa_enforcement.sql
+?? supabase/migrations/202608020014_report_evidence_hardening.sql
+?? supabase/tests/open_email_registration.pgtap.sql
+?? supabase/tests/report_evidence_hardening.pgtap.sql
+?? "tests/AGENTS 3.md"
+?? tests/contracts/report-attachments.contract.test.ts
+?? tests/contracts/request-body-limits.contract.test.ts
+?? tests/domain/offer-status.test.ts
+?? tests/server/auth-guards-regression.test.ts
+?? tests/server/auth-refactor-contract.test.ts
+?? tests/server/request-body.test.ts
+?? ~/.codex/skills/
+```
+

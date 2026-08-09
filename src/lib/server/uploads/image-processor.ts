@@ -40,6 +40,12 @@ export interface CloudflareImagesBinding {
   input(stream: ReadableStream<Uint8Array>): CloudflareImageTransform;
 }
 
+export function cloudflareImagesBinding(
+  platform: App.Platform | undefined
+): CloudflareImagesBinding | undefined {
+  return (platform?.env as unknown as { IMAGES?: CloudflareImagesBinding } | undefined)?.IMAGES;
+}
+
 export interface SanitizedImage {
   bytes: Uint8Array;
   contentHash: string;
@@ -91,13 +97,14 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 }
 
 function validateInfo(info: CloudflareImageInfo, stage: 'source' | 'output'): void {
+  const maxDimension = stage === 'source' ? MAX_SOURCE_DIMENSION : MAX_OUTPUT_DIMENSION;
   if (
     !Number.isInteger(info.width) ||
     !Number.isInteger(info.height) ||
     info.width < 1 ||
     info.height < 1 ||
-    info.width > MAX_SOURCE_DIMENSION ||
-    info.height > MAX_SOURCE_DIMENSION
+    info.width > maxDimension ||
+    info.height > maxDimension
   ) {
     throw new ImageProcessingError(
       stage === 'source' ? 'invalid_dimensions' : 'processor_output_invalid',
@@ -111,7 +118,7 @@ function validateInfo(info: CloudflareImageInfo, stage: 'source' | 'output'): vo
  * is never trusted. Output is always re-encoded as a non-animated WebP. Per
  * Cloudflare Images semantics, non-JPEG output discards all EXIF metadata.
  */
-export async function sanitizeListingImage(
+export async function sanitizeImage(
   binding: CloudflareImagesBinding | undefined,
   source: Uint8Array,
   declaredMimeType: string
@@ -180,3 +187,5 @@ export async function sanitizeListingImage(
     height: outputInfo.height
   };
 }
+
+export const sanitizeListingImage = sanitizeImage;

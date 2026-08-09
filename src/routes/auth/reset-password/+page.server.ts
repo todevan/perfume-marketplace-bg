@@ -1,6 +1,12 @@
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
+import {
+	InvalidFormDataError,
+	parseBoundedFormData,
+	RequestBodyTooLargeError,
+	STANDARD_ACTION_FORM
+} from '$lib/server/http/request-body';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -11,7 +17,18 @@ export const load: PageServerLoad = ({ locals }) => ({
 
 export const actions: Actions = {
 	default: async (event) => {
-		const formData = await event.request.formData();
+		let formData: FormData;
+		try {
+			formData = await parseBoundedFormData(event.request, STANDARD_ACTION_FORM);
+		} catch (cause) {
+			if (cause instanceof RequestBodyTooLargeError) {
+				return fail(413, { success: false, email: '', message: 'Заявката е твърде голяма.' });
+			}
+			if (cause instanceof InvalidFormDataError) {
+				return fail(400, { success: false, email: '', message: 'Изпрати валидни данни от формата.' });
+			}
+			throw cause;
+		}
 		const email = formData.get('email')?.toString().trim().toLowerCase() ?? '';
 		if (!EMAIL_PATTERN.test(email)) {
 			return fail(400, { success: false, email, message: 'Въведи валиден имейл.' });
@@ -57,4 +74,3 @@ export const actions: Actions = {
 		};
 	}
 };
-

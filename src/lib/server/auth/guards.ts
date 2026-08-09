@@ -10,19 +10,37 @@ import type {
 
 export type RouteAccessPolicy = 'public' | 'authenticated' | 'beta' | 'staff' | 'staff-aal1';
 
+/**
+ * Auth data that a route needs after access authorization. This deliberately
+ * remains separate from RouteAccessPolicy: public and authenticated routes can
+ * still need a narrow subset of context to render or complete an action.
+ */
+export interface RouteAuthDataRequirements {
+	user: true;
+	profile: boolean;
+	betaAccess: boolean;
+	aal: boolean;
+}
+
 const PUBLIC_ROUTE_PREFIXES = ['/legal'];
-const PUBLIC_EXACT_ROUTES = new Set([
+const PUBLIC_NAVIGATION_EXACT_ROUTES = new Set([
 	'/login',
 	'/safety',
-	'/robots.txt',
-	'/sitemap.xml',
-	'/auth/callback',
-	'/auth/confirm',
 	'/auth/error',
 	'/auth/reset-password'
 ]);
+const PUBLIC_TECHNICAL_EXACT_ROUTES = new Set([
+	'/robots.txt',
+	'/sitemap.xml',
+	'/auth/callback',
+	'/auth/confirm'
+]);
+const PUBLIC_EXACT_ROUTES = new Set([
+	...PUBLIC_NAVIGATION_EXACT_ROUTES,
+	...PUBLIC_TECHNICAL_EXACT_ROUTES
+]);
 const AUTHENTICATED_EXACT_ROUTES = new Set(['/auth/logout', '/auth/update-password']);
-const AUTHENTICATED_ROUTE_PREFIXES = ['/onboarding', '/phone-verification'];
+const AUTHENTICATED_ROUTE_PREFIXES = ['/onboarding'];
 const STAFF_ROUTE_PREFIXES = ['/admin'];
 
 function isWithin(pathname: string, prefix: string): boolean {
@@ -45,6 +63,41 @@ export function routeAccessPolicy(pathname: string): RouteAccessPolicy {
 	}
 	if (STAFF_ROUTE_PREFIXES.some((prefix) => isWithin(normalizedPath, prefix))) return 'staff';
 	return 'beta';
+}
+
+/**
+ * Declares the smallest context each route consumer requires. Anonymous
+ * requests never query these optional pieces because the hook only loads them
+ * after getUser() returns an authenticated user.
+ */
+export function routeAuthDataRequirements(pathname: string): RouteAuthDataRequirements {
+	const normalizedPath = pathname.length > 1 ? pathname.replace(/\/+$/u, '') : pathname;
+	const policy = routeAccessPolicy(normalizedPath);
+
+	switch (policy) {
+		case 'beta':
+			return { user: true, profile: true, betaAccess: true, aal: false };
+		case 'staff':
+			return { user: true, profile: true, betaAccess: true, aal: true };
+		case 'staff-aal1':
+			return { user: true, profile: true, betaAccess: true, aal: true };
+		case 'authenticated':
+			if (AUTHENTICATED_ROUTE_PREFIXES.some((prefix) => isWithin(normalizedPath, prefix))) {
+				return { user: true, profile: true, betaAccess: true, aal: false };
+			}
+			if (normalizedPath === '/auth/update-password') {
+				return { user: true, profile: false, betaAccess: true, aal: false };
+			}
+			return { user: true, profile: false, betaAccess: false, aal: false };
+		case 'public':
+			if (
+				PUBLIC_NAVIGATION_EXACT_ROUTES.has(normalizedPath) ||
+				PUBLIC_ROUTE_PREFIXES.some((prefix) => isWithin(normalizedPath, prefix))
+			) {
+				return { user: true, profile: false, betaAccess: true, aal: false };
+			}
+			return { user: true, profile: false, betaAccess: false, aal: false };
+	}
 }
 
 export function requireAuthenticated(context: RequestAuthContext, url: URL): User {
@@ -93,14 +146,6 @@ export function requireMfa(
 	if (requiredLevel === 'aal2' && context.currentAal !== 'aal2') {
 		const next = safeRedirectPath(`${url.pathname}${url.search}`, '/dashboard');
 		redirect(303, `/auth/mfa?next=${encodeURIComponent(next)}`);
-	}
-}
-
-export function requireVerifiedPhone(context: RequestAuthContext, url: URL): void {
-	const authorized = requireBetaAccess(context, url);
-	if (!authorized.profile.phoneVerifiedAt) {
-		const next = safeRedirectPath(`${url.pathname}${url.search}`, '/dashboard');
-		redirect(303, `/phone-verification?next=${encodeURIComponent(next)}`);
 	}
 }
 

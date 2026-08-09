@@ -7,7 +7,6 @@
     LogOut,
     Menu,
     MessageCircle,
-    Phone,
     Plus,
     Search,
     UserRound,
@@ -20,7 +19,6 @@
     profile: {
       username: string;
       role: 'user' | 'moderator' | 'admin';
-      phoneVerifiedAt: string | null;
     } | null;
     betaAccess: {
       status: 'pending' | 'active' | 'suspended' | 'revoked';
@@ -59,9 +57,6 @@
   let isAuthenticated = $derived(Boolean(auth.user));
   let hasBetaAccess = $derived(demoMode || auth.betaAccess?.isActive === true);
   let needsOnboarding = $derived(isAuthenticated && !auth.betaAccess?.isActive);
-  let needsPhoneVerification = $derived(
-    isAuthenticated && auth.betaAccess?.isActive === true && !auth.profile?.phoneVerifiedAt
-  );
   let links = $derived(hasBetaAccess ? betaLinks : needsOnboarding ? onboardingLinks : publicLinks);
   let homeHref = $derived(hasBetaAccess ? '/' : needsOnboarding ? '/onboarding' : '/login');
 
@@ -108,13 +103,6 @@
         <a class="icon-action desktop-action" href="/messages" aria-label="Съобщения"><MessageCircle size={19} /></a>
         <a class="icon-action desktop-action" href="/notifications" aria-label="Известия"><Bell size={19} /></a>
         <a class="icon-action desktop-action" href="/dashboard" aria-label="Моят профил"><UserRound size={19} /></a>
-        {#if needsPhoneVerification}
-          <a
-            class="icon-action phone-action desktop-action"
-            href="/phone-verification?next=%2Fpublish"
-            aria-label="Потвърди телефон"
-          ><Phone size={19} /></a>
-        {/if}
         <a class="button primary publish desktop-action" href="/publish">
           <Plus size={17} /> Публикувай обява
         </a>
@@ -165,9 +153,6 @@
           <a href="/messages" onclick={closeMenu}>Съобщения</a>
           <a href="/notifications" onclick={closeMenu}>Известия</a>
           <a href="/dashboard" onclick={closeMenu}>Моят профил</a>
-          {#if needsPhoneVerification}
-            <a href="/phone-verification?next=%2Fpublish" onclick={closeMenu}>Потвърди телефон</a>
-          {/if}
           <a class="button primary" href="/publish" onclick={closeMenu}>
             <Plus size={18} /> Публикувай обява
           </a>
@@ -177,7 +162,7 @@
           </a>
         {:else}
           <a class="button primary" href="/login" onclick={closeMenu}>
-            <LogIn size={18} /> Вход с покана
+            <LogIn size={18} /> Вход или регистрация
           </a>
         {/if}
 
@@ -322,22 +307,6 @@
     margin: 0;
   }
 
-  .phone-action {
-    position: relative;
-    color: var(--action);
-  }
-
-  .phone-action::after {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 7px;
-    height: 7px;
-    border: 2px solid var(--paper);
-    border-radius: 50%;
-    background: var(--warning);
-    content: '';
-  }
 
   .menu-button,
   .mobile-nav {

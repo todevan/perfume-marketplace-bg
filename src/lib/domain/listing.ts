@@ -204,12 +204,6 @@ export function validateListing(
 				message: 'Липсва контекст за публикуване на обявата.'
 			});
 		} else {
-			if (!activation.phoneVerified) {
-				issues.push({
-					code: 'phone_verification_required',
-					message: 'Телефонът трябва да е потвърден преди публикуване.'
-				});
-			}
 			if (activation.activeListingCount >= activation.activeListingLimit) {
 				issues.push({
 					code: 'active_listing_quota_reached',

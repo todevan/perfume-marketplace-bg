@@ -29,6 +29,7 @@ describe('private upload cleanup worker contract', () => {
 
 	it('claims a bounded lease and transitions every item with the matching worker token', () => {
 		expect(edgeFunction).toContain('const MAX_BATCH_SIZE = 100');
+		expect(edgeFunction).toContain("'expire_report_evidence_uploads'");
 		expect(edgeFunction).toContain("'claim_upload_cleanup'");
 		expect(edgeFunction).toContain("'complete_upload_cleanup'");
 		expect(edgeFunction).toContain("'fail_upload_cleanup'");
@@ -39,9 +40,10 @@ describe('private upload cleanup worker contract', () => {
 		expect(jobsMigration).toContain('for update skip locked');
 	});
 
-	it('deletes one exact object only from the two private upload buckets', () => {
+	it('deletes one exact object only from the approved private upload buckets', () => {
 		expect(edgeFunction).toContain("'listing-image-quarantine'");
 		expect(edgeFunction).toContain("'listing-images'");
+		expect(edgeFunction).toContain("'report-evidence'");
 		expect(edgeFunction).toContain('ALLOWED_PRIVATE_BUCKETS.has(claim.bucket_id)');
 		expect(edgeFunction).toContain('isSafeStoragePath(claim.storage_path)');
 		expect(edgeFunction).toContain('.remove([claim.storage_path])');

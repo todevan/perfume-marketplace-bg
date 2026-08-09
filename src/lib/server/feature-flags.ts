@@ -4,7 +4,6 @@ export const FEATURE_FLAG_NAMES = [
 	'merchantSubscriptions',
 	'boosts',
 	'directAds',
-	'smsVerification',
 	'myposPayments',
 	'stripeFallback'
 ] as const;
@@ -41,7 +40,6 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = Object.freeze({
 	merchantSubscriptions: false,
 	boosts: false,
 	directAds: false,
-	smsVerification: false,
 	myposPayments: false,
 	stripeFallback: false
 });
@@ -52,7 +50,6 @@ const envKeys: Record<FeatureFlagName, string> = {
 	merchantSubscriptions: 'FEATURE_MERCHANT_SUBSCRIPTIONS_ENABLED',
 	boosts: 'FEATURE_BOOSTS_ENABLED',
 	directAds: 'FEATURE_DIRECT_ADS_ENABLED',
-	smsVerification: 'FEATURE_SMS_VERIFICATION_ENABLED',
 	myposPayments: 'FEATURE_MYPOS_PAYMENTS_ENABLED',
 	stripeFallback: 'FEATURE_STRIPE_FALLBACK_ENABLED'
 };

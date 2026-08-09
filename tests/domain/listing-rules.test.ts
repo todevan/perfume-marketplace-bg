@@ -20,7 +20,6 @@ const openedPhotos: ListingPhotoInput[] = [
 ];
 
 const activation: ListingActivationContext = {
-	phoneVerified: true,
 	activeListingCount: 3,
 	activeListingLimit: 10
 };
@@ -49,7 +48,7 @@ function issueCodes(result: ValidationResult): string[] {
 }
 
 describe('listing price and activation rules', () => {
-	it('accepts a publishable sale-or-swap listing with verified phone and quota', () => {
+	it('accepts a publishable sale-or-swap listing within quota', () => {
 		expect(validateListing(makeListing({ status: 'active' }), activation)).toEqual({ ok: true });
 	});
 
@@ -95,17 +94,14 @@ describe('listing price and activation rules', () => {
 		);
 	});
 
-	it('requires phone verification and a free slot before activation', () => {
+	it('requires a free slot before activation without a phone gate', () => {
 		const listing = makeListing({ status: 'active' });
 		const result = validateListing(listing, {
-			phoneVerified: false,
 			activeListingCount: 10,
 			activeListingLimit: 10
 		});
 
-		expect(issueCodes(result)).toEqual(
-			expect.arrayContaining(['phone_verification_required', 'active_listing_quota_reached'])
-		);
+		expect(issueCodes(result)).toEqual(['active_listing_quota_reached']);
 	});
 
 	it('rejects a zero-remaining active offer', () => {

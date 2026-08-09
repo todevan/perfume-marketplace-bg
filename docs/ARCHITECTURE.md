@@ -2,7 +2,7 @@
 
 ## Runtime shape
 
-The application is a SvelteKit/TypeScript modular monolith deployed as a Cloudflare Worker with static assets. Supabase provides PostgreSQL, Auth, private Storage and Realtime. Resend handles email, Twilio is configured through Supabase Auth for Bulgarian phone OTP, Turnstile protects sensitive forms, and Cloudflare Images performs trusted image normalization.
+The application is a SvelteKit/TypeScript modular monolith deployed as a Cloudflare Worker with static assets. Supabase provides PostgreSQL, email/password Auth, private Storage and Realtime. Resend handles email, Turnstile protects sensitive forms, and Cloudflare Images performs trusted image normalization.
 
 ```text
 Browser
@@ -11,13 +11,13 @@ Browser
              │
 Cloudflare Worker / SvelteKit
   ├─ request-scoped cookie PKCE client
-  ├─ authentication, beta, phone, role and MFA guards
+  ├─ authentication, membership, role and MFA guards
   ├─ Zod input contracts → services → repositories
   └─ private upload processor and structured request logs
              │
 Supabase
   ├─ PostgreSQL functions, constraints, RLS and scheduled jobs
-  ├─ Auth users (email and phone remain private)
+  ├─ Auth users (email remains private)
   ├─ quarantine/finalized private Storage
   ├─ report-bound moderation and immutable audit
   └─ Realtime messages and notifications
@@ -30,13 +30,13 @@ Database Webhook → notification Edge Function → Resend
 - `PUBLIC_DEMO_MODE=true` is an explicit local/test fixture adapter. No external identity or persistent writes are implied.
 - Production mode fails closed when Supabase configuration or verified identity loading fails.
 - Production routes use repository/service DTOs; database row shapes do not reach components.
-- `robots.txt` denies indexing and `sitemap.xml` returns 404 during the closed beta.
+- `robots.txt` denies indexing and `sitemap.xml` returns 404 during pre-launch development.
 
 ## Authentication and access
 
-`hooks.server.ts` creates one request-scoped `@supabase/ssr` client, reads cookies and validates identity with `getUser()` before loading the profile, beta membership and AAL. Route policy is default-deny: only login, auth callbacks, legal and safety routes are public. Onboarding and phone verification require an authenticated invitee; all marketplace routes require active beta membership; staff routes additionally require role and AAL2.
+`hooks.server.ts` creates one request-scoped `@supabase/ssr` client, reads cookies and validates identity with `getUser()` before loading the profile, membership and AAL. Route policy is default-deny: only login/registration, auth callbacks, legal and safety routes are public. Any user may create an email/password account. Email confirmation establishes the secure-cookie session, `claim_open_registration()` creates pending invite-free membership, and onboarding records the current legal consents before activation. All marketplace routes require active membership; staff routes additionally require role and AAL2.
 
-An administrator creates a hashed one-time database invite and then asks Supabase Auth to send the invitation. The raw token exists only in that confirmation URL. Delivery failure revokes the database invite. Callback redemption and onboarding record accepted document versions and the 18+ declaration before activation.
+Legacy invite records remain supported for the operator-only first-administrator bootstrap, but they are not part of public user registration. Suspended or revoked memberships are never reactivated by the open-registration claim.
 
 ## Application boundaries
 
@@ -50,7 +50,7 @@ An administrator creates a hashed one-time database invite and then asks Supabas
 ## Core workflow
 
 ```text
-invite → onboarding/consent → phone OTP
+email/password signup → email confirmation → onboarding/consent
   → listing draft/autosave → sanitized evidence → atomic activation
   → indexed search → structured offer → atomic acceptance/reservation
   → private conversation/deal → two confirmations → completed deal → review
@@ -60,11 +60,11 @@ Material listing edits pause the listing and expire stale offers. Offer acceptan
 
 ## Data privacy and RLS
 
-`profiles` is not publicly selectable. A security-invoker public projection exposes only allow-listed profile fields. Email and phone stay in Supabase Auth; the application stores only `phone_verified_at`. Drafts, conversations, reports, evidence, staff data and verification details remain owner/member/report scoped. Revoked or suspended beta users cannot create rows, subscribe to protected Realtime data or upload files.
+`profiles` is not publicly selectable. A security-invoker public projection exposes only allow-listed profile fields. Email stays in Supabase Auth. The legacy nullable `phone_verified_at` column remains dormant for forward-migration safety and is not an activation or marketplace-action requirement. Drafts, conversations, reports, evidence, staff data and verification details remain owner/member/report scoped. Revoked or suspended members cannot create rows, subscribe to protected Realtime data or upload files.
 
 ## Upload pipeline
 
-1. An authenticated, phone-verified owner requests a quarantine upload record.
+1. An authenticated active owner requests a quarantine upload record.
 2. The Worker validates declared limits and sends the original to private quarantine.
 3. The processor detects actual MIME and dimensions, hashes content, re-encodes to safe JPEG/WebP with metadata removed and stores only the derivative in the finalized bucket.
 4. The original is deleted; a finalized database record is written with ownership and evidence role.

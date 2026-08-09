@@ -2313,6 +2313,7 @@ export type Database = {
         }
         Returns: undefined
       }
+      claim_open_registration: { Args: never; Returns: boolean }
       claim_listing_upload: {
         Args: { processor_request_id: string; target_upload_id: string }
         Returns: {

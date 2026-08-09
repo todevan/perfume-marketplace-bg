@@ -15,9 +15,10 @@ a committed `.env` file, or a pull-request-visible GitHub variable.
 
 ## Current hosted staging checkpoint
 
-Checkpoint date: 2026-07-28. This is a backend-connected, invite-locked
-checkpoint. It is not a usable beta environment and must not receive external
-invitations.
+Checkpoint date: 2026-07-28. This records the then-current backend-connected,
+signup-locked environment. The 2026-08-02 owner decision supersedes the invite
+model: the environment is not usable until migration `012` is applied and
+public email/password signup is enabled with email confirmation.
 
 | Area | Verified state |
 |---|---|
@@ -33,7 +34,7 @@ invitations.
 | Hosted Auth lock | Public signup and anonymous signup are disabled; email confirmation is enabled. Site URL is the exact staging Worker origin, and only its `/auth/callback` and `/auth/confirm` URLs are allowed. SMTP, SMS, and CAPTCHA are unconfigured. |
 | Configured Worker | Commit `39867216c0440077476ce13f89bd1f40505bef8e` was deployed as Worker version `9024d848-dcd7-4894-b6da-d2f2453b2df0`, deployment `0ce71c4c-4e9e-4118-b813-62e4fb6a5260`. The backend-attested exact-SHA HTTP smoke passed all 13 checks. |
 | GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write is stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. Manual `workflow_dispatch` run `30343975074` passed, and its logs contained no raw Supabase, GitHub, Cloudflare bearer, or JWT token patterns. |
-| External providers | Resend, Turnstile, Cloudflare Images processing, Twilio, real-provider E2E, and backup/restore rehearsal remain deferred. |
+| External providers | Resend, Turnstile, Cloudflare Images processing, real-provider E2E, and backup/restore rehearsal remain deferred. SMS is no longer required. |
 | Production | Locked. No production project, route, secret, deployment, domain, user, invitation, or payment capability is authorized by this checkpoint. |
 
 The previous Stockholm project `zllqwlekadiuyejgbuxc` remains untouched and is
@@ -123,7 +124,7 @@ reconciliation plan.
 | Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Deployments** | Active deployment/version ID and rollback target |
 | Supabase | Organization `khazvscqabwvslnphbqp` → project `perfume-marketplace-bg-staging` (`nuhkpqjjyuygiemrxbdp`) → **Connect** or **Settings → API Keys** | Publishable key and server secret; copy them only into their intended secret store |
 | Supabase | Project **Authentication → URL Configuration** | Exact Site URL and allowed `/auth/callback` and `/auth/confirm` redirects |
-| Supabase | Project **Authentication → Sign In / Providers → Email** | Public and anonymous signup disabled; email confirmation enabled |
+| Supabase | Project **Authentication → Sign In / Providers → Email** | Enable public email/password signup, keep anonymous signup disabled, and keep email confirmation enabled |
 | Supabase | Project **Authentication → Users** and **Storage** | Confirmed 0 Auth users/identities and 0 Storage objects; the 4 empty buckets are migration-owned |
 
 The trusted local shell owns the Supabase CLI access token, database password,
@@ -173,9 +174,8 @@ The bootstrap is fail-closed:
    hand. Until runtime configuration exists, an application `503` is the
    expected safe result.
 3. Configure the new Worker with the inventoried Supabase values and keep
-   `PUBLIC_DEMO_MODE=false`, invite-only access enabled, every
-   monetisation/payment flag `false`, `FEATURE_SMS_VERIFICATION_ENABLED=false`,
-   and `IMAGE_PROCESSOR_MODE=disabled`.
+   `PUBLIC_DEMO_MODE=false`, every monetisation/payment flag `false`,
+   `PRIVATE_BETA_REQUIRE_STAFF_MFA=true`, and `IMAGE_PROCESSOR_MODE=disabled`.
 4. Deploy staging a second time and verify the deployment ID, `/robots.txt`,
    the sitemap `404`, authentication
    denial, the staging-only `workers.dev` address, and the CI configuration
@@ -228,15 +228,15 @@ and verify all of the following:
   trigger, extension, RLS policy, scheduled job, Realtime publication, Storage
   bucket/object, Edge Function, webhook, and secret name;
 - counts for `auth.users`, application tables, and `storage.objects`;
-- Auth public-signup setting, Site URL, redirect allow-list, email/SMS provider
+- Auth public-signup setting, Site URL, redirect allow-list, email provider
   state, and MFA policy;
 - whether any row, user, object, or log indicates real or production data.
 
 Stop immediately if the project identity or region is wrong; any unexpected
-migration or application object exists; any auth user, Storage object, or
-non-synthetic application row exists; public signup is enabled unexpectedly;
+infrastructure migration or application object exists; any auth user, Storage object, or
+non-synthetic application row exists; the signup setting differs from the documented target;
 the project appears shared with another application; or permissions prevent a
-complete inventory. Preserve the read-only evidence and ask for a decision.
+complete inventory. Preserve the read-only evidence and investigate before changing it.
 
 Remote reset and repair operations are not authorized. In particular, never
 run `supabase db reset` against a linked/hosted project, never use
@@ -292,14 +292,14 @@ separately by the staging `/login` backend attestation: it must read the exact
 written to application logs.
 
 Keep the hosted staging project isolated from production and populate it only
-with synthetic people and listings. Disable public signup in Supabase Auth
-before testing invitations.
+with synthetic people and listings. Apply migration `012`, then enable public
+email/password signup before testing registration.
 
-### Keep hosted Auth locked until provider testing
+### Enable hosted email/password Auth for registration testing
 
 The Frankfurt staging Auth configuration is:
 
-- public signup: disabled;
+- public email/password signup: currently disabled and must be enabled after migration `012`;
 - anonymous signup: disabled;
 - email confirmation: enabled;
 - Site URL:
@@ -308,7 +308,7 @@ The Frankfurt staging Auth configuration is:
   `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/callback`
   and
   `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/confirm`;
-- custom SMTP, SMS provider, and CAPTCHA: unconfigured.
+- custom SMTP and CAPTCHA: unconfigured; no SMS provider is required.
 
 Do not run `supabase config push` against this project. The local Supabase
 configuration contains localhost callback values and an SMS test OTP that must
@@ -362,11 +362,11 @@ Resend/Auth email delivery is deliberately deferred. It rejects every
 environment except `APP_ENV=staging`, and a successfully bound bootstrap is
 terminal.
 
-## Add Resend before testing invitations and notifications
+## Add Resend before testing registration emails and notifications
 
 | Name | Classification | Where it is used | When it is required |
 |---|---|---|---|
-| `RESEND_API_KEY` | Secret | `notification-email` Edge Function and transactional email provider | Required before invitation/email notification tests; defer for the first infrastructure-only deploy |
+| `RESEND_API_KEY` | Secret | `notification-email` Edge Function and transactional email provider | Required before registration-email and notification tests; defer for the first infrastructure-only deploy |
 | `RESEND_FROM_EMAIL` | Public sender configuration | `notification-email` and the verified sender setup | Required with `RESEND_API_KEY` |
 | `NOTIFICATION_WEBHOOK_SECRET` | Secret, at least 32 bytes | Header shared by the Supabase notification webhook and `notification-email` | Required before enabling the notification webhook; use a staging-only value |
 
@@ -383,20 +383,8 @@ Deploy the notification function only after its Resend values and
 | `TURNSTILE_EXPECTED_HOSTNAME` | Public hostname configuration | Server-side hostname validation | Set it to the hostname from `PUBLIC_APP_URL` |
 
 These values can be deferred for an infrastructure-only deploy. They are
-required before the staging login, password-reset, phone OTP, and sensitive
+required before the staging login, password-reset, and sensitive
 form security tests.
-
-## Add Twilio only when phone verification is ready
-
-| Name | Classification | Where it is used | When it is required |
-|---|---|---|---|
-| `SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID` | Secret account credential | Supabase Auth SMS configuration and operations | Required before real `+359` OTP tests |
-| `SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID` | Secret service credential | Supabase Auth SMS configuration and operations | Required before real `+359` OTP tests |
-| `SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN` | Secret | Supabase Auth SMS configuration and operations | Required before real `+359` OTP tests |
-| `FEATURE_SMS_VERIFICATION_ENABLED` | Private feature flag | Application phone-verification flow | Keep `false` until Twilio is configured; set `true` for the planned staging carrier tests |
-
-Twilio can be deferred during the initial Worker/Supabase smoke test. It is not
-optional for the complete invite-to-review staging flow.
 
 ## Set application, consent, and safety values
 
@@ -404,8 +392,7 @@ optional for the complete invite-to-review staging flow.
 |---|---|---|---|
 | `APP_ENV` | Private environment label | `staging` | Set for the hosted staging Worker |
 | `PUBLIC_DEMO_MODE` | Public build/runtime flag | `false` | Required from the first staging deploy |
-| `PUBLIC_APP_URL` | Public HTTPS origin | Exact staging Worker origin | Required before invitations, callbacks, and email links |
-| `PRIVATE_BETA_REQUIRE_INVITE` | Private policy flag | `true` | Required from the first staging deploy |
+| `PUBLIC_APP_URL` | Public HTTPS origin | Exact staging Worker origin | Required before registration callbacks and email links |
 | `PRIVATE_BETA_REQUIRE_STAFF_MFA` | Private policy flag | `true` | Required from the first staging deploy |
 | `TERMS_VERSION` | Public consent version | Exact version shown by the deployed Terms page | Required before onboarding tests |
 | `PRIVACY_VERSION` | Public consent version | Exact version shown by the deployed Privacy page | Required before onboarding tests |
@@ -471,8 +458,8 @@ Payments, fees, subscriptions, boosts, and advertising remain out of scope.
    version `75593db4-12fd-486d-ae8a-bdf9ebbb3ece` and verifies its five-route
    fail-closed contract. Keep the database forward-only and investigate before
    another dispatch.
-7. Start Resend, Turnstile, Cloudflare Images, Twilio, real-provider E2E, and
+7. Start Resend, Turnstile, Cloudflare Images, real-provider E2E, and
    backup/restore work only in a separately approved phase.
-8. Keep production, first-admin bootstrap, real users, external invitations,
-   custom domain, legal approval, carrier tests, and every
+8. Keep production, first-admin bootstrap, real users, external access,
+   custom domain, legal approval, and every
    payment/monetisation capability gated.
