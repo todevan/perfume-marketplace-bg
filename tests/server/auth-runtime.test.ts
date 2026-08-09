@@ -65,9 +65,8 @@ describe('private beta route policy', () => {
 		}
 	});
 
-	it('separates onboarding from active membership and staff from ordinary beta routes', () => {
+	it('separates onboarding from active membership and staff from ordinary marketplace routes', () => {
 		expect(routeAccessPolicy('/onboarding')).toBe('authenticated');
-		expect(routeAccessPolicy('/phone-verification')).toBe('authenticated');
 		expect(routeAccessPolicy('/admin/reports')).toBe('staff');
 	});
 });

@@ -33,13 +33,6 @@ function serviceStatus(actionError: ActionError): number {
 	return 503;
 }
 
-function phoneFailure(): ActionResult<never> {
-	return actionFailure({
-		code: 'FORBIDDEN',
-		message: 'Потвърди телефона си, преди да запишеш първата обява.'
-	});
-}
-
 function jsonPayload(formData: FormData): unknown {
 	const raw = formData.get('payload');
 	if (typeof raw !== 'string') return null;
@@ -63,7 +56,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.runtime.mode === 'demo') {
 		return {
 			catalogBrands: demoBrands(),
-			phoneVerified: true,
 			initialCity: '',
 			turnstileSiteKey: null,
 			demoMode: true
@@ -81,7 +73,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	for (const brand of [...first.data.brands, ...second.data.brands]) brands.set(brand.id, brand);
 	return {
 		catalogBrands: [...brands.values()].sort((left, right) => left.name.localeCompare(right.name, 'bg-BG')),
-		phoneVerified: Boolean(locals.profile.phoneVerifiedAt),
 		initialCity: locals.profile.city ?? '',
 		turnstileSiteKey: locals.runtime.publicTurnstileSiteKey ?? null,
 		demoMode: false
@@ -97,7 +88,6 @@ export const actions: Actions = {
 			if (!parsed.success) return fail(400, { result: actionFailure({ code: 'VALIDATION', message: 'Провери името на марката.' }) });
 			return { result: actionSuccess({ id: DEMO_DRAFT_ID, name: parsed.data.displayName, slug: `pending-${DEMO_DRAFT_ID}`, parentBrandId: null }) };
 		}
-		if (!locals.profile?.phoneVerifiedAt) return fail(403, { result: phoneFailure(), phoneVerificationRequired: true });
 		if (!locals.supabase) return fail(503, { result: actionFailure({ code: 'INTERNAL', message: 'Услугата временно не е достъпна.' }) });
 		const result = await submitPendingBrand(locals.supabase as MarketplaceSupabaseClient, input);
 		if (!result.ok) return fail(serviceStatus(result.error), { result });
@@ -113,7 +103,6 @@ export const actions: Actions = {
 			if (!parsed.success) return fail(400, { result: actionFailure({ code: 'VALIDATION', message: 'Провери полетата на обявата.' }) });
 			return { result: actionSuccess({ id: DEMO_DRAFT_ID, slug: 'demo-preview', status: 'draft' }) };
 		}
-		if (!locals.profile?.phoneVerifiedAt) return fail(403, { result: phoneFailure(), phoneVerificationRequired: true });
 		if (!locals.supabase) return fail(503, { result: actionFailure({ code: 'INTERNAL', message: 'Услугата временно не е достъпна.' }) });
 		const client = locals.supabase as MarketplaceSupabaseClient;
 		const result = listingId
@@ -131,7 +120,6 @@ export const actions: Actions = {
 		if (locals.runtime.mode === 'demo') {
 			return { result: actionSuccess({ id: parsed.data.listingId, slug: 'demo-preview', status: 'active' }) };
 		}
-		if (!locals.profile?.phoneVerifiedAt) return fail(403, { result: phoneFailure(), phoneVerificationRequired: true });
 		if (!locals.supabase) return fail(503, { result: actionFailure({ code: 'INTERNAL', message: 'Услугата временно не е достъпна.' }) });
 		const result = await publishListing(locals.supabase as MarketplaceSupabaseClient, parsed.data);
 		if (!result.ok) return fail(serviceStatus(result.error), { result });

@@ -26,7 +26,6 @@
 		<ListingWizard
 			{initialKind}
 			catalogBrands={data.catalogBrands}
-			phoneVerified={data.phoneVerified}
 			initialCity={data.initialCity}
 			turnstileSiteKey={data.turnstileSiteKey}
 			demoMode={data.demoMode}

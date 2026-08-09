@@ -1,6 +1,11 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
 import {
+  InvalidFormDataError,
+  parseBoundedFormData,
+  RequestBodyTooLargeError
+} from '$lib/server/http/request-body';
+import {
   acknowledgeServiceRoleClient,
   claimListingUpload,
   finalizeListingUpload,
@@ -9,9 +14,9 @@ import {
 import { createServiceRoleSupabaseClient } from '$lib/server/supabase';
 import {
   ACCEPTED_SOURCE_MIME_TYPES,
+  cloudflareImagesBinding,
   ImageProcessingError,
-  sanitizeListingImage,
-  type CloudflareImagesBinding
+  sanitizeListingImage
 } from '$lib/server/uploads/image-processor';
 
 const PHOTO_ROLES = new Set([
@@ -27,6 +32,14 @@ const PHOTO_ROLES = new Set([
   'other'
 ]);
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_BYTES + 256 * 1024;
+const LISTING_UPLOAD_FORM_LIMITS = {
+  maxBytes: MAX_UPLOAD_REQUEST_BYTES,
+  maxFileBytes: MAX_UPLOAD_BYTES,
+  maxFiles: 1,
+  maxParts: 20,
+  maxHeaderBytes: 8 * 1024
+} as const;
 
 interface UploadAllocation {
   upload_id: string;
@@ -34,9 +47,6 @@ interface UploadAllocation {
   storage_path: string;
 }
 
-function imagesBinding(platform: App.Platform | undefined): CloudflareImagesBinding | undefined {
-  return (platform?.env as unknown as { IMAGES?: CloudflareImagesBinding } | undefined)?.IMAGES;
-}
 
 function stringField(formData: FormData, key: string): string {
   const value = formData.get(key);
@@ -54,14 +64,22 @@ export const POST: RequestHandler = async (event) => {
   ) {
     return json({ ok: false, code: 'upload_unavailable' }, { status: 503 });
   }
-  if (!locals.profile.phoneVerifiedAt) {
-    return json({ ok: false, code: 'phone_verification_required' }, { status: 403 });
-  }
   if (locals.runtime.imageProcessorMode !== 'cloudflare-images' || !locals.runtime.supabaseSecretKey) {
     return json({ ok: false, code: 'upload_processor_not_configured' }, { status: 503 });
   }
 
-  const formData = await event.request.formData();
+  let formData: FormData;
+  try {
+    formData = await parseBoundedFormData(event.request, LISTING_UPLOAD_FORM_LIMITS);
+  } catch (cause) {
+    if (cause instanceof RequestBodyTooLargeError) {
+      return json({ ok: false, code: 'payload_too_large' }, { status: 413 });
+    }
+    if (cause instanceof InvalidFormDataError) {
+      return json({ ok: false, code: 'invalid_upload_request' }, { status: 400 });
+    }
+    throw cause;
+  }
   const turnstile = await verifyTurnstileForAction(
     event,
     formData,
@@ -135,7 +153,7 @@ export const POST: RequestHandler = async (event) => {
     if (sourceBytes.byteLength !== file.size) throw new Error('stored_size_mismatch');
 
     const sanitized = await sanitizeListingImage(
-      imagesBinding(event.platform),
+      cloudflareImagesBinding(event.platform),
       sourceBytes,
       file.type
     );

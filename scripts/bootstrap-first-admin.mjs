@@ -83,7 +83,6 @@ export function resolveBootstrapConfiguration(environment, action) {
 
 	requireExact(environment, 'FIRST_ADMIN_BOOTSTRAP_ENABLED', 'true');
 	requireExact(environment, 'PUBLIC_DEMO_MODE', 'false');
-	requireExact(environment, 'PRIVATE_BETA_REQUIRE_INVITE', 'true');
 
 	const appEnvironment = requireValue(environment, 'APP_ENV').toLowerCase();
 	if (appEnvironment !== 'staging') {

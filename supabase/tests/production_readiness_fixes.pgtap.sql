@@ -4,7 +4,23 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(21);
+select plan(35);
+
+select ok(
+  to_regprocedure('private.has_staff_mfa()') is not null,
+  'the central private staff-MFA helper exists'
+);
+select ok(
+  coalesce(
+    not has_function_privilege(
+      'authenticated',
+      to_regprocedure('private.has_staff_mfa()'),
+      'execute'
+    ),
+    false
+  ),
+  'authenticated clients cannot execute the private staff-MFA helper directly'
+);
 
 select ok(
   coalesce((
@@ -172,12 +188,14 @@ alter table public.listings enable trigger user;
 
 alter table public.offers disable trigger user;
 insert into public.offers (
-  id, listing_id, offerer_id, kind, cash_amount_minor, status
+  id, listing_id, offerer_id, kind, cash_amount_minor, status, expires_at, created_at
 ) values (
   '61111111-1111-4111-8111-111111111111',
   '51111111-1111-4111-8111-111111111111',
   '22222222-2222-4222-8222-222222222222',
-  'cash', 9000, 'pending'
+  'cash', 9000, 'pending',
+  statement_timestamp() - interval '1 second',
+  statement_timestamp() - interval '2 days'
 );
 alter table public.offers enable trigger user;
 
@@ -196,6 +214,22 @@ select ok(
   public.is_active_beta_user(),
   'the authenticated fixture satisfies the real active-beta RLS predicate'
 );
+select throws_ok(
+  $sql$
+    select public.accept_offer('61111111-1111-4111-8111-111111111111')
+  $sql$,
+  'P0002',
+  'pending offer not found',
+  'a seller cannot accept an offer after its expiry instant even before maintenance runs'
+);
+reset role;
+set local role postgres;
+alter table public.offers disable trigger user;
+update public.offers
+set expires_at = null
+where id = '61111111-1111-4111-8111-111111111111';
+alter table public.offers enable trigger user;
+set local role authenticated;
 
 select throws_ok(
   $sql$
@@ -328,7 +362,7 @@ set local role postgres;
 select set_config('request.jwt.claim.sub', '', true);
 select set_config('request.jwt.claims', '{}', true);
 update public.profiles
-set role = 'moderator'
+set role = 'admin'
 where id = '11111111-1111-4111-8111-111111111111';
 
 alter table public.reports disable trigger user;
@@ -345,13 +379,80 @@ alter table public.reports enable trigger user;
 set local role authenticated;
 select set_config(
   'request.jwt.claims',
-  '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated","aal":"aal2"}',
+  '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated","aal":"aal1"}',
   true
 );
 select set_config(
   'request.jwt.claim.sub',
   '11111111-1111-4111-8111-111111111111',
   true
+);
+select is(
+  public.is_staff(),
+  false,
+  'an AAL1 staff identity is denied at the database boundary'
+);
+select is(
+  public.is_admin(),
+  false,
+  'an AAL1 administrator is denied at the database boundary'
+);
+select throws_ok(
+  $sql$
+    select public.resolve_conversation_report(
+      'a1111111-1111-4111-8111-111111111111',
+      'keep',
+      'Hostile AAL1 direct RPC attempt.'
+    )
+  $sql$,
+  '42501',
+  'active staff access required',
+  'an AAL1 administrator cannot invoke a privileged moderation RPC directly'
+  );
+select throws_ok(
+	$sql$
+		update public.reports
+		set status = 'open'
+		where id = '81111111-1111-4111-8111-111111111111'
+	$sql$,
+	'42501',
+	'staff access required for report workflow changes',
+	'an AAL1 administrator cannot mutate a staff workflow through the table API'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated"}',
+  true
+);
+select is(
+  public.is_staff(),
+  false,
+  'a staff JWT without an assurance claim fails closed'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated","aal":"unexpected"}',
+  true
+);
+select is(
+  public.is_staff(),
+  false,
+  'a staff JWT with an unknown assurance claim fails closed'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated","aal":"aal2"}',
+  true
+);
+select is(
+  public.is_staff(),
+  true,
+  'an AAL2 staff identity remains authorized at the database boundary'
+);
+select is(
+  public.is_admin(),
+  true,
+  'an AAL2 administrator remains authorized at the database boundary'
 );
 select public.moderate_listing(
   '81111111-1111-4111-8111-111111111111',
@@ -445,6 +546,41 @@ select is(
   0,
   'failed atomic report closure leaves no partial decision audit'
 );
+
+reset role;
+set local role service_role;
+select set_config(
+  'request.jwt.claims',
+  '{"role":"service_role"}',
+  true
+);
+select ok(
+	public.is_admin('11111111-1111-4111-8111-111111111111'),
+	'the service role retains its explicit trusted-system administrator path'
+);
+select is(
+	public.is_admin('22222222-2222-4222-8222-222222222222'),
+	false,
+	'the service role cannot elevate an ordinary profile to administrator'
+);
+
+reset role;
+set local role postgres;
+update public.profiles
+set is_suspended = true
+where id = '11111111-1111-4111-8111-111111111111';
+set local role service_role;
+select is(
+	public.is_admin('11111111-1111-4111-8111-111111111111'),
+	false,
+	'the service role cannot elevate a suspended administrator'
+);
+
+reset role;
+set local role postgres;
+update public.profiles
+set is_suspended = false
+where id = '11111111-1111-4111-8111-111111111111';
 
 select * from finish();
 rollback;

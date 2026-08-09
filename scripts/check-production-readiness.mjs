@@ -70,7 +70,6 @@ const requiredProviderChecks = [
   'resendEmail',
   'supabaseAuth',
   'turnstile',
-  'twilioSms',
   'uploadCleanup'
 ];
 
@@ -154,7 +153,6 @@ function requireCustomDomain(key) {
 
 requireExact('APP_ENV', 'production');
 requireExact('PUBLIC_DEMO_MODE', 'false');
-requireExact('PRIVATE_BETA_REQUIRE_INVITE', 'true');
 requireExact('PRIVATE_BETA_REQUIRE_STAFF_MFA', 'true');
 requireExact('LEGAL_CONTENT_APPROVED', 'true');
 requireExact('PAYMENT_PROVIDER', 'disabled');
@@ -205,7 +203,6 @@ if (existsSync(resolve(workspace, 'static', 'robots.txt'))) {
   failures.push('static/robots.txt must not bypass the Worker crawler policy');
 }
 
-requireExact('FEATURE_SMS_VERIFICATION_ENABLED', 'true');
 requireExact('IMAGE_PROCESSOR_MODE', 'cloudflare-images');
 requireCanonicalHttpsOrigin('PUBLIC_APP_URL');
 requireCustomDomain('PUBLIC_APP_URL');
@@ -322,9 +319,6 @@ for (const key of [
   'TURNSTILE_SECRET_KEY',
   'PUBLIC_TURNSTILE_SITE_KEY',
   'TURNSTILE_EXPECTED_HOSTNAME',
-  'SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID',
-  'SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID',
-  'SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN',
   'CLOUDFLARE_ACCOUNT_ID',
   'CLOUDFLARE_IMAGES_API_TOKEN'
 ]) {
@@ -362,17 +356,6 @@ if (
   failures.push('SUPABASE_SECRET_KEY must not equal PUBLIC_SUPABASE_PUBLISHABLE_KEY');
 }
 requirePattern('RESEND_API_KEY', /^re_[A-Za-z0-9_-]{8,}$/u, 'must be a Resend API-key shape');
-requirePattern(
-  'SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID',
-  /^AC[a-f0-9]{32}$/iu,
-  'must be a Twilio Account SID'
-);
-requirePattern(
-  'SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID',
-  /^MG[a-f0-9]{32}$/iu,
-  'must be a Twilio Messaging Service SID'
-);
-requireMinBytes('SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN', 32);
 requireMinBytes('TURNSTILE_SECRET_KEY', 20);
 requireMinBytes('PUBLIC_TURNSTILE_SITE_KEY', 20);
 requirePattern(

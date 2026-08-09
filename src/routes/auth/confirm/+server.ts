@@ -49,6 +49,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	}
 
 	if (type === 'recovery') redirect(303, '/auth/update-password');
+	if (type === 'signup') {
+		const { error: admissionError } = await locals.supabase.rpc('claim_open_registration');
+		if (admissionError) {
+			await locals.supabase.auth.signOut();
+			redirect(303, '/auth/error?reason=profile_activation_failed');
+		}
+	}
 	redirect(303, safeRedirectPath(url.searchParams.get('next'), '/dashboard'));
 };
 

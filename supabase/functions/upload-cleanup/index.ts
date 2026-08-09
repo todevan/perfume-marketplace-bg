@@ -11,7 +11,8 @@ type CleanupClaim = {
 
 const ALLOWED_PRIVATE_BUCKETS = new Set([
 	'listing-image-quarantine',
-	'listing-images'
+	'listing-images',
+	'report-evidence'
 ]);
 const DEFAULT_BATCH_SIZE = 25;
 const MAX_BATCH_SIZE = 100;
@@ -122,6 +123,18 @@ Deno.serve(async (request) => {
 		const supabase = createClient(supabaseUrl, serviceKey, {
 			auth: { autoRefreshToken: false, persistSession: false }
 		});
+		const { error: expiryError } = await supabase.rpc(
+			'expire_report_evidence_uploads',
+			{ target_limit: limit }
+		);
+		if (expiryError) {
+			console.error(JSON.stringify({
+				event: 'report_evidence_expiry_failed',
+				code: databaseCode(expiryError),
+				requestId
+			}));
+			return json({ error: 'expiry_failed', requestId }, 503);
+		}
 
 		const { data: claimedData, error: claimError } = await supabase.rpc(
 			'claim_upload_cleanup',

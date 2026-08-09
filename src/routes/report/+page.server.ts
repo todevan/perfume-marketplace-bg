@@ -7,9 +7,20 @@ import {
   uuidSchema
 } from '$lib/contracts';
 import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
+import {
+  InvalidFormDataError,
+  parseBoundedFormData,
+  RequestBodyTooLargeError
+} from '$lib/server/http/request-body';
 import type { MarketplaceSupabaseClient } from '$lib/server/repositories';
 import { submitReport } from '$lib/server/services';
 import { createServiceRoleSupabaseClient } from '$lib/server/supabase';
+import {
+  ACCEPTED_SOURCE_MIME_TYPES,
+  cloudflareImagesBinding,
+  ImageProcessingError,
+  sanitizeImage
+} from '$lib/server/uploads/image-processor';
 
 function clientFrom(locals: App.Locals): MarketplaceSupabaseClient {
   if (!locals.supabase) error(503, 'Сигналите не са конфигурирани.');
@@ -20,28 +31,30 @@ function httpStatus(code: string): 400 | 401 | 403 | 404 | 409 | 429 | 500 {
 }
 
 const MAX_EVIDENCE_BYTES = 10 * 1024 * 1024;
+const MAX_REPORT_REQUEST_BYTES = 4 * MAX_EVIDENCE_BYTES + 512 * 1024;
+const REPORT_FORM_LIMITS = {
+  maxBytes: MAX_REPORT_REQUEST_BYTES,
+  maxFileBytes: MAX_EVIDENCE_BYTES,
+  maxFiles: 4,
+  maxParts: 20,
+  maxHeaderBytes: 8 * 1024
+} as const;
 
-function evidenceExtension(bytes: Uint8Array, declaredType: string): 'jpg' | 'png' | 'webp' | 'pdf' | null {
-	if (
-		declaredType === 'image/jpeg' &&
-		bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-	) return 'jpg';
-	if (
-		declaredType === 'image/png' &&
-		bytes.slice(0, 8).every((value, index) =>
-			value === [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][index]
-		)
-	) return 'png';
-	if (
-		declaredType === 'image/webp' &&
-		new TextDecoder().decode(bytes.slice(0, 4)) === 'RIFF' &&
-		new TextDecoder().decode(bytes.slice(8, 12)) === 'WEBP'
-	) return 'webp';
-	if (
-		declaredType === 'application/pdf' &&
-		new TextDecoder().decode(bytes.slice(0, 5)) === '%PDF-'
-	) return 'pdf';
-	return null;
+interface ReportEvidenceAllocation {
+  upload_id: string;
+  bucket_id: 'report-evidence';
+  storage_path: string;
+  expires_at: string;
+}
+
+interface ReportEvidenceRpcClient {
+  rpc(
+    name:
+      | 'create_report_evidence_upload'
+      | 'finalize_report_evidence_upload'
+      | 'reject_unattached_report_evidence_uploads',
+    parameters: Record<string, unknown>
+  ): PromiseLike<{ data: unknown; error: { code?: string } | null }>;
 }
 
 export const load: PageServerLoad = ({ locals, url }) => {
@@ -63,67 +76,191 @@ export const load: PageServerLoad = ({ locals, url }) => {
 
 export const actions: Actions = {
   default: async (event) => {
-    const formData = await event.request.formData();
     if (event.locals.runtime.mode === 'demo') return { ok: true, demo: true };
-    const challenge = await verifyTurnstileForAction(event, formData, event.locals.runtime, 'report_submit');
-    if (!challenge.success) return fail(400, { ok: false, error: { message: 'Проверката срещу автоматични заявки не беше успешна.' } });
-    const client = clientFrom(event.locals);
+    if (!event.locals.user) {
+      return fail(401, { ok: false, error: { message: 'Влез в профила си, за да подадеш сигнал.' } });
+    }
     if (
-      !event.locals.user ||
       !event.locals.runtime.publicSupabaseUrl ||
       !event.locals.runtime.supabaseSecretKey
     ) {
       return fail(503, { ok: false, error: { message: 'Качването на доказателства не е конфигурирано.' } });
     }
-    const evidenceStorage = createServiceRoleSupabaseClient({
+
+    let formData: FormData;
+    try {
+      formData = await parseBoundedFormData(event.request, REPORT_FORM_LIMITS);
+    } catch (cause) {
+      if (cause instanceof RequestBodyTooLargeError) {
+        return fail(413, {
+          ok: false,
+          error: { message: 'Общият размер на заявката е твърде голям.' }
+        });
+      }
+      if (cause instanceof InvalidFormDataError) {
+        return fail(400, {
+          ok: false,
+          error: { message: 'Заявката за сигнал е невалидна.' }
+        });
+      }
+      throw cause;
+    }
+    const challenge = await verifyTurnstileForAction(event, formData, event.locals.runtime, 'report_submit');
+    if (!challenge.success) return fail(400, { ok: false, error: { message: 'Проверката срещу автоматични заявки не беше успешна.' } });
+    const client = clientFrom(event.locals);
+    const serviceClient = createServiceRoleSupabaseClient({
       PUBLIC_SUPABASE_URL: event.locals.runtime.publicSupabaseUrl,
       SUPABASE_SECRET_KEY: event.locals.runtime.supabaseSecretKey
-    }).storage.from('report-evidence');
+    });
+    const evidenceStorage = serviceClient.storage.from('report-evidence');
+    const allocationClient = client as unknown as ReportEvidenceRpcClient;
+    const privilegedEvidenceClient = serviceClient as unknown as ReportEvidenceRpcClient;
     const uploadedPaths: string[] = [];
+    const allocatedUploads: ReportEvidenceAllocation[] = [];
+    const rejectAllocatedUploads = async (rejectionCode: string) => {
+      if (allocatedUploads.length === 0) return;
+      try {
+        const { error: reconciliationError } = await privilegedEvidenceClient.rpc(
+          'reject_unattached_report_evidence_uploads',
+          {
+            target_upload_ids: allocatedUploads.map((allocation) => allocation.upload_id),
+            rejection_code: rejectionCode
+          }
+        );
+        if (!reconciliationError) return;
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'report_evidence_reconciliation_failed',
+            requestId: event.locals.requestId,
+            code: rejectionCode
+          })
+        );
+      } catch {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'report_evidence_reconciliation_transport_failed',
+            requestId: event.locals.requestId,
+            code: rejectionCode
+          })
+        );
+      }
+    };
     const evidenceFiles = formData.getAll('evidence').filter(
       (entry): entry is File => typeof entry !== 'string' && entry.size > 0
     );
     if (evidenceFiles.length > 4) {
       return fail(400, { ok: false, error: { message: 'Добави най-много четири файла.' } });
     }
+    if (
+      evidenceFiles.length > 0 &&
+      event.locals.runtime.imageProcessorMode !== 'cloudflare-images'
+    ) {
+      return fail(503, {
+        ok: false,
+        error: { message: 'Обработката на изображения временно не е налична. Изпрати сигнала без файл.' }
+      });
+    }
+    const processReport = async () => {
     for (const file of evidenceFiles) {
-      if (file.size > MAX_EVIDENCE_BYTES) {
-        if (uploadedPaths.length) await evidenceStorage.remove(uploadedPaths);
-        return fail(400, { ok: false, error: { message: 'Всеки файл трябва да е до 10 MB.' } });
+      if (
+        file.size > MAX_EVIDENCE_BYTES ||
+        !ACCEPTED_SOURCE_MIME_TYPES.includes(
+          file.type as (typeof ACCEPTED_SOURCE_MIME_TYPES)[number]
+        )
+      ) {
+        await rejectAllocatedUploads('invalid_source_file');
+        return fail(400, {
+          ok: false,
+          error: { message: 'Добави JPEG, PNG, WebP или AVIF изображение до 10 MB.' }
+        });
       }
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const extension = evidenceExtension(bytes, file.type);
-      if (!extension) {
-        if (uploadedPaths.length) await evidenceStorage.remove(uploadedPaths);
-        return fail(400, { ok: false, error: { message: 'Невалиден JPEG, PNG, WebP или PDF файл.' } });
+      let sanitized: Awaited<ReturnType<typeof sanitizeImage>>;
+      try {
+        sanitized = await sanitizeImage(
+          cloudflareImagesBinding(event.platform),
+          bytes,
+          file.type
+        );
+      } catch (cause) {
+        await rejectAllocatedUploads('image_sanitization_failed');
+        if (cause instanceof ImageProcessingError) {
+          return fail(cause.code === 'processor_unavailable' ? 503 : 400, {
+            ok: false,
+            error: {
+              message:
+                cause.code === 'processor_unavailable'
+                  ? 'Обработката на изображения временно не е налична. Изпрати сигнала без файл.'
+                  : 'Изображението не можа да бъде проверено и безопасно обработено.'
+            }
+          });
+        }
+        throw cause;
       }
-      const path = `${event.locals.user!.id}/${crypto.randomUUID()}.${extension}`;
-      const { error: uploadError } = await evidenceStorage.upload(path, bytes, {
-        contentType: file.type,
+      const { data: rawAllocation, error: allocationError } = await allocationClient.rpc(
+        'create_report_evidence_upload',
+        {
+          source_mime_type: file.type,
+          source_byte_size: file.size
+        }
+      );
+      const allocation = (
+        Array.isArray(rawAllocation) ? rawAllocation[0] : rawAllocation
+      ) as ReportEvidenceAllocation | null;
+      if (
+        allocationError ||
+        !allocation ||
+        allocation.bucket_id !== 'report-evidence' ||
+        !allocation.storage_path
+      ) {
+        await rejectAllocatedUploads('allocation_failed');
+        return fail(503, { ok: false, error: { message: 'Доказателството не можа да бъде подготвено.' } });
+      }
+      allocatedUploads.push(allocation);
+      const path = allocation.storage_path;
+      const { error: uploadError } = await evidenceStorage.upload(path, sanitized.bytes, {
+        contentType: sanitized.mimeType,
         upsert: false
       });
       if (uploadError) {
-        if (uploadedPaths.length) await evidenceStorage.remove(uploadedPaths);
+        await rejectAllocatedUploads('storage_upload_failed');
         return fail(503, { ok: false, error: { message: 'Доказателството не можа да бъде качено.' } });
       }
       uploadedPaths.push(path);
+      const { error: finalizeError } = await privilegedEvidenceClient.rpc(
+        'finalize_report_evidence_upload',
+        {
+          target_upload_id: allocation.upload_id,
+          actual_content_hash: sanitized.contentHash,
+          actual_byte_size: sanitized.bytes.byteLength,
+          actual_width_px: sanitized.width,
+          actual_height_px: sanitized.height
+        }
+      );
+      if (finalizeError) {
+        await rejectAllocatedUploads('finalization_failed');
+        return fail(503, { ok: false, error: { message: 'Доказателството не можа да бъде финализирано.' } });
+      }
     }
 
-    let result: Awaited<ReturnType<typeof submitReport>>;
-    try {
-      result = await submitReport(client, {
-        targetType: formData.get('targetType'), targetId: formData.get('targetId'),
-        reasonCode: formData.get('reasonCode'), details: formData.get('details') || null,
-        evidencePaths: uploadedPaths
-      });
-    } catch (cause) {
-      if (uploadedPaths.length) await evidenceStorage.remove(uploadedPaths);
-      throw cause;
-    }
+    const result = await submitReport(client, {
+      targetType: formData.get('targetType'), targetId: formData.get('targetId'),
+      reasonCode: formData.get('reasonCode'), details: formData.get('details') || null,
+      evidencePaths: uploadedPaths
+    });
     if (!result.ok) {
-      if (uploadedPaths.length) await evidenceStorage.remove(uploadedPaths);
+      await rejectAllocatedUploads('report_submission_rejected');
       return fail(httpStatus(result.error.code), { ok: false, error: result.error });
     }
     return { ok: true, reportId: result.data.id };
+    };
+    try {
+      return await processReport();
+    } catch (cause) {
+      await rejectAllocatedUploads('report_processing_failed');
+      throw cause;
+    }
   }
 };

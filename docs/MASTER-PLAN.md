@@ -4,7 +4,7 @@ Purpose of this document: This is the single source of truth for the project. An
 
 Owner: [Tedi] - the only person who can approve business/legal decisions and authorize new phases of work.
 
-Last updated: [update this date every time the doc changes]
+Last updated: 2026-08-02
 
 1. What this project is
 
@@ -14,17 +14,17 @@ Full concept document: docs/CONCEPT.md (save the original concept doc here if no
 
 Target stack (confirm this matches reality - see Open Questions #1): SvelteKit, TypeScript, Supabase (Postgres + RLS), Cloudflare Workers/Pages, Playwright.
 
-Current stage: closed beta, invite-only, pre-launch. Not yet open to the public.
+Current stage: pre-launch development with open email-and-password registration. Not yet production-ready.
 
 2. Current state (living summary - update this section as phases complete)
 
 Keep this section short. Full detail lives in the dated audit files below. This is just "where are we right now."
 
 Last full audit: docs/AUDIT-2026-08-02.md
-Phase currently active: Phase 1 - restore a green, buildable branch
-Phases completed: Phase 0 (credential rotation - done manually by owner, Aug 2 2026)
-Known blockers right now: ListingCard.svelte compiler error (fix in progress), demo-mode validation bug (fix in progress)
-Branch under active work: codex/full-site-redesign (no PR open yet as of last check)
+Phase currently active: Phase 2 - security hardening and hosted integration tests
+Phases completed: Phase 0 (credential rotation - done manually by owner, Aug 2 2026), Phase 1 (green local baseline)
+Known blockers right now: hosted evidence acceptance, owner-approved messaging/moderation-evidence/blocking and retention semantics, and real multi-session concurrency tests; hosted staging activation remains blocked
+Branch under active work: main (local changes are not committed or pushed)
 
 (Update this block every time a phase completes or a new blocker is found - this is the 30-second version of project status.)
 
@@ -55,13 +55,16 @@ These block later phases. Answer them whenever you're ready - doesn't need to be
  Privacy contact
  Appeals channel (for moderation disputes)
  Should merchant verification stay manual, or get a real upload workflow?
- Are report PDFs actually necessary, or can that be dropped for simplicity?
- SMS provider for phone verification
+
  Expected beta size (how many invited users initially?)
  Backup retention period and acceptable downtime
- Should production stay permanently invite-only, or is public launch the eventual goal?
  Are chat attachments needed for v1, or can they wait?
  Is public search-engine indexing ever desired, and if so, when?
+ What message policy should Phase 2 enforce: edit deadline, irreversible deletion behavior, immutable revision/snapshot scope, and moderation retention/legal-hold duration?
+ Should blocking be a unilateral inbound-contact prohibition, mutual conversation closure, or local mute/hide; and what historical chat/deal access remains after blocking?
+ Should expired offers remain visibly distinct from seller-declined and buyer-withdrawn offers in user and support history?
+ Should transactional-email provider 4xx failures be acknowledged as terminal after durable ledger failure, or retried by the webhook/operator workflow; which specific statuses are considered transient?
+ Should reports continue to accept up to four 10 MiB images in one Worker request, use a lower aggregate request limit, or move evidence to direct quarantine uploads to reduce peak isolate memory?
 
 (As each is answered, move it to a "Decisions Made" section below with the answer and date.)
 
@@ -70,6 +73,10 @@ These block later phases. Answer them whenever you're ready - doesn't need to be
 (Move answered items here, with date and reasoning, so the "why" isn't lost later.)
 
 Example format: [Date] - Question: ... Decision: ... Reasoning: ...
+
+2026-08-02 - Question: Should registration remain invite-only and should regular users verify a phone before account activation or sensitive marketplace actions? Decision: No. The owner requires standard public email-and-password signup and login, with no invitation restriction and no phone-number or SMS OTP verification for regular-user activation or marketplace actions. Email confirmation, existing password rules, secure-cookie sessions, legal onboarding/consents, suspension and moderation controls remain; staff/admin MFA remains separate and mandatory. Reasoning: During the current development stage the owner wants the simplest regular-user authentication flow and does not want invites or phone verification to block testing and use. Existing RLS policies and unrelated authorization/moderation behavior must remain unchanged.
+
+2026-08-02 - Question: Are PDF report attachments required before launch, and how should report evidence be handled without a configured document scanner? Decision: Report evidence is images-only for now. Accepted images must be decoded and re-encoded through the trusted image processor before final storage; PDFs and other document formats are rejected until a dedicated malware/PDF scanning provider exists. Text-only reports remain available when image processing is unavailable. Reasoning: This closes the active-content and malformed-file risk without silently storing unscanned documents or blocking users from filing a report.
 6. Standing rules for any agent working on this repo
 
 These apply regardless of which phase is active.

@@ -8,8 +8,9 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
  * It is intentionally inert unless E2E_REAL_RUN=true. The target environment
  * must use Cloudflare Turnstile's always-pass testing keys: automation must not
  * bypass or attempt to solve a live CAPTCHA. All three users must already be
- * active beta members; seller and buyer must have verified +359 phones, while
- * the moderator must have an enrolled TOTP factor and a moderator/admin role.
+ * active marketplace members; seller and buyer use ordinary email/password
+ * accounts, while the moderator must have an enrolled TOTP factor and a
+ * moderator/admin role.
  *
  * Required for the marketplace flow:
  *   E2E_REAL_RUN=true
@@ -358,7 +359,7 @@ function currentTotp(secret: string): string {
 	return String(binary % 1_000_000).padStart(6, '0');
 }
 
-test.describe('real invite-only beta', () => {
+test.describe('real hosted marketplace', () => {
 	test('seller → buyer → offer → chat → deal → review', async ({ browser }, testInfo) => {
 		onlyExplicitRealChromium(testInfo);
 		test.setTimeout(240_000);

@@ -7,8 +7,7 @@ import MemberShell from '../../src/lib/components/MemberShell.svelte';
 
 const auth = {
   profile: {
-    username: 'scent_archive',
-    phoneVerifiedAt: '2026-07-22T12:00:00Z'
+    username: 'scent_archive'
   }
 };
 
@@ -38,6 +37,8 @@ describe('member shell', () => {
 
     expect(within(navigation).getByRole('link', { name: 'Оферти' }).getAttribute('aria-current')).toBe('page');
     expect(within(navigation).getByRole('link', { name: 'Преглед' }).hasAttribute('aria-current')).toBe(false);
+    expect(screen.getByText('Активен профил')).toBeTruthy();
+    expect(screen.queryByText(/Телефон/)).toBeNull();
   });
 
   it('uses a compact workspace bar for messages', () => {

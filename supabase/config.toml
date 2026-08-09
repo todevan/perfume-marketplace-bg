@@ -2,14 +2,14 @@ project_id = "perfume-marketplace-bg"
 
 [api]
 enabled = true
-port = 54321
+port = 45321
 schemas = ["public", "graphql_public"]
 extra_search_path = ["public", "extensions"]
 max_rows = 1000
 
 [db]
-port = 54322
-shadow_port = 54320
+port = 45322
+shadow_port = 45320
 major_version = 17
 
 [db.seed]
@@ -20,13 +20,13 @@ enabled = true
 
 [studio]
 enabled = true
-port = 54323
+port = 45323
 
 [local_smtp]
 enabled = true
-port = 54324
-smtp_port = 54325
-pop3_port = 54326
+port = 45324
+smtp_port = 45325
+pop3_port = 45326
 admin_email = "beta-admin@example.invalid"
 sender_name = "Perfume marketplace beta"
 

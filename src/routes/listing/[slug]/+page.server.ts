@@ -49,7 +49,6 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			offeredListings: demoOwnListings().items.filter(
 				(item) => item.id !== listing.id && offeredListingEligible(item)
 			),
-			phoneVerified: true,
 			favorite: false,
 			turnstileSiteKey: null,
 			demoMode: true
@@ -86,7 +85,6 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 				(item) => item.id !== listing.id && offeredListingEligible(item)
 			)
 			: [],
-		phoneVerified: Boolean(locals.profile?.phoneVerifiedAt),
 		favorite: favoriteResult.ok ? favoriteResult.data : false,
 		turnstileSiteKey: locals.runtime.publicTurnstileSiteKey ?? null,
 		demoMode: false
@@ -136,12 +134,7 @@ export const actions: Actions = {
 		if (locals.runtime.mode === 'demo') {
 			return { offerResult: { ok: true, data: null } as unknown as ActionResult<OfferDto>, demoSubmission: true };
 		}
-		if (!locals.profile?.phoneVerifiedAt) {
-			return fail(403, {
-				offerResult: { ok: false, error: { code: 'FORBIDDEN', message: 'Потвърди телефона си, преди да изпратиш първа оферта.' } } satisfies ActionResult<OfferDto>,
-				phoneVerificationRequired: true
-			});
-		}
+		if (!locals.profile) return fail(401, { offerResult: invalidOffer('Необходим е активен профил.') });
 		if (!locals.supabase) return fail(503, { offerResult: invalidOffer('Услугата временно не е достъпна.') });
 		if (listing.seller.id === locals.profile.id) return fail(400, { offerResult: invalidOffer('Не можеш да изпратиш оферта към собствена обява.') });
 		const challenge = await verifyTurnstileForAction(event, formData, locals.runtime, 'offer_submit');

@@ -24,14 +24,12 @@
 	let {
 		initialKind = 'offer',
 		catalogBrands = [],
-		phoneVerified = false,
 		initialCity = '',
 		turnstileSiteKey = null,
 		demoMode = false
 	}: {
 		initialKind?: ListingKind;
 		catalogBrands?: readonly BrandSummaryDto[];
-		phoneVerified?: boolean;
 		initialCity?: string;
 		turnstileSiteKey?: string | null;
 		demoMode?: boolean;
@@ -341,10 +339,6 @@
 
 
 		if (!demoMode && currentStep === 4) {
-			if (!phoneVerified) {
-				window.location.assign(`/phone-verification?next=${encodeURIComponent('/publish')}`);
-				return;
-			}
 			busy = true;
 			try {
 				await persistDraft();
@@ -555,11 +549,7 @@
 			throw new Error('redirected');
 		}
 		if (decoded.type === 'error') throw new Error('action_failed');
-		const actionData = decoded.data as { result?: ActionResult<T>; phoneVerificationRequired?: boolean } | undefined;
-		if (actionData?.phoneVerificationRequired) {
-			window.location.assign(`/phone-verification?next=${encodeURIComponent('/publish')}`);
-			throw new Error('phone_verification_required');
-		}
+		const actionData = decoded.data as { result?: ActionResult<T> } | undefined;
 		if (!actionData?.result) throw new Error('missing_action_result');
 		return actionData.result;
 	}
@@ -1077,7 +1067,7 @@
 
 					<div class="publish-note">
 						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7v5c0 4.5 3.2 8 8 9 4.8-1 8-4.5 8-9V7z" /><path d="M9 12.5 11 14l4-4" /></svg>
-						<div><strong>Преди публикуване</strong><p>{phoneVerified || demoMode ? 'Телефонът е потвърден. ' : 'Ще се изисква потвърден телефон. '}Модератор може да поиска допълнителни доказателства, но прегледът им не е гаранция за автентичност.</p></div>
+						<div><strong>Преди публикуване</strong><p>Модератор може да поиска допълнителни доказателства, но прегледът им не е гаранция за автентичност.</p></div>
 					</div>
 				</div>
 			{/if}

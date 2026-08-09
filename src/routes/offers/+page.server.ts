@@ -48,9 +48,6 @@ async function offerAction(
   const formData = await request.formData();
   const offerId = formData.get('offerId');
   if (locals.runtime.mode === 'demo') return { ok: true, demo: true, operation };
-  if (!locals.profile?.phoneVerifiedAt) {
-    return fail(403, { ok: false, error: { code: 'FORBIDDEN', message: 'Потвърди телефона си преди действие по оферта.' } });
-  }
   const client = clientFrom(locals);
   if (operation === 'accept') {
     const result = await acceptOffer(client, { offerId });

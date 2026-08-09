@@ -1,8 +1,11 @@
 import { createServerClient } from '@supabase/ssr';
 import { version as deployedGitSha } from '$app/environment';
 import { isHttpError, isRedirect, type Handle, type HandleServerError } from '@sveltejs/kit';
-import { AuthContextError, loadRequestAuthContext } from '$lib/server/auth/context';
-import { enforceRoutePolicy } from '$lib/server/auth/guards';
+import { AuthContextError, loadMinimalAuthContext, loadAuthPieces } from '$lib/server/auth/context';
+import {
+	enforceRoutePolicy,
+	routeAuthDataRequirements
+} from '$lib/server/auth/guards';
 import type { RequestAuthContext } from '$lib/server/auth/types';
 import {
 	getPlatformEnvironment,
@@ -174,9 +177,35 @@ export const handle: Handle = async ({ event, resolve }) => {
 		return { session: sessionData.session, user: userData.user };
 	};
 
-	let context: RequestAuthContext;
+	let context: RequestAuthContext = EMPTY_AUTH_CONTEXT;
 	try {
-		context = await loadRequestAuthContext(supabase);
+		// Minimal auth: always getUser first (preserves current getUser semantics)
+		const minimal = await loadMinimalAuthContext(supabase);
+		context = { ...context, user: minimal.user };
+
+		if (context.user) {
+			const requirements = routeAuthDataRequirements(event.url.pathname);
+
+			if (requirements.profile || requirements.betaAccess || requirements.aal) {
+				try {
+					const pieces = await loadAuthPieces(
+						supabase,
+						{
+							needProfile: requirements.profile,
+							needBetaAccess: requirements.betaAccess,
+							needAal: requirements.aal
+						},
+						context.user.id
+					);
+					context = { ...context, ...pieces } as RequestAuthContext;
+				} catch (cause) {
+					if (cause instanceof AuthContextError) {
+						return serviceUnavailable(requestId, event.url.protocol === 'https:');
+					}
+					throw cause;
+				}
+			}
+		}
 	} catch (cause) {
 		if (cause instanceof AuthContextError) {
 			return serviceUnavailable(requestId, event.url.protocol === 'https:');

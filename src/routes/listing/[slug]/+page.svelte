@@ -232,8 +232,7 @@
           <div class="field"><label for="offer-note">Кратка бележка (по избор)</label><textarea id="offer-note" name="message" maxlength="1000" class="textarea" placeholder="Например: мога да изпратя утре..."></textarea></div>
           {#if data.turnstileSiteKey && !data.demoMode}<div class="cf-turnstile" data-sitekey={data.turnstileSiteKey} data-action="offer_submit"></div>{/if}
           {#if form?.offerResult && !form.offerResult.ok}<p class="form-error" role="alert">{form.offerResult.error.message}</p>{/if}
-          {#if !data.phoneVerified && !data.demoMode}<p class="phone-required"><a href={`/phone-verification?next=${encodeURIComponent(`/listing/${listing.slug}`)}`}>Потвърди телефона си</a>, преди да изпратиш оферта.</p>{/if}
-          <button class="button primary submit-offer" type="submit" disabled={!data.phoneVerified && !data.demoMode}>Изпрати намерение <ArrowRight size={17} /></button>
+          <button class="button primary submit-offer" type="submit">Изпрати намерение <ArrowRight size={17} /></button>
         </form>
       {/if}
     </div>
@@ -506,18 +505,13 @@
     margin-block: 22px;
   }
 
-  .form-error,
-  .phone-required {
+  .form-error {
     margin: 14px 0 0;
     color: var(--danger);
     font-size: 0.78rem;
     font-weight: 700;
   }
 
-  .phone-required a {
-    text-decoration: underline;
-    text-underline-offset: 3px;
-  }
 
   .submit-offer:disabled {
     cursor: not-allowed;

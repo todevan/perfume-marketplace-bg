@@ -71,12 +71,10 @@ describe('auth-aware marketplace header', () => {
 		expect(screen.getByRole('button', { name: 'Изход' })).toBeTruthy();
 	});
 
-	it('keeps publish available while surfacing required phone verification', () => {
+	it('keeps publish available without a phone-verification prompt', () => {
 		render(Header, { auth: active(null), demoMode: false });
 
-		expect(screen.getByRole('link', { name: 'Потвърди телефон' }).getAttribute('href')).toBe(
-			'/phone-verification?next=%2Fpublish'
-		);
+		expect(screen.queryByRole('link', { name: 'Потвърди телефон' })).toBeNull();
 		expect(screen.getByRole('link', { name: /Публикувай/ }).getAttribute('href')).toBe('/publish');
 	});
 

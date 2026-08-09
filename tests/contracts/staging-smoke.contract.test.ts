@@ -14,6 +14,7 @@ const workflowPath = resolve(workspace, '.github/workflows/deploy.yml');
 const expectedOrigin =
 	'https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev';
 const expectedGitSha = 'a'.repeat(40);
+const expectedTurnstileRejection = 'Потвърди, че не си автоматизиран клиент.';
 type WorkflowStep = {
 	id?: string;
 	if?: string;
@@ -65,7 +66,12 @@ function finish(
 }
 
 async function startSmokeServer(
-	options: { exposeDemo?: boolean; deployedGitSha?: string; rollback?: boolean } = {}
+	options: {
+		exposeDemo?: boolean;
+		deployedGitSha?: string;
+		rollback?: boolean;
+		loginBody?: string;
+	} = {}
 ): Promise<StartedServer> {
 	const publicPages = new Set([
 		'/login',
@@ -100,7 +106,7 @@ async function startSmokeServer(
 
 		if (request.method === 'POST' && url.pathname === '/login' && url.search === '?/login') {
 			request.resume();
-			respond(503, 'Login temporarily unavailable.', {
+			respond(400, options.loginBody ?? expectedTurnstileRejection, {
 				'cache-control': 'private, no-store'
 			});
 			return;
@@ -108,7 +114,7 @@ async function startSmokeServer(
 
 		if (request.method === 'POST' && url.pathname === '/login' && url.search === '?/register') {
 			request.resume();
-			respond(403, 'Invitation required.', {
+			respond(400, 'Registration input validation failed.', {
 				'cache-control': 'private, no-store'
 			});
 			return;
@@ -123,7 +129,7 @@ async function startSmokeServer(
 			const body =
 				options.exposeDemo && url.pathname === '/login'
 					? '<html>demo@example.bg</html>'
-					: '<html>Closed beta</html>';
+					: '<html>Open email registration</html>';
 			respond(200, body);
 			return;
 		}
@@ -185,7 +191,7 @@ afterEach(async () => {
 });
 
 describe('hosted staging smoke runner', () => {
-	it('verifies the complete closed-beta HTTP contract without following redirects', async () => {
+	it('verifies the complete open-registration HTTP contract without following redirects', async () => {
 		const server = await startSmokeServer();
 		const fetchImpl = vi.fn(
 			(input: string | URL | Request, init?: RequestInit) => fetch(input, init)
@@ -204,12 +210,12 @@ describe('hosted staging smoke runner', () => {
 		expect(receipts).toContainEqual({
 			method: 'POST',
 			path: '/login?/register',
-			status: 403
+			status: 400
 		});
 		expect(receipts).toContainEqual({
 			method: 'POST',
 			path: '/login?/login',
-			status: 503
+			status: 400
 		});
 	});
 
@@ -223,6 +229,18 @@ describe('hosted staging smoke runner', () => {
 				logger: { log() {}, warn() {} }
 			})
 		).rejects.toThrow('demo fixture data is exposed');
+	});
+
+	it('rejects a generic 400 that does not attest the pre-auth Turnstile boundary', async () => {
+		const server = await startSmokeServer({ loginBody: 'Authentication request rejected.' });
+		await expect(
+			runStagingSmoke({
+				origin: server.origin,
+				expectedGitSha,
+				attempts: 1,
+				logger: { log() {}, warn() {} }
+			})
+		).rejects.toThrow('pre-auth Turnstile rejection was not attested');
 	});
 
 	it('fails when any response comes from a different deployed Git SHA', async () => {

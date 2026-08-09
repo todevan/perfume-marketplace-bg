@@ -2,7 +2,6 @@
   import type { Component, Snippet } from 'svelte';
   import {
     ArrowLeft,
-    BadgeCheck,
     Bell,
     ChartNoAxesColumnIncreasing,
     CircleHelp,
@@ -22,7 +21,6 @@
   interface MemberAuth {
     profile: {
       username: string;
-      phoneVerifiedAt: string | null;
     } | null;
   }
 
@@ -63,7 +61,6 @@
   ];
 
   let username = $derived(auth.profile?.username ?? (demoMode ? 'demo_user' : 'Моят профил'));
-  let phoneVerified = $derived(demoMode || Boolean(auth.profile?.phoneVerifiedAt));
   let initial = $derived(username.slice(0, 1).toLocaleUpperCase('bg-BG'));
 
   function isActive(item: NavigationItem): boolean {
@@ -79,10 +76,7 @@
           <span class="member-avatar" aria-hidden="true">{initial}</span>
           <span class="member-identity">
             <strong>{username}</strong>
-            <small class:pending={!phoneVerified}>
-              <BadgeCheck size={14} />
-              {phoneVerified ? 'Телефонът е потвърден' : 'Телефонът чака потвърждение'}
-            </small>
+            <small><ShieldCheck size={14} /> Активен профил</small>
           </span>
         </div>
 
@@ -219,10 +213,6 @@
     color: #b9d1c0;
     font-size: 0.59rem;
     line-height: 1.35;
-  }
-
-  .member-identity small.pending {
-    color: #e5c895;
   }
 
   .member-rail nav {

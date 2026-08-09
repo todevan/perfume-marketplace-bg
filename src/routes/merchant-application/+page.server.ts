@@ -21,9 +21,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 async function saveApplication(locals: App.Locals, request: Request, submit: boolean) {
   const formData = await request.formData();
   if (locals.runtime.mode === 'demo') return { ok: true, demo: true, submitted: submit };
-  if (!locals.profile?.phoneVerifiedAt) {
-    return fail(403, { ok: false, error: { message: 'Потвърди телефона си преди кандидатстване.' } });
-  }
   const declarationAccepted = ['authorityDeclaration', 'rulesDeclaration', 'verificationDeclaration', 'privacyAcknowledgement']
     .every((name) => formData.get(name) === 'on');
   const input = {

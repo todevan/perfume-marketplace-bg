@@ -2,6 +2,8 @@ import { pathToFileURL } from 'node:url';
 
 const EXPECTED_STAGING_HOST =
 	'perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev';
+const EXPECTED_PRE_AUTH_TURNSTILE_REJECTION =
+	'Потвърди, че не си автоматизиран клиент.';
 
 const PUBLIC_PAGE_PATHS = [
 	'/login',
@@ -317,14 +319,14 @@ async function runSmokeAttempt(fetchImpl, origin, expectedGitSha, timeoutMs) {
 					origin
 				},
 				body: new URLSearchParams({
-					email: 'staging-registration-must-fail@example.invalid',
+					email: 'staging-registration-validation@example.invalid',
 					next: '/dashboard'
 				})
 			},
 			timeoutMs
 		);
 		const context = `POST ${path}`;
-		assertStatus(response, 403, context);
+		assertStatus(response, 400, context);
 		assertDeploymentIdentity(response, expectedGitSha, context);
 		assertNoStore(response, context);
 		assertNoDemoData(await response.text(), context);
@@ -353,11 +355,15 @@ async function runSmokeAttempt(fetchImpl, origin, expectedGitSha, timeoutMs) {
 			timeoutMs
 		);
 		const context = `POST ${path}`;
-		assertStatus(response, 503, context);
+		assertStatus(response, 400, context);
 		assertDeploymentIdentity(response, expectedGitSha, context);
 		assertNoStore(response, context);
 		const body = await response.text();
 		assertNoDemoData(body, context);
+		assertSmoke(
+			body.includes(EXPECTED_PRE_AUTH_TURNSTILE_REJECTION),
+			`${context}: pre-auth Turnstile rejection was not attested.`
+		);
 		assertSmoke(!body.includes(password), `${context}: submitted password was reflected.`);
 		receipts.push({ method: 'POST', path, status: response.status });
 	}
