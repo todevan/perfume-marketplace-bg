@@ -53,15 +53,16 @@ const billingFlags = [
 	'FEATURE_STRIPE_FALLBACK_ENABLED'
 ] as const;
 
+const activeFrankfurtPublishableKeySha256 =
+	'e3a86494076813f116a5d87efd8476397f9c572a0d6bf71d1e1497a285331bfb';
+
 const validReleaseEnvironment: NodeJS.ProcessEnv = {
 	...process.env,
 	APP_ENV: 'production',
 	PUBLIC_DEMO_MODE: 'false',
-	PRIVATE_BETA_REQUIRE_INVITE: 'true',
 	PRIVATE_BETA_REQUIRE_STAFF_MFA: 'true',
 	LEGAL_CONTENT_APPROVED: 'true',
 	PAYMENT_PROVIDER: 'disabled',
-	FEATURE_SMS_VERIFICATION_ENABLED: 'true',
 	IMAGE_PROCESSOR_MODE: 'cloudflare-images',
 	PUBLIC_APP_URL: 'https://perfume.example.com',
 	PUBLIC_SUPABASE_URL: 'https://example.supabase.co',
@@ -85,9 +86,6 @@ const validReleaseEnvironment: NodeJS.ProcessEnv = {
 	TURNSTILE_SECRET_KEY: 'turnstile-secret-key-production',
 	PUBLIC_TURNSTILE_SITE_KEY: 'turnstile-site-key-production',
 	TURNSTILE_EXPECTED_HOSTNAME: 'perfume.example.com',
-	SUPABASE_AUTH_SMS_TWILIO_ACCOUNT_SID: `AC${'1'.repeat(32)}`,
-	SUPABASE_AUTH_SMS_TWILIO_MESSAGE_SERVICE_SID: `MG${'2'.repeat(32)}`,
-	SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN: 't'.repeat(32),
 	CLOUDFLARE_ACCOUNT_ID: '3'.repeat(32),
 	CLOUDFLARE_IMAGES_API_TOKEN: 'cloudflare-images-token-production',
 	NOTIFICATION_WEBHOOK_SECRET: 'n'.repeat(32),
@@ -108,7 +106,7 @@ function runReadiness(environment: NodeJS.ProcessEnv = validReleaseEnvironment) 
 	});
 }
 
-describe('closed beta deployment hardening', () => {
+describe('pre-launch deployment hardening', () => {
 	it('keeps deployment manual, staging-only, and guarded to main', () => {
 		expect(Object.keys(deploymentWorkflow.on)).toEqual(['workflow_dispatch']);
 		expect(Object.keys(deploymentWorkflow.jobs)).toEqual(['staging']);
@@ -226,7 +224,7 @@ describe('closed beta deployment hardening', () => {
 		expect(wrangler.env.staging.images).toEqual({ binding: 'IMAGES' });
 	});
 
-	it('pins the Frankfurt closed-beta runtime without committing server secrets', () => {
+	it('pins the Frankfurt development runtime without committing server secrets', () => {
 		const wrangler = JSON.parse(readFileSync(resolve(workspace, 'wrangler.jsonc'), 'utf8'));
 		const variables = wrangler.env.staging.vars as Record<string, string>;
 
@@ -236,11 +234,12 @@ describe('closed beta deployment hardening', () => {
 			PUBLIC_APP_URL:
 				'https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev',
 			PUBLIC_SUPABASE_URL: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
-			PRIVATE_BETA_REQUIRE_INVITE: 'true',
+			PUBLIC_TURNSTILE_SITE_KEY: '1x00000000000000000000AA',
+			TURNSTILE_EXPECTED_HOSTNAME:
+				'perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev',
 			PRIVATE_BETA_REQUIRE_STAFF_MFA: 'true',
 			LEGAL_CONTENT_APPROVED: 'false',
-			FEATURE_SMS_VERIFICATION_ENABLED: 'false',
-			IMAGE_PROCESSOR_MODE: 'disabled',
+			IMAGE_PROCESSOR_MODE: 'cloudflare-images',
 			FEATURE_BILLING_ENABLED: 'false',
 			FEATURE_LISTING_FEES_ENABLED: 'false',
 			FEATURE_MERCHANT_SUBSCRIPTIONS_ENABLED: 'false',
@@ -251,8 +250,15 @@ describe('closed beta deployment hardening', () => {
 			PAYMENT_PROVIDER: 'disabled'
 		});
 		expect(variables.PUBLIC_SUPABASE_PUBLISHABLE_KEY).toMatch(/^sb_publishable_/);
+		expect(
+			createHash('sha256')
+				.update(variables.PUBLIC_SUPABASE_PUBLISHABLE_KEY)
+				.digest('hex')
+		).toBe(activeFrankfurtPublishableKeySha256);
 		expect(variables).not.toHaveProperty('SUPABASE_SECRET_KEY');
 		expect(variables).not.toHaveProperty('SUPABASE_SERVICE_ROLE_KEY');
+		expect(variables).not.toHaveProperty('TURNSTILE_SECRET_KEY');
+		expect(variables).not.toHaveProperty('UPLOAD_CLEANUP_SECRET');
 	});
 
 	it('blocks release while legal routes still contain draft markers', () => {
@@ -293,7 +299,6 @@ describe('closed beta deployment hardening', () => {
 				resendEmail: checkResult,
 				supabaseAuth: checkResult,
 				turnstile: checkResult,
-				twilioSms: checkResult,
 				uploadCleanup: checkResult
 			}
 		})}\n`;

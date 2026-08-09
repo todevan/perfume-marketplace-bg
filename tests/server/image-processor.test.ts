@@ -5,11 +5,11 @@ import {
   type CloudflareImagesBinding
 } from '../../src/lib/server/uploads/image-processor';
 
-function fakeBinding(sourceFormat = 'jpeg') {
+function fakeBinding(sourceFormat = 'jpeg', outputSize = { width: 1200, height: 900 }) {
   const info = vi
     .fn()
     .mockResolvedValueOnce({ format: sourceFormat, fileSize: 4, width: 1200, height: 900 })
-    .mockResolvedValueOnce({ format: 'webp', fileSize: 3, width: 1200, height: 900 });
+    .mockResolvedValueOnce({ format: 'webp', fileSize: 3, ...outputSize });
   const output = vi.fn(async () => ({ response: () => new Response(new Uint8Array([8, 9, 10])) }));
   const transform = vi.fn();
   const chain = { transform, output };
@@ -49,6 +49,13 @@ describe('trusted listing image processor', () => {
     await expect(
       sanitizeListingImage(processor.binding, new Uint8Array([1, 2, 3]), 'image/jpeg')
     ).rejects.toMatchObject({ code: 'mime_mismatch' });
+  });
+
+  it('rejects processor output that exceeds the requested sanitized dimensions', async () => {
+    const processor = fakeBinding('jpeg', { width: 2401, height: 900 });
+    await expect(
+      sanitizeListingImage(processor.binding, new Uint8Array([1, 2, 3]), 'image/jpeg')
+    ).rejects.toMatchObject({ code: 'processor_output_invalid' });
   });
 
   it('fails closed when the production processor binding is absent', async () => {

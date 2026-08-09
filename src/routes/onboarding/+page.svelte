@@ -17,9 +17,9 @@
 
 <section class="section">
 	<div class="container onboarding surface">
-		<span class="eyebrow">Достъп с покана</span>
-		<h1>Завърши beta профила си.</h1>
-		<p>Публично се вижда потребителското име. Имейлът и телефонът остават скрити.</p>
+		<span class="eyebrow">Завършване на регистрацията</span>
+		<h1>Завърши профила си.</h1>
+		<p>Публично се вижда потребителското име. Имейлът остава скрит.</p>
 		{#if form?.message}<p class="form-error" role="alert">{form.message}</p>{/if}
 
 		<form method="POST">
@@ -28,10 +28,6 @@
 			<input id="onboarding-username" class="input" name="username" value={submittedUsername ?? data.profile?.username ?? ''} minlength="3" maxlength="40" autocomplete="username" required />
 			<label for="onboarding-city">Град <span>(незадължително)</span></label>
 			<input id="onboarding-city" class="input" name="city" value={submittedCity ?? data.profile?.city ?? ''} maxlength="100" autocomplete="address-level2" />
-			<label for="onboarding-password">Парола</label>
-			<input id="onboarding-password" class="input" name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required />
-			<label for="onboarding-password-confirmation">Повтори паролата</label>
-			<input id="onboarding-password-confirmation" class="input" name="passwordConfirmation" type="password" minlength="12" maxlength="128" autocomplete="new-password" required />
 
 			{#if data.documents.length > 0}
 				<fieldset>

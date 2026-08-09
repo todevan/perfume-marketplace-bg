@@ -8,7 +8,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.runtime.mode === 'demo') {
 		return {
 			listings: demoOwnListings(),
-			profile: { username: 'north_notes', city: 'София', phoneVerified: true, accountKind: 'private' as const },
+			profile: { username: 'north_notes', city: 'София', accountKind: 'private' as const },
 			demoMode: true
 		};
 	}
@@ -20,7 +20,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 		profile: {
 			username: locals.profile.username,
 			city: locals.profile.city,
-			phoneVerified: Boolean(locals.profile.phoneVerifiedAt),
 			accountKind: locals.profile.accountKind
 		},
 		demoMode: false

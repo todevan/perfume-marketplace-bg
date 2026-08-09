@@ -69,8 +69,6 @@ export const actions: Actions = {
 		const username = formData.get('username')?.toString().trim() ?? '';
 		const cityValue = formData.get('city')?.toString().trim() ?? '';
 		const city = cityValue || null;
-		const password = formData.get('password')?.toString() ?? '';
-		const passwordConfirmation = formData.get('passwordConfirmation')?.toString() ?? '';
 
 		if (!USERNAME_PATTERN.test(username)) {
 			return fail(400, {
@@ -82,14 +80,6 @@ export const actions: Actions = {
 		}
 		if (cityValue.length === 1 || cityValue.length > 100) {
 			return fail(400, { success: false, username, city: cityValue, message: 'Градът трябва да е между 2 и 100 знака.' });
-		}
-		if (password.length < 12 || password.length > 128 || password !== passwordConfirmation) {
-			return fail(400, {
-				success: false,
-				username,
-				city: cityValue,
-				message: 'Избери еднакви пароли между 12 и 128 знака.'
-			});
 		}
 
 		const documents = await requiredLegalDocuments(locals);
@@ -110,10 +100,6 @@ export const actions: Actions = {
 			});
 		}
 
-		const { error: passwordError } = await locals.supabase.auth.updateUser({ password });
-		if (passwordError) {
-			return fail(400, { success: false, username, city: cityValue, message: 'Паролата не можа да бъде запазена.' });
-		}
 
 		for (const document of documents) {
 			const { error: consentError } = await locals.supabase.rpc('accept_beta_consent', {

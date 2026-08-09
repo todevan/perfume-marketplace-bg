@@ -87,7 +87,6 @@ export interface ListingInput {
 }
 
 export interface ListingActivationContext {
-	phoneVerified: boolean;
 	activeListingCount: number;
 	activeListingLimit: number;
 }

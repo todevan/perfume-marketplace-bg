@@ -1,10 +1,8 @@
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { createServiceRoleSupabaseClient } from '$lib/server/supabase';
 import { requireStaffRequest } from './access.server';
 import {
 	assignReportCase,
-	createBetaInviteAndSendEmail,
 	decideModerationReport,
 	inspectModerationConversation,
 	loadModerationDashboard,
@@ -13,7 +11,7 @@ import {
 	workflowHttpStatus
 } from './moderation.server';
 
-function actionFailure(action: 'assign' | 'decide' | 'inspect' | 'invite' | 'merchant', cause: unknown) {
+function actionFailure(action: 'assign' | 'decide' | 'inspect' | 'merchant', cause: unknown) {
 	const workflowError =
 		cause instanceof ModerationWorkflowError
 			? cause
@@ -97,38 +95,6 @@ export const actions: Actions = {
 			return { ok: true as const, action: 'merchant' as const, ...result };
 		} catch (cause) {
 			return actionFailure('merchant', cause);
-		}
-	},
-
-	invite: async ({ request, locals, url }) => {
-		const { actor } = requireStaffRequest(locals, url, ['admin']);
-		if (
-			locals.runtime.mode !== 'production' ||
-			!locals.runtime.supabaseSecretKey ||
-			!locals.runtime.publicAppUrl
-		) {
-			return fail(503, {
-				ok: false as const,
-				action: 'invite' as const,
-				code: 'UNAVAILABLE' as const,
-				message: 'Поканите изискват server secret и каноничен PUBLIC_APP_URL.'
-			});
-		}
-
-		const formData = await request.formData();
-		try {
-			const serviceClient = createServiceRoleSupabaseClient({
-				PUBLIC_SUPABASE_URL: locals.runtime.publicSupabaseUrl,
-				SUPABASE_SECRET_KEY: locals.runtime.supabaseSecretKey
-			});
-			const result = await createBetaInviteAndSendEmail(serviceClient, {
-				email: formData.get('email'),
-				adminId: actor.id,
-				appOrigin: locals.runtime.publicAppUrl
-			});
-			return { ok: true as const, action: 'invite' as const, ...result };
-		} catch (cause) {
-			return actionFailure('invite', cause);
 		}
 	}
 };

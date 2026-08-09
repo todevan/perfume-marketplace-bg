@@ -7,7 +7,6 @@
     Clock3,
     Flag,
     LayoutDashboard,
-    MailPlus,
     ShieldAlert,
     UserRound,
     X
@@ -70,9 +69,7 @@
     if (result.ok === true && result.action === 'decide') {
       return { kind: 'success', message: 'Решението и audit записът са съхранени.' };
     }
-    if (result.ok === true && result.action === 'invite' && typeof result.email === 'string') {
-      return { kind: 'success', message: `Поканата до ${result.email} е изпратена.` };
-    }
+
     if (result.ok === true && result.action === 'merchant') {
       return { kind: 'success', message: 'Търговската кандидатура е обновена чрез защитения review RPC.' };
     }
@@ -113,15 +110,6 @@
       <article><span>Търговски кандидатури</span><strong>{data.stats.merchantPending}</strong><small>submitted / under review</small></article>
     </section>
 
-    {#if data.actor.role === 'admin'}
-      <section class="invite-panel" aria-labelledby="invite-title">
-        <div><MailPlus size={20} /><div><h2 id="invite-title">Нова beta покана</h2><p>Токенът се изпраща само през Supabase Auth и не се връща към браузъра.</p></div></div>
-        <form method="POST" action="?/invite">
-          <label><span class="sr-only">Имейл за покана</span><input name="email" type="email" autocomplete="email" maxlength="320" placeholder="member@example.bg" required /></label>
-          <button class="button primary" type="submit">Изпрати покана</button>
-        </form>
-      </section>
-    {/if}
 
     {#if data.merchantApplications.length > 0}
       <section class="merchant-panel" aria-labelledby="merchant-title">
@@ -473,53 +461,6 @@
     color: #2f6b4f;
   }
 
-  .invite-panel {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 20px;
-    margin-bottom: 18px;
-    padding: 15px 17px;
-    border: 1px solid #d0c8bf;
-    border-radius: 9px;
-    background: #f9f7f3;
-  }
-
-  .invite-panel > div,
-  .invite-panel form {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .invite-panel h2,
-  .invite-panel p {
-    margin: 0;
-  }
-
-  .invite-panel h2 {
-    font-size: .9rem;
-    font-style: normal;
-  }
-
-  .invite-panel p {
-    margin-top: 3px;
-    color: #7d7167;
-    font-size: .62rem;
-  }
-
-  .invite-panel input {
-    min-width: 230px;
-    min-height: 44px;
-    padding: 9px 11px;
-    border: 1px solid #cfc6bd;
-    border-radius: 7px;
-    background: white;
-  }
-
-  .invite-panel button {
-    min-height: 44px;
-  }
 
   .merchant-panel {
     margin-bottom: 18px;
@@ -1058,13 +999,6 @@
     font-size: .73rem;
   }
 
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-  }
 
   @media (max-width: 1150px) {
     .workbench {
@@ -1109,20 +1043,6 @@
       display: none;
     }
 
-    .invite-panel {
-      align-items: stretch;
-      flex-direction: column;
-    }
-
-    .invite-panel form {
-      align-items: stretch;
-    }
-
-    .invite-panel label,
-    .invite-panel input {
-      width: 100%;
-      min-width: 0;
-    }
 
     .merchant-grid {
       grid-template-columns: 1fr;
@@ -1134,8 +1054,5 @@
       grid-template-columns: repeat(2, 1fr);
     }
 
-    .invite-panel form {
-      flex-direction: column;
-    }
   }
 </style>

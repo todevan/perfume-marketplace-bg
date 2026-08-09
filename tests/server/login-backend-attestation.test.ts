@@ -7,7 +7,7 @@ const backendHealth = vi.hoisted(() => ({
 
 vi.mock('$lib/server/services/backend-health', () => backendHealth);
 
-import { load } from '../../src/routes/login/+page.server';
+import { actions, load } from '../../src/routes/login/+page.server';
 
 const stagingRuntime: ProductionRuntimeConfiguration = {
 	mode: 'production',
@@ -93,5 +93,149 @@ describe('login backend attestation boundary', () => {
 			)
 		).resolves.toMatchObject({ demoMode: true });
 		expect(backendHealth.attestHostedBackendBaseline).not.toHaveBeenCalled();
+	});
+});
+
+describe('open email registration', () => {
+	it('rejects a registration without a Turnstile response before account creation', async () => {
+		const signUp = vi.fn();
+		const formData = new FormData();
+		formData.set('email', 'new.member@example.bg');
+		formData.set('password', 'correct-horse-battery-staple');
+		formData.set('username', 'scent_archive');
+		formData.set('ageAccepted', 'on');
+
+		const result = await actions.register({
+			request: new Request('https://market.example/login?/register', {
+				method: 'POST',
+				body: formData
+			}),
+			url: new URL('https://market.example/login?/register'),
+			locals: {
+				runtime: {
+					...stagingRuntime,
+					turnstileSecretKey: 'turnstile-secret-key'
+				},
+				supabase: { auth: { signUp } }
+			}
+		} as never);
+
+		expect(result).toMatchObject({ status: 400, data: { success: false } });
+		expect(signUp).not.toHaveBeenCalled();
+	});
+
+	it('rejects a Turnstile response bound to a different action before account creation', async () => {
+		const signUp = vi.fn();
+		const formData = new FormData();
+		formData.set('email', 'new.member@example.bg');
+		formData.set('password', 'correct-horse-battery-staple');
+		formData.set('username', 'scent_archive');
+		formData.set('ageAccepted', 'on');
+		formData.set('cf-turnstile-response', 'wrong-action-token');
+
+		const result = await actions.register({
+			request: new Request('https://market.example/login?/register', {
+				method: 'POST',
+				body: formData
+			}),
+			url: new URL('https://market.example/login?/register'),
+			fetch: vi.fn(async () =>
+				new Response(JSON.stringify({ success: true, action: 'login' }), { status: 200 })
+			),
+			locals: {
+				runtime: {
+					...stagingRuntime,
+					turnstileSecretKey: 'turnstile-secret-key'
+				},
+				supabase: { auth: { signUp } }
+			}
+		} as never);
+
+		expect(result).toMatchObject({ status: 400, data: { success: false } });
+		expect(signUp).not.toHaveBeenCalled();
+	});
+
+	it('creates an email-password account and requests confirmation before onboarding', async () => {
+		const signUp = vi.fn(async () => ({
+			data: { user: { id: 'new-user' }, session: null },
+			error: null
+		}));
+		const formData = new FormData();
+		formData.set('email', ' New.Member@Example.BG ');
+		formData.set('password', 'correct-horse-battery-staple');
+		formData.set('username', 'scent_archive');
+		formData.set('kind', 'merchant');
+		formData.set('ageAccepted', 'on');
+		formData.set('next', '/dashboard');
+		formData.set('cf-turnstile-response', 'verified-registration-token');
+
+		const result = await actions.register({
+			request: new Request('https://market.example/login?/register', {
+				method: 'POST',
+				body: formData
+			}),
+			url: new URL('https://market.example/login?/register'),
+			fetch: vi.fn(async () =>
+				new Response(JSON.stringify({ success: true, action: 'register' }), { status: 200 })
+			),
+			locals: {
+				runtime: {
+					...stagingRuntime,
+					publicAppUrl: 'https://market.example',
+					turnstileSecretKey: 'turnstile-secret-key'
+				},
+				supabase: { auth: { signUp } }
+			}
+		} as never);
+
+		expect(signUp).toHaveBeenCalledWith({
+			email: 'new.member@example.bg',
+			password: 'correct-horse-battery-staple',
+			options: {
+				emailRedirectTo: 'https://market.example/auth/confirm?next=%2Fonboarding%3Fnext%3D%252Fdashboard',
+				data: { username: 'scent_archive', account_kind: 'merchant' }
+			}
+		});
+		expect(result).toMatchObject({ success: true, email: 'new.member@example.bg' });
+	});
+
+	it('claims invite-free membership when Supabase returns an immediate session', async () => {
+		const signUp = vi.fn(async () => ({
+			data: { user: { id: 'new-user' }, session: { access_token: 'session' } },
+			error: null
+		}));
+		const rpc = vi.fn(async () => ({ data: true, error: null }));
+		const signOut = vi.fn(async () => ({ error: null }));
+		const formData = new FormData();
+		formData.set('email', 'member@example.bg');
+		formData.set('password', 'correct-horse-battery-staple');
+		formData.set('username', 'scent_archive');
+		formData.set('kind', 'private');
+		formData.set('ageAccepted', 'on');
+		formData.set('next', '/dashboard');
+		formData.set('cf-turnstile-response', 'verified-registration-token');
+
+		await expect(actions.register({
+			request: new Request('https://market.example/login?/register', {
+				method: 'POST',
+				body: formData
+			}),
+			url: new URL('https://market.example/login?/register'),
+			fetch: vi.fn(async () =>
+				new Response(JSON.stringify({ success: true, action: 'register' }), { status: 200 })
+			),
+			locals: {
+				runtime: {
+					...stagingRuntime,
+					publicAppUrl: 'https://market.example',
+					turnstileSecretKey: 'turnstile-secret-key'
+				},
+				supabase: { auth: { signUp, signOut }, rpc }
+			}
+		} as never)).rejects.toMatchObject({ status: 303, location: '/onboarding?next=%2Fdashboard' });
+
+		expect(rpc).toHaveBeenCalledOnce();
+		expect(rpc).toHaveBeenCalledWith('claim_open_registration');
+		expect(signOut).not.toHaveBeenCalled();
 	});
 });

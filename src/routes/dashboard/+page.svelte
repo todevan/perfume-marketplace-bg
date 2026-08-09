@@ -1,7 +1,7 @@
 <script lang="ts">
   import {
     ArrowRight,
-    BadgeCheck,
+
     ChartNoAxesColumnIncreasing,
     Clock3,
     Heart,
@@ -23,7 +23,7 @@
   let activeCount = $derived(data.listings.items.filter((listing) => listing.status === 'active').length);
   let reservedCount = $derived(data.listings.items.filter((listing) => listing.status === 'reserved').length);
   let draftCount = $derived(data.listings.items.filter((listing) => listing.status === 'draft').length);
-  let profileScore = $derived((data.profile.phoneVerified ? 50 : 0) + (data.profile.city ? 50 : 0));
+  let profileScore = $derived(data.profile.city ? 100 : 0);
 </script>
 
 <svelte:head><title>Моят dashboard · Marketplace beta</title><meta name="robots" content="noindex,nofollow" /></svelte:head>
@@ -63,13 +63,13 @@
         <a href="/offers"><div class="offer-avatar"><Repeat2 size={18} /></div><div><strong>Прегледай офертите</strong><span>Приемането резервира обявата, без да обработва плащане.</span></div><ArrowRight size={16} /></a>
       </section>
       <section class="dashboard-section profile-progress">
-        <div class="section-title"><div><h2>Основи на профила</h2><span>Контактът остава скрит</span></div><span class="score">{profileScore}%</span></div>
+        <div class="section-title"><div><h2>Основи на профила</h2><span>Личните контакти остават скрити</span></div><span class="score">{profileScore}%</span></div>
         <div class="progress"><span style={`width:${profileScore}%`}></span></div>
-        <ul><li class:done={data.profile.phoneVerified}><BadgeCheck size={17} /> {data.profile.phoneVerified ? 'Потвърден телефон' : 'Потвърди телефона'}</li><li class:done={Boolean(data.profile.city)}><UserRound size={17} /> {data.profile.city ? `Град: ${data.profile.city}` : 'Добави град'}</li></ul>
+        <ul><li class:done={Boolean(data.profile.city)}><UserRound size={17} /> {data.profile.city ? `Град: ${data.profile.city}` : 'Добави град'}</li></ul>
       </section>
     </div>
 
-    <div class="beta-note"><Clock3 size={20} /><div><strong>Затворена beta</strong><p>Таксата над 10 активни обяви е изключена, докато пазарът достигне договорените прагове за ликвидност.</p></div></div>
+    <div class="beta-note"><Clock3 size={20} /><div><strong>Етап на разработка</strong><p>Таксата над 10 активни обяви е изключена, докато пазарът достигне договорените прагове за ликвидност.</p></div></div>
   </section>
 </div>
 
