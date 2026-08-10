@@ -9,11 +9,12 @@ import {
 	routeAccessPolicy
 } from '../../src/lib/server/auth/guards';
 import { safeRedirectPath } from '../../src/lib/server/auth/redirect';
-import { verifyTurnstile } from '../../src/lib/server/auth/turnstile';
+import { verifyTurnstile, verifyTurnstileForAction } from '../../src/lib/server/auth/turnstile';
 import type { RequestAuthContext } from '../../src/lib/server/auth/types';
 import {
 	getRuntimeConfiguration,
-	RuntimeConfigurationError
+	RuntimeConfigurationError,
+	type ProductionRuntimeConfiguration
 } from '../../src/lib/server/env';
 import { UnexpectedServiceError } from '../../src/lib/server/services/action';
 
@@ -311,6 +312,42 @@ describe('global request error logging', () => {
 
 const TURNSTILE_DUMMY_RESPONSE = 'dummy-response-value';
 const TURNSTILE_TEST_KEY = String('server-key');
+const CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY = '1x00000000000000000000AA';
+const CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY = String('1x0000000000000000000000000000000AA');
+const STAGING_TURNSTILE_HOST =
+	'perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev';
+
+function stagingTurnstileRuntime(
+	overrides: Partial<ProductionRuntimeConfiguration> = {}
+): ProductionRuntimeConfiguration {
+	return {
+		mode: 'production',
+		demoMode: false,
+		appEnvironment: 'staging',
+		publicSupabaseUrl: 'https://project.supabase.co',
+		publicSupabaseKey: 'publishable-key',
+		publicSupabaseAnonKey: 'legacy-anon-key',
+		imageProcessorMode: 'cloudflare-images',
+		publicTurnstileSiteKey: CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY,
+		turnstileSecretKey: CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY,
+		turnstileExpectedHostname: STAGING_TURNSTILE_HOST,
+		...overrides
+	};
+}
+
+function turnstileFormData(): FormData {
+	const formData = new FormData();
+	formData.set('cf-turnstile-response', TURNSTILE_DUMMY_RESPONSE);
+	return formData;
+}
+
+const invalidTestingRuntimeCases: ReadonlyArray<
+	readonly [string, Partial<ProductionRuntimeConfiguration>]
+> = [
+	['production environment', { appEnvironment: 'production' }],
+	['non-testing site key', { publicTurnstileSiteKey: 'real-site-key' }],
+	['non-testing secret', { turnstileSecretKey: TURNSTILE_TEST_KEY }]
+];
 
 function siteverifyFetcher(payload: Record<string, unknown>): typeof fetch {
 	return vi.fn(async () =>
@@ -322,6 +359,54 @@ function siteverifyFetcher(payload: Record<string, unknown>): typeof fetch {
 }
 
 describe('Turnstile verification', () => {
+	it.each(['login', 'register', 'report_submit'])(
+		'accepts the official Cloudflare testing receipt at the exact staging boundary for %s',
+		async (expectedAction) => {
+			const event = {
+				getClientAddress: () => '127.0.0.1',
+				fetch: siteverifyFetcher({
+					success: true,
+					action: 'test',
+					hostname: 'localhost'
+				})
+			};
+
+			await expect(
+				verifyTurnstileForAction(
+					event,
+					turnstileFormData(),
+					stagingTurnstileRuntime(),
+					expectedAction
+				)
+			).resolves.toEqual({ success: true });
+		}
+	);
+
+	it.each(invalidTestingRuntimeCases)(
+		'rejects the official testing receipt when the boundary has %s',
+		async (_label, overrides) => {
+			const event = {
+				getClientAddress: () => '127.0.0.1',
+				fetch: siteverifyFetcher({
+					success: true,
+					action: 'test',
+					hostname: 'localhost'
+				})
+			};
+
+			await expect(
+				verifyTurnstileForAction(
+					event,
+					turnstileFormData(),
+					stagingTurnstileRuntime(overrides),
+					'login'
+				)
+			).resolves.toMatchObject({
+				success: false,
+				reason: 'rejected'
+			});
+		}
+	);
 	it('accepts the exact Cloudflare testing receipt when explicitly enabled', async () => {
 		const fetcher = siteverifyFetcher({
 			success: true,

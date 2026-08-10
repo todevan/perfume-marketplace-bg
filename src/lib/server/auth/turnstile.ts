@@ -3,6 +3,10 @@ import type { ProductionRuntimeConfiguration } from '$lib/server/env';
 
 const VERIFY_ENDPOINT = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 
+const CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY = '1x00000000000000000000AA';
+const CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY =
+	'1x0000000000000000000000000000000AA';
+
 interface TurnstileApiResponse {
 	success?: boolean;
 	hostname?: string;
@@ -14,6 +18,16 @@ export interface TurnstileVerificationResult {
 	success: boolean;
 	reason?: 'missing_token' | 'not_configured' | 'network_error' | 'rejected';
 	errorCodes?: readonly string[];
+}
+
+function acceptsCloudflareTestingReceipt(
+	runtime: ProductionRuntimeConfiguration
+): boolean {
+	return (
+		runtime.appEnvironment === 'staging' &&
+		runtime.publicTurnstileSiteKey === CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY &&
+		runtime.turnstileSecretKey === CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY
+	);
 }
 
 export async function verifyTurnstile(options: {
@@ -85,6 +99,7 @@ export async function verifyTurnstileForAction(
 		remoteIp,
 		expectedAction,
 		expectedHostname: runtime.turnstileExpectedHostname,
+		acceptCloudflareTestingReceipt: acceptsCloudflareTestingReceipt(runtime),
 		fetch: event.fetch
 	});
 }
