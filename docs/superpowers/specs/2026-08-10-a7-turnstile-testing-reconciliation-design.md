@@ -1,4 +1,4 @@
-﻿# Gate 3 A7 Turnstile Testing-Key Reconciliation Design
+# Gate 3 A7 Turnstile Testing-Key Reconciliation Design
 
 Date: 2026-08-10
 
@@ -121,6 +121,48 @@ accept Cloudflare's documented dummy receipt:
 
 Any other testing receipt remains rejected.
 
+### 2.1 Exact testing-mode gate
+
+Cloudflare testing-receipt acceptance must be enabled only when all three of
+the following runtime conditions are true:
+
+- `appEnvironment === "staging"`;
+- `PUBLIC_TURNSTILE_SITE_KEY === "1x00000000000000000000AA"`;
+- `TURNSTILE_SECRET_KEY === "1x0000000000000000000000000000000AA"`.
+
+The low-level `verifyTurnstile` function must receive an explicit boolean
+capability such as:
+
+`acceptCloudflareTestingReceipt`
+
+Its default value must be `false`.
+
+`verifyTurnstile` must not inspect application environment variables itself and
+must not infer testing mode from the Siteverify response.
+
+`verifyTurnstileForAction` is the only application boundary allowed to enable
+`acceptCloudflareTestingReceipt`, after checking the exact three runtime
+conditions above.
+
+When `acceptCloudflareTestingReceipt === true`, the only testing receipt that
+may bypass normal expected-action and expected-hostname comparison is exactly:
+
+- `success === true`;
+- `action === "test"`;
+- `hostname === "localhost"`.
+
+A testing-mode response with any other action or hostname remains rejected.
+
+When `acceptCloudflareTestingReceipt === false`, the validator continues using
+the normal strict expected-action and expected-hostname checks.
+
+This explicit three-condition gate prevents:
+
+- production from accepting Cloudflare dummy receipts;
+- staging with real Turnstile credentials from entering testing mode;
+- arbitrary successful Siteverify responses from being interpreted as testing
+  receipts;
+- the low-level validator from depending directly on deployment environment.
 ### 3. Production cannot enter testing mode
 
 Production runtime must never accept the dummy testing receipt.
