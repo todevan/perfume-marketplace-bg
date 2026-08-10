@@ -309,7 +309,100 @@ describe('global request error logging', () => {
 	});
 });
 
+const TURNSTILE_DUMMY_RESPONSE = 'dummy-response-value';
+const TURNSTILE_TEST_KEY = String('server-key');
+
+function siteverifyFetcher(payload: Record<string, unknown>): typeof fetch {
+	return vi.fn(async () =>
+		new Response(JSON.stringify(payload), {
+			status: 200,
+			headers: { 'content-type': 'application/json' }
+		})
+	) as unknown as typeof fetch;
+}
+
 describe('Turnstile verification', () => {
+	it('accepts the exact Cloudflare testing receipt when explicitly enabled', async () => {
+		const fetcher = siteverifyFetcher({
+			success: true,
+			action: 'test',
+			hostname: 'localhost'
+		});
+
+		await expect(
+			verifyTurnstile({
+				token: TURNSTILE_DUMMY_RESPONSE,
+				secretKey: TURNSTILE_TEST_KEY,
+				expectedAction: 'login',
+				expectedHostname: 'market.example',
+				acceptCloudflareTestingReceipt: true,
+				fetch: fetcher
+			})
+		).resolves.toEqual({ success: true });
+	});
+	it('rejects the Cloudflare testing receipt when explicit support is off', async () => {
+		const fetcher = siteverifyFetcher({
+			success: true,
+			action: 'test',
+			hostname: 'localhost'
+		});
+
+		await expect(
+			verifyTurnstile({
+				token: TURNSTILE_DUMMY_RESPONSE,
+				secretKey: TURNSTILE_TEST_KEY,
+				expectedAction: 'login',
+				expectedHostname: 'market.example',
+				fetch: fetcher
+			})
+		).resolves.toMatchObject({ success: false, reason: 'rejected' });
+	});
+
+	it.each([
+		[
+			'wrong testing action',
+			{ success: true, action: 'other', hostname: 'localhost' }
+		],
+		[
+			'wrong testing hostname',
+			{ success: true, action: 'test', hostname: 'other.example' }
+		],
+		[
+			'unsuccessful testing receipt',
+			{ success: false, action: 'test', hostname: 'localhost' }
+		]
+	])('rejects %s even when testing receipt support is enabled', async (_label, payload) => {
+		const fetcher = siteverifyFetcher(payload);
+
+		await expect(
+			verifyTurnstile({
+				token: TURNSTILE_DUMMY_RESPONSE,
+				secretKey: TURNSTILE_TEST_KEY,
+				expectedAction: 'login',
+				expectedHostname: 'market.example',
+				acceptCloudflareTestingReceipt: true,
+				fetch: fetcher
+			})
+		).resolves.toMatchObject({ success: false, reason: 'rejected' });
+	});
+
+	it('rejects a strict hostname mismatch outside testing mode', async () => {
+		const fetcher = siteverifyFetcher({
+			success: true,
+			action: 'login',
+			hostname: 'other.example'
+		});
+
+		await expect(
+			verifyTurnstile({
+				token: TURNSTILE_DUMMY_RESPONSE,
+				secretKey: TURNSTILE_TEST_KEY,
+				expectedAction: 'login',
+				expectedHostname: 'market.example',
+				fetch: fetcher
+			})
+		).resolves.toMatchObject({ success: false, reason: 'rejected' });
+	});
 	it('checks the server response action and hostname', async () => {
 		const fetcher = vi.fn(async () =>
 			new Response(
