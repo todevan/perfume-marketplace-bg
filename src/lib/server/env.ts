@@ -61,6 +61,25 @@ function firstValue(
 	return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function firstValueForKeys(
+	keys: readonly string[],
+	platformEnvironment?: RuntimeEnvironmentSource
+): string | undefined {
+	for (const key of keys) {
+		const value = platformEnvironment?.[key];
+		if (typeof value === 'string' && value.trim()) return value.trim();
+	}
+
+	for (const key of keys) {
+		const value =
+			(publicEnvironment as RuntimeEnvironmentSource)[key] ??
+			(privateEnvironment as RuntimeEnvironmentSource)[key];
+		if (typeof value === 'string' && value.trim()) return value.trim();
+	}
+
+	return undefined;
+}
+
 function optionalHttpUrl(value: string | undefined, key: string): string | undefined {
 	if (!value) return undefined;
 
@@ -149,9 +168,10 @@ export function getRuntimeConfiguration(
 		firstValue('PUBLIC_SUPABASE_URL', platformEnvironment),
 		'PUBLIC_SUPABASE_URL'
 	);
-	const publicSupabaseKey =
-		firstValue('PUBLIC_SUPABASE_PUBLISHABLE_KEY', platformEnvironment) ??
-		firstValue('PUBLIC_SUPABASE_ANON_KEY', platformEnvironment);
+	const publicSupabaseKey = firstValueForKeys(
+		['PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'PUBLIC_SUPABASE_ANON_KEY'],
+		platformEnvironment
+	);
 	const missingVariables: string[] = [];
 	if (!publicSupabaseUrl) missingVariables.push('PUBLIC_SUPABASE_URL');
 	if (!publicSupabaseKey) {
@@ -173,9 +193,10 @@ export function getRuntimeConfiguration(
 		publicSupabaseUrl,
 		publicSupabaseKey,
 		publicSupabaseAnonKey: publicSupabaseKey,
-		supabaseSecretKey:
-			firstValue('SUPABASE_SECRET_KEY', platformEnvironment) ??
-			firstValue('SUPABASE_SERVICE_ROLE_KEY', platformEnvironment),
+		supabaseSecretKey: firstValueForKeys(
+			['SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
+			platformEnvironment
+		),
 		imageProcessorMode: imageProcessorMode(platformEnvironment),
 		publicAppUrl,
 		publicTurnstileSiteKey,
