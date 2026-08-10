@@ -170,7 +170,7 @@ export type Database = {
           created_at: string
           ended_at: string | null
           expires_at: string | null
-          invite_id: string
+          invite_id: string | null
           onboarding_completed_at: string | null
           profile_id: string
           status: Database["public"]["Enums"]["beta_membership_status"]
@@ -181,7 +181,7 @@ export type Database = {
           created_at?: string
           ended_at?: string | null
           expires_at?: string | null
-          invite_id: string
+          invite_id?: string | null
           onboarding_completed_at?: string | null
           profile_id: string
           status?: Database["public"]["Enums"]["beta_membership_status"]
@@ -192,7 +192,7 @@ export type Database = {
           created_at?: string
           ended_at?: string | null
           expires_at?: string | null
-          invite_id?: string
+          invite_id?: string | null
           onboarding_completed_at?: string | null
           profile_id?: string
           status?: Database["public"]["Enums"]["beta_membership_status"]
@@ -1876,6 +1876,94 @@ export type Database = {
         }
         Relationships: []
       }
+      report_evidence_uploads: {
+        Row: {
+          actual_byte_size: number | null
+          actual_content_hash: string | null
+          actual_mime_type: string | null
+          attached_at: string | null
+          bucket_id: string
+          created_at: string
+          expires_at: string
+          finalized_at: string | null
+          height_px: number | null
+          id: string
+          rejection_code: string | null
+          report_id: string | null
+          source_byte_size: number
+          source_mime_type: string
+          status: Database["public"]["Enums"]["report_evidence_upload_status"]
+          storage_path: string
+          updated_at: string
+          uploader_id: string
+          width_px: number | null
+        }
+        Insert: {
+          actual_byte_size?: number | null
+          actual_content_hash?: string | null
+          actual_mime_type?: string | null
+          attached_at?: string | null
+          bucket_id?: string
+          created_at?: string
+          expires_at?: string
+          finalized_at?: string | null
+          height_px?: number | null
+          id: string
+          rejection_code?: string | null
+          report_id?: string | null
+          source_byte_size: number
+          source_mime_type: string
+          status?: Database["public"]["Enums"]["report_evidence_upload_status"]
+          storage_path: string
+          updated_at?: string
+          uploader_id: string
+          width_px?: number | null
+        }
+        Update: {
+          actual_byte_size?: number | null
+          actual_content_hash?: string | null
+          actual_mime_type?: string | null
+          attached_at?: string | null
+          bucket_id?: string
+          created_at?: string
+          expires_at?: string
+          finalized_at?: string | null
+          height_px?: number | null
+          id?: string
+          rejection_code?: string | null
+          report_id?: string | null
+          source_byte_size?: number
+          source_mime_type?: string
+          status?: Database["public"]["Enums"]["report_evidence_upload_status"]
+          storage_path?: string
+          updated_at?: string
+          uploader_id?: string
+          width_px?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "report_evidence_uploads_report_id_fkey"
+            columns: ["report_id"]
+            isOneToOne: false
+            referencedRelation: "reports"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "report_evidence_uploads_uploader_id_fkey"
+            columns: ["uploader_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "report_evidence_uploads_uploader_id_fkey"
+            columns: ["uploader_id"]
+            isOneToOne: false
+            referencedRelation: "public_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       reports: {
         Row: {
           assigned_to: string | null
@@ -2088,6 +2176,7 @@ export type Database = {
           processed_at: string | null
           processing_error: string | null
           reason: string
+          report_evidence_upload_id: string | null
           storage_path: string
           upload_id: string | null
           worker_request_id: string | null
@@ -2103,6 +2192,7 @@ export type Database = {
           processed_at?: string | null
           processing_error?: string | null
           reason: string
+          report_evidence_upload_id?: string | null
           storage_path: string
           upload_id?: string | null
           worker_request_id?: string | null
@@ -2118,11 +2208,19 @@ export type Database = {
           processed_at?: string | null
           processing_error?: string | null
           reason?: string
+          report_evidence_upload_id?: string | null
           storage_path?: string
           upload_id?: string | null
           worker_request_id?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "upload_cleanup_queue_report_evidence_upload_id_fkey"
+            columns: ["report_evidence_upload_id"]
+            isOneToOne: false
+            referencedRelation: "report_evidence_uploads"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "upload_cleanup_queue_upload_id_fkey"
             columns: ["upload_id"]
@@ -2284,6 +2382,10 @@ export type Database = {
           bootstrap_profile_id: string
         }[]
       }
+      can_read_report_evidence: {
+        Args: { evidence_path: string }
+        Returns: boolean
+      }
       cancel_deal: {
         Args: { reason: string; target_deal_id: string }
         Returns: undefined
@@ -2313,7 +2415,6 @@ export type Database = {
         }
         Returns: undefined
       }
-      claim_open_registration: { Args: never; Returns: boolean }
       claim_listing_upload: {
         Args: { processor_request_id: string; target_upload_id: string }
         Returns: {
@@ -2368,16 +2469,17 @@ export type Database = {
       claim_notification_email_delivery_v2: {
         Args: { target_notification_id: string; worker_request_id: string }
         Returns: {
-          action_url: string | null
+          action_url: string
           body: string
-          claimed_worker_request_id: string | null
+          claimed_worker_request_id: string
           kind: string
           profile_id: string
-          provider_message_id: string | null
+          provider_message_id: string
           status: Database["public"]["Enums"]["notification_email_delivery_status"]
           title: string
         }[]
       }
+      claim_open_registration: { Args: never; Returns: boolean }
       claim_upload_cleanup: {
         Args: { target_limit: number; worker_request_id: string }
         Returns: {
@@ -2444,6 +2546,15 @@ export type Database = {
           upload_id: string
         }[]
       }
+      create_report_evidence_upload: {
+        Args: { source_byte_size: number; source_mime_type: string }
+        Returns: {
+          bucket_id: string
+          expires_at: string
+          storage_path: string
+          upload_id: string
+        }[]
+      }
       decline_offer: { Args: { target_offer_id: string }; Returns: undefined }
       decline_offer_foundation: {
         Args: { target_offer_id: string }
@@ -2451,6 +2562,10 @@ export type Database = {
       }
       effective_listing_limit: {
         Args: { target_profile_id: string }
+        Returns: number
+      }
+      expire_report_evidence_uploads: {
+        Args: { target_limit?: number }
         Returns: number
       }
       fail_upload_cleanup: {
@@ -2493,6 +2608,16 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      finalize_report_evidence_upload: {
+        Args: {
+          actual_byte_size: number
+          actual_content_hash: string
+          actual_height_px: number
+          actual_width_px: number
+          target_upload_id: string
+        }
+        Returns: undefined
+      }
       get_hosted_runtime_inventory: { Args: never; Returns: Json }
       get_my_beta_access: {
         Args: never
@@ -2526,10 +2651,10 @@ export type Database = {
           body: string
           conversation_id: string
           created_at: string
-          deleted_at: string | null
-          edited_at: string | null
+          deleted_at: string
+          edited_at: string
           id: string
-          reply_to_id: string | null
+          reply_to_id: string
           sender_id: string
         }[]
       }
@@ -2539,7 +2664,26 @@ export type Database = {
           page_offset?: number
           page_size?: number
         }
-        Returns: Database["public"]["Tables"]["offers"]["Row"][]
+        Returns: {
+          cash_amount_minor: number | null
+          created_at: string
+          expires_at: string | null
+          id: string
+          kind: Database["public"]["Enums"]["offer_kind"]
+          listing_id: string
+          message: string | null
+          offered_listing_id: string | null
+          offerer_id: string
+          responded_at: string | null
+          status: Database["public"]["Enums"]["offer_status"]
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "offers"
+          isOneToOne: false
+          isSetofReturn: true
+        }
       }
       mark_notification_email_failed: {
         Args: {
@@ -2679,7 +2823,7 @@ export type Database = {
           created_at: string
           ended_at: string | null
           expires_at: string | null
-          invite_id: string
+          invite_id: string | null
           onboarding_completed_at: string | null
           profile_id: string
           status: Database["public"]["Enums"]["beta_membership_status"]
@@ -2695,6 +2839,25 @@ export type Database = {
       reject_listing_upload: {
         Args: { rejection_code: string; target_upload_id: string }
         Returns: undefined
+      }
+      reject_report_evidence_upload: {
+        Args: { rejection_code: string; target_upload_id: string }
+        Returns: undefined
+      }
+      reject_unattached_report_evidence_uploads: {
+        Args: { rejection_code: string; target_upload_ids: string[] }
+        Returns: {
+          storage_path: string
+          upload_id: string
+        }[]
+      }
+      resolve_conversation_report: {
+        Args: {
+          decision: string
+          moderation_rationale: string
+          report_case_id: string
+        }
+        Returns: Json
       }
       resolve_deal_dispute: {
         Args: {
@@ -2725,14 +2888,6 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
-      }
-      resolve_conversation_report: {
-        Args: {
-          decision: string
-          moderation_rationale: string
-          report_case_id: string
-        }
-        Returns: Json
       }
       review_listing_authenticity: {
         Args: {
@@ -2809,7 +2964,7 @@ export type Database = {
           id: string
           label: string
           relevance: number
-          secondary_label: string | null
+          secondary_label: string
           slug: string
         }[]
       }
@@ -2857,7 +3012,7 @@ export type Database = {
           listing_id: string
           relevance: number
           slug: string
-          sort_price_minor: number | null
+          sort_price_minor: number
         }[]
       }
       slugify_marketplace: { Args: { value: string }; Returns: string }
@@ -2995,6 +3150,12 @@ export type Database = {
         | "other"
       platform_role: "user" | "moderator" | "admin"
       product_format: "retail_bottle" | "tester" | "official_sample"
+      report_evidence_upload_status:
+        | "pending"
+        | "finalized"
+        | "attached"
+        | "rejected"
+        | "expired"
       report_status: "open" | "investigating" | "resolved" | "dismissed"
       report_target_type:
         | "profile"
@@ -3282,6 +3443,13 @@ export const Constants = {
       ],
       platform_role: ["user", "moderator", "admin"],
       product_format: ["retail_bottle", "tester", "official_sample"],
+      report_evidence_upload_status: [
+        "pending",
+        "finalized",
+        "attached",
+        "rejected",
+        "expired",
+      ],
       report_status: ["open", "investigating", "resolved", "dismissed"],
       report_target_type: [
         "profile",
