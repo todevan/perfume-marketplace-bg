@@ -360,6 +360,77 @@ function siteverifyFetcher(payload: Record<string, unknown>): typeof fetch {
 
 describe('Turnstile verification', () => {
 	it.each(['login', 'register', 'report_submit'])(
+		'accepts the live Cloudflare testing receipt at the exact staging boundary for %s',
+		async (expectedAction) => {
+			const event = {
+				getClientAddress: () => '127.0.0.1',
+				fetch: siteverifyFetcher({
+					success: true,
+					hostname: 'example.com',
+					'error-codes': []
+				})
+			};
+
+			await expect(
+				verifyTurnstileForAction(
+					event,
+					turnstileFormData(),
+					stagingTurnstileRuntime(),
+					expectedAction
+				)
+			).resolves.toEqual({ success: true });
+		}
+	);
+	it.each(invalidTestingRuntimeCases)(
+		'rejects the live testing receipt when the boundary has %s',
+		async (_label, overrides) => {
+			const event = {
+				getClientAddress: () => '127.0.0.1',
+				fetch: siteverifyFetcher({
+					success: true,
+					hostname: 'example.com',
+					'error-codes': []
+				})
+			};
+
+			await expect(
+				verifyTurnstileForAction(
+					event,
+					turnstileFormData(),
+					stagingTurnstileRuntime(overrides),
+					'login'
+				)
+			).resolves.toMatchObject({ success: false, reason: 'rejected' });
+		}
+	);
+	it.each([
+		['missing error codes', { success: true, hostname: 'example.com' }],
+		[
+			'non-empty error codes',
+			{ success: true, hostname: 'example.com', 'error-codes': ['invalid-input-response'] }
+		],
+		[
+			'null action',
+			{ success: true, action: null, hostname: 'example.com', 'error-codes': [] }
+		],
+		[
+			'unexpected action',
+			{ success: true, action: 'test', hostname: 'example.com', 'error-codes': [] }
+		]
+	])('rejects a live testing receipt with %s', async (_label, payload) => {
+		await expect(
+			verifyTurnstile({
+				token: TURNSTILE_DUMMY_RESPONSE,
+				secretKey: TURNSTILE_TEST_KEY,
+				expectedAction: 'login',
+				expectedHostname: 'market.example',
+				acceptCloudflareTestingReceipt: true,
+				fetch: siteverifyFetcher(payload)
+			})
+		).resolves.toMatchObject({ success: false, reason: 'rejected' });
+	});
+
+	it.each(['login', 'register', 'report_submit'])(
 		'accepts the official Cloudflare testing receipt at the exact staging boundary for %s',
 		async (expectedAction) => {
 			const event = {

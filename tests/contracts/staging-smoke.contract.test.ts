@@ -321,6 +321,7 @@ describe('manual staging deploy workflow smoke contract', () => {
 		const commands = job.steps.flatMap((step) => (step.run ? [step.run] : []));
 		const deploy = commands.indexOf('pnpm exec wrangler deploy --env staging');
 		const smoke = commands.indexOf('node scripts/smoke-staging.mjs');
+		const turnstileEvidence = commands.indexOf('node scripts/verify-staging-turnstile.mjs');
 		const rollback = commands.findIndex((command) =>
 			command.includes('pnpm exec wrangler versions deploy "$SAFE_ROLLBACK_VERSION"')
 		);
@@ -339,7 +340,9 @@ describe('manual staging deploy workflow smoke contract', () => {
 		);
 		expect(deploy).toBeGreaterThan(-1);
 		expect(smoke).toBeGreaterThan(deploy);
+		expect(turnstileEvidence).toBeGreaterThan(smoke);
 		expect(rollback).toBeGreaterThan(smoke);
+		expect(rollback).toBeGreaterThan(turnstileEvidence);
 		expect(rollbackSmoke).toBeGreaterThan(rollback);
 		expect(job.steps.find((step) => step.id === 'rollback')?.if).toBe(
 			"failure() && steps.deploy.outcome == 'success'"
@@ -350,6 +353,9 @@ describe('manual staging deploy workflow smoke contract', () => {
 		expect(commands.filter((command) => command === 'pnpm exec wrangler deploy --env staging')).toHaveLength(
 			1
 		);
+		expect(
+			commands.filter((command) => command === 'node scripts/verify-staging-turnstile.mjs')
+		).toHaveLength(1);
 		expect(commands.filter((command) => command.startsWith('node scripts/smoke-staging.mjs'))).toHaveLength(
 			2
 		);

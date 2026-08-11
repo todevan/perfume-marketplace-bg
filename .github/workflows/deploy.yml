@@ -54,6 +54,8 @@ jobs:
       - name: Smoke deployed closed-beta routes
         id: smoke
         run: node scripts/smoke-staging.mjs
+      - name: Verify staging Turnstile action boundaries
+        run: node scripts/verify-staging-turnstile.mjs
       - name: Restore safe Worker after failed smoke
         id: rollback
         if: failure() && steps.deploy.outcome == 'success'
