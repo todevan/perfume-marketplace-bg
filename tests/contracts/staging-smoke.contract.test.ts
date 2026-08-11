@@ -27,7 +27,14 @@ type WorkflowJob = {
 	steps: WorkflowStep[];
 };
 type Workflow = {
-	on: Record<string, unknown>;
+	on: {
+		workflow_dispatch: {
+			inputs: Record<
+				string,
+				{ description: string; required: boolean; type: string; default: boolean }
+			>;
+		};
+	};
 	jobs: Record<string, WorkflowJob>;
 };
 
@@ -328,7 +335,16 @@ describe('manual staging deploy workflow smoke contract', () => {
 		const rollbackSmoke = commands.indexOf('node scripts/smoke-staging.mjs --mode rollback');
 
 		expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+		expect(workflow.on.workflow_dispatch.inputs.require_disabled_signup).toEqual({
+			description: 'Require the temporary A7 signup-disabled precondition',
+			required: true,
+			type: 'boolean',
+			default: true
+		});
 		expect(job.if).toBe("github.ref == 'refs/heads/main'");
+		expect(job.env?.A7_REQUIRE_DISABLED_SIGNUP).toBe(
+			'${{ inputs.require_disabled_signup }}'
+		);
 		expect(job.env).toMatchObject({
 			STAGING_ORIGIN: expectedOrigin,
 			EXPECTED_GIT_SHA: '${{ github.sha }}',

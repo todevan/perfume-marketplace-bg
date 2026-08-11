@@ -14,6 +14,33 @@ This is an A7 remediation only.
 It does not reopen A6, enter A8, modify database state, change production
 configuration, or alter the fail-closed staging rollback Worker.
 
+## 2026-08-11 live reconciliation addendum
+
+The current A7 owner handoff and fresh provider evidence supersede the original
+receipt-shape and file-scope assumptions below where they conflict.
+
+Against the official testing site key, testing secret, and dummy token, the live
+Cloudflare Siteverify API repeatedly returned `success=true`, omitted `action`,
+reported `hostname=example.com`, and returned an empty `error-codes` array. The
+documented `action=test` / `hostname=localhost` receipt remains accepted too.
+Both shapes are accepted only behind the existing exact three-condition gate:
+staging environment, official testing site key, and official testing secret.
+Production and non-testing credentials retain strict action and hostname checks.
+
+The durable follow-up may change the staging Wrangler configuration, manual
+staging workflow, evidence script, and the direct dependency needed to decode
+SvelteKit action envelopes. Required secret names provide an early configuration
+guard; post-deploy live login/register action evidence detects a missing, stale,
+or wrong secret value and triggers the existing safe rollback on failure.
+
+The action evidence uses per-run random `.invalid` identities, exact known
+application failure branches, and signup-disabled checks before and after the
+registration request. The temporary signup-disabled precondition is an explicit
+manual-workflow input so later staging phases can turn it off without making all
+future deployments fail. `report_submit` remains deferred because its route
+requires an authenticated actor before Turnstile and no A7-safe actor is approved;
+the evidence receipt must state that dependency rather than provision an A9 actor.
+
 ## Context
 
 The exact approved staging candidate was:

@@ -8,24 +8,31 @@ const expectedOrigin =
 	'https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev';
 const expectedGitSha = 'a'.repeat(40);
 const dummyToken = 'XXXX.DUMMY.TOKEN.XXXX';
-const syntheticEmail = 'a7-turnstile-evidence@example.invalid';
-const syntheticPassword = 'Synthetic-A7-Evidence-Password';
+const turnstileRejection = '\u041f\u043e\u0442\u0432\u044a\u0440\u0434\u0438, \u0447\u0435 \u043d\u0435 \u0441\u0438 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0437\u0438\u0440\u0430\u043d \u043a\u043b\u0438\u0435\u043d\u0442.';
+const invalidCredentials = '\u041d\u0435\u0432\u0430\u043b\u0438\u0434\u0435\u043d \u0438\u043c\u0435\u0439\u043b \u0438\u043b\u0438 \u043f\u0430\u0440\u043e\u043b\u0430.';
+const signupDisabled =
+	'\u041f\u0440\u043e\u0444\u0438\u043b\u044a\u0442 \u043d\u0435 \u043c\u043e\u0436\u0430 \u0434\u0430 \u0431\u044a\u0434\u0435 \u0441\u044a\u0437\u0434\u0430\u0434\u0435\u043d. \u041f\u0440\u043e\u0432\u0435\u0440\u0438 \u0434\u0430\u043d\u043d\u0438\u0442\u0435 \u0438\u043b\u0438 \u043e\u043f\u0438\u0442\u0430\u0439 \u043f\u043e-\u043a\u044a\u0441\u043d\u043e.';
 
-function actionFailure(message: string): string {
+function actionFailure(message: string, email: string): string {
 	return JSON.stringify({
 		type: 'failure',
 		status: 400,
 		data: JSON.stringify([
 			{ success: 1, email: 2, message: 3 },
 			false,
-			syntheticEmail,
+			email,
 			message
 		])
 	});
 }
 
 function stagingFetch(
-	options: { disableSignup?: boolean; keepTestingAtTurnstile?: boolean } = {}
+	options: {
+		disableSignup?: boolean;
+		keepTestingAtTurnstile?: boolean;
+		wrongDistinctMessages?: boolean;
+		onAction?: (value: { action: string; email: string; password: string }) => void;
+	} = {}
 ): typeof fetch {
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(input instanceof Request ? input.url : input);
@@ -48,13 +55,18 @@ function stagingFetch(
 		const formData = new URLSearchParams(String(init?.body ?? ''));
 		const token = formData.get('cf-turnstile-response');
 		const action = url.search === '?/login' ? 'login' : 'register';
-		const message = token && !options.keepTestingAtTurnstile
-			? action === 'login'
-				? 'invalid credentials'
-				: 'public signup disabled'
-			: `${action} turnstile rejection`;
+		const email = formData.get('email') ?? '';
+		const password = formData.get('password') ?? '';
+		options.onAction?.({ action, email, password });
+		const message = options.wrongDistinctMessages
+			? `${action}-${token ? 'testing' : 'missing'}-wrong-branch`
+			: token && !options.keepTestingAtTurnstile
+				? action === 'login'
+					? invalidCredentials
+					: signupDisabled
+				: turnstileRejection;
 
-		return new Response(actionFailure(message), {
+		return new Response(actionFailure(message, email), {
 			status: 200,
 			headers: {
 				'content-type': 'application/json',
@@ -68,6 +80,7 @@ function stagingFetch(
 describe('A7 staging Turnstile evidence', () => {
 	it('uses direct SvelteKit actions to prove missing-token rejection and downstream testing-token branches', async () => {
 		const logger = { log: vi.fn(), warn: vi.fn() };
+		const actions: Array<{ action: string; email: string; password: string }> = [];
 
 		await expect(
 			runStagingTurnstileEvidence({
@@ -75,21 +88,37 @@ describe('A7 staging Turnstile evidence', () => {
 				expectedGitSha,
 				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
 				supabasePublishableKey: 'public-staging-key',
-				fetchImpl: stagingFetch(),
+				fetchImpl: stagingFetch({ onAction: (value) => actions.push(value) }),
+				requireDisabledSignup: true,
 				logger
 			})
 		).resolves.toEqual([
-			{ check: 'supabase-signup-disabled', status: 200 },
+			{ check: 'supabase-signup-disabled-before', status: 200 },
 			{ check: 'login-missing-token', actionStatus: 400 },
 			{ check: 'login-testing-token', actionStatus: 400 },
 			{ check: 'register-missing-token', actionStatus: 400 },
-			{ check: 'register-testing-token', actionStatus: 400 }
+			{ check: 'register-testing-token', actionStatus: 400 },
+			{ check: 'supabase-signup-disabled-after', status: 200 },
+			{
+				check: 'report-submit-testing-token',
+				outcome: 'deferred',
+				reason: 'authenticated-actor-requires-later-gate'
+			}
 		]);
 
 		const output = JSON.stringify(logger.log.mock.calls);
 		expect(output).not.toContain(dummyToken);
-		expect(output).not.toContain(syntheticEmail);
-		expect(output).not.toContain(syntheticPassword);
+		const loginIdentity = actions.find((value) => value.action === 'login');
+		const registerIdentity = actions.find((value) => value.action === 'register');
+		expect(loginIdentity?.email).toMatch(/^a7-login-[0-9a-f-]+@example\.invalid$/);
+		expect(registerIdentity?.email).toMatch(/^a7-register-[0-9a-f-]+@example\.invalid$/);
+		expect(loginIdentity?.email).not.toBe(registerIdentity?.email);
+		expect(loginIdentity?.password).not.toBe(registerIdentity?.password);
+		expect(output).not.toContain(loginIdentity?.email ?? 'missing-login-identity');
+		expect(output).not.toContain(registerIdentity?.email ?? 'missing-register-identity');
+		expect(output).not.toContain(loginIdentity?.password ?? 'missing-login-password');
+		expect(output).not.toContain(registerIdentity?.password ?? 'missing-register-password');
+		expect(output).toContain('authenticated-actor-requires-later-gate');
 	});
 
 	it('fails when the official testing token remains in the Turnstile rejection branch', async () => {
@@ -105,7 +134,37 @@ describe('A7 staging Turnstile evidence', () => {
 		).rejects.toThrow('official testing token did not reach the downstream Auth branch');
 	});
 
+	it('rejects distinct 400 messages that do not prove the expected application branches', async () => {
+		await expect(
+			runStagingTurnstileEvidence({
+				origin: 'http://127.0.0.1:54321',
+				expectedGitSha,
+				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
+				supabasePublishableKey: 'public-staging-key',
+				fetchImpl: stagingFetch({ wrongDistinctMessages: true }),
+				requireDisabledSignup: true,
+				logger: { log() {}, warn() {} }
+			})
+		).rejects.toThrow('expected the exact Turnstile rejection branch');
+	});
+
 	it('stops before registration evidence unless hosted public signup is disabled', async () => {
+		const fetchImpl = stagingFetch({ disableSignup: false });
+		await expect(
+			runStagingTurnstileEvidence({
+				origin: 'http://127.0.0.1:54321',
+				expectedGitSha,
+				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
+				supabasePublishableKey: 'public-staging-key',
+				fetchImpl,
+				requireDisabledSignup: true,
+				logger: { log() {}, warn() {} }
+			})
+		).rejects.toThrow('Public Supabase signup must remain disabled');
+		expect(fetchImpl).toHaveBeenCalledOnce();
+	});
+
+	it('keeps later staging deploys usable after public signup is enabled', async () => {
 		const fetchImpl = stagingFetch({ disableSignup: false });
 		await expect(
 			runStagingTurnstileEvidence({
@@ -116,8 +175,12 @@ describe('A7 staging Turnstile evidence', () => {
 				fetchImpl,
 				logger: { log() {}, warn() {} }
 			})
-		).rejects.toThrow('Public Supabase signup must remain disabled');
-		expect(fetchImpl).toHaveBeenCalledOnce();
+		).resolves.toContainEqual({
+			check: 'register-testing-token',
+			outcome: 'deferred',
+			reason: 'public-signup-enabled'
+		});
+		expect(fetchImpl).toHaveBeenCalledTimes(3);
 	});
 
 	it('rejects an inexact Git ref before making a hosted request', async () => {
