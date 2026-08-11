@@ -28,12 +28,16 @@ function actionFailure(message: string, email: string): string {
 
 function stagingFetch(
 	options: {
+		candidateActionFailures?: number;
 		disableSignup?: boolean;
 		keepTestingAtTurnstile?: boolean;
+		staleActionResponses?: number;
 		wrongDistinctMessages?: boolean;
 		onAction?: (value: { action: string; email: string; password: string }) => void;
 	} = {}
 ): typeof fetch {
+	let remainingCandidateActionFailures = options.candidateActionFailures ?? 0;
+	let remainingStaleActionResponses = options.staleActionResponses ?? 0;
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(input instanceof Request ? input.url : input);
 		const headers = new Headers(init?.headers);
@@ -51,6 +55,23 @@ function stagingFetch(
 		expect(headers.get('origin')).toBe('http://127.0.0.1:54321');
 		expect(headers.get('referer')).toBe('http://127.0.0.1:54321/login');
 		expect(headers.get('x-sveltekit-action')).toBe('true');
+		if (remainingStaleActionResponses > 0) {
+			remainingStaleActionResponses -= 1;
+			return new Response('Authentication service is unavailable.', {
+				status: 503,
+				headers: { 'retry-after': '60' }
+			});
+		}
+		if (remainingCandidateActionFailures > 0) {
+			remainingCandidateActionFailures -= 1;
+			return new Response('Authentication service is unavailable.', {
+				status: 503,
+				headers: {
+					'x-deployed-git-sha': expectedGitSha,
+					'x-request-id': 'candidate-failure'
+				}
+			});
+		}
 
 		const formData = new URLSearchParams(String(init?.body ?? ''));
 		const token = formData.get('cf-turnstile-response');
@@ -119,6 +140,60 @@ describe('A7 staging Turnstile evidence', () => {
 		expect(output).not.toContain(loginIdentity?.password ?? 'missing-login-password');
 		expect(output).not.toContain(registerIdentity?.password ?? 'missing-register-password');
 		expect(output).toContain('authenticated-actor-requires-later-gate');
+	});
+
+	it('retries when a stale safe Worker serves an action during deployment propagation', async () => {
+		const logger = { log: vi.fn(), warn: vi.fn() };
+
+		await expect(
+			runStagingTurnstileEvidence({
+				origin: 'http://127.0.0.1:54321',
+				expectedGitSha,
+				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
+				supabasePublishableKey: 'public-staging-key',
+				fetchImpl: stagingFetch({ staleActionResponses: 1 }),
+				requireDisabledSignup: true,
+				attempts: 2,
+				delayMs: 0,
+				logger
+			})
+		).resolves.toContainEqual({ check: 'login-missing-token', actionStatus: 400 });
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.stringContaining('stale Worker version')
+		);
+	});
+
+	it('fails after the bounded retry budget when the stale Worker does not converge', async () => {
+		await expect(
+			runStagingTurnstileEvidence({
+				origin: 'http://127.0.0.1:54321',
+				expectedGitSha,
+				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
+				supabasePublishableKey: 'public-staging-key',
+				fetchImpl: stagingFetch({ staleActionResponses: 2 }),
+				attempts: 2,
+				delayMs: 0,
+				logger: { log() {}, warn() {} }
+			})
+		).rejects.toThrow('exact staging deployment did not converge after 2 attempts');
+	});
+
+	it('does not retry an application failure from the exact candidate SHA', async () => {
+		const fetchImpl = stagingFetch({ candidateActionFailures: 1 });
+
+		await expect(
+			runStagingTurnstileEvidence({
+				origin: 'http://127.0.0.1:54321',
+				expectedGitSha,
+				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
+				supabasePublishableKey: 'public-staging-key',
+				fetchImpl,
+				attempts: 2,
+				delayMs: 0,
+				logger: { log() {}, warn() {} }
+			})
+		).rejects.toThrow('expected transport HTTP 200');
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
 	});
 
 	it('fails when the official testing token remains in the Turnstile rejection branch', async () => {

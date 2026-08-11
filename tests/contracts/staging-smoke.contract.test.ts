@@ -334,6 +334,8 @@ describe('manual staging deploy workflow smoke contract', () => {
 		expect(job.env).toMatchObject({
 			STAGING_ORIGIN: expectedOrigin,
 			EXPECTED_GIT_SHA: '${{ github.sha }}',
+			STAGING_SMOKE_ATTEMPTS: '6',
+			STAGING_SMOKE_DELAY_MS: '5000',
 			SAFE_ROLLBACK_VERSION: '75593db4-12fd-486d-ae8a-bdf9ebbb3ece'
 		});
 		expect(job).not.toHaveProperty('environment');

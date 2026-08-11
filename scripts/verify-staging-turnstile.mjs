@@ -32,6 +32,8 @@ const DOWNSTREAM_MESSAGES = {
  *   supabaseSettingsUrl: string;
  *   supabasePublishableKey: string;
  *   requireDisabledSignup?: boolean;
+ *   attempts?: number;
+ *   delayMs?: number;
  *   timeoutMs?: number;
  *   fetchImpl?: typeof fetch;
  *   logger?: Pick<Console, 'log' | 'warn'>;
@@ -186,34 +188,62 @@ function createEvidenceIdentity(action) {
  *   action: EvidenceAction;
  *   identity: EvidenceIdentity;
  *   token?: string;
+ *   attempts: number;
+ *   delayMs: number;
  *   timeoutMs: number;
+ *   logger: Pick<Console, 'warn'>;
  * }} options
  */
-async function postAction({ fetchImpl, origin, expectedGitSha, action, identity, token, timeoutMs }) {
+async function postAction({
+	fetchImpl,
+	origin,
+	expectedGitSha,
+	action,
+	identity,
+	token,
+	attempts,
+	delayMs,
+	timeoutMs,
+	logger
+}) {
 	const path = `/login?/${action}`;
 	const context = `POST ${path} (${token ? 'testing token' : 'missing token'})`;
-	const response = await fetchImpl(new URL(path, origin), {
-		method: 'POST',
-		headers: {
-			accept: 'application/json',
-			'content-type': 'application/x-www-form-urlencoded',
-			origin,
-			referer: `${origin}/login`,
-			'user-agent': 'perfume-marketplace-staging-turnstile-evidence/1.0',
-			'x-sveltekit-action': 'true'
-		},
-		body: actionForm(action, identity, token),
-		redirect: 'manual',
-		signal: AbortSignal.timeout(timeoutMs)
-	});
+	for (let attempt = 1; attempt <= attempts; attempt += 1) {
+		const response = await fetchImpl(new URL(path, origin), {
+			method: 'POST',
+			headers: {
+				accept: 'application/json',
+				'content-type': 'application/x-www-form-urlencoded',
+				origin,
+				referer: `${origin}/login`,
+				'user-agent': 'perfume-marketplace-staging-turnstile-evidence/1.0',
+				'x-sveltekit-action': 'true'
+			},
+			body: actionForm(action, identity, token),
+			redirect: 'manual',
+			signal: AbortSignal.timeout(timeoutMs)
+		});
 
-	assertEvidence(response.status === 200, `${context}: expected transport HTTP 200.`);
-	assertEvidence(
-		response.headers.get('x-deployed-git-sha') === expectedGitSha,
-		`${context}: deployed Git SHA does not match.`
-	);
-	assertEvidence(Boolean(response.headers.get('x-request-id')), `${context}: request ID is missing.`);
-	return parseActionEnvelope(await response.text(), context);
+		if (response.headers.get('x-deployed-git-sha') !== expectedGitSha) {
+			await response.arrayBuffer();
+			if (attempt === attempts) {
+				throw new TurnstileEvidenceError(
+					`${context}: exact staging deployment did not converge after ${attempts} attempts.`
+				);
+			}
+			logger.warn(
+				`${context}: stale Worker version observed during propagation; retrying attempt ${attempt + 1}/${attempts}.`
+			);
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+			continue;
+		}
+
+		assertEvidence(response.status === 200, `${context}: expected transport HTTP 200.`);
+		assertEvidence(Boolean(response.headers.get('x-request-id')), `${context}: request ID is missing.`);
+		return parseActionEnvelope(await response.text(), context);
+	}
+
+	throw new TurnstileEvidenceError(`${context}: exact staging deployment did not converge.`);
 }
 
 /**
@@ -262,6 +292,14 @@ export async function runStagingTurnstileEvidence(options) {
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
 		throw new TypeError('timeoutMs must be an integer from 1000 through 60000.');
 	}
+	const attempts = Number(options.attempts ?? 1);
+	if (!Number.isInteger(attempts) || attempts < 1 || attempts > 30) {
+		throw new TypeError('attempts must be an integer from 1 through 30.');
+	}
+	const delayMs = Number(options.delayMs ?? 0);
+	if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 30_000) {
+		throw new TypeError('delayMs must be an integer from 0 through 30000.');
+	}
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const logger = options.logger ?? console;
 
@@ -293,7 +331,10 @@ export async function runStagingTurnstileEvidence(options) {
 			expectedGitSha,
 			action,
 			identity,
-			timeoutMs
+			attempts,
+			delayMs,
+			timeoutMs,
+			logger
 		});
 		assertEvidence(
 			missing.data.message === TURNSTILE_REJECTION_MESSAGE,
@@ -308,7 +349,10 @@ export async function runStagingTurnstileEvidence(options) {
 			action,
 			identity,
 			token: CLOUDFLARE_DUMMY_TOKEN,
-			timeoutMs
+			attempts,
+			delayMs,
+			timeoutMs,
+			logger
 		});
 		assertEvidence(
 			testing.data.message === DOWNSTREAM_MESSAGES[action],
@@ -410,6 +454,8 @@ async function main() {
 			cli['require-disabled-signup'] ?? process.env.A7_REQUIRE_DISABLED_SIGNUP,
 			'A7_REQUIRE_DISABLED_SIGNUP'
 		),
+		attempts: Number(cli.attempts ?? process.env.STAGING_SMOKE_ATTEMPTS ?? 1),
+		delayMs: Number(cli['delay-ms'] ?? process.env.STAGING_SMOKE_DELAY_MS ?? 0),
 		timeoutMs: Number(cli['timeout-ms'] ?? process.env.STAGING_SMOKE_TIMEOUT_MS ?? 10_000)
 	});
 }
