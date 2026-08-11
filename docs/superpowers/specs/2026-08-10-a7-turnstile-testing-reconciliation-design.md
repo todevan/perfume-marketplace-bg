@@ -35,11 +35,13 @@ or wrong secret value and triggers the existing safe rollback on failure.
 
 The action evidence uses per-run random `.invalid` identities, exact known
 application failure branches, and signup-disabled checks before and after the
-registration request. The temporary signup-disabled precondition is an explicit
-manual-workflow input so later staging phases can turn it off without making all
-future deployments fail. `report_submit` remains deferred because its route
-requires an authenticated actor before Turnstile and no A7-safe actor is approved;
-the evidence receipt must state that dependency rather than provision an A9 actor.
+registration request. The A7 workflow pins the temporary signup-disabled
+precondition to `true` so the current acceptance gate cannot be bypassed. The
+evidence runner supports a later signup-enabled mode, but a future approved gate
+must deliberately revise the workflow before public signup is enabled.
+`report_submit` remains deferred because its route requires an authenticated actor
+before Turnstile and no A7-safe actor is approved; the evidence receipt must state
+that dependency rather than provision an A9 actor.
 
 ## Context
 

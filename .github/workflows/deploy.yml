@@ -2,12 +2,6 @@ name: deploy staging
 
 on:
   workflow_dispatch:
-    inputs:
-      require_disabled_signup:
-        description: Require the temporary A7 signup-disabled precondition
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -25,7 +19,7 @@ jobs:
     env:
       STAGING_ORIGIN: https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev
       EXPECTED_GIT_SHA: ${{ github.sha }}
-      A7_REQUIRE_DISABLED_SIGNUP: ${{ inputs.require_disabled_signup }}
+      A7_REQUIRE_DISABLED_SIGNUP: "true"
       STAGING_SMOKE_ATTEMPTS: "6"
       STAGING_SMOKE_DELAY_MS: "5000"
       STAGING_SMOKE_TIMEOUT_MS: "5000"
