@@ -21,6 +21,9 @@
     "staging": {
       "name": "perfume-marketplace-bg-staging",
       "workers_dev": true,
+      "secrets": {
+        "required": ["SUPABASE_SECRET_KEY", "TURNSTILE_SECRET_KEY"]
+      },
       "vars": {
         "APP_ENV": "staging",
         "PUBLIC_DEMO_MODE": "false",

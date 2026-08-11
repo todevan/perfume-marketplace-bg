@@ -19,6 +19,7 @@ jobs:
     env:
       STAGING_ORIGIN: https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev
       EXPECTED_GIT_SHA: ${{ github.sha }}
+      A7_REQUIRE_DISABLED_SIGNUP: "true"
       STAGING_SMOKE_ATTEMPTS: "6"
       STAGING_SMOKE_DELAY_MS: "5000"
       STAGING_SMOKE_TIMEOUT_MS: "5000"
@@ -54,6 +55,8 @@ jobs:
       - name: Smoke deployed closed-beta routes
         id: smoke
         run: node scripts/smoke-staging.mjs
+      - name: Verify staging Turnstile action boundaries
+        run: node scripts/verify-staging-turnstile.mjs
       - name: Restore safe Worker after failed smoke
         id: rollback
         if: failure() && steps.deploy.outcome == 'success'

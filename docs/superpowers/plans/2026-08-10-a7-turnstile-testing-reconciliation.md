@@ -1,5 +1,10 @@
 # A7 Turnstile Testing-Key Reconciliation Implementation Plan
 
+> Follow-up status (2026-08-11): this plan records the first remediation attempt.
+> The live provider receipt and durable workflow requirements are governed by the
+> 2026-08-11 addendum in the companion design document; that addendum supersedes
+> this plan's original receipt-shape and allowed-file assumptions where they conflict.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Reconcile Cloudflare's official always-pass Turnstile testing receipt with staging while preserving strict action and hostname validation everywhere else.

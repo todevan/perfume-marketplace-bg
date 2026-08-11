@@ -227,6 +227,9 @@ describe('pre-launch deployment hardening', () => {
 	it('pins the Frankfurt development runtime without committing server secrets', () => {
 		const wrangler = JSON.parse(readFileSync(resolve(workspace, 'wrangler.jsonc'), 'utf8'));
 		const variables = wrangler.env.staging.vars as Record<string, string>;
+		expect(wrangler.env.staging.secrets).toEqual({
+			required: ['SUPABASE_SECRET_KEY', 'TURNSTILE_SECRET_KEY']
+		});
 
 		expect(variables).toMatchObject({
 			APP_ENV: 'staging',

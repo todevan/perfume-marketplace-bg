@@ -57,11 +57,19 @@ export async function verifyTurnstile(options: {
 		if (!response.ok) return { success: false, reason: 'network_error' };
 
 		const result = (await response.json()) as TurnstileApiResponse;
-		const isCloudflareTestingReceipt =
-			options.acceptCloudflareTestingReceipt === true &&
+		const isDocumentedCloudflareTestingReceipt =
 			result.success === true &&
 			result.action === 'test' &&
 			result.hostname === 'localhost';
+		const isLiveCloudflareTestingReceipt =
+			result.success === true &&
+			result.action === undefined &&
+			result.hostname === 'example.com' &&
+			Array.isArray(result['error-codes']) &&
+			result['error-codes'].length === 0;
+		const isCloudflareTestingReceipt =
+			options.acceptCloudflareTestingReceipt === true &&
+			(isDocumentedCloudflareTestingReceipt || isLiveCloudflareTestingReceipt);
 
 		if (isCloudflareTestingReceipt) return { success: true };
 
