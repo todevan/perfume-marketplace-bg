@@ -49,3 +49,31 @@ Before ending a work session or completing a phase:
 3. If a decision from that list was answered during the session, move it to the "Decisions Made" section of `docs/MASTER-PLAN.md` with the date and reasoning.
 
 These protocols apply regardless of which phase is active and do not require the user to repeat them.
+## Graphify usage
+
+For non-trivial repository work, use Graphify before broad source exploration.
+
+Use Graphify to:
+- identify the relevant architectural community/subsystem;
+- find callers, callees, neighbors, and dependency paths;
+- estimate blast radius before editing;
+- identify likely affected tests;
+- locate architectural hubs touched by the change.
+
+Treat Graphify as discovery evidence, not correctness evidence.
+
+For security-, auth-, privacy-, database-, RLS-, RPC-, trigger-, migration-,
+moderation-, payment-, or release-sensitive behavior, verify Graphify findings
+against authoritative source, SQL/migrations, tests, and runtime evidence.
+Before relying on Graphify for important work, confirm that its indexed
+repository commit/tree matches the task baseline.
+
+If Graphify is unavailable or stale, do not block the task solely because of it;
+fall back to authoritative source exploration and record that limitation.
+
+After substantial structural changes, refresh the Graphify index before relying
+on it for subsequent blast-radius or dependency analysis.
+Before relying on the graph for important work, confirm its indexed repository
+SHA/tree matches the task baseline.
+
+After substantial structural changes, refresh/update the Graphify graph.
