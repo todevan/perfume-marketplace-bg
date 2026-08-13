@@ -1,16 +1,33 @@
 # Project Status
 
-Last updated: 2026-08-02
+## Purpose and evidence hierarchy
+
+This file is the concise living operational snapshot: current phase/gate, material blockers, important merged/released state, and the next authorized work. It is not the durable roadmap, an architecture specification, historical audit log, or executable queue.
+
+When status claims conflict, prefer explicit current owner instructions, approved gate/plan evidence, verified hosted receipts, merged Git/GitHub state, and current issue/PR state over older prose in this snapshot. Do not infer provider, deployment, migration, or gate completion from local source alone.
+
+GitHub Issues are the canonical executable queue. Update this file only for material state transitions; replace stale claims instead of appending routine command history.
+
+Last updated: 2026-08-13
+
+## Current repository evidence
+
+PR #12, `feat: add hosted A9 provisioning runner`, is merged into `main` at `b828daf38252df9b33c7bb622c761c1ad827770e`.
+
+This proves the A9 runner integration is present in the current main lineage. It does not prove Hosted A9 execution, provider convergence, or A9 gate closure; those require the applicable hosted evidence.
 
 ## Current verdict
 
-**Development baseline: green.**
-**Owner-approved auth simplification: implemented and locally verified.**
-**Hosted staging activation and production launch readiness: blocked.**
+**Gate 3 staging reconciliation: active.**
+**A7 and A8: complete.**
+**A9 runner integration: merged; Hosted A9 execution and closure remain outstanding.**
+**Production readiness: not achieved.**
 
-Phase 1 remains complete and Phase 2 is active. Local Phase 2 work now enforces database-authoritative staff AAL2, bounded request streams, sanitized images-only report evidence, a one-time evidence allocation/finalization ledger, durable rejection/expiry cleanup and effective expired-offer behavior. Hosted evidence acceptance, owner-approved messaging/moderation-evidence/blocking semantics and real multi-session races remain outstanding. Phase 3 and Phase 4 work remains out of scope.
+Gate 3 remains open at A9. PR #12 provides the merged target-locked runner foundation, but local implementation and merge evidence do not prove hosted actor provisioning, hosted acceptance, cleanup, or gate closure. Production and later gate work remain outside this status boundary.
 
 The full repository audit remains recorded in [AUDIT-2026-08-02.md](./AUDIT-2026-08-02.md). Its dated invite/phone observations are historical and are superseded by the 2026-08-02 owner decision for current behavior.
+
+The Phase 2 material below is retained as historical implementation evidence from the prior main snapshot. It is not the current executable queue or Gate 3 checklist.
 
 ## Auth simplification completed locally
 
@@ -68,7 +85,7 @@ The full repository audit remains recorded in [AUDIT-2026-08-02.md](./AUDIT-2026
 | `pnpm run test:e2e` | Passed; 13 passed and 5 intentional skips |
 | Focused request/Edge contracts | Passed; 4 files and 28 tests |
 
-## Hosted staging work still required
+## Historical Phase 2 hosted checklist
 
 1. Apply migrations `012`, `013` and `014` to the authorized Frankfurt staging project with the updated cleanup Worker and report application cutover.
 2. Enable public email/password signup in hosted Supabase Auth while keeping anonymous signup disabled and email confirmation enabled.
@@ -78,7 +95,7 @@ The full repository audit remains recorded in [AUDIT-2026-08-02.md](./AUDIT-2026
 
 No hosted database, Auth setting, Worker or provider was changed during this local implementation.
 
-## Highest-priority unresolved blockers
+## Historical Phase 2 blocker snapshot
 
 1. Treat the credential-shaped Resend value in `.env.example` as exposed: rotate it, inspect provider activity, and blank the example.
 2. Verify report evidence ownership and cleanup against hosted Supabase.
@@ -93,4 +110,4 @@ No hosted database, Auth setting, Worker or provider was changed during this loc
 
 The legal Phase 4 pages still contain draft closed-beta/verified-phone language. They were deliberately not changed because the owner excluded unrelated Phase 4 work; those pages must be reconciled during legal review before external launch. Historical audits and reviews were not rewritten.
 
-The next change batch should remain independently selected and approved rather than combining the remaining security, database, provider, legal and UX work.
+The next change batch should be selected through the authorized issue/gate scope rather than combining unrelated security, database, provider, legal and UX work. Ordinary reversible engineering does not require routine owner approval; Human Gates remain authoritative where autonomy ends.

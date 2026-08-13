@@ -1,42 +1,52 @@
-Perfume Marketplace - Master Plan
+# Perfume Marketplace — Master Plan
 
-Purpose of this document: This is the single source of truth for the project. Any AI agent (Hermes or otherwise) working on this codebase should read this file first, every session, before doing anything else. It exists because agent sessions compact, reset, and drift - this file doesn't.
+## Purpose and authority
 
-Owner: [Tedi] - the only person who can approve business/legal decisions and authorize new phases of work.
+This document defines durable product direction, broad roadmap phases, owner-controlled business decisions, and long-lived project constraints. It is not a living operational log and does not prove hosted or release state.
 
-Last updated: 2026-08-02
+Use this authority order:
+
+```text
+AGENTS.md and explicit owner instructions
+        ↓
+authoritative project and domain documentation
+        ↓
+PROJECT-STATUS and applicable launch/gate evidence
+        ↓
+current GitHub issue or explicitly authorized scope
+        ↓
+skill-assisted reasoning and execution
+```
+
+For current implementation and release state, use `docs/PROJECT-STATUS.md`, applicable launch/gate documentation, GitHub Issues, and verified repository/provider evidence. For agent execution policy, use the applicable documents under `docs/agents/`.
+
+Owner: **Tedi**. The owner retains product, business, legal, privacy, high-risk merge, and protected production authority defined by the repository Human Gates. Ordinary reversible engineering decisions do not require routine owner approval.
+
+Last durable review: 2026-08-13.
 
 1. What this project is
 
 A Bulgarian online marketplace for buying, selling, and exchanging new, pre-owned, and collectible perfumes. Private sellers, collectors, and verified merchants publish structured listings; buyers discover them through a catalogue and filters; both sides negotiate through an internal chat and structured offers; payment and delivery happen off-platform. The platform does not process payments, hold inventory, or guarantee authenticity - it provides structure, search, trust signals, and moderation.
 
-Full concept document: docs/CONCEPT.md (save the original concept doc here if not already saved)
+The durable concept is defined by this document together with `docs/ARCHITECTURE.md`, `docs/BUSINESS-MODEL.md`, and applicable product specifications. A separate `docs/CONCEPT.md` is not required.
 
-Target stack (confirm this matches reality - see Open Questions #1): SvelteKit, TypeScript, Supabase (Postgres + RLS), Cloudflare Workers/Pages, Playwright.
+The active stack is SvelteKit, TypeScript, Supabase PostgreSQL/Auth/private Storage/Realtime, Cloudflare Workers, and Playwright. `docs/ARCHITECTURE.md` is the architecture authority.
 
 Current stage: pre-launch development with open email-and-password registration. Not yet production-ready.
 
-2. Current state (living summary - update this section as phases complete)
+2. Operational state
 
-Keep this section short. Full detail lives in the dated audit files below. This is just "where are we right now."
-
-Last full audit: docs/AUDIT-2026-08-02.md
-Phase currently active: Phase 2 - security hardening and hosted integration tests
-Phases completed: Phase 0 (credential rotation - done manually by owner, Aug 2 2026), Phase 1 (green local baseline)
-Known blockers right now: hosted evidence acceptance, owner-approved messaging/moderation-evidence/blocking and retention semantics, and real multi-session concurrency tests; hosted staging activation remains blocked
-Branch under active work: main (local changes are not committed or pushed)
-
-(Update this block every time a phase completes or a new blocker is found - this is the 30-second version of project status.)
+Operational phase, gate, blocker, merged-SHA, deployment, and provider claims belong in `docs/PROJECT-STATUS.md` or the applicable gate evidence. Do not copy that volatile state into this durable plan or infer hosted state from roadmap text.
 
 3. The phase plan
 
 This is the order of work. Do not skip ahead or combine phases unless explicitly told to. Each phase has a goal and an exit condition - don't call a phase "done" until its exit condition is actually met.
 
 Phase	Goal	Exit condition
-0	Security containment	Exposed credential rotated, removed from files, activity reviewed - DONE
+0	Security containment	Exposed credential rotated, removed from files, and relevant activity reviewed
 1	Restore a green, buildable branch	All local checks + PR CI pass
 2	Security hardening + hosted integration tests	Security boundaries hold when bypassing the UI, not just the app
-3	Activate required staging providers	A real invited seller and buyer can complete the full lifecycle in staging
+3	Activate required staging providers	A real or controlled synthetic seller and buyer can complete the public email/password lifecycle in staging
 4	Legal and privacy completion	No placeholder legal content; data export/deletion implemented and tested
 5	UX completion and regression protection	Dead controls removed/implemented; key flows have test coverage
 6	Backup, monitoring, production deployment	Production can be deployed, monitored, and restored predictably
@@ -48,7 +58,6 @@ Full detail on each phase's specific tasks: see docs/AUDIT-2026-08-02.md, sectio
 
 These block later phases. Answer them whenever you're ready - doesn't need to be all at once.
 
- Confirm actual tech stack matches this doc (concept doc said Next.js/Prisma; real repo uses SvelteKit/Supabase - which is correct going forward?)
  Final site name and domain
  Legal operator/entity for the business
  Public support email
@@ -56,7 +65,7 @@ These block later phases. Answer them whenever you're ready - doesn't need to be
  Appeals channel (for moderation disputes)
  Should merchant verification stay manual, or get a real upload workflow?
 
- Expected beta size (how many invited users initially?)
+ Expected initial beta size
  Backup retention period and acceptable downtime
  Are chat attachments needed for v1, or can they wait?
  Is public search-engine indexing ever desired, and if so, when?
@@ -81,22 +90,24 @@ Example format: [Date] - Question: ... Decision: ... Reasoning: ...
 
 These apply regardless of which phase is active.
 
-Read this file and the latest audit/status file before doing anything else, every session.
-Never touch files outside the current phase's stated scope without explicit approval. If something outside scope is discovered, report it - don't fix it inline.
-Never commit real secrets, even as examples. .env.example values must always be empty or obviously fake.
-Show a plan before making changes; wait for approval before executing, unless the owner has explicitly pre-approved a specific scoped batch (as with Phase 1).
-After any phase, save/update a findings or status file in docs/ - don't let outcomes live only in chat history.
-If a subagent or tool reports something surprising, verify it against the real repo before including it in a finding. (This project has already caught two false positives this way - keep doing that.)
-Flag, don't silently skip, anything that seems like a business/legal decision rather than a code decision - add it to the Open Questions list above instead of guessing.
-If context has compacted more than once in a session, say so and suggest starting a fresh session once the current step is done - don't push through degraded context on faith.
-7. How to start any new session
+- Read the applicable repository, product, status, issue, and gate authority before substantial work.
+- Stay inside the current issue, phase, and named-gate scope; record independent work in the GitHub Issues queue.
+- Never commit secrets. Examples must be empty, explicitly fake, or provider-documented safe placeholders.
+- Continue autonomously through ordinary reversible engineering. Stop only at H1–H6 or another explicit protected boundary.
+- Treat Superpowers as the primary process owner, Matt Pocock skills as engineering-depth helpers, and ECC/platform skills as narrow specialists. Do not run competing end-to-end workflows.
+- Verify surprising tool or subagent claims against repository/provider evidence.
+- Use repository risk rules: R0/R1 may proceed through verified review/CI boundaries, R2 stops at H3 before merge, and R3 actions remain protected.
+- Preserve significant audit, incident, release, hosted-acceptance, or architecture evidence in its authoritative durable location. Do not create a result document for every routine task.
 
-Copy/paste this as your opening message to Hermes:
+7. Session start
 
-Read docs/MASTER-PLAN.md and the most recent file in docs/ matching AUDIT-*.md or PROJECT-STATUS.md before doing anything else. Tell me what phase we're on and what's currently blocking. Then wait for my instructions.
+Follow `AGENTS.md` and the documents it routes to. Establish current repository truth, select authorized work through the GitHub Issues frontier when the user has not supplied a narrower task, classify risk, and begin automatically unless a Human Gate already applies.
 
-8. File index (update as new reference docs are created)
-docs/CONCEPT.md - original business concept
-docs/MASTER-PLAN.md - this file
-docs/AUDIT-2026-08-02.md - full initial audit findings
-docs/PROJECT-STATUS.md - living short-form status, updated after every phase
+8. File index
+
+- `docs/MASTER-PLAN.md` — durable product direction, roadmap, and owner decisions.
+- `docs/PROJECT-STATUS.md` — living operational state.
+- `docs/ARCHITECTURE.md` — intended system structure and security boundaries.
+- `docs/LAUNCH-GATES.md` — readiness conditions and launch boundaries.
+- `docs/AUDIT-2026-08-02.md` — historical audit evidence.
+- `docs/agents/` — autonomy, execution, queue, skill-routing, and Human-Gate policy.
