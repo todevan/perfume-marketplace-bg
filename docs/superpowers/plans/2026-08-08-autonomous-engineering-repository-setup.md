@@ -2,6 +2,8 @@
 
 **Plan date:** 2026-08-08
 **Role:** Historical implementation plan and reusable validation contract for the repository autonomy operating model.
+**Plan date:** 2026-08-08  
+**Role:** Historical implementation plan and reusable validation contract for the repository autonomy operating model.  
 **Execution semantics reconciled:** 2026-08-11.
 
 > This plan records how the repository autonomy model was intended to be established and validated. It is not an instruction to reinstall skills, recreate governance files, or repeat setup work merely because a checkbox below is unchecked.
@@ -30,6 +32,14 @@ For current engineering work, use this order:
 10. external/global generic defaults.
 
 Repository-defined verification and release gates bind every skill layer below them.
+1. repository instructions / `AGENTS.md`;
+2. authoritative repository product, architecture, security, business, legal and operational docs;
+3. current `docs/PROJECT-STATUS.md` and active named-gate documentation;
+4. canonical GitHub Issue and explicitly authorized task/gate scope;
+5. Superpowers as the primary process authority;
+6. Matt Pocock deep-engineering skills when useful;
+7. ECC/platform specialists when useful;
+8. repository-defined verification and release gates.
 
 Skills are reasoning and execution tools. They are not independent sources of project truth and do not create their own permission to mutate the repository, providers, staging or production.
 
@@ -446,6 +456,7 @@ This task migrated executable work from planning documents into the canonical qu
 **Reference material:**
 
 - Historical remediation findings already transferred to the GitHub issue queue.
+- `docs/superpowers/plans/2026-08-08-combined-remediation.md`
 - `docs/agents/issue-tracker.md`
 
 Current GitHub Issues, not this original conversion checklist, determine the executable frontier.
@@ -928,4 +939,5 @@ Instead:
 
 If the current repository already satisfies an item, no action is required.
 
+If this plan conflicts with the current repository authority model, the current repository authority wins.
 If this plan conflicts with the current repository authority model, the current repository authority wins.
