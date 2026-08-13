@@ -295,6 +295,123 @@ Keep the hosted staging project isolated from production and populate it only
 with synthetic people and listings. Apply migration `012`, then enable public
 email/password signup before testing registration.
 
+### Gate 3 A9 synthetic-actor runner
+
+The only executable A9 composition entrypoint is:
+
+```powershell
+pnpm a9:staging:provision
+```
+
+It remains disabled unless every A9 lock is exact. The runner validates all
+configuration before constructing inert clients, re-runs the Frankfurt target
+and hosted Auth-policy preflight before the first mutation, uses
+`PUBLIC_SUPABASE_URL` plus `SUPABASE_SECRET_KEY` for the one privileged client,
+and creates a fresh non-persistent client with
+`PUBLIC_SUPABASE_PUBLISHABLE_KEY` for every actor session. The legacy
+`SUPABASE_SERVICE_ROLE_KEY` is required only for the target-locking API-key
+inventory check; it is not used to construct the privileged A9 client.
+Before constructing either client, the runner exclusively reserves both an
+empty manifest and an authenticated empty credential store. Both configured
+paths must have the same pre-created parent directory and neither final file
+may already exist. Any collision stops A9 without replacing owner data. A
+verified transaction rollback removes the empty reservations; an unconfirmed
+rollback preserves them as retry evidence.
+The reserved manifest contains a runtime-generated opaque attempt ID and a
+SHA-256 identity for the canonical credential-store path. Before each Auth
+create, A9 checkpoints a role-only pending intent. This gives A11 exact,
+non-secret recovery coordinates if the process stops after provider commit but
+before the user ID checkpoint, and prevents parallel attempts from deleting
+one another's actor.
+
+Required A9 names are:
+
+| Name | Classification | Exact rule and lifecycle |
+|---|---|---|
+| `APP_ENV` | Non-secret gate | Exact `staging`; process-scoped |
+| `E2E_REAL_RUN` | Non-secret gate | Exact `true`; process-scoped |
+| `E2E_REAL_REPORT_EVIDENCE_RUN` | Non-secret gate | Exact `true`; process-scoped |
+| `E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN` | Non-secret gate | Exact `true`; remove after A9 |
+| `E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL` | Non-secret gate | Exact `A9`; remove after A9 |
+| `E2E_REAL_REPORT_EVIDENCE_RUN_ID` | Sensitive provenance | `gate3-` plus 8–64 lowercase letters, digits, or hyphens; keep through A11 |
+| `E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE` | Sensitive provenance | Owner-generated UUID unique to this A9 run; keep through A11 |
+| `E2E_REAL_REPORT_EVIDENCE_PROVISIONED_AFTER` | Sensitive provenance | Exact millisecond ISO-8601 lower bound for fresh actors; keep through A11 |
+| `E2E_REAL_BASE_URL` | Non-secret target | Exact staging Worker HTTPS origin |
+| `EXPECTED_SUPABASE_PROJECT_REF` | Non-secret target | Exact Frankfurt staging ref |
+| `PUBLIC_SUPABASE_URL` | Non-secret target | Exact Frankfurt staging Supabase origin |
+| `PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Non-secret browser key | Current project-bound publishable key |
+| `SUPABASE_ACCESS_TOKEN` | Secret | Supabase management inventory only; process-scoped |
+| `SUPABASE_SECRET_KEY` | Secret | Privileged A9 client; process-scoped and never browser-visible |
+| `SUPABASE_SERVICE_ROLE_KEY` | Secret | Legacy API-key inventory attestation only; process-scoped |
+| `E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH` | Sensitive local path | Absolute `.json` path outside the repository in the hardened run directory; keep through A11 |
+| `E2E_REAL_REPORT_EVIDENCE_TOTP_CREDENTIAL_PATH` | Sensitive local path | Absolute `.enc` path outside the repository in the hardened run directory; keep through A11 |
+| `E2E_REAL_REPORT_EVIDENCE_TOTP_ENCRYPTION_KEY` | Secret | At least 32 characters, loaded only into the trusted process and stored separately from the `.enc` file; keep through A11, then destroy |
+
+Each of the four exact actors also requires an owner-generated synthetic
+email, password, and unique username:
+
+```text
+E2E_REAL_REPORTER_EMAIL
+E2E_REAL_REPORTER_PASSWORD
+E2E_REAL_REPORTER_USERNAME
+E2E_REAL_CROSS_USER_EMAIL
+E2E_REAL_CROSS_USER_PASSWORD
+E2E_REAL_CROSS_USER_USERNAME
+E2E_REAL_ASSIGNED_MODERATOR_EMAIL
+E2E_REAL_ASSIGNED_MODERATOR_PASSWORD
+E2E_REAL_ASSIGNED_MODERATOR_USERNAME
+E2E_REAL_UNASSIGNED_MODERATOR_EMAIL
+E2E_REAL_UNASSIGNED_MODERATOR_PASSWORD
+E2E_REAL_UNASSIGNED_MODERATOR_USERNAME
+```
+
+Emails must be syntactically valid and unique, passwords must contain 12–128
+characters, and usernames must be unique 3–40 character values containing
+only letters, numbers, `_`, `.`, or `-`. A9 proves every configured email is
+absent immediately before its create attempt. It refuses to reuse or delete a
+prior actor, including an actor from a previous attempt with the same run
+provenance.
+
+The owner never supplies TOTP seeds. Supabase generates each seed during the
+actor-owned enrollment. The runner immediately writes it to the run-scoped
+credential store using the repository's scrypt-derived AES-256-GCM pattern.
+The file is atomically replaced, hardened to owner-only access, and contains
+only authenticated ciphertext. The manifest is also atomically written with
+owner-only access and never contains credentials.
+
+A10 reopens the same encrypted store with the same path and key and retrieves
+one exact moderator seed only while generating the current challenge code.
+A11 first verifies scoped hosted cleanup, then authenticates and purges the
+credential store, and only then removes the manifest. A failed A9 enrollment
+or later A9 compensation deletes that role's stored seed; a failed A11 store
+authentication, missing file, or unreadable file leaves the manifest in place
+for a safe retry. Missing is never treated as proof of purge while the manifest
+still exists.
+Purge atomically replaces the credential ciphertext with an authenticated
+empty tombstone bound to the original canonical path. A manifest-removal retry
+can authenticate that tombstone without restoring a seed; after manifest
+removal the runner removes the tombstone. If that final unlink fails, the same
+A11 entrypoint accepts only the absent-manifest plus authenticated empty
+tombstone state and retries the unlink; missing, unreadable, unauthenticated,
+or active stores still fail closed. Copying the encrypted file to a different
+configured path fails authentication.
+
+Never set or persist either of these obsolete plaintext inputs:
+
+```text
+E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET
+E2E_REAL_UNASSIGNED_MODERATOR_TOTP_SECRET
+```
+
+Do not put actor passwords, Supabase credentials, or the TOTP encryption key
+in `.env`, `.env.local`, tracked files, command arguments, shell history,
+logs, Playwright artifacts, issue/PR text, or chat. The two paths and non-secret
+gate values may be process variables. Keep the encryption key in a separate
+password/secret system from the encrypted run directory. Pre-create that
+directory outside the repository with inheritance removed and access granted
+only to the operator account; the runner additionally applies owner-only ACLs
+to every atomic file replacement.
+
 ### Enable hosted email/password Auth for registration testing
 
 The Frankfurt staging Auth configuration is:

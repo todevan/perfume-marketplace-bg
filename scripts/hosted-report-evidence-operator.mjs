@@ -1,23 +1,32 @@
-import { readFile, unlink, writeFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { createHmac } from 'node:crypto';
+import { readFile, stat, unlink } from 'node:fs/promises';
+import {
+	atomicPrivateWrite,
+	reservePrivateFile,
+	resolveOutsideRepositoryFile
+} from './hosted-private-file.mjs';
+import { verifyStagingTarget } from './staging-db-operator.mjs';
 
 /** @typedef {Record<string, string | undefined>} OperatorEnvironment */
 /** @typedef {import('@supabase/supabase-js').SupabaseClient} SupabaseClient */
 /** @typedef {import('@supabase/supabase-js').User} SupabaseUser */
-/** @typedef {{ email: string, password: string, username: string, totpSecret?: string }} ActorEnvironmentNames */
-/** @typedef {{ email: string, password: string, username: string, totpSecret?: string }} ActorCredentials */
+/** @typedef {{ email: string, password: string, username: string }} ActorEnvironmentNames */
+/** @typedef {{ email: string, password: string, username: string }} ActorCredentials */
 /** @typedef {{ accounts: number, reports: number, uploads: number, objects: number, queueRows: number, foreignArtifacts: number, preExistingAccounts: number }} InventoryCounts */
 /** @typedef {{ target: typeof HOSTED_STAGING, runId: string, actorRoles: Readonly<Record<string, Readonly<ActorCredentials>>>, serviceKey: string, provisioningNonce: string, provisionedAfter: string }} HostedOperatorConfig */
-/** @typedef {{ role: string, userId: string, createdAt: string }} ManifestActor */
+/** @typedef {{ role: string, userId: string, createdAt: string, provisioningAttemptId?: string }} ManifestActor */
+/** @typedef {{ role: string, provisioningAttemptId: string }} PendingManifestActor */
 /** @typedef {{ id: string, actorRole: string }} ManifestReport */
 /** @typedef {{ id: string, actorRole: string, uploaderId: string, objectPath: string }} ManifestUpload */
 /** @typedef {{ id: number, uploadId: string }} ManifestQueueRow */
-/** @typedef {{ targetProjectRef: string, runId: string, actors: readonly ManifestActor[], reports: readonly ManifestReport[], uploads: readonly ManifestUpload[], queueRows: readonly ManifestQueueRow[] }} HostedRunManifest */
-/** @typedef {{ actors?: readonly ManifestActor[], reports?: readonly ManifestReport[], uploads?: readonly ManifestUpload[], queueRows?: readonly ManifestQueueRow[] }} ManifestChanges */
+/** @typedef {{ targetProjectRef: string, runId: string, provisioningAttemptId: string, credentialStoreId: string, pendingActors: readonly PendingManifestActor[], actors: readonly ManifestActor[], reports: readonly ManifestReport[], uploads: readonly ManifestUpload[], queueRows: readonly ManifestQueueRow[] }} HostedRunManifest */
+/** @typedef {{ pendingActors?: readonly PendingManifestActor[], actors?: readonly ManifestActor[], reports?: readonly ManifestReport[], uploads?: readonly ManifestUpload[], queueRows?: readonly ManifestQueueRow[] }} ManifestChanges */
 /** @typedef {{ event: string, runId: string, actorRole: string, status: string, boundary: string, actualResult: string, requestId: string, before: Partial<InventoryCounts>, after: Partial<InventoryCounts>, cleanup: string } & Record<string, unknown>} OperatorRecordInput */
 /** @typedef {{ info: (record: ReturnType<typeof createSanitizedOperatorRecord>) => void }} OperatorLogger */
 
 const ALLOWED_SERVICE_ROLE_OPERATIONS = new Set(['provision', 'inspect', 'cleanup']);
+const ACTOR_CREDENTIAL_NAME_PATTERN =
+	/^E2E_REAL_[A-Z0-9_]+_(?:EMAIL|PASSWORD|USERNAME|TOTP_SECRET)$/u;
 /** @type {Readonly<Record<string, Readonly<ActorEnvironmentNames>>>} */
 const ACTOR_ENVIRONMENT = Object.freeze({
 	reporter: Object.freeze({
@@ -33,16 +42,17 @@ const ACTOR_ENVIRONMENT = Object.freeze({
 	'assigned-moderator': Object.freeze({
 		email: 'E2E_REAL_ASSIGNED_MODERATOR_EMAIL',
 		password: 'E2E_REAL_ASSIGNED_MODERATOR_PASSWORD',
-		username: 'E2E_REAL_ASSIGNED_MODERATOR_USERNAME',
-		totpSecret: 'E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET'
+		username: 'E2E_REAL_ASSIGNED_MODERATOR_USERNAME'
 	}),
 	'unassigned-moderator': Object.freeze({
 		email: 'E2E_REAL_UNASSIGNED_MODERATOR_EMAIL',
 		password: 'E2E_REAL_UNASSIGNED_MODERATOR_PASSWORD',
-		username: 'E2E_REAL_UNASSIGNED_MODERATOR_USERNAME',
-		totpSecret: 'E2E_REAL_UNASSIGNED_MODERATOR_TOTP_SECRET'
+		username: 'E2E_REAL_UNASSIGNED_MODERATOR_USERNAME'
 	})
 });
+const APPROVED_ACTOR_ENVIRONMENT_NAMES = new Set(
+	Object.values(ACTOR_ENVIRONMENT).flatMap((names) => Object.values(names))
+);
 /** @type {readonly (keyof InventoryCounts)[]} */
 const INVENTORY_FIELDS = Object.freeze([
 	'accounts',
@@ -147,7 +157,9 @@ function normalizeOrigin(value) {
 	}
 }
 
-/** @param {OperatorEnvironment} environment */
+/**
+ * @param {OperatorEnvironment} environment
+ */
 function loadActorRoles(environment) {
 	/** @type {Record<string, Readonly<ActorCredentials>>} */
 	const actors = Object.fromEntries(
@@ -156,23 +168,112 @@ function loadActorRoles(environment) {
 			Object.freeze({
 				email: requirePrivateValue(environment, names.email).toLowerCase(),
 				password: requirePrivateValue(environment, names.password),
-				username: requirePrivateValue(environment, names.username),
-				...(names.totpSecret
-					? { totpSecret: requirePrivateValue(environment, names.totpSecret) }
-					: {})
+				username: requirePrivateValue(environment, names.username)
 			})
 		])
 	);
 	const emails = Object.values(actors).map((actor) => actor.email);
 	const usernames = Object.values(actors).map((actor) => actor.username.toLowerCase());
+	for (const actor of Object.values(actors)) {
+		const at = actor.email.lastIndexOf('@');
+		const local = actor.email.slice(0, at);
+		const domain = actor.email.slice(at + 1);
+		const domainLabels = domain.split('.');
+		if (
+			actor.email.length > 254 ||
+			at < 1 ||
+			local.length > 64 ||
+			!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/u.test(local) ||
+			local.startsWith('.') ||
+			local.endsWith('.') ||
+			local.includes('..') ||
+			domain.length > 253 ||
+			domainLabels.length < 2 ||
+			domainLabels.some(
+				(label) =>
+					label.length < 1 ||
+					label.length > 63 ||
+					!/^[a-z0-9-]+$/u.test(label) ||
+					label.startsWith('-') ||
+					label.endsWith('-')
+			) ||
+			actor.password.length < 12 ||
+			actor.password.length > 128 ||
+			!/^[\p{L}\p{N}_.-]{3,40}$/u.test(actor.username)
+		) {
+			throw new HostedEvidenceOperatorError('synthetic hosted actor configuration is invalid');
+		}
+	}
 	if (new Set(emails).size !== emails.length || new Set(usernames).size !== usernames.length) {
 		throw new HostedEvidenceOperatorError('synthetic hosted actors must be unique');
 	}
 	return Object.freeze(actors);
 }
 
-/** @param {OperatorEnvironment} [environment] @returns {Readonly<HostedOperatorConfig>} */
-export function validateHostedOperatorEnvironment(environment = process.env) {
+/** @param {OperatorEnvironment} environment */
+function assertExactActorEnvironment(environment) {
+	for (const name of [
+		'E2E_REAL_ADMIN_EMAIL',
+		'E2E_REAL_ADMIN_PASSWORD',
+		'E2E_REAL_ADMIN_TOTP_SECRET'
+	]) {
+		if (environment[name]) {
+			throw new HostedEvidenceOperatorError('administrator actor is outside the approved hosted scope');
+		}
+	}
+	for (const [name, value] of Object.entries(environment)) {
+		if (
+			value &&
+			ACTOR_CREDENTIAL_NAME_PATTERN.test(name) &&
+			!APPROVED_ACTOR_ENVIRONMENT_NAMES.has(name)
+		) {
+			throw new HostedEvidenceOperatorError('actor is outside the approved hosted scope');
+		}
+	}
+}
+
+/** @param {string} secret */
+function decodeBase32Secret(secret) {
+	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+	const normalized =
+		typeof secret === 'string' ? secret.toUpperCase().replace(/[\s=-]/gu, '') : '';
+	if (!normalized || [...normalized].some((character) => !alphabet.includes(character))) {
+		throw new HostedEvidenceOperatorError('TOTP input is invalid');
+	}
+	let bits = '';
+	for (const character of normalized) {
+		bits += alphabet.indexOf(character).toString(2).padStart(5, '0');
+	}
+	const bytes = [];
+	for (let index = 0; index + 8 <= bits.length; index += 8) {
+		bytes.push(Number.parseInt(bits.slice(index, index + 8), 2));
+	}
+	if (bytes.length === 0) throw new HostedEvidenceOperatorError('TOTP input is invalid');
+	return Buffer.from(bytes);
+}
+
+/**
+ * Generate the six-digit SHA-1 TOTP used by hosted staff MFA.
+ * @param {string} secret base32-encoded seed
+ * @param {number} timestamp Unix timestamp in milliseconds
+ */
+export function generateTotpCode(secret, timestamp) {
+	if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+		throw new HostedEvidenceOperatorError('TOTP timestamp is invalid');
+	}
+	const counterBytes = Buffer.alloc(8);
+	counterBytes.writeBigUInt64BE(BigInt(Math.floor(timestamp / 30_000)));
+	const digest = createHmac('sha1', decodeBase32Secret(secret)).update(counterBytes).digest();
+	const offset = digest[digest.length - 1] & 0x0f;
+	const binary = digest.readUInt32BE(offset) & 0x7fffffff;
+	return String(binary % 1_000_000).padStart(6, '0');
+}
+
+/**
+ * @param {OperatorEnvironment} environment
+ * @returns {Readonly<HostedOperatorConfig>}
+ */
+function validateHostedBaseEnvironment(environment) {
 	requireExact(
 		environment,
 		'APP_ENV',
@@ -212,14 +313,12 @@ export function validateHostedOperatorEnvironment(environment = process.env) {
 		throw new HostedEvidenceOperatorError('hosted operator target does not match approved staging');
 	}
 
-	for (const name of [
-		'E2E_REAL_ADMIN_EMAIL',
-		'E2E_REAL_ADMIN_PASSWORD',
-		'E2E_REAL_ADMIN_TOTP_SECRET'
-	]) {
-		if (environment[name]) {
-			throw new HostedEvidenceOperatorError('administrator actor is outside the approved hosted scope');
-		}
+	assertExactActorEnvironment(environment);
+	const provisionedAfter = requireIsoTimestamp(
+		requirePrivateValue(environment, 'E2E_REAL_REPORT_EVIDENCE_PROVISIONED_AFTER')
+	);
+	if (Date.parse(provisionedAfter) > Date.now() + 5 * 60_000) {
+		throw new HostedEvidenceOperatorError('actor provisioning timestamp is in the future');
 	}
 
 	return Object.freeze({
@@ -231,18 +330,41 @@ export function validateHostedOperatorEnvironment(environment = process.env) {
 			requirePrivateValue(environment, 'E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE'),
 			'provisioning nonce'
 		),
-		provisionedAfter: requireIsoTimestamp(
-			requirePrivateValue(environment, 'E2E_REAL_REPORT_EVIDENCE_PROVISIONED_AFTER')
-		)
+		provisionedAfter
 	});
+}
+
+/** @param {OperatorEnvironment} [environment] @returns {Readonly<HostedOperatorConfig>} */
+export function validateHostedOperatorEnvironment(environment = process.env) {
+	return validateHostedBaseEnvironment(environment);
+}
+
+/** @param {OperatorEnvironment} [environment] @returns {Readonly<HostedOperatorConfig>} */
+export function validateHostedA9Environment(environment = process.env) {
+	const config = validateHostedBaseEnvironment(environment);
+	if (
+		environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN !== 'true' ||
+		environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL !== 'A9' ||
+		environment.E2E_REAL_REPORT_EVIDENCE_SCENARIO_RUN ||
+		environment.E2E_REAL_REPORT_EVIDENCE_SCENARIO_APPROVAL ||
+		environment.E2E_REAL_REPORT_EVIDENCE_CLEANUP_RUN ||
+		environment.E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL
+	) {
+		throw new HostedEvidenceOperatorError('A9 account-provisioning gate is disabled');
+	}
+	return config;
 }
 
 /** @param {OperatorEnvironment} [environment] */
 export function validateHostedCleanupEnvironment(environment = process.env) {
-	const config = validateHostedOperatorEnvironment(environment);
+	const config = validateHostedBaseEnvironment(environment);
 	if (
 		environment.E2E_REAL_REPORT_EVIDENCE_CLEANUP_RUN !== 'true' ||
-		environment.E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL !== 'A11'
+		environment.E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL !== 'A11' ||
+		environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN ||
+		environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL ||
+		environment.E2E_REAL_REPORT_EVIDENCE_SCENARIO_RUN ||
+		environment.E2E_REAL_REPORT_EVIDENCE_SCENARIO_APPROVAL
 	) {
 		throw new HostedEvidenceOperatorError('A11 cleanup gate is disabled');
 	}
@@ -251,21 +373,52 @@ export function validateHostedCleanupEnvironment(environment = process.env) {
 
 /** @param {OperatorEnvironment} [environment] */
 export function validateHostedProvisionEnvironment(environment = process.env) {
-	const config = validateHostedOperatorEnvironment(environment);
-	if (
-		environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN !== 'true' ||
-		environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL !== 'A9'
-	) {
-		throw new HostedEvidenceOperatorError('A9 account-provisioning gate is disabled');
+	return validateHostedA9Environment(environment);
+}
+
+/** @param {OperatorEnvironment} [environment] */
+export function isHostedA10ScenarioApproved(environment = process.env) {
+	return (
+		environment.E2E_REAL_RUN === 'true' &&
+		environment.E2E_REAL_REPORT_EVIDENCE_RUN === 'true' &&
+		environment.E2E_REAL_REPORT_EVIDENCE_SCENARIO_RUN === 'true' &&
+		environment.E2E_REAL_REPORT_EVIDENCE_SCENARIO_APPROVAL === 'A10' &&
+		!environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN &&
+		!environment.E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL &&
+		!environment.E2E_REAL_REPORT_EVIDENCE_CLEANUP_RUN &&
+		!environment.E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL
+	);
+}
+
+/** @param {OperatorEnvironment} [environment] */
+export function validateHostedA10Environment(environment = process.env) {
+	const config = validateHostedBaseEnvironment(environment);
+	if (!isHostedA10ScenarioApproved(environment)) {
+		throw new HostedEvidenceOperatorError('A10 scenario gate is disabled');
 	}
 	return config;
 }
 
-/** @param {HostedOperatorConfig} config @returns {Readonly<HostedRunManifest>} */
-export function createHostedRunManifest(config) {
+/**
+ * @param {HostedOperatorConfig} config
+ * @param {{ provisioningAttemptId?: string, credentialStoreId?: string }} [binding]
+ * @returns {Readonly<HostedRunManifest>}
+ */
+export function createHostedRunManifest(config, binding = {}) {
+	const provisioningAttemptId = requireUuid(
+		binding.provisioningAttemptId ?? config.provisioningNonce,
+		'provisioning attempt ID'
+	);
+	const credentialStoreId = binding.credentialStoreId ?? '0'.repeat(64);
+	if (!/^[a-f0-9]{64}$/u.test(credentialStoreId)) {
+		throw new HostedEvidenceOperatorError('credential store binding is invalid');
+	}
 	return Object.freeze({
 		targetProjectRef: config.target.projectRef,
 		runId: config.runId,
+		provisioningAttemptId,
+		credentialStoreId,
+		pendingActors: Object.freeze([]),
 		actors: Object.freeze([]),
 		reports: Object.freeze([]),
 		uploads: Object.freeze([]),
@@ -295,6 +448,9 @@ function cloneManifest(manifest, changes = {}) {
 	return Object.freeze({
 		targetProjectRef: manifest.targetProjectRef,
 		runId: manifest.runId,
+		provisioningAttemptId: manifest.provisioningAttemptId,
+		credentialStoreId: manifest.credentialStoreId,
+		pendingActors: Object.freeze([...(changes.pendingActors ?? manifest.pendingActors)]),
 		actors: Object.freeze([...(changes.actors ?? manifest.actors)]),
 		reports: Object.freeze([...(changes.reports ?? manifest.reports)]),
 		uploads: Object.freeze([...(changes.uploads ?? manifest.uploads)]),
@@ -320,9 +476,15 @@ export function registerHostedActor(manifest, role, userId, createdAt) {
 		throw new HostedEvidenceOperatorError('actor is already present in the exact run manifest');
 	}
 	return cloneManifest(manifest, {
+		pendingActors: manifest.pendingActors.filter((actor) => actor.role !== role),
 		actors: [
 			...manifest.actors,
-			Object.freeze({ role, userId, createdAt })
+			Object.freeze({
+				role,
+				userId,
+				createdAt,
+				provisioningAttemptId: manifest.provisioningAttemptId
+			})
 		]
 	});
 }
@@ -387,19 +549,31 @@ export function registerHostedQueueRow(manifest, queueId, uploadId) {
 }
 
 /** @param {string} filePath */
-function exactManifestFile(filePath) {
-	if (typeof filePath !== 'string' || !isAbsolute(filePath)) {
+export function resolveHostedManifestPath(filePath) {
+	try {
+		return resolveOutsideRepositoryFile(filePath, { extension: '.json' });
+	} catch {
 		throw new HostedEvidenceOperatorError('hosted run manifest path is invalid');
 	}
-	const absolutePath = resolve(filePath);
-	const workspaceRelative = relative(process.cwd(), absolutePath);
-	if (
-		workspaceRelative === '' ||
-		(!workspaceRelative.startsWith('..') && !isAbsolute(workspaceRelative))
-	) {
-		throw new HostedEvidenceOperatorError('hosted run manifest must remain outside the repository');
+}
+
+/** @param {HostedRunManifest} manifest @param {string} role */
+export function registerHostedActorIntent(manifest, role) {
+	if (!Object.hasOwn(ACTOR_ENVIRONMENT, role)) {
+		throw new HostedEvidenceOperatorError('actor role is outside the approved hosted matrix');
 	}
-	return absolutePath;
+	if (
+		manifest.pendingActors.some((actor) => actor.role === role) ||
+		manifest.actors.some((actor) => actor.role === role)
+	) {
+		throw new HostedEvidenceOperatorError('actor is already present in the exact run manifest');
+	}
+	return cloneManifest(manifest, {
+		pendingActors: [
+			...manifest.pendingActors,
+			Object.freeze({ role, provisioningAttemptId: manifest.provisioningAttemptId })
+		]
+	});
 }
 
 /** @param {HostedOperatorConfig} config @param {unknown} candidate */
@@ -411,6 +585,9 @@ function decodeHostedRunManifest(config, candidate) {
 	if (
 		input.targetProjectRef !== config.target.projectRef ||
 		input.runId !== config.runId ||
+		typeof input.provisioningAttemptId !== 'string' ||
+		typeof input.credentialStoreId !== 'string' ||
+		!Array.isArray(input.pendingActors) ||
 		!Array.isArray(input.actors) ||
 		!Array.isArray(input.reports) ||
 		!Array.isArray(input.uploads) ||
@@ -418,9 +595,22 @@ function decodeHostedRunManifest(config, candidate) {
 	) {
 		throw new HostedEvidenceOperatorError('hosted run manifest target is invalid');
 	}
-	let manifest = createHostedRunManifest(config);
+	let manifest = createHostedRunManifest(config, {
+		provisioningAttemptId: String(input.provisioningAttemptId),
+		credentialStoreId: String(input.credentialStoreId)
+	});
+	for (const value of input.pendingActors) {
+		const pending = /** @type {Record<string, unknown>} */ (value);
+		if (String(pending.provisioningAttemptId ?? '') !== manifest.provisioningAttemptId) {
+			throw new HostedEvidenceOperatorError('hosted run manifest target is invalid');
+		}
+		manifest = registerHostedActorIntent(manifest, String(pending.role ?? ''));
+	}
 	for (const value of input.actors) {
 		const actor = /** @type {Record<string, unknown>} */ (value);
+		if (String(actor.provisioningAttemptId ?? '') !== manifest.provisioningAttemptId) {
+			throw new HostedEvidenceOperatorError('hosted run manifest target is invalid');
+		}
 		manifest = registerHostedActor(
 			manifest,
 			String(actor.role ?? ''),
@@ -459,12 +649,9 @@ function decodeHostedRunManifest(config, candidate) {
 /** @param {HostedOperatorConfig} config @param {HostedRunManifest} manifest @param {string} filePath */
 export async function persistHostedRunManifest(config, manifest, filePath) {
 	assertManifestTarget(config, manifest);
-	const exactPath = exactManifestFile(filePath);
+	const exactPath = resolveHostedManifestPath(filePath);
 	try {
-		await writeFile(exactPath, `${JSON.stringify(manifest)}\n`, {
-			encoding: 'utf8',
-			mode: 0o600
-		});
+		await atomicPrivateWrite(exactPath, `${JSON.stringify(manifest)}\n`);
 	} catch {
 		throw new HostedEvidenceOperatorError('hosted run manifest could not be persisted');
 	}
@@ -472,7 +659,7 @@ export async function persistHostedRunManifest(config, manifest, filePath) {
 
 /** @param {HostedOperatorConfig} config @param {string} filePath */
 export async function loadHostedRunManifest(config, filePath) {
-	const exactPath = exactManifestFile(filePath);
+	const exactPath = resolveHostedManifestPath(filePath);
 	try {
 		return decodeHostedRunManifest(config, JSON.parse(await readFile(exactPath, 'utf8')));
 	} catch (error) {
@@ -714,8 +901,1076 @@ function actorProvenanceMatches(config, actor, user) {
 			createdAt === actor.createdAt &&
 			Date.parse(createdAt) >= Date.parse(config.provisionedAfter) &&
 			metadata.gate3_report_evidence_run_id === config.runId &&
-			metadata.gate3_report_evidence_provisioning_nonce === config.provisioningNonce
+			metadata.gate3_report_evidence_provisioning_nonce === config.provisioningNonce &&
+			metadata.gate3_report_evidence_provisioning_attempt_id ===
+				(actor.provisioningAttemptId ?? config.provisioningNonce)
 	);
+}
+
+/**
+ * @param {HostedOperatorConfig} config
+ * @param {PendingManifestActor} pending
+ * @param {SupabaseUser} user
+ */
+function pendingActorProvenanceMatches(config, pending, user) {
+	const credentials = config.actorRoles[pending.role];
+	const metadata =
+		user.user_metadata && typeof user.user_metadata === 'object'
+			? /** @type {Record<string, unknown>} */ (user.user_metadata)
+			: {};
+	const createdAt = String(user.created_at ?? '');
+	return Boolean(
+		credentials &&
+			typeof user.email === 'string' &&
+			user.email.toLowerCase() === credentials.email &&
+			Number.isFinite(Date.parse(createdAt)) &&
+			Date.parse(createdAt) >= Date.parse(config.provisionedAfter) &&
+			metadata.gate3_report_evidence_run_id === config.runId &&
+			metadata.gate3_report_evidence_provisioning_nonce === config.provisioningNonce &&
+			metadata.gate3_report_evidence_provisioning_attempt_id === pending.provisioningAttemptId
+	);
+}
+
+/** @param {HostedOperatorConfig} config @param {HostedRunManifest} manifest @param {string} filePath */
+export async function reserveHostedRunManifest(config, manifest, filePath) {
+	assertManifestTarget(config, manifest);
+	if (
+		manifest.pendingActors.length !== 0 ||
+		manifest.actors.length !== 0 ||
+		manifest.reports.length !== 0 ||
+		manifest.uploads.length !== 0 ||
+		manifest.queueRows.length !== 0
+	) {
+		throw new HostedEvidenceOperatorError('hosted run manifest reservation is not empty');
+	}
+	const exactPath = resolveHostedManifestPath(filePath);
+	try {
+		await reservePrivateFile(exactPath, `${JSON.stringify(manifest)}\n`);
+	} catch {
+		throw new HostedEvidenceOperatorError('hosted run manifest already exists');
+	}
+}
+
+/** @param {HostedOperatorConfig} config @param {string} role */
+function exactActorCredentials(config, role) {
+	if (!Object.hasOwn(ACTOR_ENVIRONMENT, role) || !Object.hasOwn(config.actorRoles, role)) {
+		throw new HostedEvidenceOperatorError('actor role is outside the approved hosted matrix');
+	}
+	return config.actorRoles[role];
+}
+
+/**
+ * @param {HostedOperatorConfig} config
+ * @param {HostedRunManifest} manifest
+ * @param {string} role
+ * @param {string} userId
+ */
+function exactFreshManifestActor(config, manifest, role, userId) {
+	assertManifestTarget(config, manifest);
+	exactActorCredentials(config, role);
+	requireUuid(userId, 'actor ID');
+	const actor = manifest.actors.find((entry) => entry.role === role && entry.userId === userId);
+	if (!actor) throw new HostedEvidenceOperatorError('actor is outside the exact run manifest');
+	return actor;
+}
+
+/** @param {HostedOperatorConfig} config @param {HostedRunManifest} manifest */
+function assertCompleteA9Manifest(config, manifest) {
+	assertManifestTarget(config, manifest);
+	const expectedRoles = Object.keys(ACTOR_ENVIRONMENT);
+	if (
+		manifest.actors.length !== expectedRoles.length ||
+		new Set(manifest.actors.map((actor) => actor.userId)).size !== expectedRoles.length ||
+		expectedRoles.some(
+			(role) => manifest.actors.filter((actor) => actor.role === role).length !== 1
+		)
+	) {
+		throw new HostedEvidenceOperatorError('A9 manifest does not contain the exact actor matrix');
+	}
+	for (const actor of manifest.actors) exactFreshManifestActor(config, manifest, actor.role, actor.userId);
+	return manifest.actors;
+}
+
+/** @param {SupabaseUser} user */
+function authUserIsConfirmed(user) {
+	return (
+		typeof user.email_confirmed_at === 'string' &&
+		Number.isFinite(Date.parse(user.email_confirmed_at))
+	);
+}
+
+/**
+ * A9-only Supabase adapters. Construction is inert: each operation stays scoped
+ * to a configured actor and the exact run manifest supplied by its caller.
+ *
+	 * The credential sink is deliberately write-only from this module's point of
+	 * view. Its implementation must authenticate and encrypt persisted seeds outside
+	 * the repository, never log them, and delete compensated enrollments.
+ *
+ * @param {{
+ *   config: HostedOperatorConfig,
+ *   serviceClient: SupabaseClient,
+ *   createActorClient: () => SupabaseClient,
+ *   credentialSink: {
+ *     storeModeratorTotpSecret: (credential: { role: string, secret: string }) => Promise<void> | void,
+ *     deleteModeratorTotpSecret: (credential: { role: string }) => Promise<void> | void
+ *   }
+ * }} options
+ */
+export function createSupabaseHostedA9Adapters({
+	config,
+	serviceClient,
+	createActorClient,
+	credentialSink
+}) {
+	const absenceAttestedRoles = new Set();
+	let privilegedClientOrigin;
+	try {
+		const clientMetadata = /** @type {{ supabaseUrl?: string }} */ (
+			/** @type {unknown} */ (serviceClient)
+		);
+		if (typeof clientMetadata.supabaseUrl !== 'string') throw new Error('missing target');
+		privilegedClientOrigin = normalizeOrigin(clientMetadata.supabaseUrl);
+	} catch {
+		throw new HostedEvidenceOperatorError(
+			'A9 privileged client does not match the exact staging target'
+		);
+	}
+	if (privilegedClientOrigin !== HOSTED_STAGING.supabaseUrl) {
+		throw new HostedEvidenceOperatorError(
+			'A9 privileged client does not match the exact staging target'
+		);
+	}
+	if (
+		config.target.projectRef !== HOSTED_STAGING.projectRef ||
+		typeof createActorClient !== 'function' ||
+		typeof credentialSink?.storeModeratorTotpSecret !== 'function' ||
+		typeof credentialSink?.deleteModeratorTotpSecret !== 'function'
+	) {
+		throw new HostedEvidenceOperatorError('A9 adapter configuration is invalid');
+	}
+
+	/** @param {string} userId @param {string} failureMessage */
+	async function deleteAndConfirmAbsent(userId, failureMessage) {
+		const deleted = await serviceClient.auth.admin.deleteUser(userId);
+		if (deleted.error) throw new HostedEvidenceOperatorError(failureMessage);
+		const absent = await serviceClient.auth.admin.getUserById(userId);
+		if (!isMissingAuthUser(absent)) throw new HostedEvidenceOperatorError(failureMessage);
+	}
+
+	/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+	async function reconcileAmbiguousActorCreation(scope) {
+		if (!absenceAttestedRoles.has(scope.role)) {
+			throw new HostedEvidenceOperatorError('A9 actor absence was not attested');
+		}
+		const credentials = exactActorCredentials(config, scope.role);
+		assertManifestTarget(config, scope.manifest);
+		const matches = [];
+		const perPage = 1000;
+		for (let page = 1; page <= 100; page += 1) {
+			let listed;
+			try {
+				listed = await serviceClient.auth.admin.listUsers({ page, perPage });
+			} catch {
+				throw new HostedEvidenceOperatorError('A9 actor creation rollback was not confirmed');
+			}
+			const users = listed.data?.users;
+			if (listed.error || !Array.isArray(users)) {
+				throw new HostedEvidenceOperatorError('A9 actor creation rollback was not confirmed');
+			}
+			for (const user of users) {
+				if (
+					typeof user?.created_at === 'string' &&
+					typeof user?.email === 'string' &&
+					user.email.toLowerCase() === credentials.email &&
+					pendingActorProvenanceMatches(
+						config,
+						{
+							role: scope.role,
+							provisioningAttemptId: scope.manifest.provisioningAttemptId
+						},
+						user
+					)
+				) {
+					matches.push(user);
+				}
+			}
+			const lastPage = listed.data?.lastPage;
+			if (users.length < perPage || (Number.isSafeInteger(lastPage) && page >= lastPage)) break;
+			if (page === 100) {
+				throw new HostedEvidenceOperatorError('A9 actor creation rollback was not confirmed');
+			}
+		}
+		if (matches.length > 1) {
+			throw new HostedEvidenceOperatorError('A9 actor creation rollback was not confirmed');
+		}
+		if (matches.length === 1) {
+			await deleteAndConfirmAbsent(
+				matches[0].id,
+				'A9 actor creation rollback was not confirmed'
+			);
+		}
+	}
+
+	/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+	async function createConfirmedUser(scope) {
+		const credentials = exactActorCredentials(config, scope.role);
+		assertManifestTarget(config, scope.manifest);
+		const pending = scope.manifest.pendingActors.find((actor) => actor.role === scope.role);
+		if (!pending || pending.provisioningAttemptId !== scope.manifest.provisioningAttemptId) {
+			throw new HostedEvidenceOperatorError('A9 actor intent was not checkpointed');
+		}
+		if (!absenceAttestedRoles.has(scope.role)) {
+			throw new HostedEvidenceOperatorError('A9 actor absence was not attested');
+		}
+		try {
+			let result;
+			try {
+				result = await serviceClient.auth.admin.createUser({
+				email: credentials.email,
+				password: credentials.password,
+				email_confirm: true,
+				user_metadata: {
+					username: credentials.username,
+					gate3_report_evidence_run_id: config.runId,
+					gate3_report_evidence_provisioning_nonce: config.provisioningNonce,
+					gate3_report_evidence_provisioning_attempt_id:
+						scope.manifest.provisioningAttemptId
+				}
+				});
+			} catch {
+				await reconcileAmbiguousActorCreation(scope);
+				throw new HostedEvidenceOperatorError('confirmed A9 actor creation failed after reconciliation');
+			}
+			const user = result.data?.user;
+			if (!user || typeof user.created_at !== 'string') {
+				await reconcileAmbiguousActorCreation(scope);
+				throw new HostedEvidenceOperatorError('confirmed A9 actor creation failed after reconciliation');
+			}
+			requireUuid(user.id, 'actor ID');
+			const actor = {
+				role: scope.role,
+				userId: user.id,
+				createdAt: user.created_at,
+				provisioningAttemptId: scope.manifest.provisioningAttemptId
+			};
+			const provenanceMatches = actorProvenanceMatches(config, actor, user);
+			if (!provenanceMatches || result.error || !authUserIsConfirmed(user)) {
+				if (!result.error || provenanceMatches) {
+					await deleteAndConfirmAbsent(user.id, 'A9 actor creation compensation failed');
+				}
+			}
+			if (!provenanceMatches) {
+				throw new HostedEvidenceOperatorError('fresh A9 actor provenance is invalid');
+			}
+			if (result.error || !authUserIsConfirmed(user)) {
+				throw new HostedEvidenceOperatorError('confirmed A9 actor creation failed');
+			}
+			return Object.freeze({
+				role: actor.role,
+				userId: actor.userId,
+				createdAt: actor.createdAt,
+				emailConfirmed: true
+			});
+		} finally {
+			absenceAttestedRoles.delete(scope.role);
+		}
+	}
+
+	/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+	async function assertFreshActorAbsent(scope) {
+		const credentials = exactActorCredentials(config, scope.role);
+		assertManifestTarget(config, scope.manifest);
+		if (!scope.manifest.pendingActors.some((actor) => actor.role === scope.role)) {
+			throw new HostedEvidenceOperatorError('A9 actor intent was not checkpointed');
+		}
+		let found = false;
+		const perPage = 1000;
+		for (let page = 1; page <= 100; page += 1) {
+			let listed;
+			try {
+				listed = await serviceClient.auth.admin.listUsers({ page, perPage });
+			} catch {
+				throw new HostedEvidenceOperatorError('A9 actor absence inspection failed');
+			}
+			const users = listed.data?.users;
+			if (listed.error || !Array.isArray(users)) {
+				throw new HostedEvidenceOperatorError('A9 actor absence inspection failed');
+			}
+			found ||= users.some(
+				(user) =>
+					typeof user?.email === 'string' && user.email.toLowerCase() === credentials.email
+			);
+			const lastPage = listed.data?.lastPage;
+			if (users.length < perPage || (Number.isSafeInteger(lastPage) && page >= lastPage)) break;
+			if (page === 100) {
+				throw new HostedEvidenceOperatorError('A9 actor absence inspection failed');
+			}
+		}
+		if (found) throw new HostedEvidenceOperatorError('A9 configured actor already exists');
+		absenceAttestedRoles.add(scope.role);
+		return Object.freeze({ role: scope.role, absent: true });
+	}
+
+	/** @param {{ role: string, userId: string, createdAt: string, provisioningAttemptId?: string }} scope */
+	async function lookupConfirmedUser(scope) {
+		exactActorCredentials(config, scope.role);
+		requireUuid(scope.userId, 'actor ID');
+		requireIsoTimestamp(scope.createdAt);
+		const result = await serviceClient.auth.admin.getUserById(scope.userId);
+		const user = result.data.user;
+		if (
+			result.error ||
+			!user ||
+			typeof user.created_at !== 'string' ||
+			!authUserIsConfirmed(user)
+		) {
+			throw new HostedEvidenceOperatorError('confirmed A9 actor lookup failed');
+		}
+		const actor = {
+			role: scope.role,
+			userId: scope.userId,
+			createdAt: scope.createdAt,
+			provisioningAttemptId: scope.provisioningAttemptId ?? config.provisioningNonce
+		};
+		if (!actorProvenanceMatches(config, actor, user)) {
+			throw new HostedEvidenceOperatorError('fresh A9 actor provenance is invalid');
+		}
+		return Object.freeze({
+			role: actor.role,
+			userId: actor.userId,
+			createdAt: actor.createdAt,
+			emailConfirmed: true
+		});
+	}
+
+	/** @param {{ manifest: HostedRunManifest, role: string, userId: string }} scope */
+	async function deleteFreshUser(scope) {
+		const actor = exactFreshManifestActor(config, scope.manifest, scope.role, scope.userId);
+		const existing = await serviceClient.auth.admin.getUserById(scope.userId);
+		if (isMissingAuthUser(existing)) return;
+		const user = existing.data?.user;
+		if (
+			existing.error ||
+			!user ||
+			!authUserIsConfirmed(user) ||
+			!actorProvenanceMatches(config, actor, user)
+		) {
+			throw new HostedEvidenceOperatorError('fresh A9 actor rollback scope is invalid');
+		}
+		await deleteAndConfirmAbsent(scope.userId, 'A9 actor rollback was not confirmed');
+	}
+
+	/** @param {{ manifest: HostedRunManifest, role: string, userId: string }} scope */
+	async function createActorSession(scope) {
+		const credentials = exactActorCredentials(config, scope.role);
+		const actor = exactFreshManifestActor(config, scope.manifest, scope.role, scope.userId);
+		await lookupConfirmedUser({
+			role: scope.role,
+			userId: scope.userId,
+			createdAt: actor.createdAt,
+			provisioningAttemptId: actor.provisioningAttemptId
+		});
+		const actorClient = createActorClient();
+		const signIn = await actorClient.auth.signInWithPassword({
+			email: credentials.email,
+			password: credentials.password
+		});
+		if (
+			signIn.error ||
+			!signIn.data.user ||
+			signIn.data.user.id !== scope.userId ||
+			typeof signIn.data.user.email !== 'string' ||
+			signIn.data.user.email.toLowerCase() !== credentials.email
+		) {
+			throw new HostedEvidenceOperatorError('A9 actor-owned sign-in failed');
+		}
+
+		/** @param {string} functionName @param {Record<string, unknown> | undefined} args */
+		async function callActorRpc(functionName, args) {
+			const result = args
+				? await actorClient.rpc(functionName, args)
+				: await actorClient.rpc(functionName);
+			if (result.error) throw new HostedEvidenceOperatorError('A9 actor-owned lifecycle call failed');
+			return result.data;
+		}
+
+		/** @param {string} factorId */
+		async function rollbackModeratorFactor(factorId) {
+			let rollbackFailed = false;
+			try {
+				const unenrolled = await actorClient.auth.mfa.unenroll({ factorId });
+				const factors = await actorClient.auth.mfa.listFactors();
+				rollbackFailed =
+					Boolean(unenrolled.error) ||
+					Boolean(factors.error) ||
+					!Array.isArray(factors.data?.totp) ||
+					factors.data.totp.some((factor) => factor.id === factorId);
+			} catch {
+				rollbackFailed = true;
+			}
+			try {
+				await credentialSink.deleteModeratorTotpSecret({ role: scope.role });
+			} catch {
+				rollbackFailed = true;
+			}
+			if (rollbackFailed) {
+				throw new HostedEvidenceOperatorError('A9 MFA enrollment compensation failed');
+			}
+		}
+
+		async function getAuthenticatorAssuranceLevel() {
+			const result = await actorClient.auth.mfa.getAuthenticatorAssuranceLevel();
+			if (result.error || !result.data) {
+				throw new HostedEvidenceOperatorError('A9 actor-owned MFA assurance lookup failed');
+			}
+			return Object.freeze({
+				currentLevel: result.data.currentLevel ?? null,
+				nextLevel: result.data.nextLevel ?? null
+			});
+		}
+
+		async function enrollModeratorFactor() {
+			if (!new Set(['assigned-moderator', 'unassigned-moderator']).has(scope.role)) {
+				throw new HostedEvidenceOperatorError('A9 MFA enrollment is limited to moderator actors');
+			}
+			const result = await actorClient.auth.mfa.enroll({
+				factorType: 'totp',
+				friendlyName: 'Perfume marketplace A9 moderator'
+			});
+			const factorId = result.data?.id;
+			const secret = result.data?.totp?.secret;
+			if (
+				result.error ||
+				typeof factorId !== 'string' ||
+				factorId.length === 0 ||
+				typeof secret !== 'string'
+			) {
+				throw new HostedEvidenceOperatorError('A9 actor-owned MFA enrollment failed');
+			}
+			try {
+				decodeBase32Secret(secret);
+				await credentialSink.storeModeratorTotpSecret({ role: scope.role, secret });
+			} catch {
+				await rollbackModeratorFactor(factorId);
+				throw new HostedEvidenceOperatorError('ephemeral moderator credential delivery failed');
+			}
+			return { factorId, secret };
+		}
+
+		/** @param {{ factorId: string, code: string }} verification */
+		async function challengeAndVerify(verification) {
+			if (
+				typeof verification.factorId !== 'string' ||
+				verification.factorId.length === 0 ||
+				!/^\d{6}$/u.test(verification.code)
+			) {
+				throw new HostedEvidenceOperatorError('A9 MFA verification input is invalid');
+			}
+			const result = await actorClient.auth.mfa.challengeAndVerify({
+				factorId: verification.factorId,
+				code: verification.code
+			});
+			if (result.error) {
+				throw new HostedEvidenceOperatorError('A9 actor-owned MFA verification failed');
+			}
+			return Object.freeze({ verified: true });
+		}
+
+		async function listFactors() {
+			const result = await actorClient.auth.mfa.listFactors();
+			if (result.error || !Array.isArray(result.data?.totp)) {
+				throw new HostedEvidenceOperatorError('A9 actor-owned MFA factor lookup failed');
+			}
+			return Object.freeze(
+				result.data.totp.map((factor) =>
+					Object.freeze({ id: String(factor.id), status: String(factor.status) })
+				)
+			);
+		}
+
+		const mfa = Object.freeze({
+			getAuthenticatorAssuranceLevel,
+			async enroll() {
+				const { factorId } = await enrollModeratorFactor();
+				return Object.freeze({ factorId, factorType: 'totp' });
+			},
+			challengeAndVerify,
+			listFactors,
+			/** @param {{ clock?: () => number }} input */
+			async enrollAndVerify(input) {
+				const clock = input?.clock ?? Date.now;
+				if (typeof clock !== 'function') {
+					throw new HostedEvidenceOperatorError('A9 moderator MFA clock is invalid');
+				}
+				const initialAal = await getAuthenticatorAssuranceLevel();
+				const initialFactors = await listFactors();
+				if (initialAal.currentLevel !== 'aal1' || initialFactors.length !== 0) {
+					throw new HostedEvidenceOperatorError('A9 moderator MFA precondition failed');
+				}
+				const { factorId, secret } = await enrollModeratorFactor();
+				try {
+					const timestampMs = clock();
+					if (!Number.isSafeInteger(timestampMs) || timestampMs < 0) {
+						throw new HostedEvidenceOperatorError('A9 moderator MFA clock is invalid');
+					}
+					await challengeAndVerify({
+						factorId,
+						code: generateTotpCode(secret, timestampMs)
+					});
+					const [factors, finalAal] = await Promise.all([
+						listFactors(),
+						getAuthenticatorAssuranceLevel()
+					]);
+					if (
+						factors.length !== 1 ||
+						factors[0].id !== factorId ||
+						factors[0].status !== 'verified' ||
+						finalAal.currentLevel !== 'aal2'
+					) {
+						throw new HostedEvidenceOperatorError('A9 moderator MFA attestation failed');
+					}
+				} catch {
+					await rollbackModeratorFactor(factorId);
+					throw new HostedEvidenceOperatorError('A9 moderator MFA verification failed');
+				}
+				return Object.freeze({
+					factorId,
+					factorType: 'totp',
+					factorStatus: 'verified',
+					initialAal: 'aal1',
+					finalAal: 'aal2'
+				});
+			},
+			/** @param {{ factorId: string }} input */
+			async rollbackEnrollment(input) {
+				if (typeof input.factorId !== 'string' || input.factorId.length === 0) {
+					throw new HostedEvidenceOperatorError('A9 MFA rollback input is invalid');
+				}
+				await rollbackModeratorFactor(input.factorId);
+			}
+		});
+
+		return Object.freeze({
+			role: scope.role,
+			userId: scope.userId,
+			claimOpenRegistration: () => callActorRpc('claim_open_registration', undefined),
+			/** @param {{ documentCode: string, documentVersion: string }} input */
+			acceptBetaConsent(input) {
+				if (!input.documentCode?.trim() || !input.documentVersion?.trim()) {
+					throw new HostedEvidenceOperatorError('A9 consent input is invalid');
+				}
+				return callActorRpc('accept_beta_consent', {
+					requested_document_code: input.documentCode,
+					requested_document_version: input.documentVersion
+				});
+			},
+			/** @param {{ username: string, city?: string | null }} input */
+			completeBetaOnboarding(input) {
+				if (!/^[\p{L}\p{N}_.-]{3,40}$/u.test(input.username)) {
+					throw new HostedEvidenceOperatorError('A9 onboarding input is invalid');
+				}
+				return callActorRpc('complete_beta_onboarding', {
+					desired_username: input.username,
+					home_city: input.city ?? null
+				});
+			},
+			getMyBetaAccess: () => callActorRpc('get_my_beta_access', undefined),
+			mfa
+		});
+	}
+
+	/** @param {{ manifest: HostedRunManifest, role: string, userId: string }} scope */
+	async function inspectFreshActor(scope) {
+		const actor = exactFreshManifestActor(config, scope.manifest, scope.role, scope.userId);
+		await lookupConfirmedUser({
+			role: scope.role,
+			userId: scope.userId,
+			createdAt: actor.createdAt,
+			provisioningAttemptId: actor.provisioningAttemptId
+		});
+		const [profileResult, membershipResult] = await Promise.all([
+			serviceClient
+				.from('profiles')
+				.select('id, role, is_suspended')
+				.eq('id', scope.userId)
+				.maybeSingle(),
+			serviceClient
+				.from('beta_memberships')
+				.select('profile_id, status, onboarding_completed_at')
+				.eq('profile_id', scope.userId)
+				.maybeSingle()
+		]);
+		const profile = profileResult.data;
+		const membership = membershipResult.data;
+		const expectedProfileRole = new Set(['assigned-moderator', 'unassigned-moderator']).has(
+			scope.role
+		)
+			? 'moderator'
+			: 'user';
+		if (
+			profileResult.error ||
+			membershipResult.error ||
+			!profile ||
+			!membership ||
+			profile.id !== scope.userId ||
+			membership.profile_id !== scope.userId ||
+			profile.role !== expectedProfileRole ||
+			profile.is_suspended !== false ||
+			membership.status !== 'active' ||
+			typeof membership.onboarding_completed_at !== 'string' ||
+			!Number.isFinite(Date.parse(membership.onboarding_completed_at))
+		) {
+			throw new HostedEvidenceOperatorError('exact A9 actor state inspection failed');
+		}
+		return Object.freeze({
+			role: scope.role,
+			userId: scope.userId,
+			emailConfirmed: true,
+			profileRole: String(profile.role),
+			isSuspended: Boolean(profile.is_suspended),
+			membershipStatus: String(membership.status),
+			onboardingComplete: typeof membership.onboarding_completed_at === 'string'
+		});
+	}
+
+	/** @param {{ effectiveAt: string }} scope */
+	async function inspectRequiredAccessDocuments(scope) {
+		const effectiveAt = requireIsoTimestamp(scope.effectiveAt);
+		const result = await serviceClient
+			.from('beta_legal_documents')
+			.select('document_code, document_version')
+			.eq('required_for_access', true)
+			.is('retired_at', null)
+			.lte('effective_at', effectiveAt)
+			.order('document_code', { ascending: true });
+		if (result.error || !Array.isArray(result.data) || result.data.length === 0) {
+			throw new HostedEvidenceOperatorError('A9 required-document inspection failed');
+		}
+		const documents = result.data.map((document) => {
+			const documentCode = document?.document_code;
+			const documentVersion = document?.document_version;
+			if (
+				typeof documentCode !== 'string' ||
+				!/^[a-z][a-z0-9_]{1,63}$/u.test(documentCode) ||
+				typeof documentVersion !== 'string' ||
+				documentVersion.trim().length === 0 ||
+				documentVersion.length > 80
+			) {
+				throw new HostedEvidenceOperatorError('A9 required-document inspection failed');
+			}
+			return Object.freeze({ documentCode, documentVersion });
+		});
+		if (new Set(documents.map((document) => document.documentCode)).size !== documents.length) {
+			throw new HostedEvidenceOperatorError('A9 required-document inspection failed');
+		}
+		return Object.freeze(documents);
+	}
+
+	/** @param {{ data?: unknown, error?: unknown, count?: number | null }} result @param {string} message */
+	function exactCount(result, message) {
+		const count = result.count;
+		if (result.error || typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
+			throw new HostedEvidenceOperatorError(message);
+		}
+		return count;
+	}
+
+	/** @param {{ manifest: HostedRunManifest }} scope */
+	async function inspectZeroA9Artifacts(scope) {
+		const actors = assertCompleteA9Manifest(config, scope.manifest);
+		const actorIds = actors.map((actor) => actor.userId);
+		const [reportsResult, uploadsResult, queueResult] = await Promise.all([
+			serviceClient
+				.from('reports')
+				.select('id', { count: 'exact', head: true })
+				.in('reporter_id', actorIds),
+			serviceClient
+				.from('report_evidence_uploads')
+				.select('id', { count: 'exact', head: true })
+				.in('uploader_id', actorIds),
+			serviceClient
+				.from('upload_cleanup_queue')
+				.select('id', { count: 'exact', head: true })
+				.or(actorIds.map((userId) => `storage_path.like.${userId}/%`).join(','))
+		]);
+		let objects = 0;
+		for (const actor of actors) {
+			const listed = await serviceClient.storage
+				.from('report-evidence')
+				.list(actor.userId, { limit: 100, offset: 0 });
+			if (listed.error || !Array.isArray(listed.data)) {
+				throw new HostedEvidenceOperatorError('exact A9 object inspection failed');
+			}
+			objects += listed.data.length;
+		}
+		return Object.freeze({
+			reports: exactCount(reportsResult, 'exact A9 report inspection failed'),
+			uploads: exactCount(uploadsResult, 'exact A9 upload inspection failed'),
+			objects,
+			queueRows: exactCount(queueResult, 'exact A9 cleanup-row inspection failed')
+		});
+	}
+
+	/**
+	 * @param {{ manifest: HostedRunManifest, role: string, userId: string, fromRole: string, toRole: string }} scope
+	 */
+	async function elevateFreshActorRole(scope) {
+		if (
+			scope.fromRole !== 'user' ||
+			scope.toRole !== 'moderator' ||
+			!new Set(['assigned-moderator', 'unassigned-moderator']).has(scope.role)
+		) {
+			throw new HostedEvidenceOperatorError('only user to moderator elevation is permitted');
+		}
+		const actor = exactFreshManifestActor(config, scope.manifest, scope.role, scope.userId);
+		await lookupConfirmedUser({
+			role: scope.role,
+			userId: scope.userId,
+			createdAt: actor.createdAt,
+			provisioningAttemptId: actor.provisioningAttemptId
+		});
+		const result = await serviceClient
+			.from('profiles')
+			.update({ role: 'moderator' })
+			.eq('id', scope.userId)
+			.eq('role', 'user')
+			.select('id, role')
+			.maybeSingle();
+		if (
+			result.error ||
+			result.data?.id !== scope.userId ||
+			result.data?.role !== 'moderator'
+		) {
+			throw new HostedEvidenceOperatorError('exact A9 moderator elevation failed');
+		}
+		return Object.freeze({
+			role: scope.role,
+			userId: scope.userId,
+			fromRole: 'user',
+			toRole: 'moderator'
+		});
+	}
+
+	return Object.freeze({
+		assertFreshActorAbsent,
+		createConfirmedUser,
+		lookupConfirmedUser,
+		deleteFreshUser,
+		createActorSession,
+		inspectFreshActor,
+		inspectRequiredAccessDocuments,
+		inspectZeroA9Artifacts,
+		elevateFreshActorRole
+	});
+}
+
+/** @param {unknown} receipt */
+function assertExactA9PrerequisiteReceipt(receipt) {
+	const value = /** @type {Record<string, any>} */ (receipt);
+	if (
+		value?.target?.projectRef !== HOSTED_STAGING.projectRef ||
+		value.target.organizationId !== HOSTED_STAGING.organizationId ||
+		value.target.region !== HOSTED_STAGING.region ||
+		value.target.postgresMajor !== 17 ||
+		value.target.status !== 'ACTIVE_HEALTHY' ||
+		value.publicSignupEnabled !== true ||
+		value.emailAutoconfirmEnabled !== false ||
+		value.anonymousUsersEnabled !== false
+	) {
+		throw new HostedEvidenceOperatorError('A9 hosted prerequisite verification failed');
+	}
+	return value;
+}
+
+/**
+ * Re-verifies immutable project identity, privileged-key inventory, and the
+ * read-only hosted Auth policy immediately before an A9 transaction.
+ *
+ * @param {{
+ *   environment?: OperatorEnvironment,
+ *   dependencies?: {
+ *     verifyTarget?: (options: { environment: OperatorEnvironment, requireServiceRole: boolean }) => unknown,
+ *     fetchImpl?: typeof fetch
+ *   }
+ * }} [options]
+ */
+export async function verifyHostedA9Prerequisites({
+	environment = process.env,
+	dependencies = {}
+} = {}) {
+	validateHostedA9Environment(environment);
+	const verifyTarget = dependencies.verifyTarget ?? verifyStagingTarget;
+	const fetchImpl = dependencies.fetchImpl ?? fetch;
+	let target;
+	let settings;
+	try {
+		target = /** @type {Record<string, any>} */ (
+			await verifyTarget({ environment, requireServiceRole: true })
+		);
+		if (
+			target?.ref !== HOSTED_STAGING.projectRef ||
+			target?.organizationId !== HOSTED_STAGING.organizationId ||
+			target?.region !== HOSTED_STAGING.region ||
+			target?.postgresMajor !== 17 ||
+			target?.status !== 'ACTIVE_HEALTHY' ||
+			normalizeOrigin(target?.url) !== HOSTED_STAGING.supabaseUrl
+		) {
+			throw new Error('target mismatch');
+		}
+		const response = await fetchImpl(`${HOSTED_STAGING.supabaseUrl}/auth/v1/settings`, {
+			method: 'GET',
+			headers: {
+				apikey: requirePrivateValue(environment, 'PUBLIC_SUPABASE_PUBLISHABLE_KEY')
+			},
+			cache: 'no-store'
+		});
+		if (!response.ok || response.status !== 200) throw new Error('settings unavailable');
+		settings = await response.json();
+	} catch {
+		throw new HostedEvidenceOperatorError('A9 hosted prerequisite verification failed');
+	}
+	const receipt = Object.freeze({
+		target: Object.freeze({
+			projectRef: HOSTED_STAGING.projectRef,
+			organizationId: HOSTED_STAGING.organizationId,
+			region: HOSTED_STAGING.region,
+			postgresMajor: 17,
+			status: 'ACTIVE_HEALTHY'
+		}),
+		publicSignupEnabled: settings?.disable_signup === false,
+		emailAutoconfirmEnabled: settings?.mailer_autoconfirm === true,
+		anonymousUsersEnabled: settings?.external?.anonymous_users === true
+	});
+	assertExactA9PrerequisiteReceipt(receipt);
+	return receipt;
+}
+
+const A9_ACTOR_ROLES = Object.freeze([
+	'reporter',
+	'cross-user',
+	'assigned-moderator',
+	'unassigned-moderator'
+]);
+const A9_MODERATOR_ROLES = new Set(['assigned-moderator', 'unassigned-moderator']);
+
+/**
+ * Executes A9 as one compensating transaction. It intentionally has no A10
+ * scenario surface and leaves the successful synthetic actors in place for
+ * the separately approved later step.
+ *
+ * @param {{
+ *   environment?: OperatorEnvironment,
+ *   adapters: Record<string, Function>,
+ *   city?: string | null,
+ *   clock?: () => number,
+ *   initialManifest?: HostedRunManifest,
+ *   verifyPrerequisites?: () => Promise<unknown>,
+ *   persistManifest: (manifest: HostedRunManifest) => Promise<void> | void
+ * }} options
+ */
+export async function executeHostedA9Provisioning({
+	environment = process.env,
+	adapters,
+	city = null,
+	clock = Date.now,
+	initialManifest,
+	verifyPrerequisites = () => verifyHostedA9Prerequisites({ environment }),
+	persistManifest
+}) {
+	const config = validateHostedA9Environment(environment);
+	const requiredAdapterMethods = [
+		'assertFreshActorAbsent',
+		'createConfirmedUser',
+		'createActorSession',
+		'elevateFreshActorRole',
+		'inspectFreshActor',
+		'inspectRequiredAccessDocuments',
+		'inspectZeroA9Artifacts',
+		'deleteFreshUser'
+	];
+	if (
+		!adapters ||
+		requiredAdapterMethods.some((name) => typeof adapters[name] !== 'function') ||
+		typeof verifyPrerequisites !== 'function' ||
+		typeof persistManifest !== 'function' ||
+		typeof clock !== 'function'
+	) {
+		throw new HostedEvidenceOperatorError('A9 provisioning configuration is invalid');
+	}
+
+	let manifest = initialManifest ?? createHostedRunManifest(config);
+	assertManifestTarget(config, manifest);
+	if (
+		manifest.pendingActors.length !== 0 ||
+		manifest.actors.length !== 0 ||
+		manifest.reports.length !== 0 ||
+		manifest.uploads.length !== 0 ||
+		manifest.queueRows.length !== 0
+	) {
+		throw new HostedEvidenceOperatorError('A9 initial manifest is not empty');
+	}
+	/** @type {Array<{ role: string, userId: string }>} */
+	const createdActors = [];
+	/** @type {Array<{ role: string, factorId: string, session: any }>} */
+	const enrolledFactors = [];
+	try {
+		const prerequisites = assertExactA9PrerequisiteReceipt(await verifyPrerequisites());
+		const documentInspectionTime = clock();
+		if (!Number.isSafeInteger(documentInspectionTime) || documentInspectionTime < 0) {
+			throw new HostedEvidenceOperatorError('A9 provisioning clock is invalid');
+		}
+		const requiredConsents = await adapters.inspectRequiredAccessDocuments({
+			effectiveAt: new Date(documentInspectionTime).toISOString()
+		});
+		if (!Array.isArray(requiredConsents) || requiredConsents.length === 0) {
+			throw new HostedEvidenceOperatorError('A9 required-document attestation failed');
+		}
+		for (const role of A9_ACTOR_ROLES) {
+			manifest = registerHostedActorIntent(manifest, role);
+			await persistManifest(manifest);
+			const absence = await adapters.assertFreshActorAbsent({ manifest, role });
+			if (absence?.role !== role || absence?.absent !== true) {
+				throw new HostedEvidenceOperatorError('A9 actor absence attestation failed');
+			}
+			const actor = await adapters.createConfirmedUser({ manifest, role });
+			if (actor?.role !== role || actor?.emailConfirmed !== true) {
+				throw new HostedEvidenceOperatorError('A9 actor creation attestation failed');
+			}
+			manifest = registerHostedActor(manifest, role, actor.userId, actor.createdAt);
+			createdActors.push({ role, userId: actor.userId });
+			await persistManifest(manifest);
+		}
+
+		for (const actor of manifest.actors) {
+			const session = await adapters.createActorSession({
+				manifest,
+				role: actor.role,
+				userId: actor.userId
+			});
+			if (
+				typeof session?.claimOpenRegistration !== 'function' ||
+				typeof session?.acceptBetaConsent !== 'function' ||
+				typeof session?.completeBetaOnboarding !== 'function' ||
+				typeof session?.getMyBetaAccess !== 'function'
+			) {
+				throw new HostedEvidenceOperatorError('A9 actor session is invalid');
+			}
+			await session.claimOpenRegistration();
+			for (const consent of requiredConsents) {
+				if (!consent?.documentCode?.trim() || !consent?.documentVersion?.trim()) {
+					throw new HostedEvidenceOperatorError('A9 required-document attestation failed');
+				}
+				await session.acceptBetaConsent(consent);
+			}
+			await session.completeBetaOnboarding({
+				username: config.actorRoles[actor.role].username,
+				city
+			});
+			await session.getMyBetaAccess();
+			if (A9_MODERATOR_ROLES.has(actor.role)) {
+				await adapters.elevateFreshActorRole({
+					manifest,
+					role: actor.role,
+					userId: actor.userId,
+					fromRole: 'user',
+					toRole: 'moderator'
+				});
+				if (
+					typeof session.mfa?.enrollAndVerify !== 'function' ||
+					typeof session.mfa?.rollbackEnrollment !== 'function'
+				) {
+					throw new HostedEvidenceOperatorError('A9 moderator MFA session is invalid');
+				}
+				const enrollment = await session.mfa.enrollAndVerify({ clock });
+				if (
+					typeof enrollment?.factorId !== 'string' ||
+					enrollment.factorType !== 'totp' ||
+					enrollment.factorStatus !== 'verified' ||
+					enrollment.initialAal !== 'aal1' ||
+					enrollment.finalAal !== 'aal2'
+				) {
+					throw new HostedEvidenceOperatorError('A9 moderator MFA attestation failed');
+				}
+				enrolledFactors.push({
+					role: actor.role,
+					factorId: enrollment.factorId,
+					session
+				});
+			}
+		}
+
+		const actorReceipts = [];
+		for (const actor of manifest.actors) {
+			const state = await adapters.inspectFreshActor({
+				manifest,
+				role: actor.role,
+				userId: actor.userId
+			});
+			const expectedRole = A9_MODERATOR_ROLES.has(actor.role) ? 'moderator' : 'user';
+			if (
+				state?.role !== actor.role ||
+				state?.userId !== actor.userId ||
+				state?.emailConfirmed !== true ||
+				state?.profileRole !== expectedRole ||
+				state?.isSuspended !== false ||
+				state?.membershipStatus !== 'active' ||
+				state?.onboardingComplete !== true
+			) {
+				throw new HostedEvidenceOperatorError('A9 final actor attestation failed');
+			}
+			actorReceipts.push(
+				Object.freeze({
+					role: actor.role,
+					userId: actor.userId,
+					profileRole: expectedRole,
+					membershipStatus: 'active',
+					onboardingComplete: true,
+					mfaStatus: A9_MODERATOR_ROLES.has(actor.role) ? 'verified' : 'not-required',
+					initialAal: A9_MODERATOR_ROLES.has(actor.role) ? 'aal1' : null,
+					finalAal: A9_MODERATOR_ROLES.has(actor.role) ? 'aal2' : null
+				})
+			);
+		}
+		const artifacts = await adapters.inspectZeroA9Artifacts({ manifest });
+		if (
+			artifacts?.reports !== 0 ||
+			artifacts?.uploads !== 0 ||
+			artifacts?.objects !== 0 ||
+			artifacts?.queueRows !== 0
+		) {
+			throw new HostedEvidenceOperatorError('A9 zero-artifact attestation failed');
+		}
+		return Object.freeze({
+			status: 'PASS',
+			runId: config.runId,
+			target: prerequisites.target,
+			actors: Object.freeze(actorReceipts),
+			artifacts: Object.freeze({ reports: 0, uploads: 0, objects: 0, queueRows: 0 })
+		});
+	} catch (error) {
+		let rollbackFailed =
+			error instanceof HostedEvidenceOperatorError &&
+			/(?:rollback was not confirmed|compensation failed)$/u.test(error.message);
+		for (const enrollment of [...enrolledFactors].reverse()) {
+			try {
+				await enrollment.session.mfa.rollbackEnrollment({ factorId: enrollment.factorId });
+			} catch {
+				rollbackFailed = true;
+			}
+		}
+		for (const actor of [...createdActors].reverse()) {
+			try {
+				await adapters.deleteFreshUser({ manifest, role: actor.role, userId: actor.userId });
+			} catch {
+				rollbackFailed = true;
+			}
+		}
+		if (rollbackFailed) {
+			throw new HostedEvidenceOperatorError('A9 provisioning rollback was not confirmed');
+		}
+		throw new HostedEvidenceOperatorError('A9 provisioning failed after verified rollback');
+	}
 }
 
 /**
@@ -745,6 +2000,38 @@ export function createSupabaseHostedEvidenceAdapters({
 		throw new HostedEvidenceOperatorError('privileged hosted adapter configuration is invalid');
 	}
 
+	/** @param {HostedRunManifest} manifest @returns {Promise<Array<{ pending: PendingManifestActor, user: SupabaseUser }>>} */
+	async function listPendingManifestUsers(manifest) {
+		assertManifestTarget(config, manifest);
+		if (manifest.pendingActors.length === 0) return [];
+		/** @type {Map<string, Array<{ pending: PendingManifestActor, user: SupabaseUser }>>} */
+		const matches = new Map(manifest.pendingActors.map((pending) => [pending.role, []]));
+		const perPage = 1000;
+		for (let page = 1; page <= 100; page += 1) {
+			const listed = await serviceClient.auth.admin.listUsers({ page, perPage });
+			const users = listed.data?.users;
+			if (listed.error || !Array.isArray(users)) {
+				throw new HostedEvidenceOperatorError('pending hosted account inspection failed');
+			}
+			for (const pending of manifest.pendingActors) {
+				for (const user of users) {
+					if (pendingActorProvenanceMatches(config, pending, user)) {
+						matches.get(pending.role)?.push({ pending, user });
+					}
+				}
+			}
+			const lastPage = listed.data?.lastPage;
+			if (users.length < perPage || (Number.isSafeInteger(lastPage) && page >= lastPage)) break;
+			if (page === 100) {
+				throw new HostedEvidenceOperatorError('pending hosted account inspection failed');
+			}
+		}
+		if ([...matches.values()].some((values) => values.length > 1)) {
+			throw new HostedEvidenceOperatorError('pending hosted account scope is ambiguous');
+		}
+		return [...matches.values()].flat();
+	}
+
 	/** @param {{ role: string }} scope */
 	async function provisionActor(scope) {
 		const credentials = config.actorRoles[scope.role];
@@ -758,7 +2045,8 @@ export function createSupabaseHostedEvidenceAdapters({
 			user_metadata: {
 				username: credentials.username,
 				gate3_report_evidence_run_id: config.runId,
-				gate3_report_evidence_provisioning_nonce: config.provisioningNonce
+				gate3_report_evidence_provisioning_nonce: config.provisioningNonce,
+				gate3_report_evidence_provisioning_attempt_id: config.provisioningNonce
 			}
 		});
 		const user = result.data.user;
@@ -797,7 +2085,11 @@ export function createSupabaseHostedEvidenceAdapters({
 	/** @param {{ manifest: HostedRunManifest }} scope */
 	async function inspectManifest({ manifest }) {
 		assertManifestTarget(config, manifest);
-		const actorIds = manifest.actors.map((actor) => actor.userId);
+		const pendingUsers = await listPendingManifestUsers(manifest);
+		const actorIds = [
+			...manifest.actors.map((actor) => actor.userId),
+			...pendingUsers.map(({ user }) => String(user.id))
+		];
 		const accountResults = await Promise.all(
 			actorIds.map((userId) => serviceClient.auth.admin.getUserById(userId))
 		);
@@ -805,14 +2097,16 @@ export function createSupabaseHostedEvidenceAdapters({
 			throw new HostedEvidenceOperatorError('exact hosted account inspection failed');
 		}
 		const accounts = accountResults.filter((result) => Boolean(result.data.user)).length;
-		const invalidActorProvenance = accountResults.filter((result, index) => {
+		const invalidActorProvenance = accountResults
+			.slice(0, manifest.actors.length)
+			.filter((result, index) => {
 			if (!result.data.user) return false;
 			return !actorProvenanceMatches(
 				config,
 				manifest.actors[index],
 				result.data.user
 			);
-		}).length;
+			}).length;
 
 		let reports = [];
 		let uploads = [];
@@ -847,6 +2141,16 @@ export function createSupabaseHostedEvidenceAdapters({
 				throw new HostedEvidenceOperatorError('exact hosted object inspection failed');
 			}
 			for (const object of listed.data ?? []) objectPaths.push(`${actor.userId}/${object.name}`);
+		}
+		for (const { user } of pendingUsers) {
+			const userId = String(user.id);
+			const listed = await serviceClient.storage
+				.from('report-evidence')
+				.list(userId, { limit: 100, offset: 0 });
+			if (listed.error) {
+				throw new HostedEvidenceOperatorError('exact hosted object inspection failed');
+			}
+			for (const object of listed.data ?? []) objectPaths.push(`${userId}/${object.name}`);
 		}
 
 		let queueRows = [];
@@ -1066,7 +2370,18 @@ export function createSupabaseHostedEvidenceAdapters({
 			throw new HostedEvidenceOperatorError('exact hosted cleanup invocation failed');
 		}
 		const body = await response.json();
-		if (!body || typeof body !== 'object' || !UUID_PATTERN.test(String(body.requestId ?? ''))) {
+		if (
+			!body ||
+			typeof body !== 'object' ||
+			!UUID_PATTERN.test(String(body.requestId ?? '')) ||
+			!Number.isSafeInteger(body.claimed) ||
+			!Number.isSafeInteger(body.completed) ||
+			!Number.isSafeInteger(body.failed) ||
+			body.claimed < 0 ||
+			body.completed < 0 ||
+			body.failed !== 0 ||
+			body.completed !== body.claimed
+		) {
 			throw new HostedEvidenceOperatorError('exact hosted cleanup receipt is invalid');
 		}
 		return { status: response.status, requestId: String(body.requestId) };
@@ -1181,7 +2496,17 @@ export function createSupabaseHostedEvidenceAdapters({
 			const deleted = await serviceClient.auth.admin.deleteUser(actor.userId);
 			if (deleted.error) throw new HostedEvidenceOperatorError('exact hosted account cleanup failed');
 		}
+		for (const { user } of await listPendingManifestUsers(manifest)) {
+			const deleted = await serviceClient.auth.admin.deleteUser(String(user.id));
+			if (deleted.error) {
+				throw new HostedEvidenceOperatorError('pending hosted account cleanup failed');
+			}
+		}
 		await invokeCleanupWorker();
+		const postWorker = sanitizeCounts(await inspectManifest({ manifest }));
+		if (postWorker.objects !== 0) {
+			throw new HostedEvidenceOperatorError('exact hosted object cleanup was not confirmed');
+		}
 		await deleteExactQueueRows(manifest);
 	}
 
@@ -1373,6 +2698,7 @@ export async function cleanupHostedRun({
  *   environment: OperatorEnvironment,
  *   manifestPath: string,
  *   operator: { inspect: (manifest: HostedRunManifest) => Promise<InventoryCounts>, remove: (manifest: HostedRunManifest) => Promise<void> },
+ *   credentialStore: { credentialStoreId?: string, purgeModeratorTotpSecrets: () => Promise<void> | void, finalizePurgeTombstone?: () => Promise<void> | void },
  *   logger: OperatorLogger
  * }} options
  */
@@ -1381,10 +2707,70 @@ export async function cleanupHostedManifestFile({
 	environment,
 	manifestPath,
 	operator,
+	credentialStore,
 	logger
 }) {
-	const exactPath = exactManifestFile(manifestPath);
-	const manifest = await loadHostedRunManifest(config, exactPath);
+	if (typeof credentialStore?.purgeModeratorTotpSecrets !== 'function') {
+		throw new HostedEvidenceOperatorError('A11 moderator credential store is invalid');
+	}
+	const exactPath = resolveHostedManifestPath(manifestPath);
+	let manifest;
+	try {
+		manifest = await loadHostedRunManifest(config, exactPath);
+	} catch (error) {
+		let manifestIsMissing = false;
+		try {
+			await stat(exactPath);
+		} catch (statError) {
+			manifestIsMissing =
+				typeof statError === 'object' &&
+				statError !== null &&
+				/** @type {NodeJS.ErrnoException} */ (statError).code === 'ENOENT';
+			if (!manifestIsMissing) {
+				throw new HostedEvidenceOperatorError('hosted run manifest is unavailable');
+			}
+		}
+		if (!manifestIsMissing) throw error;
+		const approvedConfig = validateHostedCleanupEnvironment(environment);
+		if (
+			approvedConfig.runId !== config.runId ||
+			approvedConfig.target.projectRef !== config.target.projectRef
+		) {
+			throw new HostedEvidenceOperatorError(
+				'run manifest target does not match approved staging'
+			);
+		}
+		if (typeof credentialStore.finalizePurgeTombstone !== 'function') {
+			throw new HostedEvidenceOperatorError(
+				'A11 moderator credential tombstone removal failed'
+			);
+		}
+		try {
+			await credentialStore.finalizePurgeTombstone();
+		} catch {
+			throw new HostedEvidenceOperatorError(
+				'A11 moderator credential tombstone removal failed'
+			);
+		}
+		return Object.freeze({
+			cleaned: true,
+			counts: Object.freeze({
+				accounts: 0,
+				reports: 0,
+				uploads: 0,
+				objects: 0,
+				queueRows: 0,
+				foreignArtifacts: 0,
+				preExistingAccounts: 0
+			})
+		});
+	}
+	if (
+		manifest.credentialStoreId !== '0'.repeat(64) &&
+		credentialStore.credentialStoreId !== manifest.credentialStoreId
+	) {
+		throw new HostedEvidenceOperatorError('A11 moderator credential store binding is invalid');
+	}
 	const result = await cleanupHostedRun({
 		config,
 		manifest,
@@ -1394,9 +2780,21 @@ export async function cleanupHostedManifestFile({
 		logger
 	});
 	try {
+		await credentialStore.purgeModeratorTotpSecrets();
+	} catch {
+		throw new HostedEvidenceOperatorError('A11 moderator credential purge failed');
+	}
+	try {
 		await unlink(exactPath);
 	} catch {
 		throw new HostedEvidenceOperatorError('hosted run manifest could not be removed');
+	}
+	if (typeof credentialStore.finalizePurgeTombstone === 'function') {
+		try {
+			await credentialStore.finalizePurgeTombstone();
+		} catch {
+			throw new HostedEvidenceOperatorError('A11 moderator credential tombstone removal failed');
+		}
 	}
 	return result;
 }
