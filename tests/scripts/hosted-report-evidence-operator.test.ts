@@ -1,7 +1,9 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import * as hostedOperatorModule from '../../scripts/hosted-report-evidence-operator.mjs';
+import { createEncryptedModeratorCredentialStore } from '../../scripts/hosted-a9-credential-store.mjs';
 import {
 	HOSTED_STAGING,
 	HostedEvidenceOperatorError,
@@ -13,12 +15,16 @@ import {
 	createHostedEvidenceOperator,
 	createHostedRunManifest,
 	createSanitizedOperatorRecord,
+	createSupabaseHostedA9Adapters,
 	createSupabaseHostedEvidenceAdapters,
+	generateTotpCode,
 	loadHostedRunManifest,
 	persistHostedRunManifest,
 	registerHostedActor,
+	registerHostedActorIntent,
 	registerHostedReport,
 	registerHostedUpload,
+	validateHostedA9Environment,
 	validateHostedCleanupEnvironment,
 	validateHostedProvisionEnvironment,
 	validateHostedOperatorEnvironment
@@ -26,6 +32,12 @@ import {
 
 const runId = 'gate3-20260809-0001';
 const actorCreatedAt = '2026-08-09T12:00:00.000Z';
+const actorIds = {
+	reporter: '11111111-1111-4111-8111-111111111111',
+	'cross-user': '22222222-2222-4222-8222-222222222222',
+	'assigned-moderator': '33333333-3333-4333-8333-333333333333',
+	'unassigned-moderator': '44444444-4444-4444-8444-444444444444'
+} as const;
 const actorEnvironment = {
 	E2E_REAL_REPORTER_EMAIL: 'reporter@example.invalid',
 	E2E_REAL_REPORTER_PASSWORD: 'reporter-password',
@@ -36,11 +48,9 @@ const actorEnvironment = {
 	E2E_REAL_ASSIGNED_MODERATOR_EMAIL: 'assigned@example.invalid',
 	E2E_REAL_ASSIGNED_MODERATOR_PASSWORD: 'assigned-password',
 	E2E_REAL_ASSIGNED_MODERATOR_USERNAME: 'gate3-assigned',
-	E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET: 'ASSIGNEDTOTPSECRET',
 	E2E_REAL_UNASSIGNED_MODERATOR_EMAIL: 'unassigned@example.invalid',
 	E2E_REAL_UNASSIGNED_MODERATOR_PASSWORD: 'unassigned-password',
-	E2E_REAL_UNASSIGNED_MODERATOR_USERNAME: 'gate3-unassigned',
-	E2E_REAL_UNASSIGNED_MODERATOR_TOTP_SECRET: 'UNASSIGNEDTOTPSECRET'
+	E2E_REAL_UNASSIGNED_MODERATOR_USERNAME: 'gate3-unassigned'
 };
 
 const baseEnvironment = {
@@ -66,6 +76,11 @@ const approvedProvisionEnvironment = {
 	E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN: 'true',
 	E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL: 'A9'
 };
+const a9Environment = approvedProvisionEnvironment;
+const syntheticTotpSecret = Array.from(
+	{ length: 32 },
+	(_, index) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'[index % 32]
+).join('');
 
 function reporterManifest(config: ReturnType<typeof validateHostedOperatorEnvironment>) {
 	return registerHostedActor(
@@ -103,12 +118,33 @@ function provisionedUser(
 		id: userId,
 		email: actorEnvironment[emailNames[role]],
 		created_at: actorCreatedAt,
+		email_confirmed_at: actorCreatedAt,
 		user_metadata: {
 			gate3_report_evidence_run_id: runId,
 			gate3_report_evidence_provisioning_nonce:
+				baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE,
+			gate3_report_evidence_provisioning_attempt_id:
 				baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
 		}
 	};
+}
+
+function noopModeratorCredentialSink() {
+	return {
+		storeModeratorTotpSecret: vi.fn(),
+		deleteModeratorTotpSecret: vi.fn()
+	};
+}
+
+function reporterIntentManifest(config: ReturnType<typeof validateHostedA9Environment>) {
+	return registerHostedActorIntent(createHostedRunManifest(config), 'reporter');
+}
+
+function completeActorManifest(config: ReturnType<typeof validateHostedA9Environment>) {
+	return Object.entries(actorIds).reduce(
+		(manifest, [role, userId]) => registerHostedActor(manifest, role, userId, actorCreatedAt),
+		createHostedRunManifest(config)
+	);
 }
 
 describe('hosted report-evidence target lock', () => {
@@ -211,6 +247,1051 @@ describe('hosted report-evidence target lock', () => {
 	});
 });
 
+describe('A9 foundation environment and TOTP safety', () => {
+	it('never treats an A9 or A11 approval as authorization for the A10 hostile suite', () => {
+		const isApproved = (
+			hostedOperatorModule as unknown as {
+				isHostedA10ScenarioApproved: (environment: Record<string, string>) => boolean;
+			}
+		).isHostedA10ScenarioApproved;
+		expect(isApproved(a9Environment)).toBe(false);
+		expect(isApproved(approvedCleanupEnvironment)).toBe(false);
+		expect(
+			isApproved({
+				...baseEnvironment,
+				E2E_REAL_REPORT_EVIDENCE_SCENARIO_RUN: 'true',
+				E2E_REAL_REPORT_EVIDENCE_SCENARIO_APPROVAL: 'A10'
+			})
+		).toBe(true);
+	});
+
+	it('accepts the exact four actors without incoming TOTP or later-step secrets', () => {
+		const config = validateHostedA9Environment(a9Environment);
+
+		expect(Object.keys(config.actorRoles)).toEqual([
+			'reporter',
+			'cross-user',
+			'assigned-moderator',
+			'unassigned-moderator'
+		]);
+		expect(Object.values(config.actorRoles)).not.toContainEqual(
+			expect.objectContaining({ totpSecret: expect.anything() })
+		);
+		expect(a9Environment).not.toHaveProperty('SUPABASE_ACCESS_TOKEN');
+		expect(a9Environment).not.toHaveProperty('UPLOAD_CLEANUP_SECRET');
+	});
+
+	it('rejects plaintext moderator seed environment variables for every gate', () => {
+		for (const environment of [
+			a9Environment,
+			baseEnvironment,
+			approvedCleanupEnvironment
+		]) {
+			expect(() =>
+				validateHostedOperatorEnvironment({
+					...environment,
+					E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET: syntheticTotpSecret
+				})
+			).toThrow(/actor is outside the approved hosted scope/u);
+		}
+	});
+
+	it.each([
+		['EXPECTED_SUPABASE_PROJECT_REF', 'wrong-project'],
+		['PUBLIC_SUPABASE_URL', 'https://example.invalid'],
+		['E2E_REAL_BASE_URL', 'https://example.invalid'],
+		['E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN', 'false'],
+		['E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL', 'A10']
+	])('fails closed when the exact A9 %s lock is wrong', (name, value) => {
+		expect(() => validateHostedA9Environment({ ...a9Environment, [name]: value })).toThrow(
+			HostedEvidenceOperatorError
+		);
+	});
+
+	it.each([
+		'E2E_REAL_REPORTER_EMAIL',
+		'E2E_REAL_CROSS_USER_PASSWORD',
+		'E2E_REAL_ASSIGNED_MODERATOR_USERNAME',
+		'E2E_REAL_UNASSIGNED_MODERATOR_EMAIL'
+	])('requires every credential in the exact four-actor set (%s)', (name) => {
+		expect(() => validateHostedA9Environment({ ...a9Environment, [name]: undefined })).toThrow(
+			/required hosted operator configuration is incomplete/u
+		);
+	});
+
+	it('rejects duplicate, extra, and administrator actor credentials', () => {
+		expect(() =>
+			validateHostedA9Environment({
+				...a9Environment,
+				E2E_REAL_CROSS_USER_EMAIL: a9Environment.E2E_REAL_REPORTER_EMAIL
+			})
+		).toThrow(/synthetic hosted actors must be unique/u);
+		expect(() =>
+			validateHostedA9Environment({
+				...a9Environment,
+				E2E_REAL_SHADOW_ACTOR_EMAIL: 'shadow@example.invalid'
+			})
+		).toThrow(/actor is outside the approved hosted scope/u);
+		expect(() =>
+			validateHostedA9Environment({
+				...a9Environment,
+				E2E_REAL_ADMIN_PASSWORD: 'administrator-password'
+			})
+		).toThrow(/administrator actor is outside the approved hosted scope/u);
+	});
+
+	it('matches the RFC 6238 SHA-1 vector at a fixed timestamp', () => {
+		expect(generateTotpCode('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 59_000)).toBe('287082');
+	});
+
+	it('keeps one shared TOTP implementation for the hosted E2E', async () => {
+		const hostedSpec = await readFile(
+			new URL('../e2e/hosted-report-evidence.spec.ts', import.meta.url),
+			'utf8'
+		);
+
+		expect(hostedSpec).toContain('generateTotpCode');
+		expect(hostedSpec).not.toContain('function decodeBase32');
+		expect(hostedSpec).not.toContain('function currentTotp');
+		expect(hostedSpec).not.toContain('createHmac');
+	});
+});
+
+describe('A9-only Supabase adapter foundations', () => {
+	it('rejects a privileged client that is not bound to the exact Frankfurt staging project', () => {
+		expect(() =>
+			createSupabaseHostedA9Adapters({
+				config: validateHostedA9Environment(a9Environment),
+				serviceClient: {
+					supabaseUrl: 'https://zllqwlekadiuyejgbuxc.supabase.co'
+				} as never,
+				createActorClient: vi.fn() as never,
+				credentialSink: noopModeratorCredentialSink()
+			})
+		).toThrow('A9 privileged client does not match the exact staging target');
+	});
+
+	it('has no management-token, cleanup-secret, scheduler, or generic role dependency', () => {
+		const adapters = createSupabaseHostedA9Adapters({
+			config: validateHostedA9Environment(a9Environment),
+			serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+
+		expect(Object.keys(adapters)).toEqual([
+			'assertFreshActorAbsent',
+			'createConfirmedUser',
+			'lookupConfirmedUser',
+			'deleteFreshUser',
+			'createActorSession',
+			'inspectFreshActor',
+			'inspectRequiredAccessDocuments',
+			'inspectZeroA9Artifacts',
+			'elevateFreshActorRole'
+		]);
+		expect(Object.keys(adapters)).not.toEqual(
+			expect.arrayContaining(['setRole', 'invokeCleanupWorker', 'reportSubmit'])
+		);
+	});
+
+	it('creates, attests, and deletes only a confirmed exact-manifest Auth actor', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const user = provisionedUser('reporter', actorIds.reporter);
+		const createUser = vi.fn().mockResolvedValue({ data: { user }, error: null });
+		const getUserById = vi
+			.fn()
+			.mockResolvedValueOnce({ data: { user }, error: null })
+			.mockResolvedValueOnce({ data: { user }, error: null })
+			.mockResolvedValueOnce({ data: { user: null }, error: { status: 404 } });
+		const deleteUser = vi.fn().mockResolvedValue({ data: { user: null }, error: null });
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						createUser,
+						getUserById,
+						deleteUser,
+						listUsers: vi.fn().mockResolvedValue({ data: { users: [], lastPage: 1 }, error: null })
+					}
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+		const manifest = registerHostedActor(
+			createHostedRunManifest(config),
+			'reporter',
+			actorIds.reporter,
+			actorCreatedAt
+		);
+		const intentManifest = reporterIntentManifest(config);
+
+		await expect(
+			adapters.assertFreshActorAbsent({ manifest: intentManifest, role: 'reporter' })
+		).resolves.toEqual({
+			role: 'reporter',
+			absent: true
+		});
+		await expect(
+			adapters.createConfirmedUser({ manifest: intentManifest, role: 'reporter' })
+		).resolves.toEqual({
+			role: 'reporter',
+			userId: actorIds.reporter,
+			createdAt: actorCreatedAt,
+			emailConfirmed: true
+		});
+		const lookupReceipt = await adapters.lookupConfirmedUser({
+			role: 'reporter',
+			userId: actorIds.reporter,
+			createdAt: actorCreatedAt
+		});
+		expect(lookupReceipt).toEqual({
+			role: 'reporter',
+			userId: actorIds.reporter,
+			createdAt: actorCreatedAt,
+			emailConfirmed: true
+		});
+		await expect(
+			adapters.deleteFreshUser({ manifest, role: 'reporter', userId: actorIds.reporter })
+		).resolves.toBeUndefined();
+		expect(createUser).toHaveBeenCalledWith(
+			expect.objectContaining({ email_confirm: true, password: actorEnvironment.E2E_REAL_REPORTER_PASSWORD })
+		);
+		expect(deleteUser).toHaveBeenCalledWith(actorIds.reporter);
+		expect(JSON.stringify(lookupReceipt)).not.toContain(actorEnvironment.E2E_REAL_REPORTER_PASSWORD);
+	});
+
+	it('treats an already-absent exact manifest actor as an idempotent rollback success', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const manifest = registerHostedActor(
+			createHostedRunManifest(config),
+			'reporter',
+			actorIds.reporter,
+			actorCreatedAt
+		);
+		const deleteUser = vi.fn();
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						getUserById: vi.fn().mockResolvedValue({
+							data: { user: null },
+							error: { status: 404 }
+						}),
+						deleteUser
+					}
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+
+		await expect(
+			adapters.deleteFreshUser({ manifest, role: 'reporter', userId: actorIds.reporter })
+		).resolves.toBeUndefined();
+		expect(deleteUser).not.toHaveBeenCalled();
+	});
+
+	it('compensates an exact newly-created Auth actor when confirmation attestation fails', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const unconfirmedUser = {
+			...provisionedUser('reporter', actorIds.reporter),
+			email_confirmed_at: undefined
+		};
+		const deleteUser = vi.fn().mockResolvedValue({ data: { user: null }, error: null });
+		const getUserById = vi
+			.fn()
+			.mockResolvedValue({ data: { user: null }, error: { status: 404 } });
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						createUser: vi.fn().mockResolvedValue({ data: { user: unconfirmedUser }, error: null }),
+						listUsers: vi.fn().mockResolvedValue({ data: { users: [], lastPage: 1 }, error: null }),
+						getUserById,
+						deleteUser
+					}
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+
+		const intentManifest = reporterIntentManifest(config);
+		await adapters.assertFreshActorAbsent({ manifest: intentManifest, role: 'reporter' });
+		await expect(
+			adapters.createConfirmedUser({ manifest: intentManifest, role: 'reporter' })
+		).rejects.toThrow(
+			/confirmed A9 actor creation failed/u
+		);
+		expect(deleteUser).toHaveBeenCalledWith(actorIds.reporter);
+		expect(getUserById).toHaveBeenCalledWith(actorIds.reporter);
+	});
+
+	it('reconciles and removes an exact actor when Auth creation commits before a transport error', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const user = provisionedUser('reporter', actorIds.reporter);
+		const deleteUser = vi.fn().mockResolvedValue({ data: { user: null }, error: null });
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						createUser: vi.fn(async () => {
+							throw new Error('provider timeout with private details');
+						}),
+						listUsers: vi
+							.fn()
+							.mockResolvedValueOnce({ data: { users: [], lastPage: 1 }, error: null })
+							.mockResolvedValueOnce({ data: { users: [user], lastPage: 1 }, error: null }),
+						getUserById: vi.fn().mockResolvedValue({
+							data: { user: null },
+							error: { status: 404 }
+						}),
+						deleteUser
+					}
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+		let caught: unknown;
+		const intentManifest = reporterIntentManifest(config);
+		try {
+			await adapters.assertFreshActorAbsent({ manifest: intentManifest, role: 'reporter' });
+			await adapters.createConfirmedUser({ manifest: intentManifest, role: 'reporter' });
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(HostedEvidenceOperatorError);
+		expect(String(caught)).not.toContain('provider timeout');
+		expect(deleteUser).toHaveBeenCalledWith(actorIds.reporter);
+	});
+
+	it('never deletes an actor created by a competing provisioning attempt', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const competingAttemptId = '66666666-6666-4666-8666-666666666666';
+		const currentAttemptId = '77777777-7777-4777-8777-777777777777';
+		const competingUser = {
+			...provisionedUser('reporter', actorIds.reporter),
+			user_metadata: {
+				...provisionedUser('reporter', actorIds.reporter).user_metadata,
+				gate3_report_evidence_provisioning_attempt_id: competingAttemptId
+			}
+		};
+		const deleteUser = vi.fn();
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						createUser: vi.fn(async () => {
+							throw new Error('ambiguous provider response');
+						}),
+						listUsers: vi
+							.fn()
+							.mockResolvedValueOnce({ data: { users: [], lastPage: 1 }, error: null })
+							.mockResolvedValueOnce({
+								data: { users: [competingUser], lastPage: 1 },
+								error: null
+							}),
+						deleteUser
+					}
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+		const intentManifest = registerHostedActorIntent(
+			createHostedRunManifest(config, { provisioningAttemptId: currentAttemptId }),
+			'reporter'
+		);
+
+		await adapters.assertFreshActorAbsent({ manifest: intentManifest, role: 'reporter' });
+		await expect(
+			adapters.createConfirmedUser({ manifest: intentManifest, role: 'reporter' })
+		).rejects.toThrow(/confirmed A9 actor creation failed after reconciliation/u);
+		expect(deleteUser).not.toHaveBeenCalled();
+	});
+
+	it('refuses a prior matching actor without creating or deleting it', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const user = provisionedUser('reporter', actorIds.reporter);
+		const createUser = vi.fn();
+		const deleteUser = vi.fn();
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						listUsers: vi.fn().mockResolvedValue({
+							data: { users: [user], lastPage: 1 },
+							error: null
+						}),
+						createUser,
+						deleteUser
+					}
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+
+		await expect(
+			adapters.assertFreshActorAbsent({
+				manifest: reporterIntentManifest(config),
+				role: 'reporter'
+			})
+		).rejects.toThrow(
+			'A9 configured actor already exists'
+		);
+		expect(createUser).not.toHaveBeenCalled();
+		expect(deleteUser).not.toHaveBeenCalled();
+	});
+
+	it('compensates a successful Auth creation when returned provenance attestation fails', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const wrongProvenanceUser = {
+			...provisionedUser('reporter', actorIds.reporter),
+			user_metadata: {
+				gate3_report_evidence_run_id: runId,
+				gate3_report_evidence_provisioning_nonce: 'wrong-nonce'
+			}
+		};
+		const deleteUser = vi.fn().mockResolvedValue({ data: { user: null }, error: null });
+		const getUserById = vi
+			.fn()
+			.mockResolvedValue({ data: { user: null }, error: { status: 404 } });
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						createUser: vi.fn().mockResolvedValue({
+							data: { user: wrongProvenanceUser },
+							error: null
+						}),
+						listUsers: vi.fn().mockResolvedValue({ data: { users: [], lastPage: 1 }, error: null }),
+						getUserById,
+						deleteUser
+					}
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+
+		const intentManifest = reporterIntentManifest(config);
+		await adapters.assertFreshActorAbsent({ manifest: intentManifest, role: 'reporter' });
+		await expect(
+			adapters.createConfirmedUser({ manifest: intentManifest, role: 'reporter' })
+		).rejects.toThrow(
+			/fresh A9 actor provenance is invalid/u
+		);
+		expect(deleteUser).toHaveBeenCalledWith(actorIds.reporter);
+		expect(getUserById).toHaveBeenCalledWith(actorIds.reporter);
+	});
+
+	it('does not report rollback success until Auth confirms the actor is absent', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const user = provisionedUser('reporter', actorIds.reporter);
+		const getUserById = vi.fn().mockResolvedValue({ data: { user }, error: null });
+		const deleteUser = vi.fn().mockResolvedValue({ data: { user: null }, error: null });
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: { admin: { getUserById, deleteUser } }
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+		const manifest = registerHostedActor(
+			createHostedRunManifest(config),
+			'reporter',
+			actorIds.reporter,
+			actorCreatedAt
+		);
+
+		await expect(
+			adapters.deleteFreshUser({ manifest, role: 'reporter', userId: actorIds.reporter })
+		).rejects.toThrow(/A9 actor rollback was not confirmed/u);
+		expect(deleteUser).toHaveBeenCalledOnce();
+	});
+
+	it('runs lifecycle RPC and MFA calls only through the signed-in actor client', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const totpSecret = syntheticTotpSecret;
+		const rpc = vi.fn().mockResolvedValue({ data: true, error: null });
+		const getAuthenticatorAssuranceLevel = vi.fn().mockResolvedValue({
+			data: { currentLevel: 'aal2', nextLevel: 'aal2' },
+			error: null
+		});
+		const enroll = vi.fn().mockResolvedValue({
+			data: {
+				id: 'factor-1',
+				type: 'totp',
+				totp: { secret: totpSecret, qr_code: 'sensitive-qr', uri: 'sensitive-uri' }
+			},
+			error: null
+		});
+		const challengeAndVerify = vi.fn().mockResolvedValue({ data: {}, error: null });
+		const listFactors = vi.fn().mockResolvedValue({
+			data: { totp: [{ id: 'factor-1', status: 'verified', friendly_name: 'A9' }], phone: [] },
+			error: null
+		});
+		const actorClient = {
+			auth: {
+				signInWithPassword: vi.fn().mockResolvedValue({
+					data: {
+						user: {
+							id: actorIds['assigned-moderator'],
+							email: actorEnvironment.E2E_REAL_ASSIGNED_MODERATOR_EMAIL
+						}
+					},
+					error: null
+				}),
+				mfa: { getAuthenticatorAssuranceLevel, enroll, challengeAndVerify, listFactors }
+			},
+			rpc
+		};
+		const serviceRpc = vi.fn();
+		const serviceMfa = {
+			getAuthenticatorAssuranceLevel: vi.fn(),
+			enroll: vi.fn(),
+			challengeAndVerify: vi.fn(),
+			listFactors: vi.fn()
+		};
+		const storeModeratorTotpSecret = vi.fn().mockResolvedValue(undefined);
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				rpc: serviceRpc,
+				auth: {
+					mfa: serviceMfa,
+					admin: {
+						getUserById: vi.fn().mockResolvedValue({
+							data: {
+								user: provisionedUser(
+									'assigned-moderator',
+									actorIds['assigned-moderator']
+								)
+							},
+							error: null
+						})
+					}
+				}
+			} as never,
+			createActorClient: vi.fn(() => actorClient) as never,
+			credentialSink: {
+				storeModeratorTotpSecret,
+				deleteModeratorTotpSecret: vi.fn()
+			}
+		});
+		const manifest = registerHostedActor(
+			createHostedRunManifest(config),
+			'assigned-moderator',
+			actorIds['assigned-moderator'],
+			actorCreatedAt
+		);
+		const session = await adapters.createActorSession({
+			manifest,
+			role: 'assigned-moderator',
+			userId: actorIds['assigned-moderator']
+		});
+
+		await session.claimOpenRegistration();
+		await session.acceptBetaConsent({ documentCode: 'terms', documentVersion: '2026-08-02' });
+		await session.completeBetaOnboarding({ username: 'gate3-assigned', city: 'Sofia' });
+		await session.getMyBetaAccess();
+		await session.mfa.getAuthenticatorAssuranceLevel();
+		const enrollment = await session.mfa.enroll();
+		await session.mfa.challengeAndVerify({ factorId: 'factor-1', code: '287082' });
+		await session.mfa.listFactors();
+
+		expect(rpc.mock.calls).toEqual([
+			['claim_open_registration'],
+			[
+				'accept_beta_consent',
+				{ requested_document_code: 'terms', requested_document_version: '2026-08-02' }
+			],
+			['complete_beta_onboarding', { desired_username: 'gate3-assigned', home_city: 'Sofia' }],
+			['get_my_beta_access']
+		]);
+		expect(enrollment).toEqual({ factorId: 'factor-1', factorType: 'totp' });
+		expect(JSON.stringify(enrollment)).not.toContain(totpSecret);
+		expect(storeModeratorTotpSecret).toHaveBeenCalledWith({
+			role: 'assigned-moderator',
+			secret: totpSecret
+		});
+		expect(serviceRpc).not.toHaveBeenCalled();
+		expect(Object.values(serviceMfa).every((operation) => operation.mock.calls.length === 0)).toBe(
+			true
+		);
+	});
+
+	it('enrolls and verifies moderator TOTP through an AAL1-to-AAL2 actor-owned transition', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const totpSecret = syntheticTotpSecret;
+		const getAuthenticatorAssuranceLevel = vi
+			.fn()
+			.mockResolvedValueOnce({
+				data: { currentLevel: 'aal1', nextLevel: 'aal1' },
+				error: null
+			})
+			.mockResolvedValueOnce({
+				data: { currentLevel: 'aal2', nextLevel: 'aal2' },
+				error: null
+			});
+		const challengeAndVerify = vi.fn().mockResolvedValue({ data: {}, error: null });
+		const listFactors = vi
+			.fn()
+			.mockResolvedValueOnce({ data: { totp: [], phone: [] }, error: null })
+			.mockResolvedValueOnce({
+				data: {
+					totp: [{ id: 'factor-1', status: 'verified' }],
+					phone: []
+				},
+				error: null
+			});
+		const actorClient = {
+			auth: {
+				signInWithPassword: vi.fn().mockResolvedValue({
+					data: {
+						user: {
+							id: actorIds['assigned-moderator'],
+							email: actorEnvironment.E2E_REAL_ASSIGNED_MODERATOR_EMAIL
+						}
+					},
+					error: null
+				}),
+				mfa: {
+					getAuthenticatorAssuranceLevel,
+					enroll: vi.fn().mockResolvedValue({
+						data: { id: 'factor-1', type: 'totp', totp: { secret: totpSecret } },
+						error: null
+					}),
+					challengeAndVerify,
+					listFactors,
+					unenroll: vi.fn()
+				}
+			},
+			rpc: vi.fn()
+		};
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						getUserById: vi.fn().mockResolvedValue({
+							data: {
+								user: provisionedUser(
+									'assigned-moderator',
+									actorIds['assigned-moderator']
+								)
+							},
+							error: null
+						})
+					}
+				}
+			} as never,
+			createActorClient: vi.fn(() => actorClient) as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+		const manifest = registerHostedActor(
+			createHostedRunManifest(config),
+			'assigned-moderator',
+			actorIds['assigned-moderator'],
+			actorCreatedAt
+		);
+		const session = await adapters.createActorSession({
+			manifest,
+			role: 'assigned-moderator',
+			userId: actorIds['assigned-moderator']
+		});
+
+		await expect(
+			(session.mfa as unknown as {
+				enrollAndVerify: (input: { clock: () => number }) => Promise<unknown>;
+			}).enrollAndVerify({ clock: () => 59_000 })
+		).resolves.toEqual({
+			factorId: 'factor-1',
+			factorType: 'totp',
+			factorStatus: 'verified',
+			initialAal: 'aal1',
+			finalAal: 'aal2'
+		});
+		expect(challengeAndVerify).toHaveBeenCalledWith({
+			factorId: 'factor-1',
+			code: generateTotpCode(totpSecret, 59_000)
+		});
+		expect(JSON.stringify(challengeAndVerify.mock.calls)).not.toContain(totpSecret);
+	});
+
+	it('sanitizes credential-sink failures and never returns or logs the TOTP seed', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const totpSecret = syntheticTotpSecret;
+		const unenroll = vi.fn().mockResolvedValue({ data: {}, error: null });
+		const listFactors = vi.fn().mockResolvedValue({
+			data: { totp: [], phone: [] },
+			error: null
+		});
+		const deleteModeratorTotpSecret = vi.fn().mockResolvedValue(undefined);
+		const consoleSpies = [
+			vi.spyOn(console, 'log').mockImplementation(() => undefined),
+			vi.spyOn(console, 'info').mockImplementation(() => undefined),
+			vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+			vi.spyOn(console, 'error').mockImplementation(() => undefined)
+		];
+		const actorClient = {
+			auth: {
+				signInWithPassword: vi.fn().mockResolvedValue({
+					data: {
+						user: {
+							id: actorIds['assigned-moderator'],
+							email: actorEnvironment.E2E_REAL_ASSIGNED_MODERATOR_EMAIL
+						}
+					},
+					error: null
+				}),
+				mfa: {
+					enroll: vi.fn().mockResolvedValue({
+						data: { id: 'factor-1', type: 'totp', totp: { secret: totpSecret } },
+						error: null
+					}),
+					unenroll,
+					listFactors
+				}
+			}
+		};
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						getUserById: vi.fn().mockResolvedValue({
+							data: {
+								user: provisionedUser(
+									'assigned-moderator',
+									actorIds['assigned-moderator']
+								)
+							},
+							error: null
+						})
+					}
+				}
+			} as never,
+			createActorClient: vi.fn(() => actorClient) as never,
+			credentialSink: {
+				storeModeratorTotpSecret: vi.fn(async () => {
+					throw new Error(`sink rejected ${totpSecret}`);
+				}),
+				deleteModeratorTotpSecret
+			}
+		});
+		const manifest = registerHostedActor(
+			createHostedRunManifest(config),
+			'assigned-moderator',
+			actorIds['assigned-moderator'],
+			actorCreatedAt
+		);
+		const session = await adapters.createActorSession({
+			manifest,
+			role: 'assigned-moderator',
+			userId: actorIds['assigned-moderator']
+		});
+		let caught: unknown;
+		try {
+			await session.mfa.enroll();
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(HostedEvidenceOperatorError);
+		expect(String(caught)).not.toContain(totpSecret);
+		expect(unenroll).toHaveBeenCalledWith({ factorId: 'factor-1' });
+		expect(listFactors).toHaveBeenCalledOnce();
+		expect(deleteModeratorTotpSecret).toHaveBeenCalledWith({
+			role: 'assigned-moderator'
+		});
+		expect(consoleSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+		expect(JSON.stringify(createHostedRunManifest(config))).not.toContain(totpSecret);
+		for (const spy of consoleSpies) spy.mockRestore();
+	});
+
+	it('binds actor-owned sessions to exact fresh manifest provenance', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const actorClient = {
+			auth: {
+				signInWithPassword: vi.fn().mockResolvedValue({
+					data: {
+						user: {
+							id: actorIds.reporter,
+							email: actorEnvironment.E2E_REAL_REPORTER_EMAIL
+						}
+					},
+					error: null
+				})
+			}
+		};
+		const createActorClient = vi.fn(() => actorClient);
+		const getUserById = vi.fn().mockResolvedValue({
+			data: { user: provisionedUser('reporter', actorIds.reporter) },
+			error: null
+		});
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: { admin: { getUserById } }
+			} as never,
+			createActorClient: createActorClient as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+		const validManifest = registerHostedActor(
+			createHostedRunManifest(config),
+			'reporter',
+			actorIds.reporter,
+			actorCreatedAt
+		);
+		const tamperedManifest = {
+			...validManifest,
+			actors: validManifest.actors.map((actor) => ({
+				...actor,
+				createdAt: '2026-08-09T12:00:01.000Z'
+			}))
+		};
+
+		await expect(
+			adapters.createActorSession({
+				manifest: tamperedManifest,
+				role: 'reporter',
+				userId: actorIds.reporter
+			})
+		).rejects.toThrow(/fresh A9 actor provenance is invalid/u);
+		expect(createActorClient).not.toHaveBeenCalled();
+	});
+
+	it('elevates only an exact fresh manifest actor from user to moderator', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const manifest = completeActorManifest(config);
+		const user = provisionedUser('assigned-moderator', actorIds['assigned-moderator']);
+		const updateResult = vi.fn().mockResolvedValue({
+			data: { id: actorIds['assigned-moderator'], role: 'moderator' },
+			error: null
+		});
+		const updateChain: Record<string, ReturnType<typeof vi.fn>> = {};
+		updateChain.eq = vi.fn(() => updateChain);
+		updateChain.select = vi.fn(() => updateChain);
+		updateChain.maybeSingle = updateResult;
+		const update = vi.fn(() => updateChain);
+		const getUserById = vi.fn().mockResolvedValue({ data: { user }, error: null });
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: { admin: { getUserById } },
+				from: vi.fn(() => ({ update }))
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+
+		await expect(
+			adapters.elevateFreshActorRole({
+				manifest,
+				role: 'assigned-moderator',
+				userId: actorIds['assigned-moderator'],
+				fromRole: 'user',
+				toRole: 'moderator'
+			})
+		).resolves.toEqual({
+			role: 'assigned-moderator',
+			userId: actorIds['assigned-moderator'],
+			fromRole: 'user',
+			toRole: 'moderator'
+		});
+		expect(update).toHaveBeenCalledWith({ role: 'moderator' });
+
+		for (const roles of [
+			{ fromRole: 'moderator', toRole: 'moderator' },
+			{ fromRole: 'user', toRole: 'admin' }
+		]) {
+			await expect(
+				adapters.elevateFreshActorRole({
+					manifest,
+					role: 'assigned-moderator',
+					userId: actorIds['assigned-moderator'],
+					...roles
+				})
+			).rejects.toThrow(/only user to moderator elevation is permitted/u);
+		}
+		expect(update).toHaveBeenCalledTimes(1);
+
+		const tamperedManifest = {
+			...manifest,
+			actors: manifest.actors.map((actor) =>
+				actor.role === 'assigned-moderator'
+					? { ...actor, createdAt: '2026-08-09T12:00:01.000Z' }
+					: actor
+			)
+		};
+		await expect(
+			adapters.elevateFreshActorRole({
+				manifest: tamperedManifest,
+				role: 'assigned-moderator',
+				userId: actorIds['assigned-moderator'],
+				fromRole: 'user',
+				toRole: 'moderator'
+			})
+		).rejects.toThrow(/fresh A9 actor provenance is invalid/u);
+		expect(update).toHaveBeenCalledTimes(1);
+	});
+
+	it('inspects exact profile, membership, role, and zero A9 artifact counts', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const manifest = completeActorManifest(config);
+		const getUserById = vi.fn().mockImplementation(async (userId: string) => {
+			const role = Object.entries(actorIds).find(([, id]) => id === userId)?.[0] as keyof typeof actorIds;
+			return { data: { user: provisionedUser(role, userId) }, error: null };
+		});
+		const from = vi.fn((table: string) => {
+			if (table === 'profiles' || table === 'beta_memberships') {
+				const data =
+					table === 'profiles'
+						? { id: actorIds.reporter, role: 'user', is_suspended: false }
+						: {
+								profile_id: actorIds.reporter,
+								status: 'active',
+								onboarding_completed_at: actorCreatedAt
+							};
+				const query: Record<string, ReturnType<typeof vi.fn>> = {};
+				query.select = vi.fn(() => query);
+				query.eq = vi.fn(() => query);
+				query.maybeSingle = vi.fn().mockResolvedValue({ data, error: null });
+				return query;
+			}
+			const countQuery: Record<string, ReturnType<typeof vi.fn>> = {};
+			countQuery.select = vi.fn(() => countQuery);
+			countQuery.in = vi.fn().mockResolvedValue({ data: null, error: null, count: 0 });
+			countQuery.or = vi.fn().mockResolvedValue({ data: null, error: null, count: 0 });
+			return countQuery;
+		});
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: { admin: { getUserById } },
+				from,
+				storage: {
+					from: vi.fn(() => ({
+						list: vi.fn().mockResolvedValue({ data: [], error: null })
+					}))
+				}
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+
+		await expect(
+			adapters.inspectFreshActor({ manifest, role: 'reporter', userId: actorIds.reporter })
+		).resolves.toEqual({
+			role: 'reporter',
+			userId: actorIds.reporter,
+			emailConfirmed: true,
+			profileRole: 'user',
+			isSuspended: false,
+			membershipStatus: 'active',
+			onboardingComplete: true
+		});
+		await expect(adapters.inspectZeroA9Artifacts({ manifest })).resolves.toEqual({
+			reports: 0,
+			uploads: 0,
+			objects: 0,
+			queueRows: 0
+		});
+		expect(from.mock.calls.map(([table]) => table)).toEqual(
+			expect.arrayContaining([
+				'profiles',
+				'beta_memberships',
+				'reports',
+				'report_evidence_uploads',
+				'upload_cleanup_queue'
+			])
+		);
+	});
+
+	it('rejects suspended, inactive, incomplete, or role-mismatched final actor state', async () => {
+		const config = validateHostedA9Environment(a9Environment);
+		const manifest = completeActorManifest(config);
+		let profile = { id: actorIds.reporter, role: 'user', is_suspended: false };
+		let membership: {
+			profile_id: string;
+			status: string;
+			onboarding_completed_at: string | null;
+		} = {
+			profile_id: actorIds.reporter,
+			status: 'active',
+			onboarding_completed_at: actorCreatedAt
+		};
+		const from = vi.fn((table: string) => {
+			const query: Record<string, ReturnType<typeof vi.fn>> = {};
+			query.select = vi.fn(() => query);
+			query.eq = vi.fn(() => query);
+			query.maybeSingle = vi.fn().mockImplementation(async () => ({
+				data: table === 'profiles' ? profile : membership,
+				error: null
+			}));
+			return query;
+		});
+		const adapters = createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: {
+					admin: {
+						getUserById: vi.fn().mockResolvedValue({
+							data: { user: provisionedUser('reporter', actorIds.reporter) },
+							error: null
+						})
+					}
+				},
+				from
+			} as never,
+			createActorClient: vi.fn() as never,
+			credentialSink: noopModeratorCredentialSink()
+		});
+		const inspect = () =>
+			adapters.inspectFreshActor({ manifest, role: 'reporter', userId: actorIds.reporter });
+
+		profile = { ...profile, is_suspended: true };
+		await expect(inspect()).rejects.toThrow(/exact A9 actor state inspection failed/u);
+		profile = { ...profile, is_suspended: false };
+		membership = { ...membership, status: 'pending' };
+		await expect(inspect()).rejects.toThrow(/exact A9 actor state inspection failed/u);
+		membership = { ...membership, status: 'active', onboarding_completed_at: null };
+		await expect(inspect()).rejects.toThrow(/exact A9 actor state inspection failed/u);
+		membership = { ...membership, onboarding_completed_at: actorCreatedAt };
+		profile = { ...profile, role: 'moderator' };
+		await expect(inspect()).rejects.toThrow(/exact A9 actor state inspection failed/u);
+	});
+});
+
 describe('hosted report-evidence audit and cleanup safety', () => {
 	it('emits only role, run ID, event, status, and aggregate counts', () => {
 		const record = createSanitizedOperatorRecord({
@@ -226,7 +1307,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			cleanup: 'verified',
 			email: actorEnvironment.E2E_REAL_REPORTER_EMAIL,
 			password: actorEnvironment.E2E_REAL_REPORTER_PASSWORD,
-			totpSecret: actorEnvironment.E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET,
+			totpSecret: syntheticTotpSecret,
 			objectPath: `${runId}/private-object.webp`
 		});
 		const serialized = JSON.stringify(record);
@@ -369,10 +1450,13 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			},
 			storage: {
 				from: () => ({
-					list: vi.fn().mockResolvedValue({
-						data: [{ name: `${uploadId}.webp` }],
-						error: null
-					})
+					list: vi
+						.fn()
+						.mockResolvedValueOnce({
+							data: [{ name: `${uploadId}.webp` }],
+							error: null
+						})
+						.mockResolvedValue({ data: [], error: null })
 				})
 			}
 		};
@@ -401,6 +1485,10 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			actorCreatedAt
 		);
 		manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+		const listObjects = vi
+			.fn()
+			.mockResolvedValueOnce({ data: [{ name: `${uploadId}.webp` }], error: null })
+			.mockResolvedValue({ data: [], error: null });
 		const serviceClient = {
 			auth: {
 				admin: {
@@ -435,12 +1523,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			},
 			rpc: vi.fn(),
 			storage: {
-				from: () => ({
-					list: vi.fn().mockResolvedValue({
-						data: [{ name: `${uploadId}.webp` }],
-						error: null
-					})
-				})
+				from: () => ({ list: listObjects })
 			}
 		};
 		const requestId = '44444444-4444-4444-8444-444444444444';
@@ -451,7 +1534,10 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 					json: async () => [{ id: 7, storage_path: objectPath }]
 				};
 			}
-			return { status: 202, json: async () => ({ requestId }) };
+			return {
+				status: 202,
+				json: async () => ({ claimed: 1, completed: 1, failed: 0, requestId })
+			};
 		});
 		const adapters = createSupabaseHostedEvidenceAdapters({
 			config,
@@ -471,6 +1557,80 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		expect(body.query).toContain('delete from public.upload_cleanup_queue');
 		expect(body.query).toContain(objectPath);
 		expect(body.query).not.toContain('delete from auth.users');
+	});
+
+	it('rejects a 202 cleanup receipt that reports any failed deletion', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const requestId = '44444444-4444-4444-8444-444444444444';
+		const adapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: {} as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn().mockResolvedValue({
+				status: 202,
+				json: async () => ({ claimed: 1, completed: 0, failed: 1, requestId })
+			}) as never
+		});
+
+		await expect(
+			createHostedEvidenceOperator({ config, adapters }).processCleanupQueue()
+		).rejects.toThrow('exact hosted cleanup receipt is invalid');
+	});
+
+	it('recovers and removes an exact actor left after a pre-create intent checkpoint', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = reporterIntentManifest(config);
+		const user = provisionedUser('reporter', actorIds.reporter);
+		let deleted = false;
+		const listUsers = vi.fn(async () => ({
+			data: { users: deleted ? [] : [user], lastPage: 1 },
+			error: null
+		}));
+		const serviceClient = {
+			auth: {
+				admin: {
+					listUsers,
+					getUserById: vi.fn(async () =>
+						deleted
+							? { data: { user: null }, error: { status: 404 } }
+							: { data: { user }, error: null }
+					),
+					deleteUser: vi.fn(async () => {
+						deleted = true;
+						return { error: null };
+					})
+				}
+			},
+			from: () => {
+				const query = {
+					select: () => query,
+					in: () => Promise.resolve({ data: [], error: null })
+				};
+				return query;
+			},
+			storage: { from: () => ({ list: vi.fn().mockResolvedValue({ data: [], error: null }) }) },
+			rpc: vi.fn()
+		};
+		const requestId = '44444444-4444-4444-8444-444444444444';
+		const adapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: serviceClient as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn().mockResolvedValue({
+				status: 202,
+				json: async () => ({ claimed: 0, completed: 0, failed: 0, requestId })
+			}) as never
+		});
+		const operator = createHostedEvidenceOperator({ config, adapters });
+
+		await expect(operator.inspect(manifest)).resolves.toMatchObject({
+			accounts: 1,
+			foreignArtifacts: 0
+		});
+		await operator.remove(manifest);
+		expect(deleted).toBe(true);
 	});
 
 	it('treats a verified missing Auth actor as already cleaned on an A11 retry', async () => {
@@ -501,7 +1661,12 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		};
 		const fetchImpl = vi.fn().mockResolvedValue({
 			status: 202,
-			json: async () => ({ requestId: '44444444-4444-4444-8444-444444444444' })
+			json: async () => ({
+				claimed: 0,
+				completed: 0,
+				failed: 0,
+				requestId: '44444444-4444-4444-8444-444444444444'
+			})
 		});
 		const adapters = createSupabaseHostedEvidenceAdapters({
 			config,
@@ -613,7 +1778,12 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			cleanupSecret: 'x'.repeat(32),
 			fetchImpl: vi.fn().mockResolvedValue({
 				status: 202,
-				json: async () => ({ requestId: '44444444-4444-4444-8444-444444444444' })
+				json: async () => ({
+					claimed: 0,
+					completed: 0,
+					failed: 0,
+					requestId: '44444444-4444-4444-8444-444444444444'
+				})
 			}) as never
 		});
 		const operator = createHostedEvidenceOperator({ config, adapters });
@@ -665,6 +1835,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			.mockResolvedValueOnce(cleanInventory({ accounts: 1 }))
 			.mockResolvedValueOnce(cleanInventory());
 		const remove = vi.fn().mockResolvedValue(undefined);
+		const purgeModeratorTotpSecrets = vi.fn().mockResolvedValue(undefined);
 		try {
 			await persistHostedRunManifest(config, manifest, manifestPath);
 			await expect(loadHostedRunManifest(config, manifestPath)).resolves.toEqual(manifest);
@@ -674,10 +1845,12 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 					environment: baseEnvironment,
 					manifestPath,
 					operator: { inspect, remove },
+					credentialStore: { purgeModeratorTotpSecrets },
 					logger: { info: vi.fn() }
 				})
 			).rejects.toThrow(/A11 cleanup gate is disabled/u);
 			expect(remove).not.toHaveBeenCalled();
+			expect(purgeModeratorTotpSecrets).not.toHaveBeenCalled();
 			await expect(loadHostedRunManifest(config, manifestPath)).resolves.toEqual(manifest);
 
 			await expect(
@@ -686,13 +1859,278 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 					environment: approvedCleanupEnvironment,
 					manifestPath,
 					operator: { inspect, remove },
+					credentialStore: { purgeModeratorTotpSecrets },
 					logger: { info: vi.fn() }
 				})
 			).resolves.toEqual({ cleaned: true, counts: cleanInventory() });
 			expect(remove).toHaveBeenCalledOnce();
+			expect(purgeModeratorTotpSecrets).toHaveBeenCalledOnce();
 			await expect(loadHostedRunManifest(config, manifestPath)).rejects.toThrow(
 				/hosted run manifest is unavailable/u
 			);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('retries authenticated tombstone finalization after the manifest was removed', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = reporterManifest(config);
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		const manifestPath = join(directory, 'run.json');
+		const inspect = vi
+			.fn()
+			.mockResolvedValueOnce(cleanInventory({ accounts: 1 }))
+			.mockResolvedValueOnce(cleanInventory());
+		const remove = vi.fn().mockResolvedValue(undefined);
+		const purgeModeratorTotpSecrets = vi.fn().mockResolvedValue(undefined);
+		const finalizePurgeTombstone = vi
+			.fn()
+			.mockRejectedValueOnce(new Error('transient local file lock'))
+			.mockResolvedValueOnce(undefined);
+		try {
+			await persistHostedRunManifest(config, manifest, manifestPath);
+			await expect(
+				cleanupHostedManifestFile({
+					config,
+					environment: approvedCleanupEnvironment,
+					manifestPath,
+					operator: { inspect, remove },
+					credentialStore: { purgeModeratorTotpSecrets, finalizePurgeTombstone },
+					logger: { info: vi.fn() }
+				})
+			).rejects.toThrow(/moderator credential tombstone removal failed/u);
+			await expect(loadHostedRunManifest(config, manifestPath)).rejects.toThrow(
+				/hosted run manifest is unavailable/u
+			);
+
+			await expect(
+				cleanupHostedManifestFile({
+					config,
+					environment: approvedCleanupEnvironment,
+					manifestPath,
+					operator: { inspect, remove },
+					credentialStore: { purgeModeratorTotpSecrets, finalizePurgeTombstone },
+					logger: { info: vi.fn() }
+				})
+			).resolves.toEqual({ cleaned: true, counts: cleanInventory() });
+			expect(remove).toHaveBeenCalledOnce();
+			expect(purgeModeratorTotpSecrets).toHaveBeenCalledOnce();
+			expect(finalizePurgeTombstone).toHaveBeenCalledTimes(2);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('authenticates the concrete purged store before missing-manifest recovery', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		const manifestPath = join(directory, 'missing-run.json');
+		const storePath = join(directory, 'moderator-totp.enc');
+		const store = createEncryptedModeratorCredentialStore({
+			filePath: storePath,
+			encryptionKey: 'k'.repeat(48),
+			projectRef: config.target.projectRef,
+			runId: config.runId
+		});
+		const inspect = vi.fn();
+		const remove = vi.fn();
+		try {
+			await store.initializeModeratorTotpSecrets();
+			await store.purgeModeratorTotpSecrets();
+
+			await expect(
+				cleanupHostedManifestFile({
+					config,
+					environment: approvedCleanupEnvironment,
+					manifestPath,
+					operator: { inspect, remove },
+					credentialStore: store,
+					logger: { info: vi.fn() }
+				})
+			).resolves.toEqual({ cleaned: true, counts: cleanInventory() });
+			expect(inspect).not.toHaveBeenCalled();
+			expect(remove).not.toHaveBeenCalled();
+			await expect(stat(storePath)).rejects.toMatchObject({ code: 'ENOENT' });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('fails closed for non-finalizable concrete stores when the manifest is absent', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		const encryptionKey = 'k'.repeat(48);
+		const wrongEncryptionKey = 'w'.repeat(48);
+		try {
+			for (const scenario of ['missing', 'active', 'wrong-key', 'corrupt'] as const) {
+				const manifestPath = join(directory, `${scenario}.json`);
+				const storePath = join(directory, `${scenario}.enc`);
+				const exactStore = createEncryptedModeratorCredentialStore({
+					filePath: storePath,
+					encryptionKey,
+					projectRef: config.target.projectRef,
+					runId: config.runId
+				});
+				if (scenario !== 'missing') await exactStore.initializeModeratorTotpSecrets();
+				if (scenario === 'wrong-key' || scenario === 'corrupt') {
+					await exactStore.purgeModeratorTotpSecrets();
+				}
+				if (scenario === 'corrupt') await writeFile(storePath, 'not-an-envelope\n');
+				const recoveryStore =
+					scenario === 'wrong-key'
+						? createEncryptedModeratorCredentialStore({
+								filePath: storePath,
+								encryptionKey: wrongEncryptionKey,
+								projectRef: config.target.projectRef,
+								runId: config.runId
+							})
+						: exactStore;
+				const inspect = vi.fn();
+				const remove = vi.fn();
+				const purgeModeratorTotpSecrets = vi.fn(() =>
+					recoveryStore.purgeModeratorTotpSecrets()
+				);
+				const finalizePurgeTombstone = vi.fn(() => recoveryStore.finalizePurgeTombstone());
+
+				await expect(
+					cleanupHostedManifestFile({
+						config,
+						environment: approvedCleanupEnvironment,
+						manifestPath,
+						operator: { inspect, remove },
+						credentialStore: {
+							credentialStoreId: recoveryStore.credentialStoreId,
+							purgeModeratorTotpSecrets,
+							finalizePurgeTombstone
+						},
+						logger: { info: vi.fn() }
+					})
+				).rejects.toThrow(/moderator credential tombstone removal failed/u);
+				expect(inspect).not.toHaveBeenCalled();
+				expect(remove).not.toHaveBeenCalled();
+				expect(purgeModeratorTotpSecrets).not.toHaveBeenCalled();
+				expect(finalizePurgeTombstone).toHaveBeenCalledOnce();
+				if (scenario === 'missing') {
+					await expect(stat(storePath)).rejects.toMatchObject({ code: 'ENOENT' });
+				} else {
+					await expect(readFile(storePath, 'utf8')).resolves.toBeTruthy();
+				}
+			}
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('does not finalize a concrete tombstone without the exact A11 gate and run', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		try {
+			for (const scenario of ['gate', 'run'] as const) {
+				const manifestPath = join(directory, `${scenario}.json`);
+				const storePath = join(directory, `${scenario}.enc`);
+				const store = createEncryptedModeratorCredentialStore({
+					filePath: storePath,
+					encryptionKey: 'k'.repeat(48),
+					projectRef: config.target.projectRef,
+					runId: config.runId
+				});
+				await store.initializeModeratorTotpSecrets();
+				await store.purgeModeratorTotpSecrets();
+				const inspect = vi.fn();
+				const remove = vi.fn();
+				const purgeModeratorTotpSecrets = vi.fn(() => store.purgeModeratorTotpSecrets());
+				const finalizePurgeTombstone = vi.fn(() => store.finalizePurgeTombstone());
+				const environment =
+					scenario === 'gate'
+						? baseEnvironment
+						: {
+								...approvedCleanupEnvironment,
+								E2E_REAL_REPORT_EVIDENCE_RUN_ID: 'gate3-20260809-0002'
+							};
+
+				await expect(
+					cleanupHostedManifestFile({
+						config,
+						environment,
+						manifestPath,
+						operator: { inspect, remove },
+						credentialStore: {
+							credentialStoreId: store.credentialStoreId,
+							purgeModeratorTotpSecrets,
+							finalizePurgeTombstone
+						},
+						logger: { info: vi.fn() }
+					})
+				).rejects.toThrow(
+					scenario === 'gate'
+						? /A11 cleanup gate is disabled/u
+						: /run manifest target does not match approved staging/u
+				);
+				expect(inspect).not.toHaveBeenCalled();
+				expect(remove).not.toHaveBeenCalled();
+				expect(purgeModeratorTotpSecrets).not.toHaveBeenCalled();
+				expect(finalizePurgeTombstone).not.toHaveBeenCalled();
+				await expect(readFile(storePath, 'utf8')).resolves.toBeTruthy();
+			}
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('keeps the manifest when the A11 credential purge cannot be authenticated', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = reporterManifest(config);
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		const manifestPath = join(directory, 'run.json');
+		try {
+			await persistHostedRunManifest(config, manifest, manifestPath);
+			await expect(
+				cleanupHostedManifestFile({
+					config,
+					environment: approvedCleanupEnvironment,
+					manifestPath,
+					operator: {
+						inspect: vi.fn().mockResolvedValue(cleanInventory()),
+						remove: vi.fn()
+					},
+					credentialStore: {
+						purgeModeratorTotpSecrets: vi
+							.fn()
+							.mockRejectedValue(new Error(`wrong key ${syntheticTotpSecret}`))
+					},
+					logger: { info: vi.fn() }
+				})
+			).rejects.toThrow(/moderator credential purge failed/u);
+			await expect(loadHostedRunManifest(config, manifestPath)).resolves.toEqual(manifest);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects a copied or substituted credential store before hosted A11 cleanup', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = createHostedRunManifest(config, { credentialStoreId: 'a'.repeat(64) });
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		const manifestPath = join(directory, 'run.json');
+		const inspect = vi.fn();
+		try {
+			await persistHostedRunManifest(config, manifest, manifestPath);
+			await expect(
+				cleanupHostedManifestFile({
+					config,
+					environment: approvedCleanupEnvironment,
+					manifestPath,
+					operator: { inspect, remove: vi.fn() },
+					credentialStore: {
+						credentialStoreId: 'b'.repeat(64),
+						purgeModeratorTotpSecrets: vi.fn()
+					},
+					logger: { info: vi.fn() }
+				})
+			).rejects.toThrow('credential store binding is invalid');
+			expect(inspect).not.toHaveBeenCalled();
+			await expect(loadHostedRunManifest(config, manifestPath)).resolves.toEqual(manifest);
 		} finally {
 			await rm(directory, { recursive: true, force: true });
 		}
@@ -709,10 +2147,13 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		expect(hostedSpec).toContain("test('cleans only the persisted A10 manifest under A11'");
 		expect(hostedSpec).toContain('test.skip(!HOSTED_SCENARIO_ENABLED');
 		expect(hostedSpec).toContain('test.skip(!HOSTED_CLEANUP_ENABLED');
-		expect(hostedSpec).toContain('const HOSTED_CLEANUP_REQUESTED');
-		expect(hostedSpec).toContain(
-			'HOSTED_SCENARIO_ENABLED = HOSTED_RUN_ENABLED && !HOSTED_CLEANUP_REQUESTED'
-		);
+		expect(hostedSpec).toContain('isHostedA10ScenarioApproved(process.env)');
+		expect(hostedSpec).toContain('validateHostedA10Environment(process.env)');
+		expect(hostedSpec).toContain('validateHostedCleanupEnvironment(process.env)');
+		expect(hostedSpec).toContain('createEncryptedModeratorCredentialStore');
+		expect(hostedSpec).toContain('getModeratorTotpSecret');
+		expect(hostedSpec).toContain('credentialStore,');
+		expect(hostedSpec).not.toContain('_TOTP_SECRET');
 		expect(hostedSpec).not.toContain('await cleanupHostedRun({');
 	});
 

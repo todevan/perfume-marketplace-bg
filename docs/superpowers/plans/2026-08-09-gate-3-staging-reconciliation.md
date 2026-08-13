@@ -498,11 +498,15 @@ On any subsequent security failure, disable public signup and stop hosted testin
 
 ## 10. Task 7 — Provision or verify synthetic identities
 
-Use the target-locked operator only after A9. Account values live in a trusted one-session environment/credential store and are cleared afterward.
+Use `pnpm a9:staging:provision` only under A9. Actor credentials are supplied
+to the trusted process and retained in a separate owner-controlled secret
+system only as long as A10/A11 require them. The manifest and encrypted
+moderator credential store live in one ACL-hardened run directory outside the
+repository; their encryption key is retained separately through A11.
 
 | Actor | Required state | Provisioning rule |
 |---|---|---|
-| Ordinary reporter | Confirmed email/password identity, active membership, ordinary `user` role | Create/reuse synthetic account, claim open registration, accept current consents, complete onboarding |
+| Ordinary reporter | Confirmed email/password identity, active membership, ordinary `user` role | Create a fresh synthetic account only after exact absence attestation, claim open registration, accept current consents, complete onboarding |
 | Ordinary cross-user/target | Different confirmed active ordinary account | Same flow; email/username must differ from reporter |
 | Assigned moderator | Confirmed active account, `moderator` role, enrolled verified TOTP factor | Elevate only after explicit A9; preserve AAL1 password session and obtain AAL2 only through TOTP |
 | Unassigned moderator | Different confirmed active account, `moderator` role, separate enrolled TOTP | Must never claim/receive the test report |
@@ -512,8 +516,36 @@ Rules:
 
 - Prefer fresh throwaway accounts so all artifacts can be deleted.
 - Do not silently reuse an unknown user or alter a real account.
+- Before any hosted client action, exclusively reserve an authenticated empty
+  credential store and empty manifest in the same ACL-hardened directory.
+  Existing final paths are a stop condition and are never overwritten.
+- Bind both files with a runtime-only provisioning attempt ID and authenticated
+  canonical credential-store identity. Checkpoint a role-only pending actor
+  intent before each Auth create so A11 can recover a provider commit that
+  occurred before the user ID checkpoint. Parallel attempts have different
+  attempt IDs and cannot reconcile-delete one another's actors.
+- Validate each email, 12–128 character password, and 3–40 character
+  onboarding-safe username before mutation, then prove the exact email absent
+  immediately before its create call. A rerun never deletes a prior actor.
 - The service role may create/confirm synthetic fixtures and set the two roles only inside the guarded operator; user lifecycle and access assertions use each actor's own session.
-- TOTP enrollment/verification occurs as the moderator; seeds are never attached to Playwright traces, HTML reports, screenshots, docs, or logs.
+- TOTP enrollment/verification occurs as the moderator. Supabase generates the
+  seeds; the owner never supplies them. A9 stores only authenticated
+  scrypt-derived AES-256-GCM ciphertext outside the repository. A10 retrieves
+  the exact seed through that store, and A11 purges the store after verified
+  cleanup and before deleting the manifest.
+- Plaintext seeds never enter environment variables, `.env` files, manifests,
+  Playwright traces, HTML reports, screenshots, docs, logs, receipts, or chat.
+- A9 compensation deletes the stored role credential. Wrong-key or corrupt
+  ciphertext fails closed without exposing the seed or deleting the retry
+  manifest.
+- A11 treats a missing or unreadable credential store as a purge failure while
+  the manifest exists; only authenticated deletion permits manifest removal.
+- A11 purge first writes an authenticated empty tombstone bound to the original
+  store path. This makes a manifest-unlink retry safe and rejects a copied store
+  substituted at another path; the tombstone is removed after the manifest. If
+  that final unlink fails, the same A11 entrypoint retries only after
+  authenticating the path/run-bound purged tombstone, and continues to fail
+  closed for a missing, unreadable, unauthenticated, or active store.
 - The hosted Playwright config uses one Chromium worker, no local web server, no retry trace/video, and a line/sanitized reporter.
 - Record opaque run ID and actor role only, not email or credential.
 
@@ -528,6 +560,12 @@ Pre-account acceptance:
 ---
 
 ## 11. Task 8 — Hosted report-evidence scenario matrix
+
+Pre-A10 stop condition: do not start hosted report submission until the A10
+operator durably journals its mutation intent or can recover the exact report
+and upload coordinates after a process failure between the successful HTTP
+response and manifest checkpoint. The A9 actor/credential runner does not
+exercise this path; it remains a separate A10 implementation boundary.
 
 This task requires A10. Run only after every prior prerequisite is green. A missing UI element is never proof of authorization denial.
 
@@ -704,6 +742,14 @@ SUPABASE_URL                       (Edge Function runtime)
 ```text
 E2E_REAL_RUN
 E2E_REAL_REPORT_EVIDENCE_RUN
+E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN
+E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL
+E2E_REAL_REPORT_EVIDENCE_RUN_ID
+E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+E2E_REAL_REPORT_EVIDENCE_PROVISIONED_AFTER
+E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH
+E2E_REAL_REPORT_EVIDENCE_TOTP_CREDENTIAL_PATH
+E2E_REAL_REPORT_EVIDENCE_TOTP_ENCRYPTION_KEY
 E2E_REAL_BASE_URL
 E2E_REAL_TURNSTILE_TESTING
 E2E_REAL_REPORTER_EMAIL
@@ -715,17 +761,18 @@ E2E_REAL_CROSS_USER_USERNAME
 E2E_REAL_ASSIGNED_MODERATOR_EMAIL
 E2E_REAL_ASSIGNED_MODERATOR_PASSWORD
 E2E_REAL_ASSIGNED_MODERATOR_USERNAME
-E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET
 E2E_REAL_UNASSIGNED_MODERATOR_EMAIL
 E2E_REAL_UNASSIGNED_MODERATOR_PASSWORD
 E2E_REAL_UNASSIGNED_MODERATOR_USERNAME
-E2E_REAL_UNASSIGNED_MODERATOR_TOTP_SECRET
-E2E_REAL_ADMIN_EMAIL               (optional; must remain unset unless separately approved)
-E2E_REAL_ADMIN_PASSWORD            (optional; must remain unset unless separately approved)
-E2E_REAL_ADMIN_TOTP_SECRET         (optional; must remain unset unless separately approved)
 ```
 
-Passwords, TOTP seeds, and privileged provider values must be supplied through a trusted local secret source/session, never a tracked file, chat, GitHub issue/PR body, Playwright artifact, or documentation.
+Administrator actor inputs are forbidden for A9/A10/A11. Passwords, the TOTP
+encryption key, and privileged provider values must be supplied through a
+trusted local process/secret source, never a tracked file, `.env` file, chat,
+GitHub issue/PR body, shell command argument, Playwright artifact, or
+documentation. TOTP seeds are generated by Supabase and exist in plaintext
+only inside the narrow A9/A10 process memory needed for enrollment or the
+current challenge.
 
 ---
 

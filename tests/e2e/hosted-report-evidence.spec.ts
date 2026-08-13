@@ -1,7 +1,8 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 import { deflateSync } from 'node:zlib';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createEncryptedModeratorCredentialStore } from '../../scripts/hosted-a9-credential-store.mjs';
 import {
 	expect,
 	test,
@@ -18,12 +19,15 @@ import {
 	createHostedRunManifest,
 	createSanitizedOperatorRecord,
 	createSupabaseHostedEvidenceAdapters,
+	generateTotpCode,
+	isHostedA10ScenarioApproved,
+	loadHostedRunManifest,
 	persistHostedRunManifest,
-	registerHostedActor,
 	registerHostedQueueRow,
 	registerHostedReport,
 	registerHostedUpload,
-	validateHostedOperatorEnvironment
+	validateHostedA10Environment,
+	validateHostedCleanupEnvironment
 } from '../../scripts/hosted-report-evidence-operator.mjs';
 
 const REQUIRED_ENVIRONMENT = [
@@ -32,6 +36,8 @@ const REQUIRED_ENVIRONMENT = [
 	'E2E_REAL_TURNSTILE_TESTING',
 	'E2E_REAL_REPORT_EVIDENCE_RUN_ID',
 	'E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH',
+	'E2E_REAL_REPORT_EVIDENCE_TOTP_CREDENTIAL_PATH',
+	'E2E_REAL_REPORT_EVIDENCE_TOTP_ENCRYPTION_KEY',
 	'E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE',
 	'E2E_REAL_REPORT_EVIDENCE_PROVISIONED_AFTER',
 	'PUBLIC_SUPABASE_URL',
@@ -50,25 +56,20 @@ const REQUIRED_ENVIRONMENT = [
 	'E2E_REAL_ASSIGNED_MODERATOR_EMAIL',
 	'E2E_REAL_ASSIGNED_MODERATOR_PASSWORD',
 	'E2E_REAL_ASSIGNED_MODERATOR_USERNAME',
-	'E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET',
 	'E2E_REAL_UNASSIGNED_MODERATOR_EMAIL',
 	'E2E_REAL_UNASSIGNED_MODERATOR_PASSWORD',
-	'E2E_REAL_UNASSIGNED_MODERATOR_USERNAME',
-	'E2E_REAL_UNASSIGNED_MODERATOR_TOTP_SECRET'
+	'E2E_REAL_UNASSIGNED_MODERATOR_USERNAME'
 ] as const;
 const HOSTED_RUN_ENABLED =
 	process.env.E2E_REAL_RUN === 'true' &&
 	process.env.E2E_REAL_REPORT_EVIDENCE_RUN === 'true' &&
 	REQUIRED_ENVIRONMENT.every((name) => Boolean(process.env[name]?.trim()));
-const HOSTED_CLEANUP_REQUESTED = Boolean(
-	process.env.E2E_REAL_REPORT_EVIDENCE_CLEANUP_RUN ||
-		process.env.E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL
-);
 const HOSTED_CLEANUP_ENABLED =
 	HOSTED_RUN_ENABLED &&
 	process.env.E2E_REAL_REPORT_EVIDENCE_CLEANUP_RUN === 'true' &&
 	process.env.E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL === 'A11';
-const HOSTED_SCENARIO_ENABLED = HOSTED_RUN_ENABLED && !HOSTED_CLEANUP_REQUESTED;
+const HOSTED_SCENARIO_ENABLED =
+	HOSTED_RUN_ENABLED && isHostedA10ScenarioApproved(process.env);
 const HOSTED_SKIP_REASON =
 	'Hosted report-evidence verification requires both explicit real-run flags and every approved secure input.';
 const MAX_EVIDENCE_BYTES = 10 * 1024 * 1024;
@@ -79,7 +80,6 @@ interface ActorCredentials {
 	email: string;
 	password: string;
 	username: string;
-	totpSecret?: string;
 }
 
 interface HostedConfiguration {
@@ -335,44 +335,28 @@ async function signInActor(client: SupabaseClient, actor: ActorCredentials): Pro
 	return data.user.id;
 }
 
-function decodeBase32(secret: string): Buffer {
-	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-	const normalized = secret.toUpperCase().replace(/[\s=-]/gu, '');
-	if (!normalized || [...normalized].some((character) => !alphabet.includes(character))) {
-		throw new Error('Synthetic moderator TOTP input is invalid.');
-	}
-	let bits = '';
-	for (const character of normalized) {
-		bits += alphabet.indexOf(character).toString(2).padStart(5, '0');
-	}
-	const bytes: number[] = [];
-	for (let index = 0; index + 8 <= bits.length; index += 8) {
-		bytes.push(Number.parseInt(bits.slice(index, index + 8), 2));
-	}
-	return Buffer.from(bytes);
+type ModeratorRole = 'assigned-moderator' | 'unassigned-moderator';
+type ModeratorCredentialStore = ReturnType<typeof createEncryptedModeratorCredentialStore>;
+
+async function moderatorTotpCode(
+	credentialStore: ModeratorCredentialStore,
+	role: ModeratorRole
+): Promise<string> {
+	const secret = await credentialStore.getModeratorTotpSecret({ role });
+	return generateTotpCode(secret, Date.now());
 }
 
-function currentTotp(secret: string): string {
-	const counterBytes = Buffer.alloc(8);
-	counterBytes.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30_000)));
-	const digest = createHmac('sha1', decodeBase32(secret)).update(counterBytes).digest();
-	const offset = digest[digest.length - 1] & 0x0f;
-	const binary =
-		((digest[offset] & 0x7f) << 24) |
-		((digest[offset + 1] & 0xff) << 16) |
-		((digest[offset + 2] & 0xff) << 8) |
-		(digest[offset + 3] & 0xff);
-	return String(binary % 1_000_000).padStart(6, '0');
-}
-
-async function elevateToAal2(client: SupabaseClient, actor: ActorCredentials): Promise<void> {
-	if (!actor.totpSecret) throw new Error('Synthetic moderator MFA configuration is incomplete.');
+async function elevateToAal2(
+	client: SupabaseClient,
+	role: ModeratorRole,
+	credentialStore: ModeratorCredentialStore
+): Promise<void> {
 	const { data: factors, error: factorError } = await client.auth.mfa.listFactors();
 	const factor = factors?.totp.find((entry) => entry.status === 'verified');
 	if (factorError || !factor) throw new Error('Synthetic moderator has no verified TOTP factor.');
 	const { error } = await client.auth.mfa.challengeAndVerify({
 		factorId: factor.id,
-		code: currentTotp(actor.totpSecret)
+		code: await moderatorTotpCode(credentialStore, role)
 	});
 	if (error) throw new Error('Synthetic moderator AAL2 verification failed.');
 	const { data: assurance } = await client.auth.mfa.getAuthenticatorAssuranceLevel();
@@ -547,8 +531,14 @@ test.describe('hosted report-evidence security matrix', () => {
 			throw new Error('Hosted fixtures are not approved fresh testing actors.');
 		}
 
-		const configuration = validateHostedOperatorEnvironment(process.env) as HostedConfiguration;
+		const configuration = validateHostedA10Environment(process.env) as HostedConfiguration;
 		const publishableKey = requiredEnvironment('PUBLIC_SUPABASE_PUBLISHABLE_KEY');
+		const credentialStore = createEncryptedModeratorCredentialStore({
+			filePath: requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_TOTP_CREDENTIAL_PATH'),
+			encryptionKey: requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_TOTP_ENCRYPTION_KEY'),
+			projectRef: configuration.target.projectRef,
+			runId: configuration.runId
+		});
 		const adapters = createSupabaseHostedEvidenceAdapters({
 			config: configuration,
 			serviceClient: createClient(configuration.target.supabaseUrl, configuration.serviceKey, {
@@ -584,32 +574,24 @@ test.describe('hosted report-evidence security matrix', () => {
 				operator.attestFreshActor('unassigned-moderator', unassignedModeratorId)
 			]);
 
-		let manifest: RunManifest = createHostedRunManifest(configuration);
-		manifest = registerHostedActor(
-			manifest,
-			reporterReceipt.role,
-			reporterReceipt.userId,
-			reporterReceipt.createdAt
+		let manifest: RunManifest = await loadHostedRunManifest(
+			configuration,
+			requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH')
 		);
-		manifest = registerHostedActor(
-			manifest,
-			crossUserReceipt.role,
-			crossUserReceipt.userId,
-			crossUserReceipt.createdAt
-		);
-		manifest = registerHostedActor(
-			manifest,
-			assignedReceipt.role,
-			assignedReceipt.userId,
-			assignedReceipt.createdAt
-		);
-		manifest = registerHostedActor(
-			manifest,
-			unassignedReceipt.role,
-			unassignedReceipt.userId,
-			unassignedReceipt.createdAt
-		);
-		await persistManifest(configuration, manifest);
+		const attestedActors = [reporterReceipt, crossUserReceipt, assignedReceipt, unassignedReceipt];
+		if (
+			manifest.credentialStoreId !== credentialStore.credentialStoreId ||
+			manifest.pendingActors.length !== 0 ||
+			manifest.actors.length !== 4 ||
+			attestedActors.some(
+				(receipt) =>
+					!manifest.actors.some(
+						(actor) => actor.role === receipt.role && actor.userId === receipt.userId
+					)
+			)
+		) {
+			throw new Error('Hosted A9 manifest does not match the attested actors and credential store.');
+		}
 		let lastMeasured = (await operator.inspect(manifest)) as ScopedCounts;
 		if (
 			lastMeasured.accounts !== 4 ||
@@ -825,11 +807,11 @@ test.describe('hosted report-evidence security matrix', () => {
 			});
 
 			await test.step('5. assigned moderator self-claims at AAL2 and reads exact evidence', async () => {
-				if (!upload || !assignedModerator.totpSecret) {
+				if (!upload) {
 					throw new Error('Assigned moderator precondition is missing.');
 				}
 				const before = (await operator.inspect(manifest)) as ScopedCounts;
-				await elevateToAal2(assignedModeratorClient, assignedModerator);
+				await elevateToAal2(assignedModeratorClient, 'assigned-moderator', credentialStore);
 				const claim = await assignedModeratorClient
 					.from('reports')
 					.update({ assigned_to: assignedModeratorId, status: 'investigating' })
@@ -846,7 +828,9 @@ test.describe('hosted report-evidence security matrix', () => {
 				expect(await operator.inspectAssignmentAudit(manifest, reportId, assignedModeratorId)).toBe(1);
 				const millisecondsLeft = 30_000 - (Date.now() % 30_000);
 				await moderatorPage.waitForTimeout(millisecondsLeft + 250);
-				await moderatorPage.locator('#mfa-code').fill(currentTotp(assignedModerator.totpSecret));
+				await moderatorPage
+					.locator('#mfa-code')
+					.fill(await moderatorTotpCode(credentialStore, 'assigned-moderator'));
 				await moderatorPage.locator('button[type="submit"]').click();
 				await moderatorPage.waitForURL((url) => url.pathname === '/admin', { timeout: 30_000 });
 				const read = await storageDownload(assignedModeratorClient, upload.storage_path);
@@ -872,7 +856,11 @@ test.describe('hosted report-evidence security matrix', () => {
 			await test.step('6. unassigned AAL2 moderator receives a real Storage denial', async () => {
 				if (!upload) throw new Error('Unassigned moderator precondition is missing.');
 				const before = (await operator.inspect(manifest)) as ScopedCounts;
-				await elevateToAal2(unassignedModeratorClient, unassignedModerator);
+				await elevateToAal2(
+					unassignedModeratorClient,
+					'unassigned-moderator',
+					credentialStore
+				);
 				const denied = await storageDownload(unassignedModeratorClient, upload.storage_path);
 				const assignedRead = await storageDownload(assignedModeratorClient, upload.storage_path);
 				expect(denied.status >= 400 && denied.bytes === null).toBe(true);
@@ -1179,7 +1167,13 @@ test.describe('hosted report-evidence security matrix', () => {
 
 	test('cleans only the persisted A10 manifest under A11', async ({}, testInfo) => {
 		test.skip(!HOSTED_CLEANUP_ENABLED, HOSTED_SKIP_REASON);
-		const configuration = validateHostedOperatorEnvironment(process.env) as HostedConfiguration;
+		const configuration = validateHostedCleanupEnvironment(process.env) as HostedConfiguration;
+		const credentialStore = createEncryptedModeratorCredentialStore({
+			filePath: requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_TOTP_CREDENTIAL_PATH'),
+			encryptionKey: requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_TOTP_ENCRYPTION_KEY'),
+			projectRef: configuration.target.projectRef,
+			runId: configuration.runId
+		});
 		const adapters = createSupabaseHostedEvidenceAdapters({
 			config: configuration,
 			serviceClient: createClient(configuration.target.supabaseUrl, configuration.serviceKey, {
@@ -1194,6 +1188,7 @@ test.describe('hosted report-evidence security matrix', () => {
 			environment: process.env,
 			manifestPath: requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH'),
 			operator,
+			credentialStore,
 			logger: {
 				info(record) {
 					testInfo.annotations.push({
