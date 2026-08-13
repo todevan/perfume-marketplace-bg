@@ -8,7 +8,7 @@ The older inventory paragraph below is historical implementation context; where 
 
 Работеща SvelteKit основа за затворен marketplace за нови и употребявани парфюми, продажба, размяна и обяви „Търся“. Името, логото и домейнът остават конфигурационни.
 
-Кодът вече съдържа production data flow, invite-only authentication и forward-only Supabase hardening. Изолираният Frankfurt staging backend е свързан, мигриран и остава затворен без потребители или покани. Production, домейнът, външните доставчици и одобрените правни текстове остават launch gates.
+Кодът вече съдържа production data flow, public email/password authentication и forward-only Supabase hardening. Изолираният Frankfurt staging backend и свързаните hosted/provider факти са исторически checkpoint, а не текущо доказателство. Production, домейнът, външните доставчици и одобрените правни текстове остават launch gates.
 
 ## Реализирано
 

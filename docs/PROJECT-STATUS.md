@@ -4,13 +4,14 @@ Last updated: 2026-08-13
 
 ## Current verdict
 
-**Development baseline: green.**
-**Owner-approved auth simplification: implemented and locally verified.**
-**Hosted staging activation and production launch readiness: blocked.**
+**Local engineering baseline: healthy.**
+**Gate 3 staging reconciliation: active.**
+**A7: closed. A8: closed. A9: unresolved.**
+**Production readiness and production execution: not authorized.**
 
-Phase 1 remains complete and Phase 2 is active. Local Phase 2 work now enforces database-authoritative staff AAL2, bounded request streams, sanitized images-only report evidence, a one-time evidence allocation/finalization ledger, durable rejection/expiry cleanup and effective expired-offer behavior. Hosted evidence acceptance, owner-approved messaging/moderation-evidence/blocking semantics and real multi-session races remain outstanding. Phase 3 and Phase 4 work remains out of scope.
+The active operational track is Gate 3 staging reconciliation, specifically the A9 authenticated hosted-actor evidence boundary. Local code or a locally verified operator foundation does not equal merged, deployed, hosted evidence, or gate closure. Current hosted Auth, migration, Worker, provider, actor, and deployment state must be freshly verified under the authorized gate; it must not be inferred from historical receipts.
 
-Current repository evidence for this snapshot: branch `codex/current-main-20260813`; `HEAD` is `8ef837e4460d7a7df5386e3bb57dfa3120e7a94f`; `origin/main` remains `b00516e6b7c8d870aa18da9e36775f1d13d3c542`. Working changes are documentation-only reconciliation edits plus the intentionally preserved local rescue directory. Graphify is indexed at the authoritative origin baseline `b00516e6b7c8d870aa18da9e36775f1d13d3c542` with 4,920 nodes, 11,781 edges, and 224 communities; its indexed tree was not available.
+Current repository evidence for this snapshot: branch `codex/current-main-20260813`; `HEAD` is `9cc7af960243fbecb5646b55c1bc4180df1f9098`; `origin/main` remains `b00516e6b7c8d870aa18da9e36775f1d13d3c542`. Graphify is indexed at the origin baseline `b00516e6b7c8d870aa18da9e36775f1d13d3c542` with 4,920 nodes, 11,781 edges, and 224 communities; its indexed tree was not available.
 
 The full repository audit remains recorded in [AUDIT-2026-08-02.md](./AUDIT-2026-08-02.md). Its dated invite/phone observations are historical and are superseded by the 2026-08-02 owner decision for current behavior.
 
@@ -35,6 +36,10 @@ The full repository audit remains recorded in [AUDIT-2026-08-02.md](./AUDIT-2026
 - Report-evidence Storage reads now require attached ledger state and are limited to the reporter or the assigned AAL2 moderator of an investigating case.
 - Payments, monetisation and unrelated roadmap behavior were not changed.
 - Legacy nullable phone state remains dormant for forward-migration compatibility; it is not an activation or marketplace-action gate.
+
+## Completed local security evidence retained for provenance
+
+The following Phase 2 sections record completed local evidence and preserved invariants. They are not the current operational phase; the current phase and gate are Gate 3/A9 above.
 
 ## Phase 2 staff MFA hardening completed locally
 

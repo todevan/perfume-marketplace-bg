@@ -82,7 +82,7 @@
 
 ## 6. Launch последователност
 
-1. **Invite-only free beta:** ръчно набиране на колекционери и малък брой търговци; никакви плащания.
+1. **Free pre-launch beta:** ръчно набиране на колекционери и малък брой търговци; никакви плащания. This sequence is historical planning; current registration policy is public email/password without regular-user phone/SMS verification.
 2. **Liquidity validation:** седмичен cohort review по категория, град и вид сделка; подобряване на време до запитване.
 3. **Merchant tools pilot:** bulk и analytics се тестват безплатно с 5–10 търговци; измерва се реална спестена работа.
 4. **Billing sandbox:** myPOS callback, duplicate event, отказ, refund и entitlement се приемат само при точен server-side статус.

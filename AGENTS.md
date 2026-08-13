@@ -5,7 +5,7 @@ Guide changes for this SvelteKit, TypeScript, Supabase and Cloudflare Worker mar
 
 ## Global rules
 - Favor the existing server-first architecture: routes and server actions coordinate requests, services enforce rules, repositories access data, and domain code holds deterministic marketplace logic.
-- Keep the closed-beta and privacy constraints intact. Do not enable public signup, public profile writes, payments, boosts, ads or other monetization paths unless explicitly requested.
+- Keep the pre-launch privacy and security constraints intact. Regular users use public email/password registration by owner decision, without invitation or phone/SMS verification; email confirmation, onboarding, membership, moderation, privacy, and staff/admin MFA/AAL2 requirements remain. Do not enable public profile writes, payments, boosts, ads or other monetization paths unless explicitly requested.
 - Protect confidential data. Never log secrets, auth tokens, phone numbers, emails or raw profile content.
 - Do not edit existing Supabase migrations. If schema changes are required, add a new forward-only migration and keep the existing migration history intact.
 - Prefer small, reversible changes and validate them with the narrowest relevant command first.

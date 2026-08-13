@@ -13,7 +13,9 @@ Do not copy production credentials into staging. Store secrets in the provider
 or as explicitly listed GitHub repository secrets, never in `wrangler.jsonc`,
 a committed `.env` file, or a pull-request-visible GitHub variable.
 
-## Current hosted staging checkpoint
+## Historical hosted staging checkpoint
+
+This checkpoint is retained as historical operational evidence from 2026-07-28. It is not a statement of current hosted Auth, migration, Storage, Worker, provider, deployment, or rollback state. Current volatile state must be freshly verified under the active Gate 3/A9 authority and recorded in `docs/PROJECT-STATUS.md` or gate-specific evidence.
 
 Checkpoint date: 2026-07-28. This records the then-current backend-connected,
 signup-locked environment. The 2026-08-02 owner decision supersedes the invite
@@ -412,7 +414,7 @@ directory outside the repository with inheritance removed and access granted
 only to the operator account; the runner additionally applies owner-only ACLs
 to every atomic file replacement.
 
-### Enable hosted email/password Auth for registration testing
+### Historical hosted email/password Auth checkpoint
 
 The Frankfurt staging Auth configuration is:
 
