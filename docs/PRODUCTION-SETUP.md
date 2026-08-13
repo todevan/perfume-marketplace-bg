@@ -1,43 +1,133 @@
 # Production setup for the pre-launch marketplace
 
-This runbook describes the engineering setup. It does not replace the legal, accounting or carrier approvals listed in `LAUNCH-GATES.md`.
+## Purpose and authority
 
-## Current GitHub Free operating model
+This runbook defines the engineering and operational setup for isolated staging and future production environments.
 
-The canonical private repository for this phase is
-`todevan/perfume-marketplace-bg`. The previous
-`todevan/remix-of-scent-exchange` repository remains untouched and is not a
-remote, migration source, deployment source, or backup.
+It does not replace:
 
-The current GitHub Free model uses repository secrets and manual staging
-dispatch only. It does not rely on protected branches, required status checks,
-protected environments, or environment reviewers. Those controls may be added
-later if the repository plan and team model support them. Until then:
+- `AGENTS.md`;
+- `docs/MASTER-PLAN.md`;
+- `docs/PROJECT-STATUS.md`;
+- `docs/ARCHITECTURE.md`;
+- `docs/LAUNCH-GATES.md`;
+- `docs/BACKUP-RESTORE.md`;
+- `docs/STAGING-CREDENTIALS.md`;
+- applicable plans under `docs/superpowers/plans/`;
+- applicable policy under `docs/agents/`.
 
-- a successful push is not deployment authorization;
-- staging is dispatched manually for the exact locally/CI-tested commit;
-- only `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are stored as GitHub
-  repository secrets for staging;
-- runtime provider secrets remain in their staging providers;
-- production deployment and production GitHub credentials are not enabled.
+It is not legal, accounting or tax advice.
 
-The absence of GitHub enforcement does not relax the release contract. The
-operator must verify the commit SHA, clean checks, inventory evidence, and
-rollback target before each manual staging dispatch.
+It is also not independent authorization to mutate a hosted provider.
 
-## Environments
+Current GitHub issue scope, named gate scope, repository risk classification and Human Gates still apply.
 
-Use three isolated Supabase projects/data sets:
+In particular:
 
-| Environment | Data | Cloudflare Worker | Purpose |
+```text
+staging runbook instruction
+≠
+authorization for unrelated staging mutation
+
+production runbook instruction
+≠
+authorization for production mutation
+```
+
+Production/provider activation remains protected and must follow the repository's R3 and Human Gate rules.
+
+---
+
+# Current GitHub operating model
+
+The canonical repository is:
+
+`https://github.com/todevan/perfume-marketplace-bg`
+
+The previous repository:
+
+`todevan/remix-of-scent-exchange`
+
+must remain untouched unless an explicit owner-authorized task says otherwise.
+
+It is not:
+
+- the canonical remote;
+- a migration source;
+- a deployment source;
+- a backup source;
+- a source of current release truth.
+
+The current GitHub operating model may use repository secrets and manual staging dispatch without relying on every GitHub branch/environment protection feature.
+
+The absence of GitHub enforcement does not weaken the repository release contract.
+
+A successful push is not deployment authorization.
+
+A merge is not proof of deployment.
+
+A deployment is not proof of correct hosted provider state.
+
+---
+
+## Staging dispatch invariants
+
+Staging deployment must use the exact authorized and verified source revision required by the active gate/release process.
+
+Before dispatch, verify as applicable:
+
+- intended commit SHA;
+- intended tree/source;
+- relevant tests and CI;
+- clean candidate/worktree requirements;
+- target environment identity;
+- current known-good rollback target;
+- provider prerequisites;
+- named-gate scope.
+
+Only the Cloudflare GitHub credentials explicitly required by the repository deployment workflow should live as GitHub repository secrets.
+
+Runtime provider secrets belong in the corresponding hosted provider/environment unless a more specific repository contract explicitly requires otherwise.
+
+Production GitHub credentials and production deployment paths must remain disabled until the applicable production gates and owner authorization permit them.
+
+---
+
+# Environment isolation
+
+Use isolated environments.
+
+| Environment | Data policy | Cloudflare runtime | Purpose |
 |---|---|---|---|
 | Local | synthetic only | local Wrangler/Vite | development and integration tests |
-| Staging | currently empty; synthetic only when enabled | `perfume-marketplace-bg-staging` | migrations and email-registration E2E |
-| Production | registered marketplace users | custom domain Worker | controlled launch |
+| Staging | synthetic/non-production only | `perfume-marketplace-bg-staging` | hosted migrations, provider reconciliation and E2E evidence |
+| Production | real marketplace users only after launch authorization | separate production Worker/custom domain | controlled production launch |
 
-Never copy production personal data into local or staging. Use different Supabase secrets, Resend credentials and Turnstile keys in each environment.
+Never copy production personal data into:
 
-The only authorized hosted staging database target is:
+- local;
+- staging;
+- test fixtures;
+- release artifacts;
+- logs.
+
+Use separate credentials and secrets for staging and production, including as applicable:
+
+- Supabase;
+- Resend;
+- Turnstile;
+- Cloudflare;
+- webhook secrets;
+- scheduler secrets;
+- provider API credentials.
+
+A staging secret must never be reused merely because the corresponding production provider has not yet been provisioned.
+
+---
+
+# Authorized hosted staging target
+
+The authorized hosted staging Supabase target is:
 
 | Property | Required value |
 |---|---|
@@ -47,57 +137,289 @@ The only authorized hosted staging database target is:
 | Region | `eu-central-1` (Frankfurt) |
 | PostgreSQL major/status | `17` / `ACTIVE_HEALTHY` |
 
-Run `pnpm db:staging:verify-target` before every hosted database command. The
-operator refuses a missing link, the previous Stockholm ref, another
-organization or region, an unhealthy project, or a Supabase URL/key mismatch.
+Run:
 
-## One-time account setup
+```bash
+pnpm db:staging:verify-target
+```
 
-1. Keep the verified Frankfurt staging project isolated. Create production
-   separately only after the launch gates approve it.
-2. Enable public email/password signup, keep anonymous signup disabled and email confirmation enabled, the
-   Site URL set to the exact staging Worker origin, and the redirect allow-list
-   limited to `/auth/callback` and `/auth/confirm`. SMTP and CAPTCHA stay
-   unconfigured during the backend-baseline phase.
-3. Keep the existing `perfume-marketplace-bg-staging` Worker isolated. Create
-   a production Worker and custom domain only after the production gates pass.
-4. Configure Cloudflare Images for private originals and sanitized JPEG/WebP derivatives. Do not enable uploads while `IMAGE_PROCESSOR_MODE=disabled`.
-5. Require MFA for every admin and moderator in both Supabase and the upstream administrative accounts.
-6. Deploy `notification-email` and `upload-cleanup`, store their provider/scheduler secrets with `supabase secrets set`, then create an **INSERT-only** Database Webhook for `public.notifications`. Send `x-webhook-secret`; never put a service key in the webhook header.
+before every hosted staging database command for which the repository operator contract requires target verification.
 
-## Secrets and configuration
+The target guard must fail closed on conditions such as:
 
-Start from `.env.example` and use the [staging credentials checklist](STAGING-CREDENTIALS.md) when connecting the external services. Local `.env*` files are ignored. Put hosted Worker secrets in Cloudflare, not in `wrangler.jsonc` or GitHub variables visible to pull requests.
+- missing or incorrect project link;
+- previous/obsolete project ref;
+- wrong organization;
+- wrong region;
+- unhealthy project;
+- Supabase URL mismatch;
+- Supabase key/project mismatch.
 
-`wrangler.jsonc` uses `keep_vars: true`, so a code deployment preserves the secrets and variables provisioned for that Worker environment. Treat the Cloudflare environment settings as controlled infrastructure: record every required key from `.env.example`, restrict who may change it, and verify the deployed values after each rotation.
+Do not disable or bypass target locking merely to make a gate proceed.
 
-Production invariants:
+If the current hosted identity differs from this authority, stop and reconcile the mismatch before mutation.
 
-- `PUBLIC_DEMO_MODE=false` and public email/password signup enabled in Supabase Auth;
-- `PRIVATE_BETA_REQUIRE_STAFF_MFA=true`;
-- every billing, fee, subscription, boost, advertising and payment flag is `false`;
-- `PAYMENT_PROVIDER=disabled`;
-- `IMAGE_PROCESSOR_MODE=cloudflare-images` only after the sanitizer passes its acceptance tests;
-- `LEGAL_CONTENT_APPROVED=true` only after the actual published versions are approved.
-- `NOTIFICATION_WEBHOOK_SECRET` is a unique random value of at least 32 bytes and differs between staging and production.
+---
 
-Run the fail-closed gate before deployment:
+# Hosted mutation scope
+
+A correctly identified staging project is necessary but not sufficient authorization for mutation.
+
+Before changing hosted state, establish:
+
+```text
+correct target
++
+current GitHub issue
++
+named gate/phase scope
++
+applicable risk authority
++
+required Human Gate status
+```
+
+For example, authorization for:
+
+```text
+A9 only
+```
+
+does not authorize:
+
+- an A8 provider mutation;
+- an A10 setup step;
+- unrelated Auth cleanup;
+- unrelated database migration;
+- production configuration;
+- opportunistic infrastructure changes.
+
+If a prerequisite belongs outside the current scope, record the dependency and stop at that boundary rather than silently performing it.
+
+---
+
+# Environment provisioning invariants
+
+## Supabase Auth
+
+The intended regular-user product model uses public email/password signup.
+
+For environments where registration is enabled by the active gate:
+
+- public email/password signup may be enabled;
+- anonymous signup remains disabled;
+- email confirmation remains enabled unless a narrower authorized testing contract explicitly says otherwise;
+- Site URL must use the exact authorized application origin;
+- redirect allow-list must contain only approved authentication callback/confirmation targets.
+
+Temporary gate-specific Auth state must follow the active reconciliation plan.
+
+Do not interpret a temporary disabled signup setting as a return to invite-only product policy.
+
+Legacy invitation behavior may remain only for explicitly supported operator/bootstrap compatibility.
+
+---
+
+## Worker isolation
+
+Keep staging and production Cloudflare Workers separate.
+
+The staging Worker is:
+
+`perfume-marketplace-bg-staging`
+
+Do not repurpose it as the production Worker.
+
+Create or activate production runtime/domain infrastructure only when the production gates and protected-action authority permit it.
+
+---
+
+## Image processing
+
+Cloudflare Images is the trusted normalization path for supported marketplace evidence where the architecture requires it.
+
+Do not permit evidence publication through an untrusted raw-upload path.
+
+When:
+
+```text
+IMAGE_PROCESSOR_MODE=disabled
+```
+
+flows that require trusted sanitization must fail closed rather than silently storing unprocessed evidence as finalized content.
+
+Only enable:
+
+```text
+IMAGE_PROCESSOR_MODE=cloudflare-images
+```
+
+after the applicable binding/provider acceptance has passed.
+
+---
+
+## Staff MFA
+
+Every admin and moderator must use the repository-defined MFA/AAL2 protections.
+
+This applies to:
+
+- application privileged behavior;
+- Supabase access where applicable;
+- upstream/provider administrative accounts where supported and required.
+
+Do not weaken staff MFA to simplify hosted testing.
+
+Synthetic moderators used by an authorized hosted gate must satisfy the same security invariants the gate intends to prove.
+
+---
+
+## Notification and cleanup functions
+
+Deploy the required hosted functions only inside the authorized environment and gate.
+
+Current architectural responsibilities include:
+
+- `notification-email`;
+- `upload-cleanup`.
+
+Store their secrets through the provider's protected secret mechanism.
+
+For Supabase Edge Function secrets, use the approved `supabase secrets` path rather than committing values.
+
+The notification webhook must remain:
+
+- INSERT-only where required by architecture;
+- authenticated with a dedicated webhook secret;
+- independent of the service-role key.
+
+Send the dedicated webhook secret through the approved header.
+
+Never place a Supabase service-role credential in a Database Webhook header.
+
+---
+
+# Secrets and configuration
+
+Start from:
+
+`.env.example`
+
+and use:
+
+`docs/STAGING-CREDENTIALS.md`
+
+for staging provider/credential handling.
+
+Local `.env*` files remain ignored and must not become durable secret storage.
+
+Hosted Worker secrets belong in Cloudflare's protected environment configuration rather than:
+
+- `wrangler.jsonc`;
+- committed files;
+- plaintext documentation;
+- GitHub variables visible to pull requests.
+
+Never commit a real credential, even temporarily.
+
+---
+
+## `keep_vars`
+
+If the current `wrangler.jsonc` configuration uses:
+
+```text
+keep_vars: true
+```
+
+a code deployment may preserve provider variables/secrets already provisioned on that Worker.
+
+Treat this as controlled infrastructure behavior, not as proof that the values are correct.
+
+For every required environment variable or secret:
+
+- know which provider/environment owns it;
+- restrict who may mutate it;
+- verify it after rotation when applicable;
+- do not assume preserved means valid.
+
+---
+
+# Production invariants
+
+Before any authorized production release, the intended production configuration must preserve at least the following product/security invariants:
+
+- `PUBLIC_DEMO_MODE=false`;
+- regular-user public email/password registration follows the current approved product policy;
+- anonymous signup remains disabled;
+- staff/admin MFA remains enforced;
+- billing remains disabled until the paid-service gate explicitly passes;
+- listing fees remain disabled until authorized;
+- subscriptions remain disabled until authorized;
+- boosts remain disabled until authorized;
+- advertising remains disabled until authorized;
+- perfume-transaction payment processing remains disabled;
+- `PAYMENT_PROVIDER=disabled` until a separately authorized paid-platform-service activation;
+- trusted image processing is enabled only after its acceptance gate;
+- approved legal-content flags are true only after the actual published documents are approved;
+- notification webhook secrets are unique per environment and satisfy the repository minimum entropy/length contract.
+
+Do not copy exact production configuration from staging without independently verifying that the production gate authorizes each value.
+
+---
+
+# Production fail-closed readiness gate
+
+Before an authorized production deployment, run the repository's current fail-closed production readiness command:
 
 ```bash
 pnpm check:release -- --env-file=.env.production
 ```
 
-The command checks secrets/configuration, disabled monetisation, the nine
-forward-only migrations `003`–`011`, required legal routes, and two fresh
-release receipts. It intentionally fails on a fresh checkout.
+The executable script is authoritative for the exact current machine-checkable release contract.
 
-Both receipts must identify the exact 40-character `RELEASE_COMMIT_SHA`, the
-approved production host/project/account, and a check time no more than 24
-hours old. The configured SHA-256 values are calculated over the exact receipt
-file bytes; a bare or invented hash is not accepted.
+Do not hardcode a historical migration count or provider list into this runbook when those can evolve with the repository.
 
-Generate the hosted runtime receipt only after querying the target Supabase
-project with the service role:
+The gate should verify the current required combination of:
+
+- production configuration;
+- secret/config readiness;
+- monetisation-disabled state where required;
+- current forward-only migration expectations;
+- legal-route/content requirements;
+- exact release identity;
+- fresh target/provider receipts.
+
+It is expected to fail on an unprepared checkout/environment.
+
+Do not weaken the release script merely to make the gate green.
+
+---
+
+# Release receipts
+
+Where the current release contract requires hosted runtime/provider receipts, they must identify the exact release target and source.
+
+As applicable, receipts should bind evidence to values such as:
+
+- exact `RELEASE_COMMIT_SHA`;
+- production application host;
+- Supabase project ref;
+- Cloudflare account;
+- provider target;
+- check timestamp.
+
+Freshness requirements come from the current executable release contract.
+
+Do not invent or manually edit a receipt merely to satisfy validation.
+
+Configured SHA-256 values must be hashes of the exact evidence/receipt bytes expected by the current script.
+
+---
+
+## Hosted runtime inventory
+
+Where required by the current repository contract, generate the hosted runtime inventory only after querying the intended target:
 
 ```bash
 RELEASE_COMMIT_SHA="$(git rev-parse HEAD)" \
@@ -105,69 +427,151 @@ RELEASE_COMMIT_SHA="$(git rev-parse HEAD)" \
   --receipt-file=.release/hosted-runtime-inventory.json
 ```
 
-Set `HOSTED_RUNTIME_INVENTORY_RECEIPT_PATH` to that JSON file and
-`HOSTED_CRON_INVENTORY_SHA256` to the value printed by the command. The
-production provider acceptance run must similarly write
-`PROVIDER_ATTESTATION_RECEIPT_PATH`. Its top-level shape is:
+Use the output paths/hashes expected by the current release script.
 
-```json
-{
-  "schemaVersion": 1,
-  "kind": "production-provider-attestation",
-  "checkedAt": "2026-07-29T12:00:00.000Z",
-  "commitSha": "40-character-release-commit",
-  "productionAppHost": "market.example.bg",
-  "supabaseProjectRef": "target-project-ref",
-  "cloudflareAccountId": "32-character-account-id",
-  "checks": {
-    "cloudflareImages": {
-      "passed": true,
-      "checkedAt": "2026-07-29T12:00:00.000Z",
-      "evidenceSha256": "64-character-evidence-hash"
-    }
-  }
-}
+Do not treat a receipt generated for:
+
+- another commit;
+- another project;
+- another Cloudflare account;
+- another host;
+- another provider configuration;
+
+as reusable evidence.
+
+Regenerate evidence when the current executable contract requires it.
+
+---
+
+## Provider attestation
+
+Provider attestation must reflect the providers that are actually required by the current architecture and release contract.
+
+Do not preserve obsolete provider requirements solely because an older receipt schema named them.
+
+In particular, regular-user SMS/phone verification is not part of the current authentication model.
+
+Do **not** re-enable Twilio/SMS merely to satisfy a stale historical provider-attestation field.
+
+If the current executable release script still requires a deprecated provider such as `twilioSms`, treat that as a repository contract contradiction:
+
+1. do not fake the provider evidence;
+2. do not reintroduce the removed product requirement;
+3. record/fix the release-contract inconsistency through the normal issue/risk process;
+4. rerun the current release verification afterward.
+
+Likewise, when new required providers are added, their acceptance belongs in the current executable receipt contract rather than only in prose.
+
+---
+
+# Migration discipline
+
+Supabase migration history is forward-only.
+
+Never edit an already applied migration to repair hosted state.
+
+A failed or incomplete hosted change is repaired with a new forward-only migration when schema remediation is authorized.
+
+Do not use remote/linked destructive shortcuts such as:
+
+- `db reset`;
+- migration-history rewriting;
+- schema drops;
+- blanket truncation;
+- destructive migration repair;
+
+unless an explicit protected recovery procedure authorizes that exact operation.
+
+Local reset remains local-only.
+
+---
+
+# Migration and catalogue sequence
+
+For an authorized hosted staging migration batch:
+
+1. Inventory the intended staging target read-only according to `docs/STAGING-CREDENTIALS.md` and the active gate plan.
+2. Stop on unexpected identity, region, migration history, objects, users, Storage, configuration or permissions where the gate defines them as stop conditions.
+3. Run local database reset/tests when required and available.
+4. Run:
+
+```bash
+pnpm db:staging:verify-target
 ```
 
-`checks` must contain exactly `cloudflareImages`, `notificationWebhook`,
-`resendEmail`, `supabaseAuth`, `turnstile`, `twilioSms`, and `uploadCleanup`;
-every check uses the same three-field result shape shown above. Hash the exact
-provider receipt file into `PROVIDER_ATTESTATION_SHA256`. Regenerate both
-receipts after any commit, target, provider configuration, or 24-hour window
-changes.
+5. Run the current dry-run command:
 
-## Migration and catalogue order
+```bash
+pnpm db:staging:push:dry-run
+```
 
-1. Inventory the intended hosted staging project read-only as defined in
-   `STAGING-CREDENTIALS.md`; stop on an identity, region, history, object, user,
-   Storage, configuration, or permissions mismatch.
-2. Run `supabase db reset` locally and `supabase test db` when Docker is
-   available. This reset is local-only.
-3. Run `pnpm db:staging:verify-target`, then
-   `pnpm db:staging:push:dry-run`. Apply only the reviewed forward-only history
-   with `pnpm db:staging:push`; never edit `001` or `002`.
-4. Re-inventory the remote migration history and schema, then run the live
-   RLS/concurrency test suite against synthetic staging accounts.
-5. Run `pnpm seed:staging` from a trusted local shell. Clear the legacy
-   service-role key from the shell immediately after the seed.
-6. Exercise the full Playwright flow with buyer, seller and moderator only
-   after its required providers are configured.
-7. Take and verify a production backup before applying the same migrations to
-   production.
+6. Review the exact pending forward-only history.
+7. Apply only the migration history authorized by the current issue/gate:
 
-Database migrations are forward-only. A failed hosted migration is repaired with a new migration; do not rewrite an already applied file.
-Do not use linked/remote `db reset`, migration repair, schema drops, truncation,
-or history rewriting. If remote state differs from the recorded inventory,
-stop and choose either a new isolated staging project or an explicitly approved
-forward-only remediation.
+```bash
+pnpm db:staging:push
+```
 
-The accepted Frankfurt backend baseline has migrations `001`–`010`, 4 Storage
-buckets with 0 objects, 12 Realtime publication tables, 2 scheduled jobs, and
-0 Auth users or identities. Its atomic catalogue result is 196 brands, 48
-aliases, and 335 editorial memberships, split exactly
-`80/80/80/80/15`. Treat any later mismatch as a stop condition.
+8. Re-inventory hosted migration/schema state.
+9. Run the required RLS/security/concurrency evidence.
+10. Seed synthetic staging data only when the active gate authorizes it.
+11. Exercise hosted E2E only after its required providers and synthetic actors are ready.
 
-## Staging bootstrap sequence
+Do not infer the current migration tip from an old number recorded in this document.
+
+The repository's migration directory plus verified hosted migration history determine the current expected state.
+
+---
+
+## Immutable early migrations
+
+Existing historical migrations remain immutable.
+
+In particular, do not rewrite migrations `001` or `002`.
+
+The same forward-only rule applies to every later migration once it has been applied to a shared hosted environment.
+
+---
+
+# Catalogue integrity
+
+The known catalogue contract includes:
+
+- 196 brands;
+- 48 aliases;
+- 335 editorial memberships;
+- editorial membership split `80/80/80/80/15`.
+
+Use the current catalogue validation tooling as the executable authority for these values.
+
+A catalogue mismatch should be investigated rather than silently repaired during unrelated provider/release work.
+
+Do not assume an old hosted inventory such as "0 users" or "0 Storage objects" remains a permanent expected baseline after staging has legitimately begun hosting synthetic actors/evidence.
+
+Gate-specific inventories must define the state expected at that point in the sequence.
+
+---
+
+# Service-role handling
+
+Service-role credentials are privileged secrets.
+
+When an authorized operator command requires one:
+
+- obtain it through the approved secret path;
+- keep it out of logs and committed files;
+- scope its use to the required command/session;
+- clear it from the shell/session when practical after use;
+- never expose it to browser code;
+- never put it in a public webhook.
+
+Use target-locking and provenance checks where the applicable operator supports them.
+
+---
+
+# Staging bootstrap and reconciliation
+
+A basic local/pre-dispatch verification sequence may include:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -178,34 +582,303 @@ pnpm db:staging:push:dry-run
 pnpm exec wrangler deploy --dry-run --env staging
 ```
 
-After the read-only provider inventories pass, use local Wrangler
-authentication for the first explicit `--env staging` deploy. This creates the
-staging Worker and may safely return an application `503` until its Supabase
-runtime values exist. Configure that Worker, deploy a second time, and record
-the first known-good deployment ID only after `/robots.txt` denies indexing,
-`/sitemap.xml` returns 404, unauthenticated private routes fail closed, demo
-mode is off, and the source-controlled/CI configuration contract keeps every
-billing flag false.
+This is not a universal execution workflow and does not replace the current GitHub issue, Superpowers process or named gate plan.
 
-Only then add the two Cloudflare repository secrets and manually dispatch
-staging for the exact tested `main` commit. Capture the known-good deployment
-ID before every later dispatch and repeat the same smoke checks.
+Run the checks appropriate to the current task.
 
-If the application or security smoke test fails, the manual staging workflow
-automatically restores the recorded fail-closed Worker version
-`75593db4-12fd-486d-ae8a-bdf9ebbb3ece` and verifies its five-route rollback
-contract. The workflow remains failed and must be investigated before another
-dispatch. Do not reset or repair Supabase as part of an application rollback.
-Applied database changes remain forward-only.
+Do not rerun or mutate completed gate evidence without cause.
 
-Production deployment is not part of the current GitHub Free bootstrap. It
-remains blocked until the provider, backup/restore, domain, legal,
-security, and external-user gates are satisfied.
+---
 
-Trigger one notification of every supported kind in staging and verify both the in-app record and the Resend delivery log. The Edge Function resolves the recipient email through Supabase Auth, sends only a generic notification payload, validates same-origin action links and uses the notification UUID as Resend's idempotency key. Database Webhooks are asynchronous, so provider failure must be visible in function logs and the delivery ledger before launch.
+## Initial/fresh Worker behavior
 
-Deploy `upload-cleanup` with `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and a per-environment `UPLOAD_CLEANUP_SECRET` of at least 32 random bytes; optionally set `UPLOAD_CLEANUP_BATCH_SIZE` to `1`–`100` (default `25`). Configure exactly one scheduler per environment to send `POST /functions/v1/upload-cleanup` with `x-upload-cleanup-secret` every five minutes, retry `5xx` responses with backoff, and never place the secret in the URL. The database lease makes overlapping invocations safe; monitor failed/dead-letter counts without logging private object paths.
+When provisioning a fresh staging Worker, an application may fail closed until required runtime configuration exists.
 
-## Registration ramp
+Do not interpret an expected fail-closed state as permission to leave the environment partially configured indefinitely.
 
-Exercise internal accounts first. When error rate, abuse queue and delivery metrics remain clean, allow a controlled group of 10 users, then 30–50, while registration itself remains ordinary email/password signup. Stop the ramp for any P0/P1 issue, cross-account data access, unreviewed moderation access, lost upload, failed restore, or unexpected billing path.
+Before treating a staging Worker as a known-good runtime, verify the applicable smoke contract, including where currently required:
+
+- `/robots.txt` denies indexing;
+- `/sitemap.xml` returns 404 during pre-launch;
+- unauthenticated private routes fail closed;
+- demo mode is off;
+- monetisation remains disabled;
+- required auth/provider behavior matches the active gate.
+
+---
+
+# Exact-source staging deployment
+
+Staging must be attributable to the exact tested/approved source revision required by the active gate.
+
+Before a deployment is accepted as evidence, distinguish:
+
+```text
+local SHA
+remote main SHA
+PR merge SHA
+Worker source/version
+active deployment
+traffic assignment
+```
+
+When the active gate requires exact convergence, prove it explicitly.
+
+Do not say "deployed main" merely because the branch name is `main`.
+
+---
+
+# Rollback
+
+Before mutating staging Worker deployment state, capture or verify the current known-good rollback target according to the active deployment contract.
+
+Do not hardcode a historical Worker version in this runbook as a permanent rollback target.
+
+A rollback target can become stale after a later known-good release.
+
+If smoke/security verification fails:
+
+- restore the verified safe Worker deployment/version according to the current workflow;
+- verify the required rollback smoke;
+- keep the failed workflow/gate failed;
+- investigate before another deployment attempt.
+
+Application rollback does not authorize destructive database rollback.
+
+Do not:
+
+- reset hosted Supabase;
+- rewrite migration history;
+- reverse shared database state destructively
+
+merely because a Worker deployment failed.
+
+Hosted database changes remain forward-only.
+
+---
+
+# Notifications
+
+Before relying on notifications for real-user operation, verify each supported required notification path in staging.
+
+Acceptance should cover the applicable:
+
+```text
+database notification
+→ webhook
+→ Edge Function
+→ delivery ledger
+→ Resend
+```
+
+The notification function must preserve the architecture's privacy and delivery guarantees, including:
+
+- recipient resolution through trusted server-side identity;
+- generic/approved notification payloads;
+- same-origin action URL validation;
+- idempotency;
+- durable delivery state;
+- no unnecessary recipient-address persistence.
+
+Provider failure must be observable through the approved logs/ledger without logging sensitive recipient data.
+
+---
+
+# Upload cleanup
+
+Deploy `upload-cleanup` only to the intended environment.
+
+Provide required secrets through protected provider configuration, including as currently applicable:
+
+- `SUPABASE_URL`;
+- privileged server credential;
+- per-environment `UPLOAD_CLEANUP_SECRET`.
+
+The cleanup secret must meet the repository's current minimum security requirements and must differ between environments.
+
+If supported by the current function contract, configure the approved batch-size range.
+
+Configure exactly the scheduler behavior required by the current repository/gate contract.
+
+The scheduler must:
+
+- authenticate through the approved secret header;
+- never place the secret in the URL;
+- use the expected HTTP method/path;
+- retry only according to the approved retry policy;
+- preserve idempotent/lease-safe overlapping execution;
+- expose failures for monitoring without logging private object paths.
+
+If retry semantics remain an unresolved product/operator decision in the current gate, do not invent them in this runbook; use the applicable Human Gate or approved gate plan.
+
+---
+
+# Registration ramp
+
+Registration uses the approved ordinary email/password product model.
+
+The beta go-to-market may still ramp user exposure operationally.
+
+Exercise internal/synthetic accounts first.
+
+When the applicable:
+
+- error rate;
+- abuse/moderation queue;
+- email delivery;
+- provider health;
+- security evidence
+
+remain acceptable, expand the beta cohort gradually.
+
+A reasonable early operational sequence may use groups such as:
+
+```text
+internal/synthetic
+→ approximately 10 real beta users
+→ approximately 30–50 real beta users
+→ later authorized expansion
+```
+
+These are rollout cohorts, not invite-only authentication requirements.
+
+Stop or pause expansion for severe conditions such as:
+
+- P0/P1 correctness/security issue;
+- cross-account data access;
+- unauthorized moderation access;
+- lost finalized uploads/evidence;
+- failed required restore capability;
+- unexpected billing/monetisation path;
+- material privacy leak;
+- other launch-gate blocker.
+
+---
+
+# Production deployment boundary
+
+Production deployment is not automatically authorized by completion of staging setup.
+
+Before production activation, the applicable repository gates must cover at least the required:
+
+- provider acceptance;
+- backup/restore proof;
+- domain/HTTPS readiness;
+- legal/privacy approval;
+- security acceptance;
+- external-user readiness;
+- monitoring/incident response;
+- production configuration;
+- exact release evidence.
+
+Production operations are protected.
+
+An agent may prepare safe local/R1/R2 implementation work where repository policy allows, but must not cross the R3 production boundary without explicit owner authorization through the applicable Human Gate.
+
+This includes, as applicable:
+
+- creating or changing production providers;
+- production database mutations;
+- production Auth changes;
+- production Worker deployment;
+- production DNS/domain changes;
+- production secrets;
+- enabling monetisation;
+- destructive provider actions.
+
+---
+
+# Agent and skill interaction
+
+This runbook defines operational constraints.
+
+It does not create another engineering workflow.
+
+Use:
+
+`docs/agents/SKILL-ROUTER.md`
+
+for skill routing.
+
+The relationship remains:
+
+```text
+repository / issue / gate authority
+        ↓
+Superpowers primary process
+        ↓
+Matt Pocock engineering-depth reasoning when useful
+        ↓
+ECC / platform specialist when useful
+        ↓
+repository-defined verification
+```
+
+For this runbook, ECC/platform expertise may be particularly useful for:
+
+- Supabase;
+- Cloudflare;
+- backend/security;
+- E2E/Playwright;
+- provider documentation;
+- release verification.
+
+Matt Pocock skills may help reason about architecture, failure states and implementation boundaries.
+
+Neither may:
+
+- bypass target locks;
+- change production authorization;
+- weaken security invariants;
+- replace the active gate plan;
+- establish a parallel deployment workflow.
+
+Do not run competing planning, debugging, TDD or completion loops.
+
+---
+
+# Contradiction handling
+
+Operational documentation can become stale faster than architecture/business policy.
+
+If this file conflicts with:
+
+- current repository code;
+- executable release scripts;
+- `docs/PROJECT-STATUS.md`;
+- a newer approved gate plan;
+- a durable owner decision;
+
+do not silently choose whichever version makes execution easiest.
+
+Determine whether the discrepancy is:
+
+- stale documentation;
+- stale code;
+- incomplete migration;
+- temporary provider state;
+- an intentional gate-specific exception;
+- a real unresolved decision.
+
+Then update the appropriate durable authority through the normal issue/risk process.
+
+Never restore an obsolete product requirement merely because an old production checklist still mentions it.
+
+---
+
+# Core production invariant
+
+```text
+Local, staging and production stay isolated.
+Hosted targets are verified before mutation.
+Named gate scope limits what may be changed.
+Database history remains forward-only.
+Secrets remain outside source control.
+Staging evidence is tied to exact source and target.
+Rollback restores application runtime without destructively rewriting the database.
+Public email/password signup does not imply invite-only beta.
+Removed SMS requirements must not be resurrected by stale release receipts.
+Monetisation remains off until its business/legal/production gates pass.
+Production mutations remain protected R3 actions.
+Skills assist execution but never grant deployment authority.
+```
