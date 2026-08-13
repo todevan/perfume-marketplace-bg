@@ -2,6 +2,11 @@
 
 ## Purpose and authority
 
+This document defines the intended application architecture, system boundaries, and major security invariants. It is not proof that every capability is enabled, merged, deployed, or active in a provider.
+
+Repository instructions, explicit owner decisions, current issue/gate scope, and more specific security or operational authorities constrain architecture work. Use `docs/PROJECT-STATUS.md` and applicable gate evidence for current rollout state.
+
+Installed skills may analyze and improve the architecture inside authorized scope. Superpowers owns the primary engineering process; Matt Pocock skills may deepen domain and module-boundary reasoning; ECC/platform skills may add narrow specialist constraints. None becomes an independent architecture authority.
 This document defines the repository's authoritative application architecture, system boundaries, major security invariants and intended runtime shape.
 
 It describes the architecture the implementation is expected to conform to. It is not, by itself, proof that every capability is currently enabled or deployed.
@@ -244,6 +249,37 @@ A named release or reconciliation gate authorizes only the mutations explicitly 
 
 ## Deferred by design
 
+Perfume checkout, delivery, attachments in chat, decants/splits/attar formats, boosts, subscriptions, ads and all platform payments remain disabled. The provider-neutral payment code is future scaffolding and is outside the closed-beta transaction flow.
+
+Deferred scaffolding does not authorize product exposure, provider configuration, database activation, or production behavior.
+
+## Architecture change discipline
+
+The existing architecture is the default constraint. Agents may choose reversible implementation details autonomously when they preserve documented behavior, security/privacy invariants, established boundaries, issue scope, and named-gate scope.
+
+Treat a change as architectural when it materially changes runtime topology, authentication/authorization, domain ownership, database/RLS responsibility, transaction or Storage trust boundaries, public/private data exposure, moderation authority, provider responsibility, or deployment safety. Such changes must be explicit in scope and follow the applicable R2/R3 and Human-Gate rules.
+
+Do not use a scoped fix as an opportunity for unrelated redesign.
+
+## Architecture drift and skill boundaries
+
+When implementation and this document disagree, inspect approved plans, current status, issue scope, and repository history before changing either one. Determine whether the difference is a regression, incomplete migration, temporary rollout state, stale documentation, or an explicitly approved architecture change.
+
+Skill routing follows `docs/agents/SKILL-ROUTER.md`:
+
+```text
+repository architecture and authorized scope
+        ↓
+Superpowers primary process
+        ↓
+Matt engineering-depth reasoning when useful
+        ↓
+ECC/platform specialist constraints when triggered
+        ↓
+independent review and repository-defined verification
+```
+
+Temporary provider state, a failed deployment, a disabled staging switch, or an incomplete gate does not redefine intended architecture. Update this document only after durable architecture truth changes.
 Perfume checkout, delivery, attachments in chat, decants/splits/attar formats, boosts, subscriptions, ads and all platform payments remain disabled.
 
 The provider-neutral payment code is future scaffolding and is outside the closed-beta transaction flow.

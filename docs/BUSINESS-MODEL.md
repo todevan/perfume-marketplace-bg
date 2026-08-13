@@ -1,5 +1,14 @@
 # Приходен модел и go-to-market за парфюмния marketplace
 
+## Authority and process boundary
+
+This document records business-model assumptions, activation thresholds, and owner-controlled commercial policy. It does not authorize implementation, provider onboarding, monetisation activation, or production rollout by itself.
+
+Product, legal, privacy, accounting, pricing, and commercial choices that are not already decided remain owner decisions through the applicable Human Gate. Technical feasibility, a green test suite, or a skill recommendation cannot silently approve business policy.
+
+Superpowers owns the primary engineering process for authorized implementation. Matt Pocock skills may deepen domain/design reasoning, and ECC/platform skills may add narrow specialist evidence. None may create a competing business authority, waive H2/H3/H4/H5, or broaden an approved issue/gate.
+
+Статус: работна бизнес рамка за затворена beta, 20 юли 2026 г. Сумите са крайни продуктови хипотези и подлежат на счетоводно, данъчно и правно потвърждение.
 ## Статус и предназначение
 
 Статус: работна, но авторитетна бизнес рамка за pre-launch beta и бъдещата монетизация.

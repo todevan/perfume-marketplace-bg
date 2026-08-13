@@ -2,6 +2,13 @@
 
 ## Purpose
 
+## Authority and safety boundary
+
+This runbook defines backup/restore invariants and rehearsal mechanics. It does not authorize a hosted restore, destructive cleanup, production recovery, provider mutation, or deletion of hosted data.
+
+Before hosted mutation, establish the applicable repository/issue/recovery authority, exact source and target project, expected pre-state, expected post-state, rollback/recovery path, and required evidence. Production restore remains an R3 protected recovery action under `docs/agents/AUTONOMY.md` and `docs/agents/HUMAN-GATES.md`.
+
+## Backup
 Supabase database backups do not contain Storage objects.
 
 The marketplace therefore treats PostgreSQL state and finalized listing images as two coordinated backup sets.
@@ -125,6 +132,13 @@ when the tooling can prove the actual project identity.
 
 For staging operations, use the target-locking rules in:
 
+## Backup target safety
+
+Verify the exact source project and environment before a hosted backup operation. A variable or credential labelled "staging" or "production" is not target proof. For staging, use the target-lock rules in `docs/STAGING-CREDENTIALS.md`; for production, use the then-current release/recovery authority.
+
+A valid credential does not authorize backup or restore against the wrong project.
+
+## Restore rehearsal
 `docs/STAGING-CREDENTIALS.md`
 
 For production, use the production/release authority applicable at that time.
@@ -493,10 +507,22 @@ Neither system may:
 - bypass target verification;
 - create a parallel recovery lifecycle.
 
+The receipt must identify the source checkpoint/environment, backup-set identifier, verified target, database finalized-photo count, descriptor/object count, restored count, integrity/upload failures, elapsed time, verification result, and cleanup disposition. Do not include secrets.
+
+Rehearsal cleanup is itself a hosted mutation. Verify the exact non-production rehearsal target, preserve required evidence, and use the narrowest authorized cleanup method.
+
+## Failure rules
 ---
 
 # Core backup/restore invariant
 
+No restore is considered proven until both database relations and finalized image objects are available together.
+
+## Production and skill boundaries
+
+A successful rehearsal, backup, script exit code, or specialist recommendation does not authorize production restore. Prepare non-destructive evidence first and stop at the applicable R3/Human Gate before any protected production recovery action.
+
+Skill routing remains defined by `docs/agents/SKILL-ROUTER.md`. Superpowers owns the primary process; Matt Pocock and ECC/platform skills may contribute recovery, integrity, security, Supabase, or provider expertise. No skill may bypass target verification, weaken integrity checks, enable overwrite to make a rehearsal pass, authorize production recovery, or create a competing recovery lifecycle.
 ```text
 Database and finalized Storage are one coordinated recovery set.
 Backups must be attributable to the correct source.

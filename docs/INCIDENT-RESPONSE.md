@@ -2,6 +2,11 @@
 
 ## Purpose and authority
 
+This runbook governs containment, investigation, repair, and recovery during an incident. It does not create a separate engineering workflow or grant blanket authority for provider, production, destructive, or adjacent named-gate mutations.
+
+Incident severity and mutation risk are different classifications: P0–P3 describes urgency; R0–R3 and H1–H6 determine how each proposed mutation may proceed. A P0 incident does not itself authorize an R3 action.
+
+Perform every narrow, reversible containment action already authorized by repository policy, preserve evidence, and escalate only the exact protected action. Superpowers remains the primary engineering process; other skills may contribute engineering-depth or specialist analysis without changing authority.
 This is the operational runbook for containing, investigating and recovering from security, privacy, availability and data-integrity incidents during the closed beta.
 
 It does not create a separate execution framework or override repository authority.
@@ -49,6 +54,10 @@ Do not downgrade an incident merely because the visible symptom has stopped.
 ## First response
 
 1. Create an incident ID, UTC timeline and named incident lead.
+2. Preserve request IDs, Worker logs, Supabase audit/auth logs and moderation audit records. Do not paste secrets or unnecessary personal data into tickets.
+3. Contain with the narrowest authorized control: revoke an affected session/token, suspend an affected account, pause a specific endpoint or isolate the affected deployment/resource.
+4. For P0/P1, stop unrelated releases or mutations that could destroy evidence or complicate recovery.
+5. Determine whether a credential is credibly exposed. Revoke or rotate the affected credential through its target-locked procedure; do not rotate unrelated credentials without evidence of shared exposure.
 2. Record the currently authorized environment, issue/gate scope and known affected surface.
 3. Preserve relevant request IDs, Worker logs, Supabase audit/auth evidence, moderation audit records and deployment identifiers before changing state where practical.
 4. Do not paste secrets, authentication material or unnecessary personal data into GitHub issues, pull requests, chat logs or ordinary incident notes.
@@ -148,6 +157,23 @@ Before a production or external-provider mutation, determine:
 - whether the target and environment are positively verified;
 - whether rollback or recovery is understood.
 
+Preserve evidence proportionately. Keep secrets and unnecessary personal data out of issues, PRs, chat, and ordinary notes. Incident access does not justify unrestricted browsing of user conversations, profiles, Storage objects, or database rows.
+
+Before a production or external-provider mutation, verify the exact target/environment, classify the action, determine whether an H1–H6 gate applies, and understand rollback or recovery. A named scope such as `A9 only` remains a hard mutation boundary during incident work.
+
+## Recovery
+
+1. Add a regression test reproducing the failure.
+2. Repair through a reviewed forward change or migration.
+3. Verify RLS with affected and unaffected roles, then verify Worker route guards and Realtime behavior.
+4. Restore data/images only through `BACKUP-RESTORE.md`; do not overwrite a live target speculatively.
+5. Reopen only the contained functionality after clean telemetry and any approval required by the governing risk/Human-Gate rules.
+
+## Post-incident
+
+Within the agreed internal window, document root cause, detection gap, timeline, user impact, remediation owner and due date. Remove evidence when its approved retention period ends, while preserving legally required audit records.
+
+Post-incident improvements return to the normal GitHub Issues queue. Incident closure does not authorize unrelated hardening, provider changes, production work, or a second execution lifecycle.
 Use target-locked tooling for hosted Supabase operations.
 
 Never treat a remembered project name, credential, environment variable or old provider reference as sufficient target proof.

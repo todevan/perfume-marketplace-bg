@@ -2,10 +2,33 @@
 
 ## Purpose
 
+## Purpose and authority
+
+This document defines readiness conditions for progressively broader marketplace exposure. It does not define the executable engineering queue, the implementation workflow, detailed reconciliation steps such as A7/A8/A9, or authority to mutate staging or production.
+
+Keep these concepts separate:
+
+```text
+readiness condition
+≠ named-gate execution scope
+≠ mutation authority
+```
+
+Applicable approved gate plans define their narrower scope and evidence. `AGENTS.md`, `docs/agents/AUTONOMY.md`, and `docs/agents/HUMAN-GATES.md` define mutation authority. Passing a launch gate does not itself authorize a protected provider, production, legal, or commercial action.
+
+GitHub Issues remain the executable queue. Superpowers owns the primary engineering process; other skills contribute only their documented engineering-depth or specialist role.
+
+## Free pre-launch beta
 This document defines product, legal, operational and commercial conditions that must be satisfied before progressively broader marketplace exposure.
 
 It is an engineering and release-readiness checklist.
 
+- public email/password registration follows the durable owner decision in `docs/MASTER-PLAN.md`; no regular-user invitation or phone-verification gate is required;
+- any legacy invitation mechanism is limited to explicitly retained operator/bootstrap behavior;
+- all platform billing flags remain off;
+- fake/demo offers are clearly marked or real beta users accept the beta terms;
+- reports, account blocking and emergency listing removal are operational;
+- backups, error monitoring and an incident contact exist.
 It is not legal, accounting or tax advice.
 
 It does not define:
@@ -38,6 +61,17 @@ Passing a launch gate does not by itself authorize a protected provider or produ
 
 The intended progression is:
 
+- Counterfeit, stolen-image, harassment, spam and product-safety report categories are staffed with an SLA.
+- Safety Gate contact and recall/takedown procedure are documented.
+- Merchant verification is free and cannot be purchased through VIP.
+- Sponsored positions are labelled, capped at 10% of a feed and never alter the organic rows beneath them.
+- Retention jobs and deletion/export requests are tested before real personal data is accepted.
+
+## Risk, Human Gates, and completion evidence
+
+Launch requirements do not override repository autonomy policy. Ordinary implementation proceeds autonomously when permitted; R2 engineering stops at H3 before merge; legal/privacy/business decisions use their applicable Human Gate; and protected provider, production, destructive, or commercial activation remains an R3/owner-authorized boundary.
+
+A gate is complete only when every required acceptance condition is proven. Do not collapse these distinct claims:
 ```text
 development / staging
         ↓
@@ -446,11 +480,15 @@ tested locally
 merged
 deployed
 configured
+verified in the target environment
 verified in staging
 approved where required
 launch-ready
 ```
 
+If one condition remains unresolved, report that exact boundary. A previously completed gate is reopened only when new evidence proves one of its required conditions was false, regressed, or is no longer valid.
+
+Skill routing remains defined by `docs/agents/SKILL-ROUTER.md`. Skills may help implement or verify launch conditions; they cannot redefine policy, waive a Human Gate, broaden named-gate scope, or authorize a provider/production mutation.
 Each claim requires the evidence appropriate to that claim.
 
 If one required condition remains unresolved, report the exact remaining boundary rather than describing the whole gate as complete.

@@ -296,6 +296,7 @@ Default sequence:
 
 * Favor the existing server-first architecture: routes and server actions coordinate requests, services enforce rules, repositories access data, and domain code holds deterministic marketplace logic.
 * Keep the pre-launch and privacy constraints intact. Regular-user email/password registration is public by owner decision; do not reintroduce invitation or phone-verification gates unless the owner changes that decision.
+* In `src/AGENTS.md`, the phone-verification watchpoint applies only to privileged or explicitly retained verification paths; it does not authorize a regular-user phone gate.
 * Do not enable public profile writes, payments, boosts, ads or other monetization paths unless explicitly authorized by the owner.
 * Protect confidential data. Never log or publish secrets, auth tokens, phone numbers, emails, raw profile content, private evidence or credential-bearing command output.
 * Do not edit existing Supabase migrations. If schema changes are required, add a new forward-only migration and keep the existing migration history intact.

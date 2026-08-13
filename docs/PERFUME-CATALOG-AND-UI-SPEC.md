@@ -19,6 +19,12 @@ When implementing or reviewing this contract:
 
 Do not introduce a second competing planning, debugging, TDD, execution or completion workflow from this document.
 
+## Role and authority
+
+This document is the catalogue, listing, trust-interaction, responsive, and accessibility contract. Repository/owner decisions, security invariants, and current issue/gate scope constrain implementation; temporary provider state or incomplete rollout does not silently rewrite the product contract.
+
+Superpowers owns the primary engineering process. Matt Pocock and ECC/platform skills may add engineering-depth or specialist analysis but cannot invent product policy, broaden scope, waive a Human Gate, or create a competing specification.
+
 ## Visual system
 
 | Token               |     Value | Contract                                                            |
@@ -91,6 +97,12 @@ Batch-code.com is an external manufacture-date/format reference. A valid result 
 
 ## Trust and interaction contract
 
+- Public private-user identity: username, city, history, confirmed-deal rating and statuses. Email and phone stay private.
+- Public email/password registration is the normal user-admission model. Email confirmation, legal onboarding/consents, active membership, suspension, and moderation controls remain; regular users do not require invitation, phone-number verification, or SMS OTP for activation, listings, offers, or ordinary marketplace actions.
+- Merchant self-declaration and free manual verification are separate from paid plans.
+- An accepted structured offer only reserves a listing and starts/continues private chat; it does not create platform checkout or a binding perfume contract.
+- Payment and delivery for the perfume transaction remain off-platform. The marketplace does not collect or hold the perfume purchase price.
+- Listing fees, subscriptions, boosts, ads, checkout, and all other monetisation remain deferred and disabled until separately authorized business/legal/production gates are satisfied.
 - Normal users register publicly with email and password and complete email confirmation.
 - No invitation is required for normal-user registration or marketplace use.
 - No phone/SMS OTP verification is required for regular-user activation, first listing, offers or other ordinary marketplace actions.

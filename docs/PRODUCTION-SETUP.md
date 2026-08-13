@@ -1,5 +1,20 @@
 # Production setup for the pre-launch marketplace
 
+This runbook describes the engineering setup. It does not replace the legal, accounting or carrier approvals listed in `LAUNCH-GATES.md`.
+
+## Authority and protected boundary
+
+This document defines provider-specific setup, target-safety, release-evidence, and production-readiness contracts. It does not itself authorize production deployment, credentials, migrations, DNS, destructive operations, or monetisation.
+
+Preserve the exact provider and named-gate contracts below. Before any hosted mutation, establish the authorized issue/gate scope, exact provider/account/project/environment, verified pre-state, exact mutation, post-verification, and rollback path. Fail closed when target identity is ambiguous.
+
+Source state, merged state, provider configuration, deployed artifact, active traffic, and observable end-to-end behavior are separate claims. A successful build, push, deployment command, or provider request proves only that operation; release evidence must bind the exact target and commit required by the governing gate.
+
+Superpowers owns the primary engineering process. Matt Pocock and ECC/platform skills may add engineering-depth or provider expertise but cannot broaden scope, waive evidence, or authorize production. R2 merge approval and R3/H4/H5 production, credential, provider, and destructive boundaries remain governed by `docs/agents/AUTONOMY.md` and `docs/agents/HUMAN-GATES.md`.
+
+## Current GitHub Free operating model
+# Production setup for the pre-launch marketplace
+
 ## Purpose and authority
 
 This runbook defines the engineering and operational setup for isolated staging and future production environments.

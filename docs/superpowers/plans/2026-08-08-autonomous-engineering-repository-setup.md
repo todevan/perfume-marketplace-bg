@@ -1,5 +1,7 @@
 # Autonomous Engineering Repository Setup Implementation Plan
 
+**Plan date:** 2026-08-08
+**Role:** Historical implementation plan and reusable validation contract for the repository autonomy operating model.
 **Plan date:** 2026-08-08  
 **Role:** Historical implementation plan and reusable validation contract for the repository autonomy operating model.  
 **Execution semantics reconciled:** 2026-08-11.
@@ -18,6 +20,18 @@
 
 For current engineering work, use this order:
 
+1. explicit current owner instructions;
+2. repository instructions / `AGENTS.md`;
+3. authoritative current product, phase and status documents;
+4. architecture, launch, security and operational documents, including repository-defined verification and release gates;
+5. the applicable `docs/agents/` policy;
+6. canonical GitHub Issue and explicitly authorized task/gate scope;
+7. Superpowers as the primary process authority;
+8. Matt Pocock deep-engineering skills when useful;
+9. ECC/platform specialists when useful;
+10. external/global generic defaults.
+
+Repository-defined verification and release gates bind every skill layer below them.
 1. repository instructions / `AGENTS.md`;
 2. authoritative repository product, architecture, security, business, legal and operational docs;
 3. current `docs/PROJECT-STATUS.md` and active named-gate documentation;
@@ -441,6 +455,7 @@ This task migrated executable work from planning documents into the canonical qu
 
 **Reference material:**
 
+- Historical remediation findings already transferred to the GitHub issue queue.
 - `docs/superpowers/plans/2026-08-08-combined-remediation.md`
 - `docs/agents/issue-tracker.md`
 
@@ -924,4 +939,5 @@ Instead:
 
 If the current repository already satisfies an item, no action is required.
 
+If this plan conflicts with the current repository authority model, the current repository authority wins.
 If this plan conflicts with the current repository authority model, the current repository authority wins.
