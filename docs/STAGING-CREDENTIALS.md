@@ -1,253 +1,459 @@
 # Staging credentials and configuration
 
-Use this checklist when connecting the staging Cloudflare Worker to the hosted
-services. It covers the values that already exist in `.env.example`, the
-deployment workflow, and the current backup and Edge Function scripts.
+## Purpose
 
-No provider credentials are required for local tests, dependency audits,
-Cloudflare configuration validation, or either
-`wrangler deploy --dry-run` command. Real credentials are needed only when a
-hosted staging service is connected or deployed.
+Use this checklist when connecting the staging Cloudflare Worker and trusted operator tooling to hosted services.
 
-Do not copy production credentials into staging. Store secrets in the provider
-or as explicitly listed GitHub repository secrets, never in `wrangler.jsonc`,
-a committed `.env` file, or a pull-request-visible GitHub variable.
+This document defines:
 
-## Historical hosted staging checkpoint
+- the authorized staging targets;
+- credential ownership;
+- where secrets may and may not be stored;
+- provider-specific configuration boundaries;
+- guarded staging commands;
+- safe staging configuration invariants.
 
-This checkpoint is retained as historical operational evidence from 2026-07-28. It is not a statement of current hosted Auth, migration, Storage, Worker, provider, deployment, or rollback state. Current volatile state must be freshly verified under the active Gate 3/A9 authority and recorded in `docs/PROJECT-STATUS.md` or gate-specific evidence.
+It does not define the current Gate 3 execution step or authorize a hosted mutation by itself.
 
-Checkpoint date: 2026-07-28. This records the then-current backend-connected,
-signup-locked environment. The 2026-08-02 owner decision supersedes the invite
-model: the environment is not usable until migration `012` is applied and
-public email/password signup is enabled with email confirmation.
+Before changing hosted state, also consult:
 
-| Area | Verified state |
+- `AGENTS.md`;
+- `docs/PROJECT-STATUS.md`;
+- the current GitHub issue;
+- the applicable reconciliation/release plan;
+- `docs/agents/AUTONOMY.md`;
+- `docs/agents/HUMAN-GATES.md`.
+
+A correct credential and a correct provider target are necessary but do not expand named-gate scope.
+
+For example:
+
+```text
+valid staging credentials
++
+correct Frankfurt target
++
+A9 only
+```
+
+still means only A9-authorized mutations may be performed.
+
+---
+
+# General credential rules
+
+No provider credentials are required for ordinary local tests, dependency audits, Cloudflare configuration validation or dry-run commands that do not contact protected hosted resources.
+
+Real credentials are required only when an authorized hosted service operation actually needs them.
+
+Never copy production credentials into staging.
+
+Never store real secrets in:
+
+- `wrangler.jsonc`;
+- committed `.env` files;
+- committed documentation;
+- source code;
+- pull-request-visible GitHub variables;
+- CI logs;
+- screenshots or receipts intended for repository storage.
+
+Use the provider's protected secret store or the explicitly approved trusted local operator environment.
+
+---
+
+# Current operational state
+
+Do not use historical checkpoint tables in this document as the source of current Gate 3 state.
+
+Current operational state lives in:
+
+`docs/PROJECT-STATUS.md`
+
+This document intentionally avoids hard-coding volatile claims such as:
+
+- current migration tip;
+- current Auth-user count;
+- current Storage-object count;
+- current Worker deployment ID;
+- current known-good rollback version;
+- current provider activation state;
+- active Gate 3 sub-step.
+
+Verify those against the current repository/provider evidence required by the active gate.
+
+Historical receipts remain useful as evidence of what was true at the time they were recorded, but they are not permanent expected state.
+
+---
+
+# Authorized hosted staging identity
+
+The authorized hosted Supabase staging target is:
+
+| Property | Required value |
 |---|---|
-| GitHub | `todevan/perfume-marketplace-bg` exists as the new canonical private repository. The older `todevan/remix-of-scent-exchange` repository remains untouched. |
-| Quality CI | Workflow run `30343704378` is green on `main` commit `39867216c0440077476ce13f89bd1f40505bef8e`: application job `90224876706` and database job `90224876599` both passed. |
-| Local database | The disposable local stack matches hosted PostgreSQL major version 17. Migrations `001`–`011` apply locally, SQL lint is clean, and all 132 pgTAP assertions pass. |
-| Local catalogue | The atomic seed contains 196 brands, 48 aliases, and 335 editorial memberships. Membership counts are exactly 80 men, 80 women, 80 unisex, 80 niche, and 15 Arabic. |
-| Cloudflare account | Account ID `0cb7373563c400a08bd46564320dd747` owns the staging Worker. |
-| Cloudflare Worker | `perfume-marketplace-bg-staging` is available at `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev`. |
-| Fail-closed rollback | Git SHA `c7d2b19` remains the recorded bootstrap checkpoint. Cloudflare Worker version `75593db4-12fd-486d-ae8a-bdf9ebbb3ece` is the explicit safe `503` rollback target while the new functional receipt is pending. |
-| Hosted Supabase identity | The bootstrap project label `wow` was renamed to `perfume-marketplace-bg-staging`. Ref `nuhkpqjjyuygiemrxbdp` belongs to organization `khazvscqabwvslnphbqp`, runs in `eu-central-1` (Frankfurt), and reports PostgreSQL 17 with `ACTIVE_HEALTHY`. |
-| Hosted Supabase result | Migrations `001`–`010` are recorded. The runtime has 4 Storage buckets with 0 objects, 12 Realtime publication tables, 2 scheduled jobs, and 0 Auth users or identities. The catalogue contains 196 brands, 48 aliases, and 335 memberships with exact `80/80/80/80/15` collection counts. |
-| Hosted Auth lock | Public signup and anonymous signup are disabled; email confirmation is enabled. Site URL is the exact staging Worker origin, and only its `/auth/callback` and `/auth/confirm` URLs are allowed. SMTP, SMS, and CAPTCHA are unconfigured. |
-| Configured Worker | Commit `39867216c0440077476ce13f89bd1f40505bef8e` was deployed as Worker version `9024d848-dcd7-4894-b6da-d2f2453b2df0`, deployment `0ce71c4c-4e9e-4118-b813-62e4fb6a5260`. The backend-attested exact-SHA HTTP smoke passed all 13 checks. |
-| GitHub staging deploy | A separate account-scoped Cloudflare token with only Workers Scripts Write is stored as `CLOUDFLARE_API_TOKEN`; `CLOUDFLARE_ACCOUNT_ID` is also present. Manual `workflow_dispatch` run `30343975074` passed, and its logs contained no raw Supabase, GitHub, Cloudflare bearer, or JWT token patterns. |
-| External providers | Resend, Turnstile, Cloudflare Images processing, real-provider E2E, and backup/restore rehearsal remain deferred. SMS is no longer required. |
-| Production | Locked. No production project, route, secret, deployment, domain, user, invitation, or payment capability is authorized by this checkpoint. |
+| Project name | `perfume-marketplace-bg-staging` |
+| Project ref | `nuhkpqjjyuygiemrxbdp` |
+| Organization | `khazvscqabwvslnphbqp` |
+| Region | `eu-central-1` (Frankfurt) |
+| PostgreSQL major | `17` |
+| Required health | `ACTIVE_HEALTHY` |
 
-The previous Stockholm project `zllqwlekadiuyejgbuxc` remains untouched and is
-not an authorized target. Every hosted database operation must pass the guard
-for ref `nuhkpqjjyuygiemrxbdp`, organization `khazvscqabwvslnphbqp`, region
-`eu-central-1`, PostgreSQL 17, and `ACTIVE_HEALTHY`. The first functional
-`main` deployment and its recorded smoke evidence are listed below. The
-environment remains an internal backend baseline, not a usable beta.
+The authorized staging Supabase URL is:
 
-### First functional backend-baseline receipts
+```text
+https://nuhkpqjjyuygiemrxbdp.supabase.co
+```
 
-These fields intentionally describe the deployment immediately before the
-receipt-only documentation commit.
+The previous Stockholm project:
 
-| Receipt | Value |
-|---|---|
-| Baseline code `main` Git SHA | `39867216c0440077476ce13f89bd1f40505bef8e` |
-| Quality workflow run ID | `30343704378` |
-| Quality application job ID | `90224876706` |
-| Quality database job ID | `90224876599` |
-| First functional staging deploy run ID | `30343975074` |
-| First functional Worker version ID | `9024d848-dcd7-4894-b6da-d2f2453b2df0` |
-| First functional Worker deployment ID | `0ce71c4c-4e9e-4118-b813-62e4fb6a5260` |
-| First hosted HTTP smoke receipt | `13/13 passed`; exact Git SHA and Frankfurt backend catalogue attestation passed; rollback steps were correctly skipped |
+```text
+zllqwlekadiuyejgbuxc
+```
 
-After this table is committed, deploy that new documentation SHA once more.
-The immutable GitHub Actions run and Cloudflare deployment records are the
-authoritative final exact-SHA receipt; copying that SHA back into this tracked
-file would create an endless self-referential commit cycle.
+is not an authorized target.
 
-### Keep secrets with their current owner
+Do not:
 
-- The local Wrangler OAuth profile is for trusted operator use. Do not export
-  its token to GitHub.
-- A Supabase CLI access token, database password, service-role key, and
-  first-admin bootstrap values belong only in the trusted local shell or the
-  official local CLI profile.
-- GitHub owns a separate, account-scoped Cloudflare API token with only Workers
-  Scripts Write. Its repository secrets are `CLOUDFLARE_API_TOKEN` and account
-  ID `0cb7373563c400a08bd46564320dd747` as
-  `CLOUDFLARE_ACCOUNT_ID`. Rotate the token no later than 2026-10-25.
-- Worker runtime configuration belongs on
-  `perfume-marketplace-bg-staging`. Store `SUPABASE_SECRET_KEY` as a Worker
-  secret—the only Supabase secret on this Worker. Non-secret staging variables,
-  browser-safe Supabase values, and feature flags are source-controlled under
-  `env.staging.vars` in `wrangler.jsonc`; never copy the legacy service-role
-  key there.
-- Never copy a Supabase personal access token, database password,
-  service-role key, Cloudflare OAuth token, or first-admin values into GitHub
-  repository secrets, documentation, CI logs, or committed files.
+- link to it;
+- migrate it;
+- seed it;
+- reset it;
+- repair it;
+- use its credentials;
+- copy data from it;
+- treat it as fallback staging.
 
-## GitHub Free repository model
+Every hosted staging database operation must pass the repository target guard for the Frankfurt project.
 
-The new canonical private repository is
-`todevan/perfume-marketplace-bg`. The older
-`todevan/remix-of-scent-exchange` repository is out of scope and must remain
-untouched: do not add it as a remote, push to it, rewrite it, archive it, or
-copy credentials from it.
+Run:
 
-This project intentionally uses a minimal GitHub Free operating model:
+```powershell
+pnpm db:staging:verify-target
+```
 
-- staging deployment is manual only; a push or merge must not be treated as
-  deployment approval;
-- the GitHub Actions run must be started with `workflow_dispatch` for the
-  exact tested branch/commit;
-- the only GitHub repository secrets required for the initial staging deploy
-  are `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`;
-- no GitHub Environment reviewer gate, protected environment, protected branch,
-  or required status-check enforcement is assumed;
-- repository administrators must therefore verify the selected commit SHA and
-  the successful local/CI checks before manually starting staging;
-- production deployment and production GitHub secrets remain deferred.
+before hosted database operations when required by the operator contract.
 
-Before connecting the local repository, verify that the new remote is the
-intended private repository and inventory its refs. If it is not empty or its
-history is unexpected, stop. Do not force-push, reset the remote, merge
-unrelated history, or attempt a repair without a separately approved
-reconciliation plan.
+The guard must fail closed on an identity, organization, region, PostgreSQL-version, health, URL or project-bound-key mismatch.
 
-### Dashboard locations and secret ownership
+Do not disable the guard to make a gate proceed.
 
-| System | Exact dashboard location | Values owned there |
+---
+
+# Canonical repositories
+
+The canonical repository is:
+
+```text
+todevan/perfume-marketplace-bg
+```
+
+The older repository:
+
+```text
+todevan/remix-of-scent-exchange
+```
+
+is out of scope.
+
+Do not:
+
+- add it as an active remote;
+- push to it;
+- rewrite it;
+- archive it;
+- use it as deployment source;
+- use it as migration source;
+- copy credentials from it.
+
+If repository identity or history is unexpected, stop and reconcile it rather than force-pushing or merging unrelated history.
+
+---
+
+# GitHub operating model
+
+The repository currently uses a minimal GitHub deployment model rather than relying on GitHub to enforce every release boundary.
+
+A push or merge is not deployment authorization.
+
+Staging deployment must use the exact source revision authorized by the active release/gate process.
+
+The GitHub Actions staging deployment is manually dispatched where the current workflow requires it.
+
+The initial staging deployment model uses only the GitHub repository secrets required for Cloudflare deployment:
+
+- `CLOUDFLARE_API_TOKEN`;
+- `CLOUDFLARE_ACCOUNT_ID`.
+
+Do not move runtime Supabase, Resend, Turnstile or other provider secrets into GitHub merely for convenience.
+
+Production GitHub deployment credentials remain unavailable until the production release process explicitly authorizes them.
+
+---
+
+# Secret ownership
+
+Keep secrets with the system that owns their use.
+
+## Trusted local operator
+
+The trusted local shell or official local CLI profile may hold, when an authorized operation requires them:
+
+- Supabase CLI access token;
+- Supabase database password;
+- privileged Supabase service-role credential used by legacy/operator tooling;
+- first-admin bootstrap values;
+- other explicitly operator-only values.
+
+These must not be copied into:
+
+- GitHub repository secrets unless explicitly required by an approved workflow;
+- Cloudflare public variables;
+- committed files;
+- documentation;
+- logs.
+
+Clear highly privileged transient values from the shell after the operation when practical.
+
+---
+
+## GitHub
+
+GitHub owns only deployment credentials required by the current staging workflow.
+
+Currently:
+
+```text
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+```
+
+The Cloudflare deployment token should remain least-privilege and account-scoped as required by the deployment workflow.
+
+Credential rotation should follow the provider's actual current expiry/rotation requirement.
+
+Do not rely on an old calendar date in documentation without checking the current credential/provider state.
+
+---
+
+## Cloudflare Worker
+
+Runtime application configuration belongs on:
+
+```text
+perfume-marketplace-bg-staging
+```
+
+Secrets must use Cloudflare's protected secret mechanism.
+
+The current server-side Supabase application secret is:
+
+```text
+SUPABASE_SECRET_KEY
+```
+
+Do not copy a legacy service-role credential into ordinary Worker runtime configuration unless the current architecture explicitly requires it for a narrowly defined server/operator path.
+
+Non-secret staging variables and browser-safe values should follow the current `wrangler.jsonc` environment contract.
+
+If `keep_vars: true` is enabled, remember that preserved provider state is not automatically correct state.
+
+---
+
+## Supabase Edge Functions
+
+Provider/function secrets required by Edge Functions belong in Supabase's protected function secret environment.
+
+Examples may include:
+
+- service-role credentials required by the function architecture;
+- Resend API credentials;
+- notification webhook secret;
+- upload cleanup secret.
+
+Use approved Supabase secret tooling.
+
+Do not place these values in Database Webhook URLs or public request parameters.
+
+---
+
+## Offline backup secrets
+
+`BACKUP_ENCRYPTION_KEY` is an offline backup/restore secret.
+
+It must not be configured as an ordinary Worker runtime secret.
+
+Keep it separate from the encrypted backup data itself.
+
+See:
+
+`docs/BACKUP-RESTORE.md`
+
+for the backup/restore procedure.
+
+---
+
+# Dashboard locations
+
+| System | Location | Values / purpose |
 |---|---|---|
-| GitHub | Repository **Settings → Secrets and variables → Actions → Secrets → New repository secret** | Only `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` |
-| GitHub | Repository **Actions → deploy staging → Run workflow**, branch `main` | Manual staging dispatch and deployed commit SHA |
-| Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Settings → Variables and Secrets** | Worker runtime variables and `SUPABASE_SECRET_KEY` |
-| Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Deployments** | Active deployment/version ID and rollback target |
-| Supabase | Organization `khazvscqabwvslnphbqp` → project `perfume-marketplace-bg-staging` (`nuhkpqjjyuygiemrxbdp`) → **Connect** or **Settings → API Keys** | Publishable key and server secret; copy them only into their intended secret store |
-| Supabase | Project **Authentication → URL Configuration** | Exact Site URL and allowed `/auth/callback` and `/auth/confirm` redirects |
-| Supabase | Project **Authentication → Sign In / Providers → Email** | Enable public email/password signup, keep anonymous signup disabled, and keep email confirmation enabled |
-| Supabase | Project **Authentication → Users** and **Storage** | Confirmed 0 Auth users/identities and 0 Storage objects; the 4 empty buckets are migration-owned |
+| GitHub | Repository **Settings → Secrets and variables → Actions → Secrets** | Approved deployment-only repository secrets |
+| GitHub | Repository **Actions → deploy staging → Run workflow** | Manual staging dispatch when required |
+| Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Settings → Variables and Secrets** | Worker runtime configuration and secrets |
+| Cloudflare | **Workers & Pages → perfume-marketplace-bg-staging → Deployments** | Current deployment/version and rollback evidence |
+| Supabase | Organization `khazvscqabwvslnphbqp` → `perfume-marketplace-bg-staging` (`nuhkpqjjyuygiemrxbdp`) → **Connect / API Keys** | Project URL, browser-safe key and protected server credentials |
+| Supabase | **Authentication → URL Configuration** | Site URL and approved redirects |
+| Supabase | **Authentication → Sign In / Providers → Email** | Email/password signup and confirmation configuration |
+| Supabase | **Authentication → Users** | Current hosted Auth users |
+| Supabase | **Storage** | Current buckets and objects |
+| Supabase | Edge Functions / Secrets | Function deployment and protected provider values |
 
-The trusted local shell owns the Supabase CLI access token, database password,
-legacy service-role key when required by operator tooling, and first-admin
-bootstrap values. They do not belong in GitHub, Cloudflare Worker variables or
-committed files. GitHub owns only the two least-privilege Cloudflare deployment
-values listed above. Clear the database password and legacy service-role key
-from the shell environment after the hosted command that needs them.
+Do not assume historical counts such as `0 Auth users` or `0 Storage objects`.
 
-## Connect Cloudflare first
+Those were checkpoint observations, not permanent configuration requirements.
 
-| Name or binding | Classification | Where it is used | When it is required |
+---
+
+# Cloudflare configuration
+
+## Deployment credentials
+
+| Name or binding | Classification | Where used | Requirement |
 |---|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | Secret | GitHub staging deployment job and real Wrangler deploy | Required for a real staging deploy; not required for dry-runs |
-| `CLOUDFLARE_ACCOUNT_ID` | Account identifier | GitHub staging deployment job and the production-readiness contract | Required for a real staging deploy |
-| `IMAGES` | Cloudflare binding, not a secret | Worker upload route through the staging `wrangler.jsonc` environment | Required before enabling the Cloudflare Images processor |
-| `CLOUDFLARE_IMAGES_API_TOKEN` | Secret | Images provisioning/operations and the production-readiness contract; the application upload route uses the `IMAGES` binding instead | Can be deferred until the image pipeline is configured and tested |
-| `IMAGE_PROCESSOR_MODE` | Private runtime configuration | Worker upload pipeline | Keep `disabled` for the first deploy; change to `cloudflare-images` only after the binding and sanitizer pass their tests |
+| `CLOUDFLARE_API_TOKEN` | Secret | GitHub staging deployment / real Wrangler deploy | Required for authorized real deploys |
+| `CLOUDFLARE_ACCOUNT_ID` | Account identifier | Deployment workflow and release verification | Required for authorized real deploys |
+| `IMAGES` | Cloudflare binding | Trusted image pipeline | Required before Cloudflare Images processing is enabled |
+| `CLOUDFLARE_IMAGES_API_TOKEN` | Secret | Images provisioning/operator operations where required | Configure only when the active image-provider work needs it |
+| `IMAGE_PROCESSOR_MODE` | Runtime configuration | Worker upload/evidence pipeline | Keep fail-closed until trusted image processing is accepted |
 
-Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as GitHub
-**repository secrets** in `todevan/perfume-marketplace-bg`. Configure the
-sole application secret, `SUPABASE_SECRET_KEY`, on the
-`perfume-marketplace-bg-staging` Worker. The committed `wrangler.jsonc` is
-authoritative for every non-secret staging variable. Its `keep_vars: true`
-preserves only provider values not explicitly specified by the deployment;
-committed staging variables are reapplied on each deploy.
+The staging Worker origin is:
 
-The staging `workers.dev` address is intentionally available for internal
-testing. `PUBLIC_APP_URL` must use the exact HTTPS origin assigned to that
-Worker, with no path, query, or fragment.
+```text
+https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev
+```
 
-### Cloudflare inventory, bootstrap, and rollback gate
+`PUBLIC_APP_URL` must use the exact authorized HTTPS origin with no path, query or fragment.
 
-Before each real deploy, inventory the Cloudflare account, Worker names,
-routes, existing deployments, variables, secrets, Images bindings, and
-`workers.dev` exposure. Stop if the account is wrong, the expected staging
-Worker already contains unknown configuration or traffic, the API token has
-broader unexplained access, or the inventory cannot be completed. Do not
-overwrite an existing Worker to make the names match.
+---
 
-The bootstrap is fail-closed:
+# Cloudflare inventory before mutation
 
-1. Record the exact tested Git commit and run both Wrangler dry-runs locally.
-2. Authenticate Wrangler locally, confirm the intended Cloudflare account, and
-   deploy explicitly with `--env staging`. Wrangler creates
-   `perfume-marketplace-bg-staging`; do not create a similarly named Worker by
-   hand. Until runtime configuration exists, an application `503` is the
-   expected safe result.
-3. Configure the new Worker with the inventoried Supabase values and keep
-   `PUBLIC_DEMO_MODE=false`, every monetisation/payment flag `false`,
-   `PRIVATE_BETA_REQUIRE_STAFF_MFA=true`, and `IMAGE_PROCESSOR_MODE=disabled`.
-4. Deploy staging a second time and verify the deployment ID, `/robots.txt`,
-   the sitemap `404`, authentication
-   denial, the staging-only `workers.dev` address, and the CI configuration
-   contract that keeps all billing flags disabled before adding any provider
-   integrations.
-5. Record the known-good Cloudflare deployment ID.
+Before an authorized real Worker deployment or provider configuration change, inventory the relevant:
 
-If verification fails, stop provider testing. Roll back only to the explicitly
-recorded known-good Cloudflare deployment. When there is no previous known-good
-version, disable public access to the staging `workers.dev` endpoint until a
-corrected build passes. Never enable demo mode, point staging at production
-data, reset Supabase, or mutate migration history as a rollback technique. If a
-database migration was already applied, keep the database forward-only and use
-a compatible application rollback or a new corrective migration.
+- Cloudflare account;
+- Worker name;
+- routes;
+- deployments;
+- variables;
+- secrets;
+- Images bindings;
+- `workers.dev` exposure;
+- deployment token scope.
 
-### Roll back hosted staging in this order
+Stop when:
 
-1. Stop manual GitHub dispatches and provider tests. Record the active Worker
-   deployment, tested Git SHA, request IDs, and relevant sanitized logs.
-2. If a functional known-good Worker deployment has been recorded, roll the
-   Worker back to that exact deployment and repeat the authentication,
-   crawler, demo-mode, and security smoke checks.
-3. If no functional known-good deployment exists, keep the application
-   fail-closed or disable the public `workers.dev` endpoint. The recorded
-   Worker version `75593db4-12fd-486d-ae8a-bdf9ebbb3ece` is the safe `503`
-   bootstrap baseline.
-4. Do not reverse a hosted database migration with reset, repair, drop,
-   truncate, or migration-history edits. Use a compatible application version
-   or add a reviewed forward-only corrective migration.
-5. If a catalogue seed fails, confirm that its transaction rolled back before
-   retrying. Do not partially patch catalogue rows by hand.
-6. If credential exposure is suspected, revoke or rotate the affected
-   provider credential before redeploying. Update only the secret store that
-   owns it.
-7. After recovery, repeat hosted smoke tests and record the new deployment ID
-   and tested Git SHA before resuming provider work.
+- the account is wrong;
+- target identity is ambiguous;
+- unknown configuration exists where the gate requires a known baseline;
+- traffic/configuration conflicts with the active plan;
+- token scope is unexpectedly broad;
+- inventory cannot be completed.
 
-## Connect the hosted Supabase staging project
+Do not overwrite another Worker merely because its name appears similar.
 
-### Mandatory read-only inventory and stop conditions
+---
 
-Use only project `perfume-marketplace-bg-staging`, ref
-`nuhkpqjjyuygiemrxbdp`, in organization `khazvscqabwvslnphbqp` and Frankfurt
-region `eu-central-1`. Before linking, seeding, or applying migrations, record
-and verify all of the following:
+# Worker rollback
 
-- organization, project name, project ref, project URL, region, and intended
-  staging owner;
-- existing migration history and every non-system schema/table/view/function,
-  trigger, extension, RLS policy, scheduled job, Realtime publication, Storage
-  bucket/object, Edge Function, webhook, and secret name;
-- counts for `auth.users`, application tables, and `storage.objects`;
-- Auth public-signup setting, Site URL, redirect allow-list, email provider
-  state, and MFA policy;
-- whether any row, user, object, or log indicates real or production data.
+Rollback must use the current verified known-good staging deployment required by the active release/gate process.
 
-Stop immediately if the project identity or region is wrong; any unexpected
-infrastructure migration or application object exists; any auth user, Storage object, or
-non-synthetic application row exists; the signup setting differs from the documented target;
-the project appears shared with another application; or permissions prevent a
-complete inventory. Preserve the read-only evidence and investigate before changing it.
+Do not treat an old Worker version from an earlier bootstrap checkpoint as the permanent rollback target.
 
-Remote reset and repair operations are not authorized. In particular, never
-run `supabase db reset` against a linked/hosted project, never use
-`supabase migration repair`, never drop/truncate schemas to make the inventory
-look empty, and never rewrite an applied migration. `supabase db reset` is
-local-only. A mismatch requires a new isolated staging project or a separately
-approved forward-only remediation plan.
+Before a risky deployment, record or verify the current safe target.
 
-Run the guarded commands from the trusted local shell:
+If staging verification fails:
+
+1. stop further dispatch/provider testing;
+2. record the failed deployment/version and exact tested Git SHA;
+3. roll back to the current verified safe Worker target when available;
+4. rerun the applicable rollback smoke checks;
+5. keep the failed gate/workflow failed;
+6. investigate before redeploying.
+
+If no functional safe runtime exists, keep the application fail-closed or disable exposed staging access until corrected.
+
+Do not use database reset or migration-history changes as an application rollback mechanism.
+
+---
+
+# Supabase mandatory inventory
+
+Before authorized hosted database mutation, verify the current target state required by the active gate.
+
+Inventory as applicable:
+
+- organization;
+- project name;
+- project ref;
+- URL;
+- region;
+- health;
+- migration history;
+- non-system schemas/tables/views/functions;
+- triggers;
+- extensions;
+- RLS policies;
+- scheduled jobs;
+- Realtime publications;
+- Storage buckets and objects;
+- Edge Functions;
+- webhooks;
+- secret names;
+- `auth.users` counts/state;
+- relevant application data;
+- Auth signup configuration;
+- Site URL;
+- redirect allow-list;
+- email provider state;
+- MFA configuration.
+
+Stop if evidence suggests:
+
+- wrong target;
+- production/real personal data contamination;
+- another application's state;
+- unexplained provider state relevant to the active gate;
+- insufficient permissions to prove the required preconditions.
+
+A mismatch is not permission to erase the mismatch.
+
+---
+
+# Destructive database operations are not staging repair tools
+
+Never run the following against hosted staging merely to restore an expected baseline:
+
+```text
+supabase db reset
+supabase migration repair
+schema drop
+blanket truncate
+migration-history rewrite
+```
+
+`supabase db reset` is local-only.
+
+Shared hosted migrations remain forward-only.
+
+If a hosted migration needs remediation, use a new reviewed forward-only migration when authorized.
+
+If hosted state materially disagrees with the expected gate state, stop and reconcile it through the appropriate issue/gate process.
+
+---
+
+# Guarded staging database commands
+
+Use the repository's target-locked commands:
 
 ```powershell
 pnpm db:staging:verify-target
@@ -258,292 +464,285 @@ pnpm db:staging:types
 pnpm db:staging:types:check
 ```
 
-Each command rechecks the official link, project inventory, region, health,
-PostgreSQL major version, URL, and project-bound key before it can mutate
-hosted state. Type generation is pinned to the same project ref and public
-schema; `db:staging:types:check` fails when the committed generated types differ
-from the hosted result. Do not substitute a raw linked `db push`, unguarded
-seed, or remote reset/repair.
+Use only the commands required by the active issue/gate.
 
-The accepted hosted result is migration history `001`–`010`, 4 empty Storage
-buckets, 12 Realtime publication tables, 2 scheduled jobs, 0 Auth users or
-identities, and 0 Storage objects. The catalogue counts are 196 brands, 48
-aliases, and 335 memberships with exact `80/80/80/80/15` collections.
+Do not substitute:
 
-| Name | Classification | Where it is used | When it is required |
+- raw unguarded linked pushes;
+- remote reset;
+- migration repair;
+- unguarded seed scripts
+
+when repository target-locked equivalents exist.
+
+The current migration directory plus verified hosted migration history determine the expected migration state.
+
+Do not hard-code an old migration tip such as `001–010`, `001–011` or `012` as a permanent target.
+
+---
+
+# Catalogue contract
+
+The known catalogue contract includes:
+
+```text
+196 brands
+48 aliases
+335 editorial memberships
+80 / 80 / 80 / 80 / 15 collection split
+```
+
+Use the repository's current catalogue validator as executable authority.
+
+A catalogue mismatch discovered during unrelated provider work should be investigated rather than patched manually.
+
+Do not hand-edit partial seed state to make counts match.
+
+---
+
+# Supabase application values
+
+| Name | Classification | Where used | Requirement |
 |---|---|---|---|
-| `PUBLIC_SUPABASE_URL` | Public project URL | Browser/server Supabase clients, catalogue seed, storage backup, and restore | Required for the first connected staging Worker |
-| `PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Browser-visible key | Browser/server Supabase clients | Required for the first connected staging Worker |
-| `SUPABASE_SECRET_KEY` | Secret | Worker server actions, admin invitations, uploads, backup, and restore | Required for the real application flow; never expose it to browser code |
-| `SUPABASE_SERVICE_ROLE_KEY` | Secret | Supabase Edge Functions, catalogue seed, and legacy server fallback | Required before deploying `notification-email`, `upload-cleanup`, or seeding; otherwise defer it |
-| `PUBLIC_SUPABASE_ANON_KEY` | Legacy browser-visible fallback | Legacy/local Supabase compatibility | Leave unset when `PUBLIC_SUPABASE_PUBLISHABLE_KEY` is available |
-| `SUPABASE_URL` | Provider runtime value | `notification-email` and `upload-cleanup` Edge Functions | Verify it is available in the hosted Edge Function environment before testing those functions |
+| `PUBLIC_SUPABASE_URL` | Public project URL | Browser/server client and approved tooling | Required for connected staging |
+| `PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Browser-visible key | Browser/server Supabase client | Required for connected staging |
+| `SUPABASE_SECRET_KEY` | Secret | Trusted server-side Worker operations | Required by the current hosted application server contract |
+| `SUPABASE_SERVICE_ROLE_KEY` | Highly privileged secret | Edge Functions/operator/legacy tooling where explicitly required | Configure only in the trusted surface that requires it |
+| `PUBLIC_SUPABASE_ANON_KEY` | Legacy browser-visible fallback | Legacy/local compatibility | Prefer the current publishable-key model |
+| `SUPABASE_URL` | Provider runtime value | Supabase Edge Functions | Verify in the hosted function environment where required |
 
-`PUBLIC_SUPABASE_PUBLISHABLE_KEY` is browser-visible, but it is not one of the
-two GitHub repository secrets used by the current manual staging workflow.
-Configure it on the staging Worker. Row Level Security remains the access
-boundary.
+RLS remains the browser/data-access boundary.
 
-For this baseline, `PUBLIC_SUPABASE_URL` must equal
-`https://nuhkpqjjyuygiemrxbdp.supabase.co`. The staging target guard verifies
-that URL and the browser-safe publishable key against the Frankfurt ref without
-printing either value. The Worker-only `SUPABASE_SECRET_KEY` is verified
-separately by the staging `/login` backend attestation: it must read the exact
-`196/48/335` catalogue counts from that origin or the route fails closed with
-`503`. The key and provider error details are never returned to the browser or
-written to application logs.
+A browser-visible publishable key is not authorization to bypass RLS.
 
-Keep the hosted staging project isolated from production and populate it only
-with synthetic people and listings. Apply migration `012`, then enable public
-email/password signup before testing registration.
+Never expose a server secret or service-role credential to browser code.
 
-### Gate 3 A9 synthetic-actor runner
+---
 
-The only executable A9 composition entrypoint is:
+# Hosted Auth configuration
 
-```powershell
-pnpm a9:staging:provision
-```
+The intended regular-user product model is public email/password registration.
 
-It remains disabled unless every A9 lock is exact. The runner validates all
-configuration before constructing inert clients, re-runs the Frankfurt target
-and hosted Auth-policy preflight before the first mutation, uses
-`PUBLIC_SUPABASE_URL` plus `SUPABASE_SECRET_KEY` for the one privileged client,
-and creates a fresh non-persistent client with
-`PUBLIC_SUPABASE_PUBLISHABLE_KEY` for every actor session. The legacy
-`SUPABASE_SERVICE_ROLE_KEY` is required only for the target-locking API-key
-inventory check; it is not used to construct the privileged A9 client.
-Before constructing either client, the runner exclusively reserves both an
-empty manifest and an authenticated empty credential store. Both configured
-paths must have the same pre-created parent directory and neither final file
-may already exist. Any collision stops A9 without replacing owner data. A
-verified transaction rollback removes the empty reservations; an unconfirmed
-rollback preserves them as retry evidence.
-The reserved manifest contains a runtime-generated opaque attempt ID and a
-SHA-256 identity for the canonical credential-store path. Before each Auth
-create, A9 checkpoints a role-only pending intent. This gives A11 exact,
-non-secret recovery coordinates if the process stops after provider commit but
-before the user ID checkpoint, and prevents parallel attempts from deleting
-one another's actor.
+For the normal hosted staging configuration when registration testing is authorized:
 
-Required A9 names are:
-
-| Name | Classification | Exact rule and lifecycle |
-|---|---|---|
-| `APP_ENV` | Non-secret gate | Exact `staging`; process-scoped |
-| `E2E_REAL_RUN` | Non-secret gate | Exact `true`; process-scoped |
-| `E2E_REAL_REPORT_EVIDENCE_RUN` | Non-secret gate | Exact `true`; process-scoped |
-| `E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN` | Non-secret gate | Exact `true`; remove after A9 |
-| `E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL` | Non-secret gate | Exact `A9`; remove after A9 |
-| `E2E_REAL_REPORT_EVIDENCE_RUN_ID` | Sensitive provenance | `gate3-` plus 8–64 lowercase letters, digits, or hyphens; keep through A11 |
-| `E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE` | Sensitive provenance | Owner-generated UUID unique to this A9 run; keep through A11 |
-| `E2E_REAL_REPORT_EVIDENCE_PROVISIONED_AFTER` | Sensitive provenance | Exact millisecond ISO-8601 lower bound for fresh actors; keep through A11 |
-| `E2E_REAL_BASE_URL` | Non-secret target | Exact staging Worker HTTPS origin |
-| `EXPECTED_SUPABASE_PROJECT_REF` | Non-secret target | Exact Frankfurt staging ref |
-| `PUBLIC_SUPABASE_URL` | Non-secret target | Exact Frankfurt staging Supabase origin |
-| `PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Non-secret browser key | Current project-bound publishable key |
-| `SUPABASE_ACCESS_TOKEN` | Secret | Supabase management inventory only; process-scoped |
-| `SUPABASE_SECRET_KEY` | Secret | Privileged A9 client; process-scoped and never browser-visible |
-| `SUPABASE_SERVICE_ROLE_KEY` | Secret | Legacy API-key inventory attestation only; process-scoped |
-| `E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH` | Sensitive local path | Absolute `.json` path outside the repository in the hardened run directory; keep through A11 |
-| `E2E_REAL_REPORT_EVIDENCE_TOTP_CREDENTIAL_PATH` | Sensitive local path | Absolute `.enc` path outside the repository in the hardened run directory; keep through A11 |
-| `E2E_REAL_REPORT_EVIDENCE_TOTP_ENCRYPTION_KEY` | Secret | At least 32 characters, loaded only into the trusted process and stored separately from the `.enc` file; keep through A11, then destroy |
-
-Each of the four exact actors also requires an owner-generated synthetic
-email, password, and unique username:
-
-```text
-E2E_REAL_REPORTER_EMAIL
-E2E_REAL_REPORTER_PASSWORD
-E2E_REAL_REPORTER_USERNAME
-E2E_REAL_CROSS_USER_EMAIL
-E2E_REAL_CROSS_USER_PASSWORD
-E2E_REAL_CROSS_USER_USERNAME
-E2E_REAL_ASSIGNED_MODERATOR_EMAIL
-E2E_REAL_ASSIGNED_MODERATOR_PASSWORD
-E2E_REAL_ASSIGNED_MODERATOR_USERNAME
-E2E_REAL_UNASSIGNED_MODERATOR_EMAIL
-E2E_REAL_UNASSIGNED_MODERATOR_PASSWORD
-E2E_REAL_UNASSIGNED_MODERATOR_USERNAME
-```
-
-Emails must be syntactically valid and unique, passwords must contain 12–128
-characters, and usernames must be unique 3–40 character values containing
-only letters, numbers, `_`, `.`, or `-`. A9 proves every configured email is
-absent immediately before its create attempt. It refuses to reuse or delete a
-prior actor, including an actor from a previous attempt with the same run
-provenance.
-
-The owner never supplies TOTP seeds. Supabase generates each seed during the
-actor-owned enrollment. The runner immediately writes it to the run-scoped
-credential store using the repository's scrypt-derived AES-256-GCM pattern.
-The file is atomically replaced, hardened to owner-only access, and contains
-only authenticated ciphertext. The manifest is also atomically written with
-owner-only access and never contains credentials.
-
-A10 reopens the same encrypted store with the same path and key and retrieves
-one exact moderator seed only while generating the current challenge code.
-A11 first verifies scoped hosted cleanup, then authenticates and purges the
-credential store, and only then removes the manifest. A failed A9 enrollment
-or later A9 compensation deletes that role's stored seed; a failed A11 store
-authentication, missing file, or unreadable file leaves the manifest in place
-for a safe retry. Missing is never treated as proof of purge while the manifest
-still exists.
-Purge atomically replaces the credential ciphertext with an authenticated
-empty tombstone bound to the original canonical path. A manifest-removal retry
-can authenticate that tombstone without restoring a seed; after manifest
-removal the runner removes the tombstone. If that final unlink fails, the same
-A11 entrypoint accepts only the absent-manifest plus authenticated empty
-tombstone state and retries the unlink; missing, unreadable, unauthenticated,
-or active stores still fail closed. Copying the encrypted file to a different
-configured path fails authentication.
-
-Never set or persist either of these obsolete plaintext inputs:
-
-```text
-E2E_REAL_ASSIGNED_MODERATOR_TOTP_SECRET
-E2E_REAL_UNASSIGNED_MODERATOR_TOTP_SECRET
-```
-
-Do not put actor passwords, Supabase credentials, or the TOTP encryption key
-in `.env`, `.env.local`, tracked files, command arguments, shell history,
-logs, Playwright artifacts, issue/PR text, or chat. The two paths and non-secret
-gate values may be process variables. Keep the encryption key in a separate
-password/secret system from the encrypted run directory. Pre-create that
-directory outside the repository with inheritance removed and access granted
-only to the operator account; the runner additionally applies owner-only ACLs
-to every atomic file replacement.
-
-### Historical hosted email/password Auth checkpoint
-
-The Frankfurt staging Auth configuration is:
-
-- public email/password signup: currently disabled and must be enabled after migration `012`;
+- public email/password signup: enabled;
 - anonymous signup: disabled;
 - email confirmation: enabled;
 - Site URL:
-  `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev`;
+
+```text
+https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev
+```
+
 - redirect allow-list:
-  `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/callback`
-  and
-  `https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/confirm`;
-- custom SMTP and CAPTCHA: unconfigured; no SMS provider is required.
 
-Do not run `supabase config push` against this project. The local Supabase
-configuration contains localhost callback values and an SMS test OTP that must
-never replace the hosted Auth settings.
-
-### First administrator bootstrap
-
-Migration `008_first_admin_bootstrap` adds the only exception to the normal
-“active administrator creates invitations” rule. Its two public RPC contracts
-are service-role-only, tokenless and one-time:
-
-- `prepare_first_admin_invite(email, valid_for)` creates or safely reuses the
-  audited pending bootstrap marker;
-- `bind_first_admin_invite(invite_id, user_id)` binds that exact marker to the
-  authoritative Supabase Auth invitation.
-
-The binding creates only a pending beta membership. It does not accept Terms,
-Privacy or Marketplace Rules for the administrator, and it does not bypass
-email confirmation, onboarding or staff MFA.
-
-Run the trusted operator only from a local shell after the hosted migration,
-Auth callback allow-list and real email transport have been verified. Never
-store its service-role key or operator values in GitHub or Worker
-configuration:
-
-```powershell
-$env:APP_ENV='staging'
-$env:FIRST_ADMIN_BOOTSTRAP_ENABLED='true'
-$env:FIRST_ADMIN_EMAIL_TRANSPORT_CONFIRMED='true'
-$env:FIRST_ADMIN_EMAIL='operator@example.com'
-pnpm bootstrap:first-admin -- prepare
+```text
+https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/callback
+https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/confirm
 ```
 
-If Auth delivery fails before a user is created, the script revokes the pending
-database marker as compensation. If delivery succeeds but binding fails, the
-marker remains pending and the script prints only the non-secret invite/user
-recovery IDs. Retry without resending email:
+Custom SMTP, CAPTCHA/Turnstile and other provider state must follow the active Gate 3 plan rather than old infrastructure-baseline assumptions.
 
-```powershell
-$env:FIRST_ADMIN_BOOTSTRAP_INVITE_ID='<reported invite UUID>'
-$env:FIRST_ADMIN_BOOTSTRAP_USER_ID='<reported user UUID>'
-pnpm bootstrap:first-admin -- bind
+Do not state that SMTP or CAPTCHA must remain unconfigured merely because an earlier bootstrap checkpoint deferred them.
+
+No SMS provider is required for ordinary regular-user authentication.
+
+---
+
+## Auth mutation scope
+
+Do not run a broad configuration push merely to make local and hosted Auth settings look alike.
+
+In particular, do not blindly run:
+
+```text
+supabase config push
 ```
 
-The bind-only retry needs the staging Supabase URL, service-role key and the two
-UUIDs, but it does not depend on Resend, the callback origin or currently
-working email transport.
+against hosted staging when local configuration contains localhost/test-only values.
 
-Do not run this operator in the current infrastructure-only staging phase:
-Resend/Auth email delivery is deliberately deferred. It rejects every
-environment except `APP_ENV=staging`, and a successfully bound bootstrap is
-terminal.
+Make only the exact hosted Auth mutation authorized by the current gate.
 
-## Add Resend before testing registration emails and notifications
+If signup state is a prerequisite owned by another gate or owner action, do not change it under an `A9 only` instruction merely because the desired final product configuration is known.
 
-| Name | Classification | Where it is used | When it is required |
-|---|---|---|---|
-| `RESEND_API_KEY` | Secret | `notification-email` Edge Function and transactional email provider | Required before registration-email and notification tests; defer for the first infrastructure-only deploy |
-| `RESEND_FROM_EMAIL` | Public sender configuration | `notification-email` and the verified sender setup | Required with `RESEND_API_KEY` |
-| `NOTIFICATION_WEBHOOK_SECRET` | Secret, at least 32 bytes | Header shared by the Supabase notification webhook and `notification-email` | Required before enabling the notification webhook; use a staging-only value |
+Product policy and current mutation authority are separate questions.
 
-Configure the verified Resend sender in Supabase Auth for authentication email.
-Deploy the notification function only after its Resend values and
-`SUPABASE_SERVICE_ROLE_KEY` are available.
+---
 
-## Add Turnstile before testing protected forms
+# Resend
 
-| Name | Classification | Where it is used | When it is required |
-|---|---|---|---|
-| `PUBLIC_TURNSTILE_SITE_KEY` | Browser-visible site key | Login and protected form UI | Required before hosted Turnstile testing |
-| `TURNSTILE_SECRET_KEY` | Secret | Server-side Turnstile verification | Required at the same time as the site key |
-| `TURNSTILE_EXPECTED_HOSTNAME` | Public hostname configuration | Server-side hostname validation | Set it to the hostname from `PUBLIC_APP_URL` |
+| Name | Classification | Where used |
+|---|---|---|
+| `RESEND_API_KEY` | Secret | Transactional email / notification provider |
+| `RESEND_FROM_EMAIL` | Sender configuration | Auth/notification sender |
+| `NOTIFICATION_WEBHOOK_SECRET` | Secret, minimum repository-required strength | Supabase notification webhook ↔ `notification-email` authentication |
 
-These values can be deferred for an infrastructure-only deploy. They are
-required before the staging login, password-reset, and sensitive
-form security tests.
+Use separate staging values.
 
-## Set application, consent, and safety values
+Do not store the API key in source control.
 
-| Name | Classification | Staging value or rule | When it is required |
-|---|---|---|---|
-| `APP_ENV` | Private environment label | `staging` | Set for the hosted staging Worker |
-| `PUBLIC_DEMO_MODE` | Public build/runtime flag | `false` | Required from the first staging deploy |
-| `PUBLIC_APP_URL` | Public HTTPS origin | Exact staging Worker origin | Required before registration callbacks and email links |
-| `PRIVATE_BETA_REQUIRE_STAFF_MFA` | Private policy flag | `true` | Required from the first staging deploy |
-| `TERMS_VERSION` | Public consent version | Exact version shown by the deployed Terms page | Required before onboarding tests |
-| `PRIVACY_VERSION` | Public consent version | Exact version shown by the deployed Privacy page | Required before onboarding tests |
-| `MARKETPLACE_RULES_VERSION` | Public consent version | Exact version shown by the deployed Rules page | Required before onboarding tests |
-| `LEGAL_CONTENT_APPROVED` | Private release flag | Keep `false` until the published text is approved | May remain `false` for internal staging; must not be used to imply legal approval |
-| `INCIDENT_CONTACT_EMAIL` | Public operational contact | Monitored staging/safety contact | Required before external invitations |
+Configure the actual required sender/provider state according to the current hosted gate.
 
-Consent version values are identifiers recorded with the accepted text. Change
-them whenever the corresponding published document changes.
+A previously deferred provider may now be required by a later gate; check `docs/PROJECT-STATUS.md` and the applicable reconciliation plan instead of this document's historical checkpoint.
 
-## Configure notifications, cleanup, and backups before exercising them
+---
 
-| Name | Classification | Where it is used | When it is required |
-|---|---|---|---|
-| `UPLOAD_CLEANUP_SECRET` | Secret, at least 32 bytes | Header shared by the scheduler and `upload-cleanup` Edge Function | Required before enabling the cleanup schedule |
-| `UPLOAD_CLEANUP_BATCH_SIZE` | Private operational setting | Cleanup Edge Function | Optional; default is `25`, allowed range is `1`–`100` |
-| `FINALIZED_IMAGE_BUCKET` | Private storage setting | Finalized-image backup script | Optional; default is `listing-images` |
-| `BACKUP_ENCRYPTION_KEY` | Offline secret, at least 32 characters | Storage backup and restore scripts only | Required before the first storage backup or restore rehearsal |
-| `BACKUP_DIRECTORY` | Local path setting | Storage backup script only | Optional; default is `.backups` |
+# Turnstile
 
-Never configure `BACKUP_ENCRYPTION_KEY` as a Worker secret. Keep it in a
-separate secrets system from the encrypted backup set. Storage backup and
-restore also require `PUBLIC_SUPABASE_URL` and either
-`SUPABASE_SECRET_KEY` or the legacy `SUPABASE_SERVICE_ROLE_KEY`.
+| Name | Classification | Where used |
+|---|---|---|
+| `PUBLIC_TURNSTILE_SITE_KEY` | Browser-visible site key | Protected-form UI |
+| `TURNSTILE_SECRET_KEY` | Secret | Server-side verification |
+| `TURNSTILE_EXPECTED_HOSTNAME` | Hostname configuration | Server-side origin/hostname validation |
 
-## Keep monetisation and payments disabled
+The expected hostname must correspond to the authorized staging `PUBLIC_APP_URL`.
 
-## Durable credential boundaries
+Use provider values appropriate to the active staging acceptance step.
 
-Credentials are required only for an explicitly authorized hosted operation. Never copy production credentials into staging or store real secrets in committed environment files, configuration, documentation, source, pull-request-visible variables, logs, screenshots, or receipts. Current migration tips, Auth counts, Storage counts, Worker IDs, rollback versions, and provider activation state are intentionally volatile and belong in `PROJECT-STATUS.md` or gate evidence, not in this credential checklist.
+Do not commit real Turnstile secrets.
 
-Set every staging monetisation flag to `false`:
+Do not weaken server-side verification to make hosted E2E easier.
+
+---
+
+# Cloudflare Images
+
+The application uses trusted image normalization before supported uploaded evidence becomes finalized marketplace content.
+
+Required Cloudflare Images state must follow the active provider/gate plan.
+
+Do not enable the image processor merely because the `IMAGES` binding exists.
+
+The appropriate acceptance tests must pass first.
+
+---
+
+# Application, consent and safety configuration
+
+| Name | Classification | Staging rule |
+|---|---|---|
+| `APP_ENV` | Private environment label | `staging` |
+| `PUBLIC_DEMO_MODE` | Public/runtime flag | `false` |
+| `PUBLIC_APP_URL` | Public HTTPS origin | Exact authorized staging Worker origin |
+| `PRIVATE_BETA_REQUIRE_STAFF_MFA` | Private policy flag | `true` |
+| `TERMS_VERSION` | Public consent identifier | Match the exact deployed Terms version |
+| `PRIVACY_VERSION` | Public consent identifier | Match the exact deployed Privacy version |
+| `MARKETPLACE_RULES_VERSION` | Public consent identifier | Match the exact deployed Marketplace Rules version |
+| `LEGAL_CONTENT_APPROVED` | Release flag | Keep `false` until actual published legal content is approved |
+| `INCIDENT_CONTACT_EMAIL` | Operational contact | Use the current approved/monitored staging or safety contact when required |
+
+Consent identifiers must change when the accepted text they identify changes.
+
+Do not use `LEGAL_CONTENT_APPROVED=true` merely to bypass a release check.
+
+---
+
+# Staff MFA
+
+Staff/admin security remains mandatory.
+
+Do not weaken:
+
+```text
+PRIVATE_BETA_REQUIRE_STAFF_MFA=true
+```
+
+or the database-authoritative AAL2 boundary for staging tests.
+
+Synthetic hosted moderators must satisfy the authentication/MFA state required by the gate they are used to prove.
+
+---
+
+# First administrator bootstrap
+
+Legacy first-administrator bootstrap remains a special operator-only compatibility path.
+
+It is not the normal public user-registration model.
+
+Where still present, its security invariants include:
+
+- service-role-only execution;
+- staging-only execution when applicable;
+- one-time binding semantics;
+- no implicit legal-consent acceptance;
+- no bypass of required email confirmation/onboarding;
+- no bypass of staff MFA.
+
+Use the current operator implementation and current gate plan as the executable authority.
+
+Do not run the bootstrap merely because instructions exist in this file.
+
+It requires explicit current scope.
+
+Never store first-admin secrets/values in GitHub, Worker configuration or committed documentation.
+
+---
+
+# Notifications and cleanup
+
+## Notification delivery
+
+The notification path uses the architecture-defined:
+
+```text
+database notification
+→ authenticated webhook
+→ notification Edge Function
+→ delivery ledger
+→ Resend
+```
+
+Use the dedicated webhook secret.
+
+Never send the service-role credential in a Database Webhook header.
+
+Verify notification provider behavior through the gate/test contract that currently applies.
+
+---
+
+## Upload cleanup
+
+| Name | Classification | Rule |
+|---|---|---|
+| `UPLOAD_CLEANUP_SECRET` | Secret | Per-environment, repository-required minimum strength |
+| `UPLOAD_CLEANUP_BATCH_SIZE` | Private operational setting | Use the currently supported range/default |
+| `FINALIZED_IMAGE_BUCKET` | Storage configuration | Use current architecture/tooling default unless explicitly overridden |
+
+Scheduler behavior must follow the currently approved operator/release contract.
+
+Do not invent retry semantics if a current Human Gate or later decision governs them.
+
+Never put cleanup secrets in URLs.
+
+Do not log private object paths unnecessarily.
+
+---
+
+# Backup configuration
+
+| Name | Classification | Rule |
+|---|---|---|
+| `BACKUP_ENCRYPTION_KEY` | Offline secret | Required by backup/restore tooling |
+| `BACKUP_DIRECTORY` | Local path | Use current tooling/default |
+| `FINALIZED_IMAGE_BUCKET` | Storage setting | Use current application/tooling contract |
+
+Backup and restore procedures may require trusted Supabase credentials.
+
+See:
+
+`docs/BACKUP-RESTORE.md`
+
+Do not store `BACKUP_ENCRYPTION_KEY` with the encrypted backup set.
+
+Do not expose it to the Worker runtime unless the backup architecture explicitly changes.
+
+---
+
+# Keep monetisation and payments disabled
+
+Staging monetisation remains disabled unless a future explicitly authorized billing phase says otherwise.
+
+Expected disabled state:
 
 ```dotenv
 FEATURE_BILLING_ENABLED=false
@@ -556,34 +755,213 @@ FEATURE_STRIPE_FALLBACK_ENABLED=false
 PAYMENT_PROVIDER=disabled
 ```
 
-Do not provision `MYPOS_SID`, `MYPOS_WALLET_NUMBER`, `MYPOS_KEY_INDEX`,
-`MYPOS_CHECKOUT_URL`, `MYPOS_PRIVATE_KEY`, `MYPOS_PUBLIC_CERTIFICATE`,
-`STRIPE_SECRET_KEY`, or `STRIPE_WEBHOOK_SECRET` for this staging phase.
-Payments, fees, subscriptions, boosts, and advertising remain out of scope.
+Do not provision production-style payment credentials during unrelated staging security/reconciliation work.
 
-## Finish the baseline before adding providers
+That includes, unless an authorized billing test specifically requires them:
 
-1. Run the full local test/audit matrix, PostgreSQL checks, and both Wrangler
-   dry-runs sequentially.
-2. Push the reviewed branch, require green application and database quality
-   jobs, and merge only that tested state to `main`.
-3. Manually dispatch `deploy staging` for the exact `main` SHA. The workflow
-   must deploy only staging and run the hosted HTTP smoke automatically.
-4. Verify the smoke receipt covers public login/legal/safety `200` responses,
-   protected-route `303` redirects, closed `robots.txt`, missing sitemap,
-   security/no-store headers, no demo data, and fail-closed login without
-   Turnstile.
-5. Fill the first functional deployment receipts near the top of this
-   document, commit them, then deploy the resulting documentation SHA so the
-   active Worker and final `main` agree. Keep that final receipt in the
-   immutable GitHub Actions and Cloudflare deployment records.
-6. If functional smoke fails, the workflow automatically restores Worker
-   version `75593db4-12fd-486d-ae8a-bdf9ebbb3ece` and verifies its five-route
-   fail-closed contract. Keep the database forward-only and investigate before
-   another dispatch.
-7. Start Resend, Turnstile, Cloudflare Images, real-provider E2E, and
-   backup/restore work only in a separately approved phase.
-8. Keep production, first-admin bootstrap, real users, external access,
-   custom domain, legal approval, and every
-   payment/monetisation capability gated.
-> Historical hosted checkpoint details in this document are retained for guarded operational reference only. They do not assert current Auth, provider, migration, Worker, or environment state; current status requires fresh evidence in `docs/PROJECT-STATUS.md`.
+```text
+MYPOS_SID
+MYPOS_WALLET_NUMBER
+MYPOS_KEY_INDEX
+MYPOS_CHECKOUT_URL
+MYPOS_PRIVATE_KEY
+MYPOS_PUBLIC_CERTIFICATE
+STRIPE_SECRET_KEY
+STRIPE_WEBHOOK_SECRET
+```
+
+Payment scaffolding does not authorize billing.
+
+---
+
+# Staging deployment checks
+
+A typical pre-dispatch sequence may include:
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm test
+pnpm test:e2e
+pnpm db:staging:verify-target
+pnpm db:staging:push:dry-run
+pnpm exec wrangler deploy --dry-run --env staging
+```
+
+This list is not a competing execution workflow.
+
+Use the exact checks required by:
+
+- the current GitHub issue;
+- the active reconciliation/release plan;
+- repository verification policy.
+
+Do not rerun completed gate evidence merely because it appears in this document.
+
+---
+
+# Exact-source deployment evidence
+
+When staging deployment is used as gate evidence, distinguish:
+
+```text
+local candidate
+remote main
+merged commit
+Worker version
+deployment
+active traffic
+provider configuration
+```
+
+Prove the exact relationships required by the current gate.
+
+Do not infer deployment convergence from branch names.
+
+Historical deployment/version IDs in earlier receipts remain historical evidence only.
+
+---
+
+# Registration ramp
+
+Registration is ordinary email/password signup under the current product policy.
+
+The beta cohort may still be expanded gradually for operational safety.
+
+A typical progression may be:
+
+```text
+synthetic/internal actors
+→ small real-user cohort
+→ approximately 10 users
+→ approximately 30–50 users
+→ later authorized expansion
+```
+
+This is a go-to-market/operational ramp.
+
+It is not invite-only authentication.
+
+Pause expansion for material failures such as:
+
+- P0/P1 security or correctness issues;
+- cross-account data access;
+- unauthorized moderation access;
+- lost finalized uploads/evidence;
+- failed required restore capability;
+- unexpected monetisation path;
+- material privacy failure.
+
+---
+
+# Production boundary
+
+Production remains a separate protected environment.
+
+Do not:
+
+- create production resources;
+- configure production credentials;
+- deploy production Workers;
+- mutate production Auth/database;
+- change production DNS/domain;
+- enable production billing;
+
+under ordinary staging credentials/setup work.
+
+Production mutations require the applicable repository R3 and Human Gate authorization.
+
+---
+
+# Historical bootstrap checkpoint
+
+The July 2026 bootstrap records in earlier revisions of this file remain useful historical evidence for:
+
+- initial Frankfurt staging identity;
+- first functional Worker deployment;
+- initial CI receipts;
+- initial fail-closed deployment;
+- then-empty Auth/Storage state;
+- then-current migration history.
+
+They must not be interpreted as permanent current-state requirements.
+
+In particular:
+
+```text
+0 Auth users
+0 Storage objects
+migrations 001–010
+signup disabled
+Resend deferred
+Turnstile deferred
+specific Worker rollback UUID
+```
+
+were checkpoint facts, not timeless staging configuration.
+
+Use Git/GitHub/Cloudflare/Supabase evidence when historical receipt details are needed.
+
+---
+
+# Agent and skill interaction
+
+This document provides staging credential/configuration constraints.
+
+It does not create another planning, debugging, TDD, deployment or completion workflow.
+
+Use:
+
+`docs/agents/SKILL-ROUTER.md`
+
+for skill routing.
+
+The relationship remains:
+
+```text
+repository / issue / gate authority
+        ↓
+Superpowers primary process
+        ↓
+Matt Pocock engineering-depth reasoning when useful
+        ↓
+ECC / platform specialist when useful
+        ↓
+repository-defined verification
+```
+
+ECC/platform specialists may be especially useful for:
+
+- Supabase;
+- Cloudflare;
+- GitHub;
+- Resend;
+- Turnstile;
+- E2E/provider verification;
+- security.
+
+Their expertise does not authorize additional provider mutations.
+
+No skill may:
+
+- bypass target locks;
+- expose secrets;
+- broaden a named gate;
+- weaken MFA/RLS;
+- switch to production;
+- create a competing deployment process.
+
+---
+
+# Core staging credential invariant
+
+```text
+Use only the Frankfurt staging target.
+Keep production and staging credentials separate.
+Keep secrets with the provider/operator surface that owns them.
+Use target-locked hosted commands.
+Do not turn historical checkpoints into current expected state.
+Do not resurrect removed SMS/invite requirements.
+Do not weaken MFA, RLS or fail-closed behavior for testing.
+Correct credentials do not broaden named-gate authority.
+Production remains protected.
+```
