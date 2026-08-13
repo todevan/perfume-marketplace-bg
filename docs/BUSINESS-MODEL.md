@@ -113,8 +113,15 @@
 
 ## 9. Решения, които още са външни gates
 
+## Durable owner constraints
+
+The marketplace does not take payment for the perfume transaction or hold transaction funds; buyer and seller arrange payment, delivery, inspection, and other off-platform terms. Any future revenue is limited to separately authorized digital services such as additional listing capacity, merchant tools, clearly bounded promotion, or relevant advertising. Verified-merchant status is a trust signal, not a paid-plan, VIP, subscription, or boost benefit. Monetization remains disabled until the required accounting, tax, legal, payment-provider, and production decisions are explicitly cleared.
+
 - Български адвокат: DSA/GPSR/DAC7, trader/private, withdrawal/refund, testers/samples и условия на услугата.
 - Счетоводител: ДДС, фактуриране/фискални документи, приходно признаване и абонаменти.
 - myPOS: фирмена сметка, production onboarding и успешно sandbox досие.
 - Branding: име, лого, домейн и търговска марка; технически остават конфигурационни дотогава.
 
+## Current policy reconciliation
+
+The launch sequence in this historical business model is not current operational status. The current normal-user registration policy is public email/password without regular-user phone/SMS verification, and monetisation remains disabled until the applicable business, legal, security, and production gates pass.

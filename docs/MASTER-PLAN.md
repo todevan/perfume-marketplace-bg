@@ -100,3 +100,12 @@ docs/CONCEPT.md - original business concept
 docs/MASTER-PLAN.md - this file
 docs/AUDIT-2026-08-02.md - full initial audit findings
 docs/PROJECT-STATUS.md - living short-form status, updated after every phase
+
+## Durable owner-authored decisions preserved during reconciliation
+
+- The owner is the final authority for product, business, legal, privacy, and protected production decisions; ordinary reversible implementation details remain within the repository autonomy rules.
+- The marketplace is an off-platform transaction coordinator: it does not process marketplace payments, hold inventory, or guarantee authenticity.
+- Verified-merchant status is a trust signal and must not become a paid-plan, VIP, subscription, or boost benefit.
+- The MVP remains limited to supported physical perfume listing formats and truthful backend-supported search/filter/pagination behavior. Do not add decants, arbitrary bundles, designer/set expansion, scraped catalogue content, or unsupported relevance claims without an explicit decision.
+- Backup and recovery evidence must cover both PostgreSQL state and compatible finalized sanitized Storage objects. A database-only backup is not complete marketplace recovery evidence.
+- Incident severity does not authorize protected or destructive mutations. Hosted-provider changes, production mutation, credential changes, and destructive recovery require the applicable gate and Human Gate.

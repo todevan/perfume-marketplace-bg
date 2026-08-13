@@ -39,6 +39,10 @@ The fee feature can activate only after three consecutive months with at least 5
 
 ## Operational gate
 
+## Durable gate principles
+
+Launch evidence must be proven rather than assumed. Local green tests do not substitute for hosted or operational evidence when a gate requires it; temporary provider configuration must not be mistaken for durable product policy. Passing a gate is not itself authorization to mutate a protected provider or production. The intended progression remains development/staging, free pre-launch beta, public marketplace, paid services, then broader production operation.
+
 - Counterfeit, stolen-image, harassment, spam and product-safety report categories are staffed with an SLA.
 - Safety Gate contact and recall/takedown procedure are documented.
 - Merchant verification is free and cannot be purchased through VIP.

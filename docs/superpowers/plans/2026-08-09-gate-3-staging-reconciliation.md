@@ -1,5 +1,7 @@
 # Gate 3 Staging Reconciliation Implementation Plan
 
+> **Historical/non-authorizing document:** This plan records a prior Gate 3/A-series reconciliation scope and proposed hosted targets and evidence model. It is retained for provenance and durable safety constraints only. It does not assert that those hosted facts remain current, does not authorize provider or production mutation, and must not override `docs/PROJECT-STATUS.md`, current Git evidence, or an explicitly authorized current gate.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to execute independent source/harness tasks, `superpowers:test-driven-development` for executable behavior changes, `superpowers:systematic-debugging` for unexpected results, and `superpowers:verification-before-completion` before any PASS claim. Use `superpowers:requesting-code-review` for the final independent review. Repository instructions and explicit owner approvals override generic skill defaults.
 
 **Goal:** Reconcile only the hosted staging identity, immutable release, schema, provider, synthetic-actor, and test-harness prerequisites that currently block Gate 3 report-evidence verification, then run that verification without entering Gate 4.

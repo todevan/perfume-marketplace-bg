@@ -38,6 +38,10 @@ pnpm restore:storage -- --backup=/absolute/path/to/storage-TIMESTAMP
 
 ## Failure rules
 
+## Owner-authored recovery boundaries
+
+Database backups do not contain Storage objects. A complete marketplace recovery set therefore requires compatible PostgreSQL state plus finalized sanitized listing-image objects and an attributable manifest. Backup keys and server credentials are placeholders only and must never be committed, logged, or copied into shared evidence. This runbook does not authorize a hosted restore, destructive cleanup, production recovery, or provider mutation; those actions require the applicable release and Human Gate authority.
+
 - Hash mismatch: stop the backup/restore and investigate; never silently accept it.
 - Missing object: keep the database backup, record the affected listing IDs and open an incident.
 - Existing destination object: do not enable overwrite. Confirm the target is truly empty or restore to a new project.

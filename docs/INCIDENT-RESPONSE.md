@@ -34,4 +34,8 @@
 
 ## Post-incident
 
+## Durable response boundaries
+
+Incident severity and mutation risk are separate classifications: urgency does not authorize a protected or destructive action. Preserve request/deployment/audit evidence without copying secrets or unnecessary personal data, apply the narrowest safe containment already authorized, and classify non-trivial mutations under the applicable Human Gate. A named incident authorizes investigation and minimum permitted containment, not unrelated provider changes, production mutation, or destructive recovery.
+
 Within the agreed internal window, document root cause, detection gap, timeline, user impact, remediation owner and due date. Remove evidence when its approved retention period ends, while preserving legally required audit records.

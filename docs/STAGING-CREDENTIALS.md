@@ -537,6 +537,10 @@ restore also require `PUBLIC_SUPABASE_URL` and either
 
 ## Keep monetisation and payments disabled
 
+## Durable credential boundaries
+
+Credentials are required only for an explicitly authorized hosted operation. Never copy production credentials into staging or store real secrets in committed environment files, configuration, documentation, source, pull-request-visible variables, logs, screenshots, or receipts. Current migration tips, Auth counts, Storage counts, Worker IDs, rollback versions, and provider activation state are intentionally volatile and belong in `PROJECT-STATUS.md` or gate evidence, not in this credential checklist.
+
 Set every staging monetisation flag to `false`:
 
 ```dotenv
@@ -580,3 +584,4 @@ Payments, fees, subscriptions, boosts, and advertising remain out of scope.
 8. Keep production, first-admin bootstrap, real users, external access,
    custom domain, legal approval, and every
    payment/monetisation capability gated.
+> Historical hosted checkpoint details in this document are retained for guarded operational reference only. They do not assert current Auth, provider, migration, Worker, or environment state; current status requires fresh evidence in `docs/PROJECT-STATUS.md`.

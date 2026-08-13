@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-08-02
+Last updated: 2026-08-13
 
 ## Current verdict
 
@@ -9,6 +9,8 @@ Last updated: 2026-08-02
 **Hosted staging activation and production launch readiness: blocked.**
 
 Phase 1 remains complete and Phase 2 is active. Local Phase 2 work now enforces database-authoritative staff AAL2, bounded request streams, sanitized images-only report evidence, a one-time evidence allocation/finalization ledger, durable rejection/expiry cleanup and effective expired-offer behavior. Hosted evidence acceptance, owner-approved messaging/moderation-evidence/blocking semantics and real multi-session races remain outstanding. Phase 3 and Phase 4 work remains out of scope.
+
+Current repository evidence for this snapshot: branch `codex/current-main-20260813`; `HEAD` is `8ef837e4460d7a7df5386e3bb57dfa3120e7a94f`; `origin/main` remains `b00516e6b7c8d870aa18da9e36775f1d13d3c542`. Working changes are documentation-only reconciliation edits plus the intentionally preserved local rescue directory. Graphify is indexed at the authoritative origin baseline `b00516e6b7c8d870aa18da9e36775f1d13d3c542` with 4,920 nodes, 11,781 edges, and 224 communities; its indexed tree was not available.
 
 The full repository audit remains recorded in [AUDIT-2026-08-02.md](./AUDIT-2026-08-02.md). Its dated invite/phone observations are historical and are superseded by the 2026-08-02 owner decision for current behavior.
 
@@ -94,3 +96,11 @@ No hosted database, Auth setting, Worker or provider was changed during this loc
 The legal Phase 4 pages still contain draft closed-beta/verified-phone language. They were deliberately not changed because the owner excluded unrelated Phase 4 work; those pages must be reconciled during legal review before external launch. Historical audits and reviews were not rewritten.
 
 The next change batch should remain independently selected and approved rather than combining the remaining security, database, provider, legal and UX work.
+
+## Reconciled owner guidance
+
+Owner-maintained documentation confirms durable boundaries that remain applicable: the marketplace is off-platform for payment and delivery; verified-merchant status is a trust signal rather than monetization; backup completeness requires PostgreSQL plus compatible finalized Storage objects; and hosted or destructive operations require explicit gate/Human Gate authorization. These are durable constraints, not replacements for the operational facts above.
+
+The current operational facts in this file remain authoritative for this repository baseline: Phase 2 local hardening is complete, hosted evidence acceptance and owner decisions on messaging/moderation/blocking remain blockers, and no hosted provider or production state is inferred from manual documentation.
+
+Manual Gate 3/A9 documents remain historical planning material. They are not current evidence of hosted Auth, migration, Worker, provider, deployment, or environment health and do not authorize hosted mutation.

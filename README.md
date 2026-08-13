@@ -1,5 +1,11 @@
 # Bulgarian perfume marketplace — closed beta
 
+## Durable owner boundaries
+
+The perfume transaction remains off-platform: this application is not checkout, a payment intermediary, an inventory holder, or an authenticity guarantor. Public email/password registration is the current normal-user policy; regular users do not require phone/SMS verification. Staff and administrators remain role-bound and AAL2-protected. Payments, monetisation, boosts, subscriptions, and advertising remain disabled until their applicable business, legal, security, and production gates pass.
+
+The older inventory paragraph below is historical implementation context; where it mentions invite-only authentication or hosted state, the current policy and status above and in `docs/PROJECT-STATUS.md` take precedence.
+
 Работеща SvelteKit основа за затворен marketplace за нови и употребявани парфюми, продажба, размяна и обяви „Търся“. Името, логото и домейнът остават конфигурационни.
 
 Кодът вече съдържа production data flow, invite-only authentication и forward-only Supabase hardening. Изолираният Frankfurt staging backend е свързан, мигриран и остава затворен без потребители или покани. Production, домейнът, външните доставчици и одобрените правни текстове остават launch gates.

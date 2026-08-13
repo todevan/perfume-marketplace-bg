@@ -274,6 +274,10 @@ Wizard options използват 8px cards с Strong Taupe Line. Hover усил
 
 ## Do's and Don'ts
 
+## Owner-authored product boundaries
+
+The visual system supports a trust-oriented marketplace, not a checkout storefront. Preserve real seller, listing, and evidence context, visible keyboard focus, reduced-motion behavior, and minimum 44px targets. Evidence status must never be styled or worded as an authenticity guarantee; do not invent seller metrics, testimonials, or transaction claims to fill empty states. Design changes must not imply payments, monetisation, boosts, subscriptions, ads, or public profile writes that current product policy does not enable.
+
 ### Do:
 - **Do** use real user photography as the densest visual material and preserve its character through consistent crop.
 - **Do** pair bottle volume and remaining quantity with price or swap mode, seller identity and evidence status.

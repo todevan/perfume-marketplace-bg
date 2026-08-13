@@ -77,3 +77,18 @@ Before relying on the graph for important work, confirm its indexed repository
 SHA/tree matches the task baseline.
 
 After substantial structural changes, refresh/update the Graphify graph.
+
+## Durable operating model
+
+The repository instructions are the primary authority for autonomous engineering. Installed skills and agent tooling support investigation and implementation but do not override owner decisions, phase boundaries, security rules, Human Gates, or release scope. When instructions conflict, prefer the explicit current owner instruction, this file, current project/status documentation, applicable architecture and launch documentation, approved task scope, then skills and generic defaults.
+
+Do not silently resolve material conflicts involving authentication, authorization, MFA/AAL, RLS, privacy, cross-user visibility, evidence, staging or production providers, database mutations, releases, rollback, credentials, or destructive infrastructure. Report the conflict before performing the mutation.
+
+Routine reversible engineering work may proceed within the authorized scope. Hosted-provider changes, production mutations, destructive recovery, credential changes, and other protected actions require the applicable Human Gate and explicit scope. A runbook or skill is not authorization by itself.
+
+### Evidence discipline
+
+- Never invent provider state, hosted evidence, deployment, migration, rollback, smoke-test, or release claims.
+- Never publish secrets, authentication material, private evidence, personal data, or credential-bearing command output.
+- Keep local, staging, and production environments distinct; staging authority never implies production authority.
+- Security-sensitive failures must fail closed, and service-role access must not be used as a convenience shortcut around ordinary authorization.

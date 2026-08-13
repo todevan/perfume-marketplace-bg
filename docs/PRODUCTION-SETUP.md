@@ -208,4 +208,8 @@ Deploy `upload-cleanup` with `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and a p
 
 ## Registration ramp
 
+## Durable operating constraints
+
+The canonical repository is `todevan/perfume-marketplace-bg`; the former repository is not a source of current release truth or deployment authority. A successful push, merge, or deployment does not prove correct hosted provider state. Staging and production runbook instructions are not permission for unrelated hosted or production mutations; verify the exact authorized commit, tree, environment, gate, and rollback evidence before dispatch.
+
 Exercise internal accounts first. When error rate, abuse queue and delivery metrics remain clean, allow a controlled group of 10 users, then 30–50, while registration itself remains ordinary email/password signup. Stop the ramp for any P0/P1 issue, cross-account data access, unreviewed moderation access, lost upload, failed restore, or unexpected billing path.

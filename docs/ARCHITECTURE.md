@@ -92,4 +92,8 @@ Content decisions are made only through target-specific, report-bound RPCs. Chat
 
 ## Deferred by design
 
+## Durable owner constraints
+
+This architecture is a modular monolith by design. Do not introduce distributed services, alternate data-access paths, client-side database mutation paths, or provider abstractions merely because a generic engineering practice suggests them. Production-mode identity loading fails closed; demo mode is an explicit local/test adapter and must not leak into authenticated runtime. Hosted configuration is operational state, not an architectural guarantee; consult `PROJECT-STATUS.md` and launch-gate evidence for what is actually enabled.
+
 Perfume checkout, delivery, attachments in chat, decants/splits/attar formats, boosts, subscriptions, ads and all platform payments remain disabled. The provider-neutral payment code is future scaffolding and is outside the closed-beta transaction flow.
