@@ -436,10 +436,24 @@ function requireUuid(value, label) {
 
 /** @param {string} value */
 function requireIsoTimestamp(value) {
-	const parsed = Date.parse(value);
-	if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
+	const match =
+		/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/u.exec(value);
+
+	if (!match) {
 		throw new HostedEvidenceOperatorError('actor provisioning timestamp is invalid');
 	}
+
+	const parsed = Date.parse(value);
+	const milliseconds = (match[2] ?? '').padEnd(3, '0').slice(0, 3);
+	const canonicalMilliseconds = `${match[1]}.${milliseconds}Z`;
+
+	if (
+		!Number.isFinite(parsed) ||
+		new Date(parsed).toISOString() !== canonicalMilliseconds
+	) {
+		throw new HostedEvidenceOperatorError('actor provisioning timestamp is invalid');
+	}
+
 	return value;
 }
 
@@ -1148,6 +1162,12 @@ export function createSupabaseHostedA9Adapters({
 				throw new HostedEvidenceOperatorError('confirmed A9 actor creation failed after reconciliation');
 			}
 			requireUuid(user.id, 'actor ID');
+			try {
+				requireIsoTimestamp(user.created_at);
+			} catch {
+				await deleteAndConfirmAbsent(user.id, 'A9 actor creation compensation failed');
+				throw new HostedEvidenceOperatorError('confirmed A9 actor creation failed');
+			}
 			const actor = {
 				role: scope.role,
 				userId: user.id,
