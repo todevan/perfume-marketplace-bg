@@ -147,6 +147,40 @@ function completeActorManifest(config: ReturnType<typeof validateHostedA9Environ
 	);
 }
 
+it('accepts Supabase microsecond actor timestamps without normalization', () => {
+	const config = validateHostedOperatorEnvironment(baseEnvironment);
+	const createdAt = '2026-08-09T12:00:00.123456Z';
+
+	const manifest = registerHostedActor(
+		createHostedRunManifest(config),
+		'reporter',
+		actorIds.reporter,
+		createdAt
+	);
+
+	expect(manifest.actors).toHaveLength(1);
+	expect(manifest.actors[0]?.createdAt).toBe(createdAt);
+});
+
+it.each([
+	'2026-02-30T12:00:00Z',
+	'2026-08-09T24:00:00Z',
+	'2026-08-09T12:00:00.1234567Z',
+	'2026-08-09T12:00:00+00:00',
+	'2026-08-09 12:00:00Z'
+])('rejects unsupported actor timestamp %s', (createdAt) => {
+	const config = validateHostedOperatorEnvironment(baseEnvironment);
+
+	expect(() =>
+		registerHostedActor(
+			createHostedRunManifest(config),
+			'reporter',
+			actorIds.reporter,
+			createdAt
+		)
+	).toThrow(/actor provisioning timestamp is invalid/u);
+});
+
 describe('hosted report-evidence target lock', () => {
 	it('accepts only the exact Frankfurt project, URL, and Worker origin', () => {
 		const config = validateHostedOperatorEnvironment(baseEnvironment);
@@ -1292,6 +1326,118 @@ describe('A9-only Supabase adapter foundations', () => {
 	});
 });
 
+
+it('compensates a created actor whose provider timestamp is outside the hosted contract', async () => {
+	const config = validateHostedA9Environment(a9Environment);
+	const userId = actorIds.reporter;
+	const unsupportedCreatedAt = '2026-08-09T12:00:00+00:00';
+	const user = {
+		...provisionedUser('reporter', userId),
+		created_at: unsupportedCreatedAt
+	};
+
+	const listUsers = vi.fn().mockResolvedValue({
+		data: { users: [], lastPage: 1 },
+		error: null
+	});
+	const createUser = vi.fn().mockResolvedValue({
+		data: { user },
+		error: null
+	});
+	const deleteUser = vi.fn().mockResolvedValue({ error: null });
+	const getUserById = vi.fn().mockResolvedValue({
+		data: { user: null },
+		error: { status: 404 }
+	});
+
+	const adapters = createSupabaseHostedA9Adapters({
+		config,
+		serviceClient: {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: {
+				admin: {
+					listUsers,
+					createUser,
+					deleteUser,
+					getUserById
+				}
+			}
+		} as never,
+		createActorClient: vi.fn() as never,
+		credentialSink: noopModeratorCredentialSink()
+	});
+
+	const manifest = registerHostedActorIntent(
+		createHostedRunManifest(config),
+		'reporter'
+	);
+
+	await expect(
+		adapters.assertFreshActorAbsent({ manifest, role: 'reporter' })
+	).resolves.toEqual({ role: 'reporter', absent: true });
+
+	await expect(
+		adapters.createConfirmedUser({ manifest, role: 'reporter' })
+	).rejects.toThrow(/confirmed A9 actor creation failed/u);
+
+	expect(createUser).toHaveBeenCalledOnce();
+	expect(deleteUser).toHaveBeenCalledWith(userId);
+	expect(getUserById).toHaveBeenCalledWith(userId);
+});
+
+
+it('keeps timestamp compensation failures sanitized', async () => {
+	const config = validateHostedA9Environment(a9Environment);
+	const userId = actorIds.reporter;
+	const privateProviderDetail = actorEnvironment.E2E_REAL_REPORTER_EMAIL;
+	const user = {
+		...provisionedUser('reporter', userId),
+		created_at: '2026-08-09T12:00:00+00:00'
+	};
+
+	const adapters = createSupabaseHostedA9Adapters({
+		config,
+		serviceClient: {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: {
+				admin: {
+					listUsers: vi.fn().mockResolvedValue({
+						data: { users: [], lastPage: 1 },
+						error: null
+					}),
+					createUser: vi.fn().mockResolvedValue({
+						data: { user },
+						error: null
+					}),
+					deleteUser: vi.fn().mockResolvedValue({
+						error: { message: privateProviderDetail }
+					}),
+					getUserById: vi.fn()
+				}
+			}
+		} as never,
+		createActorClient: vi.fn() as never,
+		credentialSink: noopModeratorCredentialSink()
+	});
+
+	const manifest = registerHostedActorIntent(
+		createHostedRunManifest(config),
+		'reporter'
+	);
+
+	await adapters.assertFreshActorAbsent({ manifest, role: 'reporter' });
+
+	let caught: unknown;
+	try {
+		await adapters.createConfirmedUser({ manifest, role: 'reporter' });
+	} catch (error) {
+		caught = error;
+	}
+
+	expect(caught).toBeInstanceOf(HostedEvidenceOperatorError);
+	expect(String(caught)).toContain('A9 actor creation compensation failed');
+	expect(String(caught)).not.toContain(privateProviderDetail);
+});
 describe('hosted report-evidence audit and cleanup safety', () => {
 	it('emits only role, run ID, event, status, and aggregate counts', () => {
 		const record = createSanitizedOperatorRecord({
