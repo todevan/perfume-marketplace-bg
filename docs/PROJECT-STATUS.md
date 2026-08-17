@@ -15,18 +15,19 @@ Monetization:
 `10 qualifying active listings -> paid 11th+ 30-day listing -> paid promotion`
 
 ## Current phase
-**Repository truth reconciliation**
+**Launch Readiness execution queue**
 
-This phase aligns current authority with the approved Launch Readiness design. It does not prove that intended behavior is implemented or deployed.
+GitHub now provides the protected integration rail and a small evidence-backed queue. Queue creation does not prove that intended behavior is implemented or deployed.
 
 ## Local/GitHub sync state
 **Local ahead.**
 
-Evidence gathered before this snapshot commit:
-- local branch `codex/repository-truth-launch-readiness`: `dd6aa15`
-- `origin/main`: `fd3165f`
-
-The branch began from synchronized `origin/main`; unrelated untracked local work remains preserved.
+Verified operating state:
+- branch `codex/github-safety-launch-queue` contains the plan-owned workflow/status update pending protected PR integration;
+- GitHub `main` has an active repository ruleset requiring pull requests, current `app` and `database` CI checks, an up-to-date branch, and resolved review conversations;
+- the ruleset has no bypass actor or human-approval requirement and blocks force pushes and branch deletion;
+- Launch Readiness issues #22–#30 are the active synchronized engineering queue;
+- unrelated untracked local work remains preserved.
 
 ## Approved product truth
 - Public email/password registration with email confirmation.
@@ -71,11 +72,11 @@ Repository history contains merged A9 operator source from PRs #12 and #19, but 
 7. Verify the complete Bulgarian mobile golden path, legal/safety content, and honest loading/empty/error/success states.
 
 ## Next outcomes
-1. Complete and merge this repository-truth reconciliation.
-2. Execute the approved GitHub Safety + Launch Readiness Queue plan.
-3. Convert each evidence-backed launch blocker into a prioritized issue with dependencies and risk.
-4. Complete the seller-completion/cancellation product gap before claiming the core deal journey ready.
-5. Close the required-location gap and design launch monetization before claiming the onboarding or commercial journeys ready.
+1. Prove open registration, email confirmation, required city/location onboarding, and relevant hostile auth boundaries through issue #22.
+2. Complete seller-only deal completion and either-party cancellation through issue #25 before claiming the core deal journey ready.
+3. Prove cross-user privacy and the report/block/moderation safety journey through issues #23 and #24.
+4. Implement trusted paid-extra listing and promotion entitlements through issues #26 and #27 after their verified dependencies are satisfied.
+5. Close the remaining merchant, operational-readiness, and provider decisions through issues #28–#30.
 
 ## Not now
 - platform perfume checkout or escrow;

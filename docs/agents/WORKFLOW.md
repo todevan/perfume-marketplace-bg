@@ -19,6 +19,12 @@ Priority:
 - P2 launch-value UX/accessibility/performance/reliability;
 - P3 later/deferred.
 
+Within a priority:
+1. select only unblocked work;
+2. prefer security and data-loss prevention before UX;
+3. prefer work that unlocks the core launch journey before peripheral work;
+4. keep one large active task owner unless work is genuinely independent.
+
 ## Local-first startup
 Before substantial work:
 1. inspect `git status`;
@@ -91,6 +97,24 @@ A ready issue contains:
 - out of scope.
 
 Prefer outcome language over file chores.
+
+At task start, move `agent:ready` work to the repository's working/review state. If no
+working label exists, add a concise issue comment stating that agent work has started
+from the approved local Launch Readiness baseline.
+
+Use `issue-<number>-<short-outcome-slug>` for the branch name. The pull request must
+contain `Closes #<issue>` and report:
+- outcome;
+- risk;
+- focused, database/security, browser/E2E, hosted, CI, independent-review, and
+  adversarial-security evidence as applicable;
+- the current product authority;
+- owner action, if any;
+- sync status.
+
+After merge, reconcile the issue, update `docs/PROJECT-STATUS.md` only for material
+state changes, fetch and compare the local workspace, and select the highest-priority
+unblocked next issue without asking the owner to choose already-authorized work.
 
 ## Merge behavior
 R0: lightweight checks -> merge.
