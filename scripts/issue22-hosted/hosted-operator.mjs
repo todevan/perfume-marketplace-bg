@@ -20,13 +20,13 @@ import {
 	classifyExactWorkerProbe,
 	clearAuthSafely,
 	buildIssue22ChildEnv,
+	cleanupWidgetWithInventory,
 	cleanupExactWorkerSecrets,
 	deriveRecoverySealKey,
 	fileReceipt,
 	finalizeRecoveryArtifacts,
 	fixedWorkerSecretCommands,
 	resolveWidgetForCleanup,
-	resolveSavedWidgetForCleanup,
 	recoverCatalogForCleanup,
 	reconcileAuthenticatedRecoveryArtifacts,
 	runHostedExecutionWithRequiredCleanup,
@@ -451,10 +451,13 @@ async function cleanupSecrets() {
 function cleanupWidget() {
 	const recovery = readRecovery();
 	if (!recovery?.widgetIntent) return;
-	const widgets = listWidgets();
-	const widget = resolveSavedWidgetForCleanup(recovery.widgetIntent, recovery.widgetSitekey, widgets);
-	if (widget) run('pnpm', ['exec', 'wrangler', 'turnstile', 'widget', 'delete', widget.sitekey, '--skip-confirmation', '--json', '--config', baseConfig], { capture: true });
-	if (resolveWidgetForCleanup(recovery.widgetIntent, listWidgets())) stop('Turnstile widget remains after cleanup');
+	const remainingWidget = cleanupWidgetWithInventory(
+		recovery.widgetIntent,
+		recovery.widgetSitekey,
+		listWidgets,
+		(widget) => run('pnpm', ['exec', 'wrangler', 'turnstile', 'widget', 'delete', widget.sitekey, '--skip-confirmation', '--json', '--config', baseConfig], { capture: true })
+	);
+	if (remainingWidget) stop('Turnstile widget remains after cleanup');
 }
 
 async function attestFinalState() {

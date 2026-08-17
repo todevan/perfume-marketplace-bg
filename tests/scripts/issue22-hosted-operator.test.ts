@@ -25,6 +25,7 @@ import {
 	classifyExactWorkerProbe,
 	clearAuthSafely,
 	cleanupExactWorkerSecrets,
+	cleanupWidgetWithInventory,
 	decideMigrationExecution,
 	fixedMigrationCommands,
 	fixedWorkerSecretCommands,
@@ -693,9 +694,74 @@ describe('issue-22 hosted cleanup boundary', () => {
 	it('never trusts a saved widget sitekey unless its fetched widget matches the saved intent', () => {
 		const intent = { name: 'aromatika-issue22-run-abc', domain: TARGET.workerHostname };
 		const matching = { name: intent.name, domains: [intent.domain], sitekey: 'saved-site-key' };
+		const unrelated = {
+			name: 'uhh.com (Spin)',
+			domains: ['127.0.0.1', 'localhost', 'uhh.com'],
+			sitekey: 'unrelated-site-key'
+		};
 		expect(resolveSavedWidgetForCleanup(intent, 'saved-site-key', [matching])).toEqual(matching);
+		expect(() => resolveSavedWidgetForCleanup(
+			intent,
+			'saved-site-key',
+			[matching, { ...matching, sitekey: 'replacement-site-key' }]
+		)).toThrow(/ambiguous/i);
 		expect(() => resolveSavedWidgetForCleanup(intent, 'saved-site-key', [{ ...matching, name: 'attacker-widget' }])).toThrow(/intent/i);
 		expect(() => resolveSavedWidgetForCleanup(intent, 'saved-site-key', [{ ...matching, domains: ['attacker.invalid'] }])).toThrow(/intent/i);
+		expect(resolveSavedWidgetForCleanup(intent, 'saved-site-key', [unrelated])).toBeNull();
+		expect(() => resolveSavedWidgetForCleanup(
+			intent,
+			'saved-site-key',
+			[{ ...matching, sitekey: 'replacement-site-key' }]
+		)).toThrow(/recovery intent|sitekey|ambiguous/i);
+		expect(() => resolveSavedWidgetForCleanup(
+			intent,
+			'saved-site-key',
+			[
+				{ ...matching, sitekey: 'replacement-site-key-1' },
+				{ ...matching, sitekey: 'replacement-site-key-2' }
+			]
+		)).toThrow(/ambiguous/i);
+		expect(() => resolveSavedWidgetForCleanup(
+			intent,
+			'saved-site-key',
+			[matching, { ...matching }]
+		)).toThrow(/ambiguous/i);
+	});
+
+	it('revalidates the saved widget identity against the post-delete inventory', () => {
+		const intent = { name: 'aromatika-issue22-run-abc', domain: TARGET.workerHostname };
+		const inventories = [
+			[],
+			[{ name: 'drifted', domains: ['other.invalid'], sitekey: 'saved-site-key' }]
+		];
+		const deletedSitekeys: string[] = [];
+
+		expect(() => cleanupWidgetWithInventory(
+			intent,
+			'saved-site-key',
+			() => inventories.shift() ?? [],
+			(widget) => deletedSitekeys.push(widget.sitekey)
+		)).toThrow(/recovery intent/i);
+		expect(deletedSitekeys).toEqual([]);
+		expect(inventories).toEqual([]);
+	});
+
+	it('deletes the exact intent widget when no saved sitekey exists and confirms absence', () => {
+		const intent = { name: 'aromatika-issue22-run-abc', domain: TARGET.workerHostname };
+		const matching = { name: intent.name, domains: [intent.domain], sitekey: 'matching-site-key' };
+		const inventories = [[matching], []];
+		const deletedSitekeys: string[] = [];
+
+		const remainingWidget = cleanupWidgetWithInventory(
+			intent,
+			null,
+			() => inventories.shift() ?? [],
+			(widget) => deletedSitekeys.push(widget.sitekey)
+		);
+
+		expect(deletedSitekeys).toEqual([matching.sitekey]);
+		expect(inventories).toEqual([]);
+		expect(remainingWidget).toBeNull();
 	});
 
 	it('rejects a generated Wrangler config for any wrong target identity', () => {

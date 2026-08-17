@@ -754,14 +754,31 @@ export function resolveWidgetForCleanup(intent, widgets) {
 export function resolveSavedWidgetForCleanup(intent, savedSitekey, widgets) {
 	if (savedSitekey) {
 		const matches = widgets.filter((item) => item?.sitekey === savedSitekey);
-		if (matches.length !== 1) throw new Error('saved widget sitekey recovery state is ambiguous');
-		const [widget] = matches;
-		if (widget.name !== intent?.name || !widget.domains?.includes(intent?.domain)) {
-			throw new Error('saved widget sitekey does not match recovery intent');
+		if (matches.length > 1) throw new Error('saved widget sitekey recovery state is ambiguous');
+		const intentMatch = resolveWidgetForCleanup(intent, widgets);
+		if (matches.length === 1) {
+			const [widget] = matches;
+			if (widget.name !== intent?.name || !widget.domains?.includes(intent?.domain)) {
+				throw new Error('saved widget sitekey does not match recovery intent');
+			}
+			return widget;
 		}
-		return widget;
+		if (intentMatch) throw new Error('saved widget sitekey does not match recovery intent');
+		return null;
 	}
 	return resolveWidgetForCleanup(intent, widgets);
+}
+
+/**
+ * @param {{name: string, domain: string}} intent
+ * @param {string | null | undefined} savedSitekey
+ * @param {() => Array<Record<string, any>>} listWidgets
+ * @param {(widget: Record<string, any>) => void} deleteWidget
+ */
+export function cleanupWidgetWithInventory(intent, savedSitekey, listWidgets, deleteWidget) {
+	const widget = resolveSavedWidgetForCleanup(intent, savedSitekey, listWidgets());
+	if (widget) deleteWidget(widget);
+	return resolveSavedWidgetForCleanup(intent, savedSitekey, listWidgets());
 }
 
 /** @param {() => Promise<unknown>} operation @param {number} attempts */
