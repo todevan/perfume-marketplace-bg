@@ -61,6 +61,8 @@ The owner does not orchestrate skills.
 Docs, comments, formatting, internal metadata.
 Flow: cheap worker -> lightweight checks -> merge.
 
+Risk follows the behavioral and security consequence, not the artifact type. A current authority-document change inherits the highest risk affected by its normative rule; MFA/RLS/entitlement rules are R2, and protected real-world-operation rules are R3.
+
 ### R1 — normal product engineering
 Ordinary UI/features/bugs/tests/refactors inside established security boundaries.
 Flow: implementer -> independent review -> relevant tests -> required CI -> autonomous merge.
@@ -72,7 +74,7 @@ The owner does not approve R2 code. Failure to prove safety means do not merge.
 
 ### R3 — protected real-world operation
 Destructive production-data actions, production credentials/secrets, DNS/domain changes, irreversible production migrations, disabling security controls, legal/privacy/business-policy changes, meaningful spending, accepting provider commercial terms, owner-approved launch pricing changes, and the final public launch action.
-Agents may investigate, implement, test, review, and prepare rollback autonomously. The protected real-world action requires the owner decision/action.
+Agents may investigate, implement, test, review, and prepare rollback autonomously. Before any destructive or irreversible owner action, verify the exact target, current backup/recovery evidence, and rollback limitations; if any is missing, fail closed and do not hand off the action. The protected real-world action requires the owner decision/action.
 
 ## Product/security invariants
 - Normal users register with email/password, confirm email, complete onboarding, and do not require invites, waiting lists, phone verification, or SMS OTP.

@@ -68,7 +68,8 @@ Where relevant, prove User A cannot:
 - Callback handling must be idempotent.
 - Duplicate callbacks must not duplicate entitlements.
 - Failed/abandoned payments must not create entitlements.
-- Refund/cancellation state must remain auditable.
+- Every entitlement lifecycle must be auditable and linked to trusted provider event identifiers for provider-originated transitions.
+- Every entitlement transition must retain actor/source, provider event ID when applicable, timestamp, prior state, and resulting state.
 - Never log/store card details when the provider can retain them.
 
 ## Uploads/evidence
@@ -76,6 +77,10 @@ Preserve:
 `quarantine -> validate real MIME/content/dimensions/limits -> re-encode/sanitize -> strip metadata -> finalized sanitized object -> delete private original according to policy`
 
 Never trust filename or browser-declared MIME alone.
+
+## Confidential data
+- Never log or publish emails, phone numbers, raw profiles, or private evidence.
+- Quarantined evidence remains private and must never be exposed publicly.
 
 ## Secrets/environments
 - Never commit secrets.
@@ -92,4 +97,4 @@ A security finding blocks completion until disproved with evidence or fixed and 
 Never waive a finding merely to ship.
 
 ## R3 protected actions
-Agents may prepare and verify repository-side work, rollback steps, and exact instructions. The real external/destructive/legal/spending/launch action remains owner-controlled.
+Agents may prepare and verify repository-side work, rollback steps, and exact instructions. Before any destructive or irreversible owner action, verify the exact target, current backup/recovery evidence, and rollback limitations; if any is missing, fail closed and do not hand off the action. The real external/destructive/legal/spending/launch action remains owner-controlled.
