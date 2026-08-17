@@ -330,7 +330,8 @@ describe('manual staging deploy workflow smoke contract', () => {
 		expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
 		expect(workflow.on.workflow_dispatch).toBeNull();
 		expect(job.if).toBe("github.ref == 'refs/heads/main'");
-		expect(job.env?.A7_REQUIRE_DISABLED_SIGNUP).toBe('true');
+		expect(job.env?.A7_REQUIRE_OPEN_EMAIL_SIGNUP).toBe('true');
+		expect(job.env).not.toHaveProperty('A7_REQUIRE_DISABLED_SIGNUP');
 		expect(job.env).toMatchObject({
 			STAGING_ORIGIN: expectedOrigin,
 			EXPECTED_GIT_SHA: '${{ github.sha }}',

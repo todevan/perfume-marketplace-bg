@@ -19,7 +19,7 @@ jobs:
     env:
       STAGING_ORIGIN: https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev
       EXPECTED_GIT_SHA: ${{ github.sha }}
-      A7_REQUIRE_DISABLED_SIGNUP: "true"
+      A7_REQUIRE_OPEN_EMAIL_SIGNUP: "true"
       STAGING_SMOKE_ATTEMPTS: "6"
       STAGING_SMOKE_DELAY_MS: "5000"
       STAGING_SMOKE_TIMEOUT_MS: "5000"
@@ -52,7 +52,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Smoke deployed closed-beta routes
+      - name: Smoke deployed protected routes
         id: smoke
         run: node scripts/smoke-staging.mjs
       - name: Verify staging Turnstile action boundaries

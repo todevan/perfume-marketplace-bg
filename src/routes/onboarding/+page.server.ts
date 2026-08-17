@@ -68,7 +68,6 @@ export const actions: Actions = {
 
 		const username = formData.get('username')?.toString().trim() ?? '';
 		const cityValue = formData.get('city')?.toString().trim() ?? '';
-		const city = cityValue || null;
 
 		if (!USERNAME_PATTERN.test(username)) {
 			return fail(400, {
@@ -78,7 +77,7 @@ export const actions: Actions = {
 				message: 'Потребителското име трябва да е 3–40 букви, цифри, точки, тирета или долни черти.'
 			});
 		}
-		if (cityValue.length === 1 || cityValue.length > 100) {
+		if (cityValue.length < 2 || cityValue.length > 100) {
 			return fail(400, { success: false, username, city: cityValue, message: 'Градът трябва да е между 2 и 100 знака.' });
 		}
 
@@ -118,7 +117,7 @@ export const actions: Actions = {
 
 		const { error: onboardingError } = await locals.supabase.rpc('complete_beta_onboarding', {
 			desired_username: username,
-			home_city: city
+			home_city: cityValue
 		});
 		if (onboardingError) {
 			return fail(400, {

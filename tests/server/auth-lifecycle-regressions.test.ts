@@ -154,7 +154,7 @@ describe('auth context lifecycle regressions', () => {
 		const form = new URLSearchParams({
 			next: '/dashboard',
 			username: 'scent_archive',
-			city: 'Sofia',
+			city: ' Sofia ',
 			consent_terms: 'on'
 		});
 		const url = new URL('https://market.example/onboarding');
@@ -175,6 +175,38 @@ describe('auth context lifecycle regressions', () => {
 				})
 			)
 		).rejects.toMatchObject({ status: 303, location: '/dashboard' });
+		expect(currentClient.rpc).toHaveBeenCalledWith('complete_beta_onboarding', {
+			desired_username: 'scent_archive',
+			home_city: 'Sofia'
+		});
+	});
+
+	it('rejects blank city before recording consent or completing onboarding', async () => {
+		currentClient = createClient({ status: 'pending', isActive: false, onboardingCompletedAt: null });
+		const url = new URL('https://market.example/onboarding');
+		let actionResult: unknown;
+
+		await runLifecycle(
+			url,
+			async (event) => {
+				actionResult = await onboardingActions.default(event);
+				return new Response('ok');
+			},
+			new Request(url, {
+				method: 'POST',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams({
+					next: '/dashboard',
+					username: 'scent_archive',
+					city: '   ',
+					consent_terms: 'on'
+				})
+			})
+		);
+
+		expect(actionResult).toMatchObject({ status: 400, data: { success: false, city: '' } });
+		expect(currentClient.rpc).not.toHaveBeenCalledWith('accept_beta_consent', expect.anything());
+		expect(currentClient.rpc).not.toHaveBeenCalledWith('complete_beta_onboarding', expect.anything());
 	});
 
 	it('redirects an active user from login to the safe requested route', async () => {

@@ -21,7 +21,7 @@ export const publicProfileLookupSchema = z.object({
 
 export const updateProfileInputSchema = z.object({
 	username: z.string().trim().min(3).max(40).regex(/^[\p{L}\p{N}_.-]+$/u),
-	city: z.string().trim().min(2).max(100).nullable().optional(),
+	city: z.string().trim().min(2).max(100),
 	bio: z.string().trim().max(1000).nullable().optional(),
 	avatarUrl: nullableUrlSchema.optional()
 });

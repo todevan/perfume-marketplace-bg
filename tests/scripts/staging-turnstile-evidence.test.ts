@@ -30,6 +30,10 @@ function stagingFetch(
 	options: {
 		candidateActionFailures?: number;
 		disableSignup?: boolean;
+		emailSignup?: boolean;
+		phoneSignup?: boolean;
+		anonymousSignup?: boolean;
+		mailerAutoconfirm?: boolean;
 		keepTestingAtTurnstile?: boolean;
 		staleActionResponses?: number;
 		wrongDistinctMessages?: boolean;
@@ -44,10 +48,21 @@ function stagingFetch(
 
 		if (url.pathname === '/auth/v1/settings') {
 			expect(headers.get('apikey')).toBe('public-staging-key');
-			return new Response(JSON.stringify({ disable_signup: options.disableSignup ?? true }), {
-				status: 200,
-				headers: { 'content-type': 'application/json' }
-			});
+			return new Response(
+				JSON.stringify({
+					disable_signup: options.disableSignup ?? false,
+					mailer_autoconfirm: options.mailerAutoconfirm ?? false,
+					external: {
+						email: options.emailSignup ?? true,
+						phone: options.phoneSignup ?? false,
+						anonymous_users: options.anonymousSignup ?? false
+					}
+				}),
+				{
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				}
+			);
 		}
 
 		expect(url.origin).toBe('http://127.0.0.1:54321');
@@ -110,16 +125,20 @@ describe('A7 staging Turnstile evidence', () => {
 				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
 				supabasePublishableKey: 'public-staging-key',
 				fetchImpl: stagingFetch({ onAction: (value) => actions.push(value) }),
-				requireDisabledSignup: true,
+				requireOpenEmailSignup: true,
 				logger
 			})
 		).resolves.toEqual([
-			{ check: 'supabase-signup-disabled-before', status: 200 },
+			{ check: 'supabase-open-email-registration-before', status: 200 },
 			{ check: 'login-missing-token', actionStatus: 400 },
 			{ check: 'login-testing-token', actionStatus: 400 },
 			{ check: 'register-missing-token', actionStatus: 400 },
-			{ check: 'register-testing-token', actionStatus: 400 },
-			{ check: 'supabase-signup-disabled-after', status: 200 },
+			{
+				check: 'register-testing-token',
+				outcome: 'deferred',
+				reason: 'public-signup-enabled'
+			},
+			{ check: 'supabase-open-email-registration-after', status: 200 },
 			{
 				check: 'report-submit-testing-token',
 				outcome: 'deferred',
@@ -152,7 +171,7 @@ describe('A7 staging Turnstile evidence', () => {
 				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
 				supabasePublishableKey: 'public-staging-key',
 				fetchImpl: stagingFetch({ staleActionResponses: 1 }),
-				requireDisabledSignup: true,
+				requireOpenEmailSignup: true,
 				attempts: 2,
 				delayMs: 0,
 				logger
@@ -217,14 +236,14 @@ describe('A7 staging Turnstile evidence', () => {
 				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
 				supabasePublishableKey: 'public-staging-key',
 				fetchImpl: stagingFetch({ wrongDistinctMessages: true }),
-				requireDisabledSignup: true,
+				requireOpenEmailSignup: true,
 				logger: { log() {}, warn() {} }
 			})
 		).rejects.toThrow('expected the exact Turnstile rejection branch');
 	});
 
-	it('stops before registration evidence unless hosted public signup is disabled', async () => {
-		const fetchImpl = stagingFetch({ disableSignup: false });
+	it('stops before action evidence unless hosted email signup is open and confirmed-email only', async () => {
+		const fetchImpl = stagingFetch({ disableSignup: true });
 		await expect(
 			runStagingTurnstileEvidence({
 				origin: 'http://127.0.0.1:54321',
@@ -232,10 +251,31 @@ describe('A7 staging Turnstile evidence', () => {
 				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
 				supabasePublishableKey: 'public-staging-key',
 				fetchImpl,
-				requireDisabledSignup: true,
+				requireOpenEmailSignup: true,
 				logger: { log() {}, warn() {} }
 			})
-		).rejects.toThrow('Public Supabase signup must remain disabled');
+		).rejects.toThrow('Public Supabase email signup must be enabled');
+		expect(fetchImpl).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		[{ phoneSignup: true }, 'Phone signup must remain disabled'],
+		[{ anonymousSignup: true }, 'Anonymous signup must remain disabled'],
+		[{ mailerAutoconfirm: true }, 'Email confirmation must remain required'],
+		[{ emailSignup: false }, 'Email/password signup must be enabled']
+	] as const)('fails closed when hosted Auth violates %s', async (settings, message) => {
+		const fetchImpl = stagingFetch(settings);
+		await expect(
+			runStagingTurnstileEvidence({
+				origin: 'http://127.0.0.1:54321',
+				expectedGitSha,
+				supabaseSettingsUrl: 'https://staging.supabase.co/auth/v1/settings',
+				supabasePublishableKey: 'public-staging-key',
+				fetchImpl,
+				requireOpenEmailSignup: true,
+				logger: { log() {}, warn() {} }
+			})
+		).rejects.toThrow(message);
 		expect(fetchImpl).toHaveBeenCalledOnce();
 	});
 
@@ -255,7 +295,7 @@ describe('A7 staging Turnstile evidence', () => {
 			outcome: 'deferred',
 			reason: 'public-signup-enabled'
 		});
-		expect(fetchImpl).toHaveBeenCalledTimes(3);
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
 	});
 
 	it('rejects an inexact Git ref before making a hosted request', async () => {
