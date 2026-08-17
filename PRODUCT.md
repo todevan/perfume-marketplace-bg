@@ -1,71 +1,113 @@
-# Product
+# Aromatika Product Constitution
 
-<!-- impeccable:product-schema 1 -->
+## Purpose
+Aromatika is a Bulgaria-first vertical marketplace for perfume and fragrance commerce. It models perfume-specific listing, condition, quantity, concentration, evidence, trust, offer, deal, and seller or merchant behavior rather than behaving like a generic classifieds site.
 
-## Platform
+The primary users are Bulgarian perfume enthusiasts and collectors buying, selling, or exchanging new and used perfumes. Private individuals and declared merchants participate with their account type shown clearly.
 
-web
+## Launch model
+Aromatika is prepared for a normal public launch in Bulgaria. There is no normal-user invitation, waitlist, or permanent public-beta access model.
 
-## Users
+## Registration and onboarding
+Normal flow:
+`email/password registration -> email confirmation -> username + city/location + Terms/Marketplace Rules -> full marketplace access`
 
-Основните потребители са парфюмни ентусиасти и колекционери в България, които търсят, продават или разменят нови и употребявани парфюми. Платформата обслужва частни лица и декларирани търговци, като ясно показва вида на профила.
+Normal users do not require invitation, waiting list, manual approval, phone verification, or SMS OTP.
 
-## Product Purpose
+Staff/admin MFA remains mandatory.
 
-Продуктът е специализиран community marketplace за откриване на аромат, оценяване на конкретна обява и започване на структурирана оферта. Успешният основен път е:
+## User access after onboarding
+A normal user may publish listings immediately after onboarding. No default first-listing manual approval gate exists.
 
-**откриване → доверие → структурирана оферта → чат → взаимно потвърдена сделка → отзив**
+## Listing and evidence model
+One offer listing represents one physical perfume product. Supported formats are retail bottle, tester, and official sample. Gift sets, arbitrary bundles, decants, splits, attar, and CPO oils remain outside the launch scope unless separately approved.
 
-Продажбата, плащането и доставката на самия парфюм се уговарят между потребителите и остават извън платформата.
+The listing records concentration, original bottle volume, exact remaining volume, condition, price or exchange terms, seller identity, and evidence for that specific physical item. The seller assigns the applicable audience and optional niche or Arabic tags.
 
-## Positioning
+Offer listings require the repository's approved format-specific evidence-photo roles. Uploads must be validated by actual content, bounded, sanitized through re-encoding, stripped of EXIF metadata, and protected by per-user limits. Wanted listings are separate demand posts and do not require product photos.
 
-Всяка обява съчетава конкретни данни за физическия флакон — концентрация, оригинален обем, точен остатък, цена или размяна — с идентичността на продавача и видим процес за преглед на доказателства. Общността и доверието са част от самото разглеждане, а не отделен маркетингов слой.
+Fragrantica may be linked as an optional external reference without importing its content. Batch-code references are informational only. The strongest approved trust statement is equivalent to “Evidence reviewed”; Aromatika does not guarantee authenticity.
 
-## Operating Context
+## Listing types
+Qualifying commercial listing types:
+- For Sale
+- For Exchange
+- Sale or Exchange
 
-- Български интерфейс и EUR като съхранявана валута.
-- Обяви за продажба, размяна или продажба/размяна, плюс отделни wanted обяви.
-- Категории: мъжки, дамски, унисекс, нишови и арабски.
-- Потребителски профили, любими, запазени търсения, оферти, чат, сделки, отзиви и сигнали.
-- Чатът се отключва след приета структурирана оферта.
-- Затворената beta е само за поканени потребители; правните и safety страниците остават публични.
+Wanted / Looking For is a demand post and does not consume the commercial active-listing allowance.
 
-## Capabilities and Constraints
+## Offer, chat, deal, review
+Core flow:
+`listing -> offer -> seller accepts -> private chat opens -> buyer/seller arrange payment/delivery -> seller completes OR either party cancels`
 
-- `ListingCardDto` и backend договорите са устойчивата граница между данни и интерфейс.
-- Една продаваща обява описва един физически продукт.
-- Остатъкът се показва в ml и като производен процент.
-- Fragrantica линкът е препоръчителен, а batch-code справката е само информационна.
-- Допустимият trust текст е „Доказателствата са прегледани“; платформата не гарантира автентичност.
-- Няма кошница, checkout или плащане за парфюма.
-- Плащания, такси, boosts, абонаменти и реклами са изключени в beta.
-- Името, логото и домейнът остават конфигурационни до отделно branding решение.
-- Supabase schema, RLS, Cloudflare и deployment конфигурацията не са част от този редизайн.
+Seller completion:
+- seller marks the deal completed;
+- a completed deal unlocks the applicable review flow.
 
-## Brand Commitments
+Cancellation:
+- buyer or seller may cancel an accepted deal;
+- a cancellation reason is required;
+- cancelled deals do not unlock reviews;
+- cancellation history may be retained privately for moderation and trust according to approved privacy and retention rules.
 
-- Одобрената композиция №3 е единственият визуален north-star за началната страница и системата.
-- Композиция №2 и catalog-first структурата ѝ не се използват и не се смесват с одобрената посока.
-- Продуктът трябва да се усеща като premium perfume marketplace, а не като онлайн магазин.
-- Реалните потребителски снимки запазват характера си; рамкирането, crop-ът, типографията и информационната йерархия носят premium усещането.
+This supersedes the prior dual-party completion rule.
 
-## Evidence on Hand
+## Payment and delivery for perfume
+Perfume payment and delivery are arranged directly by buyer and seller.
 
-- Каноничен каталог и редакционни memberships в `catalog/brand-categories.json`.
-- Реални DTO и работещи UI потоци за обяви, търсене, оферти, чат, сделки, отзиви и модерация.
-- Одобрена композиция: `.impeccable/mocks/approved-community-marketplace.png`.
-- Demo данните са илюстративни. Визуалните им изображения трябва да са ясно означени „СИНТЕТИЧНА СНИМКА“.
-- Няма разрешени публични данни за „топ продавачи“, броячи на завършени сделки или testimonials; такива твърдения не се измислят.
+Aromatika does not collect the perfume purchase price, hold escrow, settle seller funds, or manage buyer refunds for the perfume itself. A structured offer is not platform checkout or a binding perfume-sales contract.
 
-## Product Principles
+No courier API integration is required for launch.
 
-1. Конкретният флакон е по-важен от общото продуктово обещание.
-2. Доверието се доказва с видима информация и процес, не с абсолютни гаранции.
-3. Общността е действаща част от marketplace потока, не декоративен social proof.
-4. Всеки основен контрол трябва да води към реално съществуващо действие.
-5. Празните състояния са честни и полезни; липсващи данни не се заместват с измислени метрики.
+## Geography
+Launch scope is Bulgaria.
 
-## Accessibility & Inclusion
+International shipping, multi-country marketplace rules, global currencies and taxation, and full international expansion are deferred.
 
-Интерфейсът трябва да покрива WCAG 2.2 AA, да работи с клавиатура и screen reader, да има поне 44 px touch targets, видим focus и reduced-motion поведение. Основните responsive проверки са при 320, 375, 768, 1024 и 1440 px.
+## Verified Merchants
+Businesses register normally, may apply for verification, and may receive Verified Merchant status and a storefront after Aromatika verification.
+
+Verification is a trust status and cannot be purchased. No merchant subscription is required for launch.
+
+## Monetization boundary
+Aromatika does not take commission from perfume sales.
+
+Aromatika monetizes its own marketplace services:
+- 10 free qualifying active listings;
+- paid 11th+ qualifying active listings, individually valid for 30 days;
+- paid time-limited listing promotion such as Boost or Featured placement.
+
+Exact provider and launch prices are defined in `docs/BUSINESS-MODEL.md` after owner approval.
+
+## Trust and safety
+- Public profiles expose only approved marketplace identity and trust data. Email and phone data remain private.
+- Chat is participant-only. Moderator access is report-bound, scoped, and audited.
+- Reports, blocking, moderation, and private evidence handling remain part of launch safety.
+- General profile comments remain separate from transaction reviews and do not affect the deal rating.
+- Demo and empty states must not fabricate activity, testimonials, deal counts, reviews, or proof.
+
+## Current core launch journey
+`register -> confirm email -> onboarding -> listing -> publish -> discover -> offer -> accept -> chat -> seller completion/cancellation -> review`
+
+Safety:
+`report/block -> moderation -> cross-user authorization denial`
+
+## Deferred
+Unless separately approved:
+- platform checkout or escrow for perfume;
+- courier integrations;
+- merchant subscription tiers;
+- advanced merchant analytics;
+- recommendation AI or vector search;
+- major social feed;
+- complex decants or splits;
+- chat attachments;
+- mobile app;
+- international expansion.
+
+## Product principles
+1. The specific physical bottle matters more than a generic product promise.
+2. Trust is supported by visible information and process, never absolute guarantees.
+3. Community interactions are functional parts of the marketplace, not decorative social proof.
+4. Every primary control must lead to a real action.
+5. Empty states remain honest and useful; missing data is never replaced with invented metrics.
