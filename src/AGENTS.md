@@ -10,6 +10,6 @@ This folder contains the application runtime and user-facing layers.
 - Use the contracts under src/lib/contracts for shared validation and DTO shapes.
 
 ## Watchpoints
-- Auth, beta membership, MFA and phone verification are sensitive. Preserve the default-deny flow.
+Regular-user admission uses public email/password registration, email confirmation, and onboarding. Do not introduce invitation, waiting-list, phone verification, or SMS OTP as normal-user activation/listing/offer requirements. Staff/admin MFA remains mandatory.
 - Uploads, evidence and moderation paths must remain privacy-preserving and validated.
 - Changes to routes should consider SSR, layout loading and the current route guards.

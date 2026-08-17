@@ -1,20 +1,5 @@
 # Staging credentials and configuration
 
-## Authority, ownership, and target safety
-
-This document is the durable staging credential and provider-operation contract. It does not grant authority for an adjacent gate, production, destructive cleanup, or a provider mutation outside the exact authorized scope.
-
-Credential values remain with their designated owner and secure store: trusted local-operator material stays local/encrypted, GitHub receives only the repository secrets explicitly assigned to it, Worker runtime secrets stay in Cloudflare, and Edge Function secrets stay in Supabase. Never copy values into source, issues, PRs, receipts, or chat.
-
-Before any hosted operation, verify the exact provider, account/organization, project, environment, expected pre-state, authorized mutation, post-state evidence, and rollback/cleanup contract. A familiar hostname, project label, environment variable, credential, or prior receipt is not target proof.
-
-The current A9 runner, encrypted credential-store, handoff, cleanup, and tombstone procedures below are authoritative operational material from the current main lineage and must remain intact. Skill output cannot bypass their target locks or expand their scope.
-
-Use this checklist when connecting the staging Cloudflare Worker to the hosted
-services. It covers the values that already exist in `.env.example`, the
-deployment workflow, and the current backup and Edge Function scripts.
-# Staging credentials and configuration
-
 ## Purpose
 
 Use this checklist when connecting the staging Cloudflare Worker and trusted operator tooling to hosted services.
