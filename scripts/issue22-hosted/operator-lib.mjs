@@ -877,7 +877,6 @@ export function assertSafeDisabledAuth(auth, publicSettings) {
 	/** @param {string} key */
 	const cleared = (key) => !Object.hasOwn(auth ?? {}, key) || auth[key] === null;
 	if (
-		!cleared('security_captcha_provider') ||
 		!cleared('security_captcha_secret') ||
 		['smtp_admin_email', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_sender_name']
 			.some((key) => !cleared(key))

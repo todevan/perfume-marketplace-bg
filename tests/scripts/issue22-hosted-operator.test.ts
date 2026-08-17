@@ -822,6 +822,18 @@ describe('issue-22 hosted Auth attestation', () => {
 		};
 		const settings = { disable_signup: true, mailer_autoconfirm: false, external: { email: true, phone: false, anonymous_users: false } };
 		expect(() => assertSafeDisabledAuth(auth, settings)).not.toThrow();
+		expect(() => assertSafeDisabledAuth(
+			{ ...auth, security_captcha_provider: 'turnstile' },
+			settings
+		)).not.toThrow();
+		expect(() => assertSafeDisabledAuth(
+			{ ...auth, security_captcha_provider: 'turnstile', security_captcha_secret: 'retained-secret' },
+			settings
+		)).toThrow(/baseline/i);
+		expect(() => assertSafeDisabledAuth(
+			{ ...auth, security_captcha_provider: 'turnstile', security_captcha_enabled: true },
+			settings
+		)).toThrow(/Auth/i);
 		expect(() => assertSafeDisabledAuth({ ...auth, smtp_host: 'smtp.example' }, settings)).toThrow(/baseline/i);
 		expect(buildAuthCredentialClearPatch()).toEqual({
 			security_captcha_enabled: false,
