@@ -38,7 +38,7 @@ Do not turn it into a chronological log of every command, test or agent session.
 
 ## Last updated
 
-2026-08-11
+2026-08-17
 
 ---
 
@@ -105,16 +105,23 @@ that does not authorize:
 
 # Current merged baseline
 
-The latest confirmed merged `main` baseline from the completed A8 closure is:
+The latest confirmed merged `main` baseline is:
 
 ```text
-8592c1524842b829b76a83df89a4b9b2cca47e5f
+260ef616531457798658f9eacb9f7d4731460f65
 ```
 
-A8 merge:
+It includes the A8 closure from:
 
 ```text
 PR #11
+```
+
+and the merged A9 source work from:
+
+```text
+PR #12 — hosted A9 provisioning runner and operator foundation
+PR #19 — A9 timestamp provenance correction
 ```
 
 The prior A7 release was merged through:
@@ -153,7 +160,7 @@ A7 evidence must not be rerun or rewritten merely because later gates are active
 
 A8 was completed operationally on staging and durably merged into `main`.
 
-Its closure resolved the A8-specific staging reconciliation boundary and produced the current confirmed merged baseline:
+Its closure resolved the A8-specific staging reconciliation boundary and produced the A8 closure baseline:
 
 ```text
 8592c1524842b829b76a83df89a4b9b2cca47e5f
@@ -173,12 +180,12 @@ A9 is the active Gate 3 boundary.
 
 The objective is to obtain the required authenticated hosted evidence using controlled synthetic actors and target-locked operations.
 
-An earlier A9 preflight identified two distinct blockers:
+An earlier A9 preflight identified two distinct blockers at that time:
 
 1. hosted signup/provider state had to match the prerequisite sequence before A9 actor creation could proceed;
 2. merged source did not yet contain all target-locked operator capabilities required for complete A9 actor preparation and attestation.
 
-The missing A9 operator foundation was subsequently implemented and locally verified in an isolated exact-main worktree.
+The missing A9 operator foundation was subsequently implemented, locally verified, and durably merged through PR #12. Its timestamp-provenance handling was subsequently corrected and durably merged through PR #19.
 
 The A9 foundation result was:
 
@@ -194,7 +201,7 @@ The foundation work was based on:
 
 and was intentionally limited to the A9 operator/evidence surface.
 
-The confirmed foundation change set was limited to:
+The core foundation change set included:
 
 ```text
 scripts/hosted-report-evidence-operator.mjs
@@ -204,11 +211,11 @@ tests/e2e/hosted-report-evidence.spec.ts
 
 The foundation added or prepared target-locked capabilities needed for A9, including authenticated hosted actor/operator support.
 
-This foundation result does **not** by itself mean A9 is complete.
+This merged source state does **not** by itself mean A9 is complete or that the intended code is deployed on staging.
 
 A9 remains open until the required hosted execution, evidence, verification and durable repository closure have all passed.
 
-Do not treat isolated-worktree preparation as merged or deployed state without independent Git/GitHub/provider evidence.
+Repository merge evidence and hosted deployment/execution evidence remain separate claims and require separate proof.
 
 ---
 
@@ -226,7 +233,7 @@ In particular, verify rather than assume:
 - required actor provenance;
 - target-lock protections;
 - current merged source;
-- whether the required A9 operator implementation has been durably merged before relying on it for hosted execution.
+- whether the hosted target is running the intended merged A9 source before relying on it for hosted execution.
 
 If a prerequisite belongs to a prior gate or requires an owner/provider action outside current autonomous authority:
 
@@ -313,7 +320,7 @@ The active blockers should remain limited to blockers that affect current execut
 For A9, the relevant unresolved boundary is:
 
 1. verify that all prerequisite hosted/provider state required by the authoritative A9 sequence is satisfied;
-2. ensure the locally verified A9 operator foundation is available through the correct durable repository path before hosted execution depends on it;
+2. prove the hosted target is running the intended merged A9 source before hosted execution depends on it;
 3. execute and verify the required authenticated hosted A9 evidence;
 4. durably close A9 only after all required repository and hosted evidence passes.
 
@@ -457,7 +464,7 @@ Conceptually:
 
 ```text
 verify exact A9 prerequisites
-→ ensure required A9 operator source is durably available
+→ prove merged/deployed A9 source convergence
 → perform target-locked hosted actor/evidence execution
 → run required verification
 → close A9 only if every acceptance condition passes
