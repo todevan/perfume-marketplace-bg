@@ -1,30 +1,28 @@
-# Bulgarian perfume marketplace — closed beta
+# Aromatika — Bulgarian perfume marketplace
 
-## Durable owner boundaries
+Aromatika is a Bulgaria-first perfume marketplace being prepared for public launch.
 
-The perfume transaction remains off-platform: this application is not checkout, a payment intermediary, an inventory holder, or an authenticity guarantor. Public email/password registration is the current normal-user policy; regular users do not require phone/SMS verification. Staff and administrators remain role-bound and AAL2-protected. Payments, monetisation, boosts, subscriptions, and advertising remain disabled until their applicable business, legal, security, and production gates pass.
+Normal users register with email/password, confirm their email, complete onboarding, and can use the marketplace without an invitation, waiting list, phone verification, or SMS OTP. Staff/admin access remains separately protected with MFA.
 
-The older inventory paragraph below is historical implementation context; where it mentions invite-only authentication or hosted state, the current policy and status above and in `docs/PROJECT-STATUS.md` take precedence.
+Perfume payment and delivery are arranged directly between buyer and seller. Aromatika monetizes its own marketplace services rather than taking commission from the perfume sale.
 
-Работеща SvelteKit основа за затворен marketplace за нови и употребявани парфюми, продажба, размяна и обяви „Търся“. Името, логото и домейнът остават конфигурационни.
-
-Кодът вече съдържа production data flow, public email/password authentication и forward-only Supabase hardening. Изолираният Frankfurt staging backend и свързаните hosted/provider факти са исторически checkpoint, а не текущо доказателство. Production, домейнът, външните доставчици и одобрените правни текстове остават launch gates.
+Current operational readiness is documented in `docs/PROJECT-STATUS.md`.
 
 ## Реализирано
 
 - cookie-based Supabase PKCE/SSR, проверена сесия, default-deny route guards и MFA за staff;
-- еднократни администраторски покани, onboarding, versioned consent history и скрит телефон;
+- публична email/password регистрация, email confirmation, onboarding, versioned consent history и private contact data;
 - публични DTO проекции без директен достъп до чувствителните колони на профила;
 - реални чернови и autosave, четири evidence снимки, атомарно публикуване и pending brand „Други“;
 - PostgreSQL full-text/trigram търсене, aliases, филтри и keyset cursor pagination;
 - любими, запазени търсения, структурирани оферти и атомарно резервиране;
-- частен текстов чат след приета оферта, сделки, спор, двойно потвърждение и отзив;
+- частен текстов чат след приета оферта, сделки, отказ, dispute и отзив; актуалната completion разлика е описана в `docs/PROJECT-STATUS.md`;
 - merchant application и report-bound moderation с append-only audit;
 - quarantine upload запис, реално MIME разпознаване, WebP/JPEG re-encode и премахване на EXIF;
 - in-app известия и идемпотентен Resend delivery ledger;
 - Cloudflare Worker конфигурация, автоматичен quality CI, ръчен staging deploy workflow и encrypted Storage backup;
 - защитен hosted baseline в Supabase проект `nuhkpqjjyuygiemrxbdp` (`eu-central-1`) с target guard преди всяка remote операция;
-- всички billing/payment/boost/subscription/ads функции са изключени по подразбиране.
+- billing/payment/entitlement scaffolding е fail-closed по подразбиране и не доказва, че launch monetization flow е готов.
 
 ## Runtime режими
 
@@ -48,7 +46,7 @@ pnpm seed:catalog
 pnpm dev
 ```
 
-Публичната регистрация е изключена. Реалният flow започва с покана от MFA-защитения `/admin` панел.
+Нормалният flow започва с публична email/password регистрация, email confirmation и onboarding. Legacy/bootstrap invitation механизми може да останат за first-admin/operator compatibility; те не са normal-user admission model.
 
 ## Проверки
 
@@ -66,7 +64,7 @@ pnpm check:release -- --env-file=.env.production
 
 `pnpm test` изпълнява каталожните, unit/contract тестовете, Svelte/TypeScript проверката и production build. `pnpm test:e2e` използва изрично включен локален demo runtime. Реалният multi-account staging сценарий се стартира само когато са зададени описаните в теста `E2E_REAL_*` secrets.
 
-Release gate-ът нарочно се проваля при чист checkout: изисква HTTPS custom domain, реални Supabase/Resend/Turnstile/Twilio/Cloudflare secrets, включен защитен image processor, одобрени правни версии и всички monetisation flags да останат `false`.
+Release gate-ът нарочно се проваля при чист checkout и валидира текущия pre-launch security/provider baseline. Той не доказва hosted readiness или launch monetization readiness; актуалните блокери са в `docs/PROJECT-STATUS.md`.
 
 ## Миграции
 
@@ -103,6 +101,6 @@ Release gate-ът нарочно се проваля при чист checkout: �
 - [`docs/PERFUME-CATALOG-AND-UI-SPEC.md`](docs/PERFUME-CATALOG-AND-UI-SPEC.md) — продуктовият/UI договор;
 - [`catalog/brand-categories.json`](catalog/brand-categories.json) — canonical brand registry.
 
-## Преди първа външна покана
+## Hosted and provider state
 
-Новият canonical private remote е `todevan/perfume-marketplace-bg`; старото repo `todevan/remix-of-scent-exchange` остава недокоснато. Текущият GitHub Free модел използва repository secrets и само ръчно staging пускане, без да разчита на protected branch/environment enforcement. Staging target guard-ът допуска единствено проекта `perfume-marketplace-bg-staging` с ref `nuhkpqjjyuygiemrxbdp`, organization `khazvscqabwvslnphbqp` и region `eu-central-1`; Stockholm проектът остава недокоснат. Hosted staging е с изключени public/anonymous signup, включено email confirmation и нула Auth потребители и Storage обекти. Resend, Turnstile, Cloudflare Images processing, Twilio, production, custom domain, carrier тестовете, backup/restore rehearsal, външните покани и правният преглед остават launch gates.
+Do not infer staging or production state from this README. Use `docs/PROJECT-STATUS.md` for current verified facts, `docs/STAGING-CREDENTIALS.md` for target-locked operator guidance, and `docs/LAUNCH-GATES.md` for evidence still required before launch.
