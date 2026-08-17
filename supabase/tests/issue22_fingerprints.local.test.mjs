@@ -85,17 +85,25 @@ select public.sync_editorial_catalog($issue22$${catalogPayload}$issue22$::jsonb)
 	assert.equal(reseeded.length, 2);
 	assert.equal(hashes(reseeded[0]).catalog, hashes(reseeded[1]).catalog);
 
-	const baseline = hashes(fingerprintRows()[0]);
-	const semanticDrift = hashes(fingerprintRows(`
+	const knownSemanticRun = `
 insert into public.catalog_sync_runs (
-  catalog_id, schema_version, source_catalog_version, payload_sha256, payload,
+  id, catalog_id, schema_version, source_catalog_version, payload_sha256, payload,
   actor_id, actor_role, brand_count, alias_count, membership_count
 )
-select catalog_id, schema_version, source_catalog_version + 1, payload_sha256, payload,
-       actor_id, actor_role, brand_count, alias_count, membership_count
-from public.catalog_sync_runs
-order by completed_at desc
-limit 1;
-`)[0]);
-	assert.notEqual(semanticDrift.catalog, baseline.catalog);
+values (
+  '22222222-2222-4222-8222-222222222222',
+  'issue22-fingerprint-test', 1, 1, repeat('1', 64), '{"fixture":"stable"}'::jsonb,
+  null, 'service_role', 1, 0, 1
+);
+`;
+	const drifted = fingerprintRows(knownSemanticRun, `
+alter table public.catalog_sync_runs disable trigger user;
+update public.catalog_sync_runs
+set source_catalog_version = 2
+where id = '22222222-2222-4222-8222-222222222222';
+alter table public.catalog_sync_runs enable trigger user;
+${fingerprintSql}
+`);
+	assert.equal(drifted.length, 2);
+	assert.notEqual(hashes(drifted[1]).catalog, hashes(drifted[0]).catalog);
 });
