@@ -738,7 +738,7 @@ internal/synthetic
 → later authorized expansion
 ```
 
-These are rollout cohorts, not invite-only authentication requirements.
+These are rollout cohorts, not normal-user admission requirements.
 
 Stop or pause expansion for severe conditions such as:
 

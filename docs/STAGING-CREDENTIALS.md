@@ -838,7 +838,7 @@ synthetic/internal actors
 
 This is a go-to-market/operational ramp.
 
-It is not invite-only authentication.
+It is not a normal-user admission requirement.
 
 Pause expansion for material failures such as:
 
