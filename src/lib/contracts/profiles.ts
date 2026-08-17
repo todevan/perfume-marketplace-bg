@@ -19,9 +19,20 @@ export const publicProfileLookupSchema = z.object({
 	username: z.string().trim().min(3).max(40)
 });
 
+export const cityInputSchema = z
+	.string()
+	.transform((value) => value.replace(/^ +| +$/gu, ''))
+	.pipe(
+		z
+			.string()
+			.min(2)
+			.max(100)
+			.refine((value) => !(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|[^\S ]/u).test(value))
+	);
+
 export const updateProfileInputSchema = z.object({
 	username: z.string().trim().min(3).max(40).regex(/^[\p{L}\p{N}_.-]+$/u),
-	city: z.string().trim().min(2).max(100),
+	city: cityInputSchema,
 	bio: z.string().trim().max(1000).nullable().optional(),
 	avatarUrl: nullableUrlSchema.optional()
 });

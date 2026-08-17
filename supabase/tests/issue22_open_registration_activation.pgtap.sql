@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(22);
+select plan(32);
 
 select ok(
   has_function_privilege('authenticated', 'public.complete_beta_onboarding(text,text)', 'execute'),
@@ -91,6 +91,36 @@ select throws_ok(
   'city must contain 2 to 100 characters',
   'confirmed registration cannot activate with a blank normalized city'
 );
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', E'\t\t')$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'tab-only city cannot activate through the authenticated RPC'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', E'\r\n')$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'CR/LF-only city cannot activate through the authenticated RPC'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', chr(160) || chr(160))$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'NBSP-only city cannot activate through the authenticated RPC'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', E'So\tfia')$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'an internal tab cannot be normalized into an accepted city by the RPC'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', 'So' || U&'\200B' || 'fia')$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'a zero-width Unicode separator cannot activate through the RPC'
+);
 reset role;
 set local role postgres;
 select is(
@@ -126,15 +156,15 @@ select throws_ok(
 
 select set_config('request.jwt.claim.sub', '22000000-0000-4000-8000-000000000005', true);
 select lives_ok(
-  $sql$select public.complete_beta_onboarding('issue22_valid', '  Sofia  ')$sql$,
+  $sql$select public.complete_beta_onboarding('issue22_valid', '  New York  ')$sql$,
   'confirmed email registration with all consents and a valid city activates'
 );
 reset role;
 set local role postgres;
 select is(
   (select city from public.profiles where id = '22000000-0000-4000-8000-000000000005'),
-  'Sofia',
-  'onboarding stores the normalized city'
+  'New York',
+  'onboarding trims ordinary surrounding spaces and preserves ordinary internal spaces'
 );
 -- pgTAP wraps this file in one transaction, while activation intentionally uses
 -- statement_timestamp(); align the fixture to the transaction snapshot used by now().
@@ -189,6 +219,42 @@ select set_config(
   true
 );
 select set_config('request.jwt.claim.sub', '22000000-0000-4000-8000-000000000005', true);
+select throws_ok(
+  $sql$
+    update public.profiles set city = E'\t\t'
+    where id = '22000000-0000-4000-8000-000000000005'
+  $sql$,
+  '23514',
+  null,
+  'direct own-profile update rejects a tab-only city'
+);
+select throws_ok(
+  $sql$
+    update public.profiles set city = chr(160) || chr(160)
+    where id = '22000000-0000-4000-8000-000000000005'
+  $sql$,
+  '23514',
+  null,
+  'direct own-profile update rejects an NBSP-only city'
+);
+select throws_ok(
+  $sql$
+    update public.profiles set city = E'Sofia\r\n'
+    where id = '22000000-0000-4000-8000-000000000005'
+  $sql$,
+  '23514',
+  null,
+  'direct own-profile update rejects CR/LF whitespace'
+);
+select throws_ok(
+  $sql$
+    update public.profiles set city = 'So' || U&'\200B' || 'fia'
+    where id = '22000000-0000-4000-8000-000000000005'
+  $sql$,
+  '23514',
+  null,
+  'direct own-profile update rejects a zero-width Unicode separator'
+);
 select is_empty(
   $sql$
     update public.profiles
@@ -255,6 +321,17 @@ select is(
   public.is_admin(),
   false,
   'an AAL2 claim does not turn user-controlled signup metadata into admin access'
+);
+
+reset role;
+set local role postgres;
+alter table public.profiles drop constraint profiles_city_shape;
+update public.profiles
+set city = chr(160) || chr(160)
+where id = '22000000-0000-4000-8000-000000000005';
+select ok(
+  not private.is_active_beta_user('22000000-0000-4000-8000-000000000005'),
+  'a legacy active row with Unicode whitespace-only city remains fail-closed'
 );
 
 reset role;

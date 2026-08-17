@@ -70,6 +70,16 @@ otp_expiry = 3600
 subject = "Покана за затворената beta"
 content_path = "./supabase/templates/invite.html"
 
+[auth.email.template.confirmation]
+subject = "Потвърди регистрацията си"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.captcha]
+enabled = true
+provider = "turnstile"
+# Cloudflare's documented always-pass test secret. Hosted projects use a managed secret.
+secret = "env(LOCAL_AUTH_CAPTCHA_TEST_KEY)"
+
 [auth.sms]
 enable_signup = false
 enable_confirmations = true

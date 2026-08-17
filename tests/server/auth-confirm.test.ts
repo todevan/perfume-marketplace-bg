@@ -15,7 +15,7 @@ function confirmationEvent({
 	const signOut = vi.fn(async () => ({ error: null }));
 	const url = new URL('https://market.example/auth/confirm');
 	url.searchParams.set('token_hash', 'signup-token-hash');
-	url.searchParams.set('type', 'signup');
+	url.searchParams.set('type', 'email');
 	url.searchParams.set('next', next);
 
 	return {
@@ -42,7 +42,7 @@ describe('signup confirmation handler', () => {
 		});
 		expect(verifyOtp).toHaveBeenCalledExactlyOnceWith({
 			token_hash: 'signup-token-hash',
-			type: 'signup'
+			type: 'email'
 		});
 		expect(rpc).toHaveBeenCalledExactlyOnceWith('claim_open_registration');
 		expect(signOut).not.toHaveBeenCalled();
