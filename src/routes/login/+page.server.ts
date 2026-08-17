@@ -25,6 +25,7 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 		try {
 			await attestHostedBackendBaseline({
 				publicSupabaseUrl: locals.runtime.publicSupabaseUrl,
+				expectedSupabaseProjectRef: locals.runtime.expectedSupabaseProjectRef,
 				supabaseSecretKey: locals.runtime.supabaseSecretKey
 			});
 		} catch {

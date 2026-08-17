@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "perfume-marketplace-bg-issue22",
+  "account_id": "0cb7373563c400a08bd46564320dd747",
+  "main": "../../src/rollback-worker.ts",
+  "compatibility_date": "2026-07-20",
+  "workers_dev": true
+}

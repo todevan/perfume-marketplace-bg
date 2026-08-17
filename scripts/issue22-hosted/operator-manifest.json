@@ -1,0 +1,709 @@
+{
+  "migrations": [
+    {
+      "file": "202607200001_marketplace_foundation.sql",
+      "sha256": "42f9a997aeed211a231bbfe11542aa84625afec082fb33f71df9452f1ed9c4ce",
+      "bytes": 121220
+    },
+    {
+      "file": "202607200002_catalog_sync.sql",
+      "sha256": "18e629b18e1210ecd562f07e0c392793223bddb356aca5c1c860ed82a1982bbe",
+      "bytes": 27921
+    },
+    {
+      "file": "202607220003_beta_access_privacy.sql",
+      "sha256": "94f28ce0ae99b96dd31ae9f36a451c3f3cd6c28faa4c5c94bb207984ebfde9b5",
+      "bytes": 41951
+    },
+    {
+      "file": "202607220004_workflow_invariants.sql",
+      "sha256": "ef0a772446d670e1c6135841fa537a255965dadc430f2335526bdb444fa7a7fb",
+      "bytes": 22049
+    },
+    {
+      "file": "202607220005_uploads_evidence.sql",
+      "sha256": "17e8e0ca89c88c1415426427a2ee0a3f6a5de3b0f2e602d423399fd04e9ab1fe",
+      "bytes": 25239
+    },
+    {
+      "file": "202607220006_moderation_lifecycle.sql",
+      "sha256": "40926ffd12593d25f7ca8bdb858ba7c381ebdaf8d8c02ca25ff2e3925b816dd2",
+      "bytes": 26244
+    },
+    {
+      "file": "202607220007_search_realtime_jobs.sql",
+      "sha256": "477c52b093424bfe5ac5b5f1259bb6a74481d7fbabcbf332120d2d11de30d236",
+      "bytes": 50970
+    },
+    {
+      "file": "202607220008_first_admin_bootstrap.sql",
+      "sha256": "8bbf11354d6b0f66d61abde804c0c8f01a507d04da02b009ee5ae3924221dea6",
+      "bytes": 15952
+    },
+    {
+      "file": "202607260009_database_lint_hardening.sql",
+      "sha256": "0f6b4f98e380749286d54b03793dc27baeb8c5c02188ae634b21ad22c5cd9447",
+      "bytes": 4313
+    },
+    {
+      "file": "202607280010_hosted_runtime_correction.sql",
+      "sha256": "6a58262d1fe78b09260bae6315174d946d3f49c6044a67e1f999693ea5188a4c",
+      "bytes": 377
+    },
+    {
+      "file": "202607290011_production_readiness_fixes.sql",
+      "sha256": "64b30bdecdfb75632a058336a0bfbb03fc288f8949a97f1fd2adc24baf7e8f2b",
+      "bytes": 35984
+    },
+    {
+      "file": "202608020012_open_email_password_registration.sql",
+      "sha256": "77392b85f02e0dbf979d172da7631eea9468b8b66593855313c854de2dd41c86",
+      "bytes": 10146
+    },
+    {
+      "file": "202608020013_staff_mfa_enforcement.sql",
+      "sha256": "1c5a143c9799e5b9e54d2c3134d09f8fa002a29526edbbaf5d058f9edb93eb64",
+      "bytes": 2835
+    },
+    {
+      "file": "202608020014_report_evidence_hardening.sql",
+      "sha256": "61d6e4651fbf0fa37aab728ed46794d22551721c83a276c65870548db50c40d9",
+      "bytes": 17095
+    },
+    {
+      "file": "20260811105409_fix_upload_cleanup_claim_pruning.sql",
+      "sha256": "dec30cc5f439217f79cac17256a5a00eeafa65a764107e87bf627a270555ffec",
+      "bytes": 688
+    },
+    {
+      "file": "20260817105126_require_city_for_active_onboarding.sql",
+      "sha256": "7df4eebcf4355b51d2086d8236db2e170efbdcb570576e2e03d76eb2e8f3382a",
+      "bytes": 5321
+    },
+    {
+      "file": "20260817112008_harden_city_whitespace_normalization.sql",
+      "sha256": "281814e9d0da12227b012bf6f99bf46dc0271eace43407a7aef3bf2113129c79",
+      "bytes": 5851
+    },
+    {
+      "file": "20260817115507_require_meaningful_city_characters.sql",
+      "sha256": "8aa7fb39c702a76d411af48bd284d0f87d99cda202b58e1d0313a1954f09f5a2",
+      "bytes": 544
+    }
+  ],
+  "seed_inputs": {
+    "scripts/seed-catalog.mjs": {
+      "bytes": 5823,
+      "sha256": "3ae6d0e1b35c3001d56f3ddbf3e1aa8a9eab1db2ea27953fc3d2445febe4dab1"
+    },
+    "catalog/brand-categories.json": {
+      "bytes": 38026,
+      "sha256": "981f25ad5f401a72d832b7853239f3b5743937da5d7a3e6692854d92adf4f209"
+    }
+  },
+  "catalog_baseline": {
+    "brands": 196,
+    "aliases": 48,
+    "memberships": 335
+  },
+  "storage_baseline": [
+    {
+      "id": "listing-image-quarantine",
+      "name": "listing-image-quarantine",
+      "public": false,
+      "file_size_limit": 10485760,
+      "allowed_mime_types": [
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/avif"
+      ]
+    },
+    {
+      "id": "listing-images",
+      "name": "listing-images",
+      "public": false,
+      "file_size_limit": 10485760,
+      "allowed_mime_types": [
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/avif"
+      ]
+    },
+    {
+      "id": "merchant-documents",
+      "name": "merchant-documents",
+      "public": false,
+      "file_size_limit": 15728640,
+      "allowed_mime_types": [
+        "image/jpeg",
+        "image/png",
+        "application/pdf"
+      ]
+    },
+    {
+      "id": "report-evidence",
+      "name": "report-evidence",
+      "public": false,
+      "file_size_limit": 10485760,
+      "allowed_mime_types": [
+        "image/webp"
+      ]
+    }
+  ],
+  "known_failed_recovery": {
+    "predecessor_sha": "a9d55c0ef1138dfb33c09328abdfa59bc3981cd0",
+    "recovery_sha256": "65a7312fe5a7829d7cd5850bc71bc3d29e57f40a991ba070c6523044b00518e3",
+    "generated_config_sha256": "afe2b4621b71c8a4a5bef19245084dfc3975ab6b0ee0f0d5af32ddf074e9b21f",
+    "run_id": "55ab019b-6818-42c8-8b0d-bf15864afe67"
+  },
+  "provider_limits": {
+    "workers_free_requests_per_utc_day": 100000,
+    "workers_free_cpu_ms_per_invocation": 10,
+    "workers_free_subrequests_per_invocation": 50,
+    "workers_standard_requests_per_month": 10000000,
+    "workers_standard_cpu_ms_per_month": 30000000,
+    "operator_total_requests": 587,
+    "operator_free_hard_total_cpu_ms": 5870,
+    "workers_standard_default_cpu_ms_per_invocation": 30000,
+    "operator_conservative_standard_total_cpu_ms": 17610000
+  },
+  "migrated_inventory": {
+    "public_relations": [
+      "public.beta_auth_events",
+      "public.beta_consent_events",
+      "public.beta_invites",
+      "public.beta_legal_documents",
+      "public.beta_memberships",
+      "public.brand_aliases",
+      "public.brand_collection_memberships",
+      "public.brands",
+      "public.catalog_sync_runs",
+      "public.conversation_members",
+      "public.conversations",
+      "public.deal_confirmations",
+      "public.deal_listing_locks",
+      "public.deals",
+      "public.entitlements",
+      "public.favorites",
+      "public.fragrances",
+      "public.listing_authenticity_reviews",
+      "public.listing_photos",
+      "public.listings",
+      "public.merchant_applications",
+      "public.messages",
+      "public.moderation_audit",
+      "public.notification_email_deliveries",
+      "public.notifications",
+      "public.offers",
+      "public.payment_events",
+      "public.payment_refunds",
+      "public.payments",
+      "public.profile_comments",
+      "public.profiles",
+      "public.public_profiles",
+      "public.report_evidence_uploads",
+      "public.reports",
+      "public.reviews",
+      "public.saved_searches",
+      "public.upload_cleanup_queue",
+      "public.upload_quarantine"
+    ],
+    "public_functions": [
+      "accept_beta_consent",
+      "accept_offer",
+      "accept_offer_foundation",
+      "apply_merchant_review",
+      "apply_payment_refund",
+      "array_has_unique_items",
+      "assert_active_beta_user",
+      "assign_fragrance_slug",
+      "assign_listing_slug",
+      "audit_report_state_change",
+      "bind_first_admin_invite",
+      "can_read_report_evidence",
+      "cancel_deal",
+      "cancel_deal_foundation",
+      "cancel_listing_upload",
+      "canonicalize_brand",
+      "canonicalize_brand_unscoped",
+      "claim_listing_upload",
+      "claim_notification_email_delivery",
+      "claim_notification_email_delivery_v2",
+      "claim_open_registration",
+      "claim_upload_cleanup",
+      "close_report_after_decision_audit",
+      "complete_beta_onboarding",
+      "complete_mutually_confirmed_deal",
+      "complete_upload_cleanup",
+      "confirm_deal",
+      "create_beta_invite",
+      "create_listing_upload",
+      "create_report_evidence_upload",
+      "decline_offer",
+      "decline_offer_foundation",
+      "effective_listing_limit",
+      "enforce_client_created_at",
+      "expire_offers_after_listing_terms_close",
+      "expire_report_evidence_uploads",
+      "fail_upload_cleanup",
+      "finalize_listing_upload",
+      "finalize_report_evidence_upload",
+      "get_hosted_runtime_inventory",
+      "get_my_beta_access",
+      "handle_new_auth_user",
+      "has_verified_phone",
+      "is_active_beta_user",
+      "is_admin",
+      "is_conversation_member",
+      "is_staff",
+      "latest_messages_for_conversations",
+      "list_received_offers",
+      "mark_notification_email_failed",
+      "mark_notification_email_sent",
+      "moderate_listing",
+      "moderate_profile",
+      "moderate_profile_comment",
+      "moderate_review",
+      "moderator_read_messages",
+      "normalize_brand_alias_fields",
+      "normalize_brand_fields",
+      "normalize_catalog_key",
+      "normalize_fragrance_fields",
+      "normalize_listing_brand_input",
+      "normalize_notification_action_url",
+      "notify_deal_confirmation_needed",
+      "notify_merchant_application_owner",
+      "notify_merchant_application_staff",
+      "notify_message_received",
+      "notify_offer_received",
+      "notify_report_created",
+      "notify_report_updated",
+      "notify_review_received",
+      "open_deal_dispute",
+      "prepare_first_admin_invite",
+      "protect_beta_invite_workflow",
+      "protect_beta_membership_workflow",
+      "protect_conversation_membership_identity",
+      "protect_deal_state",
+      "protect_listing_photo_processing",
+      "protect_listing_state",
+      "protect_merchant_review_fields",
+      "protect_message_identity",
+      "protect_notification_content",
+      "protect_payment_event_append_only",
+      "protect_profile_comment_update",
+      "protect_profile_privileged_fields",
+      "protect_report_case",
+      "protect_review_moderation",
+      "protect_upload_quarantine_workflow",
+      "prune_upload_cleanup_claim_requests",
+      "publish_listing",
+      "queue_listing_photo_cleanup",
+      "queue_notification_email_delivery",
+      "queue_report_evidence_cleanup",
+      "redeem_beta_invite",
+      "refresh_profile_rating",
+      "reject_append_only_mutation",
+      "reject_listing_upload",
+      "reject_report_evidence_upload",
+      "reject_unattached_report_evidence_uploads",
+      "replace_current_merchant_plan",
+      "require_active_beta_write",
+      "require_brand_merge_workflow",
+      "require_brand_report_workflow",
+      "resolve_conversation_report",
+      "resolve_deal_dispute",
+      "review_listing_authenticity",
+      "review_listing_authenticity_unscoped",
+      "review_merchant_application",
+      "revoke_beta_invite",
+      "run_beta_maintenance",
+      "safe_uuid",
+      "search_catalog",
+      "search_catalog_v2",
+      "search_listings",
+      "search_listings_v2",
+      "set_updated_at",
+      "slugify_marketplace",
+      "sync_auth_user_verification",
+      "sync_deal_listing_locks",
+      "sync_editorial_catalog",
+      "validate_deal_confirmation",
+      "validate_deal_dispute_report",
+      "validate_listing_activation",
+      "validate_message_write",
+      "validate_moderation_audit_insert",
+      "validate_offer_write",
+      "validate_payment_refund",
+      "validate_report_evidence_ownership",
+      "validate_report_insert",
+      "validate_review_write"
+    ],
+    "public_policies": [
+      "public.beta_consent_events:beta_consent_events_owner_read",
+      "public.beta_invites:beta_invites_redeemer_read",
+      "public.beta_legal_documents:beta_legal_documents_public_read",
+      "public.beta_memberships:beta_memberships_owner_read",
+      "public.brand_aliases:aliases_admin_manage",
+      "public.brand_aliases:aliases_public_read",
+      "public.brand_collection_memberships:collection_memberships_admin_manage",
+      "public.brand_collection_memberships:collection_memberships_public_read",
+      "public.brands:brands_admin_manage",
+      "public.brands:brands_pending_create",
+      "public.brands:brands_public_read",
+      "public.catalog_sync_runs:catalog_sync_runs_admin_read",
+      "public.conversation_members:conversation_members_self_read",
+      "public.conversation_members:conversation_members_self_update",
+      "public.conversations:conversations_members_read",
+      "public.deal_confirmations:deal_confirmations_participant_read",
+      "public.deal_confirmations:deal_confirmations_self_create",
+      "public.deals:deals_participant_read",
+      "public.entitlements:entitlements_owner_read",
+      "public.favorites:favorites_owner_all",
+      "public.fragrances:fragrances_admin_manage",
+      "public.fragrances:fragrances_public_read",
+      "public.listing_authenticity_reviews:authenticity_reviews_owner_request",
+      "public.listing_authenticity_reviews:authenticity_reviews_visible_read",
+      "public.listing_photos:listing_photos_owner_delete",
+      "public.listing_photos:listing_photos_visible_read",
+      "public.listings:listings_owner_create",
+      "public.listings:listings_owner_delete_draft",
+      "public.listings:listings_owner_update",
+      "public.listings:listings_public_read",
+      "public.merchant_applications:merchant_applicant_create",
+      "public.merchant_applications:merchant_applicant_read",
+      "public.merchant_applications:merchant_applicant_update",
+      "public.messages:messages_members_create",
+      "public.messages:messages_members_read",
+      "public.messages:messages_sender_edit",
+      "public.moderation_audit:moderation_audit_staff_read",
+      "public.notifications:notifications_owner_read",
+      "public.notifications:notifications_owner_update",
+      "public.offers:offers_offerer_create",
+      "public.offers:offers_offerer_withdraw",
+      "public.offers:offers_participant_read",
+      "public.payment_events:payment_events_staff_read",
+      "public.payment_refunds:payment_refunds_owner_read",
+      "public.payments:payments_owner_read",
+      "public.profile_comments:profile_comments_author_create",
+      "public.profile_comments:profile_comments_author_edit",
+      "public.profile_comments:profile_comments_public_read",
+      "public.profiles:profiles_own_update",
+      "public.profiles:profiles_safe_read",
+      "public.reports:reports_reporter_create",
+      "public.reports:reports_reporter_read",
+      "public.reports:reports_staff_queue_read",
+      "public.reports:reports_staff_update",
+      "public.reviews:reviews_public_read",
+      "public.reviews:reviews_reviewer_create",
+      "public.reviews:reviews_reviewer_edit",
+      "public.saved_searches:saved_searches_owner_all",
+      "public.upload_cleanup_queue:upload_cleanup_service_read",
+      "public.upload_quarantine:upload_quarantine_owner_read"
+    ],
+    "private_schema_exists": true,
+    "unexpected_schemas": [
+      "private"
+    ],
+    "user_triggers": [
+      "private.first_admin_bootstrap:protect_first_admin_bootstrap",
+      "private.first_admin_bootstrap_attempts:first_admin_bootstrap_attempts_append_only",
+      "private.upload_cleanup_claim_requests:prune_upload_cleanup_claim_requests",
+      "public.beta_auth_events:beta_auth_events_append_only",
+      "public.beta_consent_events:beta_consent_events_append_only",
+      "public.beta_invites:protect_beta_invite_workflow",
+      "public.beta_memberships:protect_beta_membership_workflow",
+      "public.brand_aliases:enforce_client_created_at",
+      "public.brand_aliases:normalize_brand_alias_fields",
+      "public.brand_aliases:require_active_beta_write",
+      "public.brand_collection_memberships:require_active_beta_write",
+      "public.brands:brands_set_updated_at",
+      "public.brands:enforce_client_created_at",
+      "public.brands:normalize_brand_fields",
+      "public.brands:require_active_beta_write",
+      "public.brands:require_brand_merge_workflow",
+      "public.brands:require_brand_report_workflow",
+      "public.catalog_sync_runs:catalog_sync_runs_append_only",
+      "public.catalog_sync_runs:require_active_beta_write",
+      "public.conversation_members:protect_conversation_membership_identity",
+      "public.conversation_members:require_active_beta_write",
+      "public.conversations:conversations_set_updated_at",
+      "public.conversations:enforce_client_created_at",
+      "public.conversations:require_active_beta_write",
+      "public.deal_confirmations:complete_mutually_confirmed_deal",
+      "public.deal_confirmations:notify_deal_confirmation_needed",
+      "public.deal_confirmations:require_active_beta_write",
+      "public.deal_confirmations:validate_deal_confirmation",
+      "public.deal_listing_locks:enforce_client_created_at",
+      "public.deal_listing_locks:require_active_beta_write",
+      "public.deals:deals_set_updated_at",
+      "public.deals:enforce_client_created_at",
+      "public.deals:protect_deal_state",
+      "public.deals:require_active_beta_write",
+      "public.deals:sync_deal_listing_locks",
+      "public.entitlements:enforce_client_created_at",
+      "public.entitlements:replace_current_merchant_plan",
+      "public.entitlements:require_active_beta_write",
+      "public.favorites:enforce_client_created_at",
+      "public.favorites:require_active_beta_write",
+      "public.fragrances:assign_fragrance_slug",
+      "public.fragrances:enforce_client_created_at",
+      "public.fragrances:fragrances_set_updated_at",
+      "public.fragrances:normalize_fragrance_fields",
+      "public.fragrances:require_active_beta_write",
+      "public.listing_authenticity_reviews:enforce_client_created_at",
+      "public.listing_authenticity_reviews:listing_authenticity_reviews_set_updated_at",
+      "public.listing_authenticity_reviews:require_active_beta_write",
+      "public.listing_photos:enforce_client_created_at",
+      "public.listing_photos:protect_listing_photo_processing",
+      "public.listing_photos:queue_listing_photo_cleanup",
+      "public.listing_photos:require_active_beta_write",
+      "public.listings:assign_listing_slug",
+      "public.listings:enforce_client_created_at",
+      "public.listings:expire_offers_after_listing_terms_close",
+      "public.listings:listings_set_updated_at",
+      "public.listings:normalize_listing_brand_input",
+      "public.listings:protect_listing_state",
+      "public.listings:require_active_beta_write",
+      "public.listings:validate_listing_activation",
+      "public.merchant_applications:apply_merchant_review",
+      "public.merchant_applications:enforce_client_created_at",
+      "public.merchant_applications:merchant_applications_set_updated_at",
+      "public.merchant_applications:notify_merchant_application_owner",
+      "public.merchant_applications:notify_merchant_application_staff",
+      "public.merchant_applications:protect_merchant_review_fields",
+      "public.merchant_applications:require_active_beta_write",
+      "public.messages:enforce_client_created_at",
+      "public.messages:notify_message_received",
+      "public.messages:protect_message_identity",
+      "public.messages:require_active_beta_write",
+      "public.messages:validate_message_write",
+      "public.moderation_audit:close_report_after_decision_audit",
+      "public.moderation_audit:enforce_client_created_at",
+      "public.moderation_audit:moderation_audit_append_only",
+      "public.moderation_audit:require_active_beta_write",
+      "public.moderation_audit:validate_moderation_audit_insert",
+      "public.notifications:enforce_client_created_at",
+      "public.notifications:normalize_notification_action_url",
+      "public.notifications:protect_notification_content",
+      "public.notifications:queue_notification_email_delivery",
+      "public.notifications:require_active_beta_write",
+      "public.offers:enforce_client_created_at",
+      "public.offers:notify_offer_received",
+      "public.offers:offers_set_updated_at",
+      "public.offers:require_active_beta_write",
+      "public.offers:validate_offer_write",
+      "public.payment_events:protect_payment_event_append_only",
+      "public.payment_events:require_active_beta_write",
+      "public.payment_refunds:apply_payment_refund",
+      "public.payment_refunds:enforce_client_created_at",
+      "public.payment_refunds:payment_refunds_set_updated_at",
+      "public.payment_refunds:require_active_beta_write",
+      "public.payment_refunds:validate_payment_refund",
+      "public.payments:enforce_client_created_at",
+      "public.payments:payments_set_updated_at",
+      "public.payments:require_active_beta_write",
+      "public.profile_comments:enforce_client_created_at",
+      "public.profile_comments:profile_comments_set_updated_at",
+      "public.profile_comments:protect_profile_comment_update",
+      "public.profile_comments:require_active_beta_write",
+      "public.profiles:enforce_client_created_at",
+      "public.profiles:profiles_set_updated_at",
+      "public.profiles:protect_profile_privileged_fields",
+      "public.profiles:require_active_beta_write",
+      "public.report_evidence_uploads:queue_report_evidence_cleanup_delete",
+      "public.report_evidence_uploads:queue_report_evidence_cleanup_update",
+      "public.reports:aa_validate_deal_dispute_report",
+      "public.reports:audit_report_state_change",
+      "public.reports:enforce_client_created_at",
+      "public.reports:notify_report_created",
+      "public.reports:notify_report_updated",
+      "public.reports:protect_report_case",
+      "public.reports:reports_set_updated_at",
+      "public.reports:require_active_beta_write",
+      "public.reports:validate_report_evidence_ownership",
+      "public.reports:validate_report_insert",
+      "public.reviews:enforce_client_created_at",
+      "public.reviews:notify_review_received",
+      "public.reviews:protect_review_moderation",
+      "public.reviews:refresh_profile_rating",
+      "public.reviews:require_active_beta_write",
+      "public.reviews:reviews_set_updated_at",
+      "public.reviews:validate_review_write",
+      "public.saved_searches:enforce_client_created_at",
+      "public.saved_searches:require_active_beta_write",
+      "public.saved_searches:saved_searches_set_updated_at",
+      "public.upload_quarantine:protect_upload_quarantine_workflow"
+    ],
+    "realtime_publication_tables": [
+      "public.beta_memberships",
+      "public.conversation_members",
+      "public.conversations",
+      "public.deal_confirmations",
+      "public.deals",
+      "public.listing_photos",
+      "public.listings",
+      "public.messages",
+      "public.notifications",
+      "public.offers",
+      "public.reports",
+      "public.upload_quarantine"
+    ],
+    "definition_fingerprints": {
+      "relationsSha256": "68ed9b3ed314344737d5c80865c84f6ffa8ddb351cb16fb39ebdc2c4c218783c",
+      "typesSha256": "2b881160a5bd011001b1b955ce249c5812865ec7a3e44f3bc1647b44c38dd201",
+      "functionsSha256": "c2fa140411d95ad7084ad8563c76603d8ea8aaaa17f743fd78025996d91d0c01",
+      "policiesSha256": "dfaf95467de3ad0692b0c7901083e4f2dde2e9d6d55b2672a288f69941699713",
+      "triggersSha256": "b9457ed932443257a0bdbe419e62b27cc9e0c61f41261c455df64177c9e69a76",
+      "catalogSha256": "a40402de40e9eb66c5ffcfce1368785134782fb1d4ab4f37771adda86b7d40be"
+    },
+    "application_table_counts": [
+      {
+        "table": "private.first_admin_bootstrap",
+        "rows": 0
+      },
+      {
+        "table": "private.first_admin_bootstrap_attempts",
+        "rows": 0
+      },
+      {
+        "table": "private.upload_cleanup_claim_requests",
+        "rows": 0
+      },
+      {
+        "table": "public.beta_auth_events",
+        "rows": 0
+      },
+      {
+        "table": "public.beta_consent_events",
+        "rows": 0
+      },
+      {
+        "table": "public.beta_invites",
+        "rows": 0
+      },
+      {
+        "table": "public.beta_memberships",
+        "rows": 0
+      },
+      {
+        "table": "public.conversation_members",
+        "rows": 0
+      },
+      {
+        "table": "public.conversations",
+        "rows": 0
+      },
+      {
+        "table": "public.deal_confirmations",
+        "rows": 0
+      },
+      {
+        "table": "public.deal_listing_locks",
+        "rows": 0
+      },
+      {
+        "table": "public.deals",
+        "rows": 0
+      },
+      {
+        "table": "public.entitlements",
+        "rows": 0
+      },
+      {
+        "table": "public.favorites",
+        "rows": 0
+      },
+      {
+        "table": "public.fragrances",
+        "rows": 0
+      },
+      {
+        "table": "public.listing_authenticity_reviews",
+        "rows": 0
+      },
+      {
+        "table": "public.listing_photos",
+        "rows": 0
+      },
+      {
+        "table": "public.listings",
+        "rows": 0
+      },
+      {
+        "table": "public.merchant_applications",
+        "rows": 0
+      },
+      {
+        "table": "public.messages",
+        "rows": 0
+      },
+      {
+        "table": "public.moderation_audit",
+        "rows": 0
+      },
+      {
+        "table": "public.notification_email_deliveries",
+        "rows": 0
+      },
+      {
+        "table": "public.notifications",
+        "rows": 0
+      },
+      {
+        "table": "public.offers",
+        "rows": 0
+      },
+      {
+        "table": "public.payment_events",
+        "rows": 0
+      },
+      {
+        "table": "public.payment_refunds",
+        "rows": 0
+      },
+      {
+        "table": "public.payments",
+        "rows": 0
+      },
+      {
+        "table": "public.profile_comments",
+        "rows": 0
+      },
+      {
+        "table": "public.profiles",
+        "rows": 0
+      },
+      {
+        "table": "public.report_evidence_uploads",
+        "rows": 0
+      },
+      {
+        "table": "public.reports",
+        "rows": 0
+      },
+      {
+        "table": "public.reviews",
+        "rows": 0
+      },
+      {
+        "table": "public.saved_searches",
+        "rows": 0
+      },
+      {
+        "table": "public.upload_cleanup_queue",
+        "rows": 0
+      },
+      {
+        "table": "public.upload_quarantine",
+        "rows": 0
+      }
+    ]
+  },
+  "definition_fingerprint_input": {
+    "bytes": 14765,
+    "sha256": "d95372b838792068632499560211c54095b2a058a4ee3a77696ec1767acd94a6"
+  }
+}

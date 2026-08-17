@@ -19,6 +19,9 @@ export const publicProfileLookupSchema = z.object({
 	username: z.string().trim().min(3).max(40)
 });
 
+const meaningfulCityCharacter = /[\p{L}\p{N}]/u;
+const allowedCityCharacters = /^[-\p{L}\p{N} ']+$/u;
+
 export const cityInputSchema = z
 	.string()
 	.transform((value) => value.replace(/^ +| +$/gu, ''))
@@ -27,7 +30,9 @@ export const cityInputSchema = z
 			.string()
 			.min(2)
 			.max(100)
-			.refine((value) => !(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|[^\S ]/u).test(value))
+			.refine(
+				(value) => meaningfulCityCharacter.test(value) && allowedCityCharacters.test(value)
+			)
 	);
 
 export const updateProfileInputSchema = z.object({

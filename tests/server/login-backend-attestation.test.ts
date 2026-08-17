@@ -14,6 +14,7 @@ const stagingRuntime: ProductionRuntimeConfiguration = {
 	demoMode: false,
 	appEnvironment: 'staging',
 	publicSupabaseUrl: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
+	expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 	publicSupabaseKey: 'browser-publishable-key',
 	publicSupabaseAnonKey: 'browser-publishable-key',
 	supabaseSecretKey: 'server-secret-key',
@@ -44,6 +45,7 @@ describe('login backend attestation boundary', () => {
 		expect(backendHealth.attestHostedBackendBaseline).toHaveBeenCalledOnce();
 		expect(backendHealth.attestHostedBackendBaseline).toHaveBeenCalledWith({
 			publicSupabaseUrl: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
+			expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 			supabaseSecretKey: 'server-secret-key'
 		});
 		expect(result).toMatchObject({

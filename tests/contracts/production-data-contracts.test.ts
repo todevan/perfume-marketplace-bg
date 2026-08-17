@@ -87,10 +87,27 @@ describe('production data input contracts', () => {
 		}
 	);
 
-	it.each(['\t\t', '\r\n', '\u00a0\u00a0', '\u00a0Sofia\u00a0', ' Sofia\t ', 'So\u200bfia'])(
+	it.each([
+		'\t\t',
+		'\r\n',
+		'\u00a0\u00a0',
+		'\u00a0Sofia\u00a0',
+		' Sofia\t ',
+		'So\u200bfia',
+		'\u0085\u0085',
+		'\u2060\u2060',
+		'---'
+	])(
 		'rejects control or non-canonical whitespace in a profile city (%j)',
 		(city) => {
 			expect(updateProfileInputSchema.safeParse({ username: 'valid_user', city }).success).toBe(false);
+		}
+	);
+
+	it.each(['София', 'Велико Търново', 'Saint-Rémy', "L'Aquila", 'New York'])(
+		'accepts a meaningful Unicode city name (%s)',
+		(city) => {
+			expect(updateProfileInputSchema.parse({ username: 'valid_user', city }).city).toBe(city);
 		}
 	);
 });

@@ -1,0 +1,39 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "perfume-marketplace-bg-issue22",
+  "account_id": "0cb7373563c400a08bd46564320dd747",
+  "main": "../../.svelte-kit/cloudflare/_worker.js",
+  "compatibility_date": "2026-07-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "keep_vars": true,
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "../../.svelte-kit/cloudflare",
+    "run_worker_first": ["/robots.txt", "/sitemap.xml"]
+  },
+  "workers_dev": true,
+  "vars": {
+    "APP_ENV": "staging",
+    "PUBLIC_DEMO_MODE": "false",
+    "PUBLIC_APP_URL": "https://perfume-marketplace-bg-issue22.perfume-marketplace-bg.workers.dev",
+    "PUBLIC_SUPABASE_URL": "https://zzrrutwlrkhevellwork.supabase.co",
+    "PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_1imlAP3Eanrj-jXL1bpcTQ_rVKnHXUy",
+    "EXPECTED_SUPABASE_PROJECT_REF": "zzrrutwlrkhevellwork",
+    "PUBLIC_TURNSTILE_SITE_KEY": "__ISSUE22_TURNSTILE_SITE_KEY__",
+    "TURNSTILE_EXPECTED_HOSTNAME": "perfume-marketplace-bg-issue22.perfume-marketplace-bg.workers.dev",
+    "PRIVATE_BETA_REQUIRE_STAFF_MFA": "true",
+    "TERMS_VERSION": "beta-2026-07",
+    "PRIVACY_VERSION": "beta-2026-07",
+    "MARKETPLACE_RULES_VERSION": "beta-2026-07",
+    "LEGAL_CONTENT_APPROVED": "false",
+    "IMAGE_PROCESSOR_MODE": "disabled",
+    "FEATURE_BILLING_ENABLED": "false",
+    "FEATURE_LISTING_FEES_ENABLED": "false",
+    "FEATURE_MERCHANT_SUBSCRIPTIONS_ENABLED": "false",
+    "FEATURE_BOOSTS_ENABLED": "false",
+    "FEATURE_DIRECT_ADS_ENABLED": "false",
+    "FEATURE_MYPOS_PAYMENTS_ENABLED": "false",
+    "FEATURE_STRIPE_FALLBACK_ENABLED": "false",
+    "PAYMENT_PROVIDER": "disabled"
+  }
+}

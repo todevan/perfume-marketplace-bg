@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(32);
+select plan(45);
 
 select ok(
   has_function_privilege('authenticated', 'public.complete_beta_onboarding(text,text)', 'execute'),
@@ -14,6 +14,10 @@ select ok(
   not has_function_privilege('anon', 'public.complete_beta_onboarding(text,text)', 'execute'),
   'anonymous users cannot execute onboarding activation'
 );
+select ok(private.is_valid_city('София'), 'Cyrillic city names satisfy the meaningful-character rule');
+select ok(private.is_valid_city('Велико Търново'), 'ordinary internal spaces remain valid');
+select ok(private.is_valid_city('Saint-Rémy'), 'hyphenated Unicode city names remain valid');
+select ok(private.is_valid_city('L''Aquila'), 'apostrophe city names remain valid');
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -120,6 +124,24 @@ select throws_ok(
   '22023',
   'city must contain 2 to 100 characters',
   'a zero-width Unicode separator cannot activate through the RPC'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', chr(133) || chr(133))$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'U+0085 control-only city cannot activate through the RPC'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', U&'\2060\2060')$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'U+2060 format-only city cannot activate through the RPC'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('issue22_blank', '---')$sql$,
+  '22023',
+  'city must contain 2 to 100 characters',
+  'punctuation-only city cannot activate through the RPC'
 );
 reset role;
 set local role postgres;
@@ -255,6 +277,33 @@ select throws_ok(
   null,
   'direct own-profile update rejects a zero-width Unicode separator'
 );
+select throws_ok(
+  $sql$
+    update public.profiles set city = chr(133) || chr(133)
+    where id = '22000000-0000-4000-8000-000000000005'
+  $sql$,
+  '23514',
+  null,
+  'direct own-profile update rejects U+0085 control-only city'
+);
+select throws_ok(
+  $sql$
+    update public.profiles set city = U&'\2060\2060'
+    where id = '22000000-0000-4000-8000-000000000005'
+  $sql$,
+  '23514',
+  null,
+  'direct own-profile update rejects U+2060 format-only city'
+);
+select throws_ok(
+  $sql$
+    update public.profiles set city = '---'
+    where id = '22000000-0000-4000-8000-000000000005'
+  $sql$,
+  '23514',
+  null,
+  'direct own-profile update rejects punctuation-only city'
+);
 select is_empty(
   $sql$
     update public.profiles
@@ -332,6 +381,27 @@ where id = '22000000-0000-4000-8000-000000000005';
 select ok(
   not private.is_active_beta_user('22000000-0000-4000-8000-000000000005'),
   'a legacy active row with Unicode whitespace-only city remains fail-closed'
+);
+update public.profiles
+set city = chr(133) || chr(133)
+where id = '22000000-0000-4000-8000-000000000005';
+select ok(
+  not private.is_active_beta_user('22000000-0000-4000-8000-000000000005'),
+  'a legacy active row with U+0085 control-only city remains fail-closed'
+);
+update public.profiles
+set city = U&'\2060\2060'
+where id = '22000000-0000-4000-8000-000000000005';
+select ok(
+  not private.is_active_beta_user('22000000-0000-4000-8000-000000000005'),
+  'a legacy active row with U+2060 format-only city remains fail-closed'
+);
+update public.profiles
+set city = '---'
+where id = '22000000-0000-4000-8000-000000000005';
+select ok(
+  not private.is_active_beta_user('22000000-0000-4000-8000-000000000005'),
+  'a legacy active row with punctuation-only city remains fail-closed'
 );
 
 reset role;

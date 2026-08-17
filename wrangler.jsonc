@@ -30,6 +30,7 @@
         "PUBLIC_APP_URL": "https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev",
         "PUBLIC_SUPABASE_URL": "https://nuhkpqjjyuygiemrxbdp.supabase.co",
         "PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_86zf-0nNrjX0bMYmHVyT0w_r2NmGPgk",
+        "EXPECTED_SUPABASE_PROJECT_REF": "nuhkpqjjyuygiemrxbdp",
         "PUBLIC_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
         "TURNSTILE_EXPECTED_HOSTNAME": "perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev",
 
