@@ -1,8 +1,3 @@
-Да — този файл също е добър. Тук не сменяме state machine-а; само го правим **официално aware за Superpowers + Matt + ECC** и премахваме местата, където биха могли да стартират два workflow-а едновременно.
-
-Замени целия `docs/agents/EXECUTION-LOOP.md` с това:
-
-````md
 # Autonomous Execution Loop
 
 ## Purpose
@@ -96,7 +91,7 @@ Clean completed worktree/branch safely
 Active phase complete?
     ├── yes → phase completion verification + summary
     └── no → select next ready issue and continue
-````
+```
 
 ---
 
@@ -1171,5 +1166,3 @@ Matt deepens engineering reasoning.
 ECC adds specialist expertise.
 Repository policy controls all three.
 Evidence decides completion.**
-
-````

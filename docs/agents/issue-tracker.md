@@ -86,7 +86,7 @@ Typical uses include:
 * `domain-modeling` for domain boundaries and invariants;
 * `codebase-design` for architecture and implementation boundaries;
 * `code-review` for an independent engineering-depth review;
-* `wizard` when a complex TypeScript problem benefits from focused expert reasoning;
+* `wizard` for exact human-executable provider/dashboard instructions when an owner-performed protected step is required;
 * `writing-for-agents` when improving durable agent-facing specifications.
 
 Matt output may refine:
@@ -586,11 +586,11 @@ Prefer a small actionable backlog over a large decorative one.
 
 ---
 
-## Remediation-plan conversion
+## Plan-to-ticket conversion
 
-The approved combined remediation plan under `docs/superpowers/plans/` should be converted into vertical GitHub issues.
+When an approved remediation or implementation plan contains executable work, convert it into vertical GitHub issues rather than treating the plan as a parallel queue.
 
-Preserve its:
+Preserve the plan's:
 
 * priority;
 * dependency ordering;

@@ -1,14 +1,3 @@
-Да — този също го **запазваме като основа**, защото H1–H6 са много важни. Само го правим напълно съвместим с новата система и изрично забраняваме Superpowers/Matt/ECC да измислят допълнителни стопове.
-
-Замени **целия**:
-
-```text
-docs/agents/HUMAN-GATES.md
-```
-
-с това:
-
-````md
 # Human Gates
 
 ## Purpose
@@ -134,7 +123,7 @@ What I already completed:
 <safe investigation/preparation already finished>
 
 Reply with: 1, 2 or 3.
-````
+```
 
 ## After resolution
 
@@ -881,5 +870,3 @@ Do interrupt the owner when:
 Ask for the smallest necessary decision.
 Explain it in plain language.
 Never manufacture a Human Gate.**
-
-````

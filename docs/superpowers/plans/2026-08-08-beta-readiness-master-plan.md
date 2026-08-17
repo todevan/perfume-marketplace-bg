@@ -1,39 +1,117 @@
 # Beta Readiness Remediation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Use TDD for every behavior-changing task. Do not skip gates.
+**Plan date:** 2026-08-08  
+**Role:** Historical Gate 0–3 remediation plan and reusable technical acceptance contract.  
+**Execution semantics reconciled:** 2026-08-11.
 
-**Goal:** Make the current application safe to advance toward hosted beta by repairing the two current High-severity findings first, proving the critical auth lifecycles end-to-end, then addressing the immediate public-form resource boundary and running full verification.
+> This document preserves the technical design, gate ordering, failure modes, acceptance criteria, and verification intent established for the 2026-08-08 beta-readiness remediation.
+>
+> It is not the current executable queue, does not reopen completed gates, and does not independently authorize hosted/provider/database mutations. Current execution comes from `AGENTS.md`, authoritative project docs, current gate/status documents, and the canonical GitHub Issue.
+
+**Goal:** Make the reviewed application safe to advance toward hosted beta by repairing the two High-severity findings identified at the time, proving critical auth lifecycles end-to-end, addressing the immediate public-form resource boundary, and running the required verification.
 
 **Architecture:** Preserve the existing server-first, fail-closed security architecture. Repair lazy auth by separating **route access policy** from **auth-data requirements**, rather than reverting to eager auth loading or adding route-specific exceptions. Registration abuse protection must fail before `auth.signUp()` is reachable. Public form parsing must be bounded by application-level limits.
 
 **Tech Stack:** SvelteKit, TypeScript, Supabase/PostgreSQL/RLS, Cloudflare Workers, Cloudflare Turnstile, Vitest/current repository Node test stack, pgTAP/current DB test stack, Playwright/current E2E stack, GitHub Actions.
 
+## Authority and execution model
+
+For current work derived from this plan, use this order:
+
+1. repository instructions / `AGENTS.md`;
+2. authoritative project, product, architecture, security, business, legal and operational documentation;
+3. current `docs/PROJECT-STATUS.md` and the active named-gate documents;
+4. canonical GitHub Issue and explicitly authorized task/gate scope;
+5. Superpowers as the primary engineering-process authority;
+6. Matt Pocock deep-engineering skills when useful;
+7. ECC/platform specialists when useful;
+8. repository-defined verification and release gates.
+
+Superpowers owns the engineering lifecycle.
+
+Matt skills such as:
+
+- `diagnosing-bugs`;
+- `domain-modeling`;
+- `codebase-design`;
+- `code-review`;
+- `wizard`;
+- `writing-for-agents`;
+
+may deepen the current Superpowers step when useful.
+
+ECC/platform specialists may support areas such as:
+
+- security;
+- backend;
+- Supabase;
+- Cloudflare;
+- E2E / Playwright;
+- GitHub;
+- evals;
+- documentation lookup.
+
+Skills do not independently define product truth, project status, mutation authority, or completion.
+
+Do not create a second competing planner, debugging methodology, TDD loop, execution framework, review loop, or completion loop from this historical plan.
+
 ## Global Constraints
 
 - This is a beta-gate remediation plan, not a general refactor.
-- Do not add new marketplace functionality while a beta gate is failing.
+- Historical checkboxes in this file are not the current executable frontier. GitHub Issues are the canonical executable queue.
+- Do not add unrelated marketplace functionality while executing a currently active beta-gate issue.
 - Preserve lazy auth loading; do not globally restore eager profile/membership/AAL loading.
 - Preserve fail-closed authorization.
 - Do not weaken RLS, SQL privilege boundaries, staff MFA/AAL2, upload sanitization, evidence isolation, or feature gates to make tests pass.
 - Do not special-case `/onboarding` inside `hooks.server.ts` as the architectural fix.
-- Behavior-changing work must follow: reproduce → failing test → minimal coherent fix → focused verification → broader regression verification.
+- Normal users register publicly with email/password and complete email confirmation.
+- Do not reintroduce invitation-only registration or phone/SMS OTP requirements for normal-user activation, first listing, offers, or ordinary marketplace actions.
+- Legacy invite/bootstrap behavior may remain only where explicitly required for operator or first-admin compatibility.
+- Staff/admin MFA/AAL2 remains mandatory.
+- The underlying perfume transaction remains off-platform.
+- Payment, billing, listing-fee, subscription, boost, advertising and provider scaffolding does not authorize activation of those features. They remain disabled until the applicable business/legal/production gates are satisfied.
+- Merchant verification remains a free trust status and is not sold.
+- Never edit an existing Supabase migration. Hosted schema evolution is forward-only.
+- Do not use hosted database reset, migration-history rewrite, destructive repair or equivalent destructive remediation as the normal fix path.
+- Behavior-changing work follows the current Superpowers lifecycle: reproduce/diagnose, TDD where applicable, minimal coherent repair, review, focused verification, broader verification, and verification-before-completion.
 - A green unit test is not sufficient when the finding concerns a real user lifecycle.
-- If implementation uncovers a security-semantic change outside the current gate, stop that task and record the discovery instead of silently broadening scope.
-- Commit after each independently reviewable task when working in a Git repository.
-- Do not mark a gate complete without recording test/verification evidence.
+- If implementation uncovers a security-semantic or product decision outside the current issue/gate, respect the applicable Human Gate and named-scope boundary instead of silently broadening work.
+- Routine branch/worktree/commit/push/PR actions follow the current autonomy model rather than requiring blanket owner approval.
+- R0/R1 may merge autonomously only after all required gates pass.
+- R2 may be implemented autonomously but requires H3 before merge.
+- R3 protected production/policy/destructive actions remain owner-controlled.
+- Named-gate scope is strict. An instruction such as `A9 only` does not authorize adjacent provider, Auth, database, release or production mutations.
+- Do not mark a gate complete without fresh command/results or equivalent hosted evidence.
+- Local, staging and production remain isolated environments. Staging credentials do not imply production authority.
+- Hosted work must use current target-locked operational procedures rather than historical credentials or project assumptions.
 
 ---
 
-## Gate order
+## Historical gate order
+
+The 2026-08-08 plan established this sequence:
 
 1. **Gate 0 — Baseline and reproducibility**
 2. **Gate 1 — Critical auth remediation**
 3. **Gate 2 — Registration Turnstile**
 4. **Gate 3 — Public auth form bounds + beta verification**
 
-Do not begin the next gate until the previous gate has a recorded `PASS`.
+The original rule was that a later gate could not begin until the previous gate had recorded `PASS`.
 
-The following remain outside the immediate beta gate unless new evidence shows they are release-critical:
+That ordering remains useful historical evidence, but **current gate state must be read from the individual gate execution records and current project status**. Do not reopen Gate 0, Gate 1, or Gate 2 merely because their tasks remain unchecked in this master planning document.
+
+The related gate records are:
+
+```text
+docs/superpowers/plans/gate-0-baseline.md
+docs/superpowers/plans/gate-1-auth-remediation.md
+docs/superpowers/plans/gate-2-registration-turnstile.md
+docs/superpowers/plans/gate-3-beta-verification.md
+```
+
+Later Gate 3 staging reconciliation work is governed by its own current plan/evidence rather than inferred from this older master plan.
+
+The following themes were intentionally outside the immediate beta gate unless new evidence promoted them:
 
 - directional block semantics;
 - message edit/delete/moderation evidence policy;
@@ -42,7 +120,7 @@ The following remain outside the immediate beta gate unless new evidence shows t
 - documentation drift;
 - text-only report degradation behavior.
 
-Track those separately in `post-beta-hardening.md`.
+Their durable reference belongs in `post-beta-hardening.md`, which is a catalogue/reference rather than a competing executable queue.
 
 ---
 
@@ -50,7 +128,10 @@ Track those separately in `post-beta-hardening.md`.
 
 **Objective:** Establish the exact current state before behavior changes.
 
+**Historical status authority:** The actual Gate 0 result belongs in `gate-0-baseline.md`. This section preserves the original plan and acceptance contract only.
+
 **Primary files to inspect:**
+
 - `src/hooks.server.ts`
 - `src/lib/server/auth/guards.ts`
 - `src/routes/onboarding/+page.server.ts`
@@ -61,7 +142,7 @@ Track those separately in `post-beta-hardening.md`.
 - `tests/server/auth-refactor-contract.test.ts`
 - repository test scripts in `package.json`
 - current auth-related test files discovered by search
-- Create for new lifecycle coverage unless an existing lifecycle file is a clearly better home: `tests/server/auth-lifecycle-regressions.test.ts`
+- create lifecycle coverage in `tests/server/auth-lifecycle-regressions.test.ts` unless an existing lifecycle harness is clearly the correct home.
 
 **Required output:** a baseline execution record containing commands, pass/fail output, and the exact tests that reproduce or fail to reproduce the audited bugs.
 
@@ -77,7 +158,8 @@ Track those separately in `post-beta-hardening.md`.
 
 - [ ] Run the existing auth hook/refactor tests unchanged.
 - [ ] Run existing onboarding/login/recovery/MFA tests.
-- [ ] Record all output; do not reinterpret green hook-only tests as lifecycle proof.
+- [ ] Record all output.
+- [ ] Do not reinterpret green hook-only tests as lifecycle proof.
 
 ### Task 0.3 — Record baseline suite status
 
@@ -95,14 +177,19 @@ pnpm test:e2e
 - [ ] Record the exit status and meaningful failure output for every command.
 - [ ] If `package.json` shows these scripts have changed, use the current script definitions and record that difference.
 
-If any command cannot run, record the exact blocker. Do not claim that suite is green.
+If any command cannot run, record the exact blocker.
 
-**Gate 0 PASS requires:**
+Do not claim that suite as green.
+
+### Gate 0 PASS requires
+
 - current SHA/state recorded;
 - canonical test commands known;
 - auth test inventory known;
 - current verification limitations recorded;
 - no behavior changes made.
+
+This plan does not supersede the actual Gate 0 execution record.
 
 ---
 
@@ -110,20 +197,22 @@ If any command cannot run, record the exact blocker. Do not claim that suite is 
 
 **Objective:** Repair the lazy-auth regression while retaining the performance optimization.
 
-**Root cause:** The current implementation treats "authorization required to enter a route" as equivalent to "auth context the route needs to render/execute." These are different concerns.
+**Historical status authority:** The actual Gate 1 result belongs in `gate-1-auth-remediation.md`. This section preserves the design and acceptance contract.
+
+**Root cause:** The reviewed implementation treated “authorization required to enter a route” as equivalent to “auth context the route needs to render/execute.” These are different concerns.
 
 ## Required design
 
 Keep `RouteAccessPolicy` for authorization.
 
-Introduce a separate representation of auth-data requirements, conceptually capable of expressing:
+Use a separate representation of auth-data requirements capable of expressing:
 
-- `user`
-- `profile`
-- `betaAccess`
-- `aal`
+- `user`;
+- `profile`;
+- `betaAccess`;
+- `aal`.
 
-The exact type/file naming should follow current project conventions, but the final design must let the hook compute the minimum data needed from:
+The exact type/file naming follows current project conventions, but the design must allow the hook to compute the minimum data needed from:
 
 1. route access policy; and
 2. route data requirements.
@@ -140,7 +229,9 @@ Do not make access policy carry unrelated rendering/data-fetch semantics.
 | `/auth/mfa` | staff AAL1 | user + profile + betaAccess + AAL |
 | `/admin` | staff AAL2 | preserve current full staff/AAL2 enforcement |
 
-Authenticated navigation on public/legal pages must not incorrectly present active beta users as needing onboarding.
+Authenticated navigation on public/legal pages must not incorrectly present an active authenticated marketplace user as needing onboarding because required beta state was omitted.
+
+The presence of beta/membership state in this Gate 1 contract does **not** mean normal-user registration is invite-only.
 
 ## Task 1.1 — Add failing onboarding lifecycle regression
 
@@ -148,7 +239,7 @@ Authenticated navigation on public/legal pages must not incorrectly present acti
 
 **Test intent:** Execute the hook/auth-context path and onboarding loader/action together. Do not mock away the data dependency being tested.
 
-- [ ] Create or extend an auth lifecycle test proving an authenticated newly-confirmed/pending user entering `/onboarding` has the required profile and beta membership context.
+- [ ] Create or extend an auth lifecycle test proving an authenticated newly-confirmed/pending user entering `/onboarding` has the required profile and beta membership/access context.
 - [ ] Assert onboarding does not return the audited false 403 solely because lazy loading omitted required state.
 - [ ] Add action coverage proving onboarding POST receives the same required context.
 - [ ] Run only the new test and verify it fails against the pre-fix implementation for the expected reason.
@@ -157,14 +248,14 @@ Authenticated navigation on public/legal pages must not incorrectly present acti
 
 ## Task 1.2 — Add failing active-user `/login` regression
 
-- [ ] Add a lifecycle test for an already active beta user requesting `/login?next=<safe-route>`.
+- [ ] Add a lifecycle test for an already active authenticated user requesting `/login?next=<safe-route>`.
 - [ ] Assert the active user is redirected to the safe intended destination.
 - [ ] Assert the user is not redirected to `/onboarding`.
 - [ ] Verify the new test fails before implementation.
 
 ## Task 1.3 — Add failing password recovery regression
 
-- [ ] Add a test for an active beta user successfully updating a password through `/auth/update-password`.
+- [ ] Add a test for an active authenticated user successfully updating a password through `/auth/update-password`.
 - [ ] Assert successful completion does not redirect that active user to onboarding.
 - [ ] Verify the test fails before implementation because beta state is missing.
 
@@ -183,21 +274,24 @@ Authenticated navigation on public/legal pages must not incorrectly present acti
 ## Task 1.6 — Replace the test that codifies the bug
 
 **File:**
+
 - `tests/server/auth-refactor-contract.test.ts`
 
 - [ ] Locate the `/onboarding` assertion that currently expects no profile/beta query.
-- [ ] Change the contract from "onboarding must not load state" to "onboarding loads only the state its route actually needs."
+- [ ] Change the contract from “onboarding must not load state” to “onboarding loads only the state its route actually needs”.
 - [ ] Preserve performance assertions for unrelated routes.
 - [ ] Ensure this test fails before the architectural implementation if run against the old behavior.
 
 ## Task 1.7 — Implement explicit auth-data requirements
 
 **Likely files:**
+
 - `src/lib/server/auth/guards.ts` or a focused neighboring auth-policy module
 - `src/hooks.server.ts`
 - related auth types/helpers
 
 **Implementation constraints:**
+
 - [ ] Keep `RouteAccessPolicy`.
 - [ ] Add a separate auth-data-requirement mapping/helper.
 - [ ] Make requirements explicit enough that `/onboarding`, `/auth/update-password`, and `/auth/mfa` cannot accidentally depend on data their policy does not request.
@@ -208,20 +302,22 @@ Authenticated navigation on public/legal pages must not incorrectly present acti
 ## Task 1.8 — Make route consumers consistent
 
 Inspect:
+
 - `src/routes/onboarding/+page.server.ts`
 - `src/routes/login/+page.server.ts`
 - `src/routes/auth/update-password/+page.server.ts`
 - `src/routes/auth/mfa/+page.server.ts`
 - `src/lib/components/Header.svelte`
 
-- [ ] Confirm every consumer's assumptions match the new requirement contract.
+- [ ] Confirm every consumer's assumptions match the requirement contract.
 - [ ] Do not remove defensive/fail-closed checks merely because the hook now loads the data.
 - [ ] Adjust route/header logic only where required for the audited behavior.
 
 ## Task 1.9 — Focused auth verification
 
 Run:
-- [ ] new onboarding lifecycle tests;
+
+- [ ] onboarding lifecycle tests;
 - [ ] active `/login` test;
 - [ ] recovery test;
 - [ ] AAL2 MFA test;
@@ -237,14 +333,14 @@ Record exact commands and results.
 - [ ] Run Svelte/type check.
 - [ ] Run build.
 - [ ] Run relevant E2E auth flows if available.
-- [ ] Confirm no new unnecessary auth data loading on unrelated anonymous public routes.
+- [ ] Confirm no unnecessary auth data loading on unrelated anonymous public routes.
 
 ### Gate 1 PASS requires
 
 - [ ] New confirmed/pending user can reach onboarding with profile + beta state.
 - [ ] Onboarding action has the same required context.
-- [ ] Active beta user visiting `/login` bypasses onboarding.
-- [ ] Active beta user completing password recovery bypasses onboarding.
+- [ ] Active user visiting `/login` bypasses onboarding.
+- [ ] Active user completing password recovery bypasses onboarding.
 - [ ] Already-AAL2 staff visiting `/auth/mfa` redirects correctly.
 - [ ] `/admin` still requires and enforces AAL2.
 - [ ] Active authenticated navigation on public routes is correct.
@@ -254,16 +350,21 @@ Record exact commands and results.
 - [ ] Focused auth tests green.
 - [ ] Full available verification green.
 
+This section defines the historical acceptance target; current closure evidence belongs in the Gate 1 execution record.
+
 ---
 
 # Gate 2 — Registration Turnstile
 
 **Objective:** Make automated public registration fail before Supabase `auth.signUp()` can be called.
 
+**Historical status authority:** The actual Gate 2 result belongs in `gate-2-registration-turnstile.md`.
+
 **Primary files:**
+
 - `src/routes/login/+page.svelte`
 - `src/routes/login/+page.server.ts`
-- existing Turnstile server helper/test files discovered in repository
+- existing Turnstile server helper/test files discovered in repository.
 
 ## Task 2.1 — Add failing server contract test
 
@@ -280,17 +381,19 @@ Record exact commands and results.
 - [ ] Use a registration-specific action name: `register`.
 - [ ] Preserve the login challenge/action for login.
 - [ ] Preserve age-check behavior.
-- [ ] Avoid sharing an action label if the server validation expects action binding.
+- [ ] Avoid sharing an action label if server validation expects action binding.
 
 ## Task 2.3 — Verify Turnstile before `signUp()`
 
 **File:**
+
 - `src/routes/login/+page.server.ts`
 
-- [ ] Parse the registration form through the bounded mechanism introduced/selected for public auth forms in Gate 3 if that helper already exists; otherwise do not broaden Gate 2 solely to refactor every form.
+- [ ] Parse registration through the bounded mechanism introduced/selected for public auth forms if that helper already exists; otherwise do not broaden Gate 2 solely to refactor unrelated forms.
 - [ ] Before `supabase.auth.signUp(...)`, call the existing Turnstile verification helper with expected action `register`.
 - [ ] Missing/invalid verification must return/fail before signup is reachable.
 - [ ] Preserve current form validation and safe redirect semantics.
+- [ ] Do not log email, Turnstile token, secret or private account metadata.
 
 ## Task 2.4 — Registration verification
 
@@ -311,31 +414,44 @@ Record exact commands and results.
 - [ ] Safe redirects and registration validation remain intact.
 - [ ] Focused and broader available tests are green.
 
+This plan does not convert Turnstile into a phone/SMS or invitation requirement. Public email/password registration remains the normal-user model.
+
 ---
 
 # Gate 3 — Public auth form bounds and beta verification
 
-**Objective:** Close the immediate unauthenticated request-body resource gap, then prove the corrected tree is suitable for hosted Phase 2 verification.
+**Objective:** Close the immediate unauthenticated request-body resource gap, then prove the corrected tree is suitable for the hosted verification required by the active beta-readiness boundary.
+
+**Historical/current boundary:** This section is the original Gate 3 planning packet. The actual Gate 3 execution status and any later staging-reconciliation/A-series work must be read from the dedicated Gate 3 documents. Do not infer current hosted authority from this section.
 
 **Primary files:**
+
 - `src/lib/server/http/request-body.ts`
 - `src/routes/login/+page.server.ts`
 - `src/routes/auth/reset-password/+page.server.ts`
-- any other unauthenticated/public auth actions discovered by route inventory
-- tests for request-body helper/routes
+- other unauthenticated/public auth actions discovered by route inventory
+- tests for request-body helper/routes.
+
+## Scope rule
+
+Start with anonymous/public auth endpoints.
+
+Record the remaining authenticated raw `request.formData()` calls for separate follow-up unless changing them is required by the centralized helper or is separately authorized by the current issue.
+
+Do not silently turn Gate 3 into a repository-wide form refactor.
 
 ## Task 3.1 — Inventory public raw `request.formData()` use
 
 - [ ] Search current tree for `request.formData()`.
 - [ ] Classify each call: anonymous/public, authenticated low-risk text form, file-bearing/bounded already.
-- [ ] Confirm the current count rather than relying on the audit's snapshot.
-- [ ] Gate 3 scope is public/anonymous auth actions first; record authenticated remainder for post-beta follow-up unless the same helper can be adopted trivially and safely.
+- [ ] Confirm the current count rather than relying on the audit snapshot.
+- [ ] Keep Gate 3 scoped to the public/anonymous auth boundary unless the current issue explicitly says otherwise.
 
 ## Task 3.2 — Define one standard small text-form profile
 
 Follow the existing bounded body helper architecture.
 
-Target profile should be intentionally small. Starting design:
+Historical starting design:
 
 ```ts
 const STANDARD_ACTION_FORM = {
@@ -346,12 +462,15 @@ const STANDARD_ACTION_FORM = {
 };
 ```
 
-Adjust exact helper shape to the repository's actual parser API. If the current helper cannot represent zero files, use the smallest safe supported file limits or add a text-form wrapper with tests.
+Adapt the exact helper shape to the repository's current parser API.
+
+If the helper cannot represent zero files, use the smallest safe supported representation or a tested text-form wrapper.
 
 - [ ] Do not trust `Content-Length` alone.
 - [ ] Bound the actual request stream.
 - [ ] Reject oversized/malformed bodies predictably.
 - [ ] Keep the helper centralized.
+- [ ] Do not weaken existing file-upload limits.
 
 ## Task 3.3 — Add failing oversized registration/login tests
 
@@ -370,19 +489,20 @@ Adjust exact helper shape to the repository's actual parser API. If the current 
 ## Task 3.5 — Adopt bounded parsing on public auth actions
 
 At minimum:
+
 - `src/routes/login/+page.server.ts`
 - `src/routes/auth/reset-password/+page.server.ts`
-- any additional anonymous auth action discovered in Task 3.1
+- any additional anonymous auth action discovered in Task 3.1.
 
 - [ ] Replace raw `request.formData()` with the centralized bounded parsing path.
 - [ ] Preserve existing field validation/error responses.
 - [ ] Preserve Turnstile verification ordering.
 - [ ] Ensure registration still verifies Turnstile before signup.
-- [ ] Do not change authenticated business-action limits in this task unless required by a shared helper change.
+- [ ] Do not change authenticated business-action limits in this task unless explicitly required by current scope.
 
 ## Task 3.6 — Full local verification
 
-Run:
+Historical canonical command set:
 
 ```bash
 pnpm test
@@ -402,39 +522,76 @@ Record each command independently.
 - [ ] DB tests;
 - [ ] E2E.
 
-If a dependency/service prevents a command, record the exact limitation and do not mark that verification item green.
+If a dependency/service prevents a command, record the exact limitation.
 
-## Task 3.7 — Hosted Phase 2 readiness checklist
+Do not turn `NOT RUN` into `PASS`.
 
-Prepare the corrected tree for hosted verification. Do not claim hosted behaviors were verified unless they were actually executed.
+Run DB lint and DB test in the safe repository-defined order when their local lifecycle requires sequential execution.
 
-Required hosted checks:
+## Task 3.7 — Hosted verification readiness
 
-- [ ] real signup → email confirmation → pending membership/profile → onboarding → authenticated destination;
+Prepare the corrected tree for hosted verification.
+
+Do not claim hosted behavior was verified unless it was actually executed against the exact authorized target/candidate.
+
+The original Gate 3 hosted checklist included:
+
+- [ ] real signup → email confirmation → profile/beta state → onboarding → authenticated destination;
 - [ ] active authenticated user → `/login` → intended destination;
 - [ ] password recovery → password update → intended destination;
 - [ ] staff AAL1 challenged appropriately;
 - [ ] staff AAL2 accepted and `/admin` remains protected;
 - [ ] evidence isolation;
-- [ ] multi-session/race behavior relevant to auth/onboarding;
+- [ ] relevant multi-session/race behavior;
 - [ ] cleanup behavior;
-- [ ] restore rehearsal;
+- [ ] restore rehearsal where required by the current release/gate;
 - [ ] provider/runtime configuration, including Turnstile action validation.
 
+Later Gate 3 plans may narrow, split or sequence these hosted requirements more precisely. Those later named-gate documents take precedence for current execution.
+
+### Hosted authority rules
+
+This master plan alone does **not** authorize:
+
+- deployment;
+- migration push;
+- hosted Auth configuration changes;
+- Turnstile/provider configuration;
+- synthetic account creation/elevation;
+- TOTP enrollment;
+- hostile hosted tests;
+- cleanup/destructive hosted operations;
+- production actions.
+
+For any such step:
+
+- use the current named-gate scope;
+- verify the exact target;
+- apply current R0–R3/H1–H6 rules;
+- keep staging and production authority separate;
+- use forward-only database evolution;
+- preserve synthetic-only evidence and least privilege.
+
 ### Gate 3 PASS requires
+
+Historically:
 
 - [ ] Public auth actions use bounded body parsing.
 - [ ] Oversized registration/login/reset-password bodies fail before expensive/provider operations.
 - [ ] All available local verification is green.
-- [ ] Any unavailable verification is explicitly recorded as not run, not silently treated as passing.
-- [ ] Hosted Phase 2 checklist is ready.
-- [ ] No High-severity finding from the audit remains open.
+- [ ] Any unavailable verification is explicitly recorded as not run.
+- [ ] Hosted verification prerequisites are ready.
+- [ ] No High-severity beta-gate finding remains unresolved.
+
+Current Gate 3 PASS must use the dedicated Gate 3 acceptance record and later reconciliation evidence, not this master checklist alone.
 
 ---
 
 # Execution evidence format
 
-Every gate document must maintain:
+The original plan required every gate document to maintain an execution record.
+
+That remains a useful evidence shape for dedicated gate documents:
 
 ```md
 ## Execution Record
@@ -464,38 +621,87 @@ Every gate document must maintain:
 Concrete evidence only.
 ```
 
-A `PASS` is invalid without commands/results or equivalent hosted evidence.
+A `PASS` is invalid without command/results or equivalent hosted evidence.
+
+Do not duplicate the same execution record into multiple planning documents. The dedicated gate record is authoritative for that gate's evidence.
+
+Routine issue/implementation history should remain in GitHub Issue + PR + CI unless durable gate evidence is specifically required.
 
 ---
 
-# Escalation rules
+# Escalation and Human Gate rules
 
-Stop the active task and record a new finding if any of the following occurs:
+The original plan identified several situations where work must not silently continue as though the finding were ordinary.
 
-1. Fixing auth appears to require weakening AAL2, RLS, or fail-closed authorization.
-2. Route behavior depends on a hidden auth-data requirement not represented by the new contract.
-3. A test can only be made green by mocking away the lifecycle boundary under test.
-4. Registration can reach `signUp()` without a successful action-bound Turnstile verification.
-5. The bounded parser must buffer an unbounded body before applying limits.
-6. Hosted schema/runtime state differs materially from local assumptions.
-7. A Medium finding becomes demonstrably exploitable or blocks the repaired signup/auth lifecycle.
+Current handling uses `docs/agents/HUMAN-GATES.md`, named-gate scope, risk classification, and repair budgets.
 
-Do not silently promote scope. Record the finding, severity rationale, affected gate, and proposed next action.
+Escalate or stop at the relevant boundary if:
+
+1. fixing auth appears to require weakening AAL2, RLS, or fail-closed authorization;
+2. route behavior depends on a hidden auth-data requirement not represented by the current contract;
+3. a test can only be made green by mocking away the lifecycle boundary under test;
+4. registration can reach `signUp()` without successful action-bound Turnstile verification;
+5. the bounded parser must buffer an unbounded body before applying limits;
+6. hosted schema/runtime state differs materially from the verified local assumptions;
+7. a lower-severity finding becomes demonstrably exploitable or blocks the active critical lifecycle;
+8. implementation requires a product/legal/privacy/business decision that authoritative docs do not resolve;
+9. completing the named gate would require an adjacent provider/database/Auth/release mutation outside its authorized scope;
+10. an R2 change reaches merge-ready state without H3;
+11. an R3 protected production/policy/destructive action becomes necessary.
+
+Do not silently promote scope.
+
+Record:
+
+- the evidence;
+- affected gate/issue;
+- risk/severity;
+- exact missing decision or authority;
+- smallest safe next action.
+
+Ordinary reversible technical failures should first use the normal Superpowers systematic-debugging and repair-budget process rather than immediately interrupting the owner.
 
 ---
 
-# Definition of beta-gate complete
+# Historical definition of beta-gate complete
 
-The beta-gate remediation is complete only when:
+The 2026-08-08 plan defined beta-gate remediation completion as:
 
-- Gate 0 = PASS
-- Gate 1 = PASS
-- Gate 2 = PASS
-- Gate 3 = PASS
-- all two audited High-severity issues are closed with regression tests;
-- public auth request-body limits are enforced;
-- full available local verification is green;
-- hosted Phase 2 verification has either passed or is explicitly the next external verification step;
-- no unresolved newly-discovered High issue exists.
+- Gate 0 = PASS;
+- Gate 1 = PASS;
+- Gate 2 = PASS;
+- Gate 3 = PASS;
+- the two audited High-severity issues closed with regression evidence;
+- public auth request-body limits enforced;
+- full available local verification green;
+- required hosted verification passed or represented by the next explicit external gate;
+- no unresolved newly discovered High issue.
 
-Do not treat the post-beta hardening queue as a blocker unless new evidence promotes an item.
+This definition is preserved as the historical planning target.
+
+Do not use it as a shortcut around later Gate 3 staging reconciliation, current launch gates, legal/business requirements, backup/restore requirements, or production protections.
+
+The post-beta hardening catalogue is not automatically a beta blocker. A hardening item becomes active only when fresh evidence and the canonical GitHub queue promote it into the current execution frontier.
+
+---
+
+# Current reuse rule
+
+When a future agent reads this plan:
+
+1. do **not** start again at Gate 0;
+2. read the individual gate execution records;
+3. read current `PROJECT-STATUS.md`;
+4. inspect the current GitHub Issues frontier;
+5. identify the active named gate or issue;
+6. use this document only for its still-relevant technical design/acceptance context;
+7. use Superpowers as the process authority;
+8. use Matt/ECC specialists only where useful;
+9. respect current R0–R3/H1–H6 and named-gate boundaries;
+10. collect fresh evidence before making any new PASS/readiness claim.
+
+Historical unchecked boxes do not mean unfinished current work.
+
+Historical `PASS` evidence does not automatically prove a later candidate.
+
+Current repository and hosted state must always be established from current authoritative evidence.
