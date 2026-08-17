@@ -1,8 +1,8 @@
-# Closed-beta incident response
+# Aromatika incident response
 
 ## Purpose and authority
 
-This is the operational runbook for containing, investigating and recovering from security, privacy, availability and data-integrity incidents during the closed beta.
+This is the operational runbook for containing, investigating, and recovering from security, privacy, availability, and data-integrity incidents before and after public launch.
 
 It does not create a separate execution framework or override repository authority.
 
@@ -10,7 +10,7 @@ During incident work, follow this order:
 
 1. `AGENTS.md` and authoritative repository/project documentation.
 2. The explicitly authorized environment, issue, gate and task scope.
-3. `docs/agents/AUTONOMY.md`, `docs/agents/EXECUTION-LOOP.md` and `docs/agents/HUMAN-GATES.md`.
+3. `docs/agents/WORKFLOW.md` and `docs/agents/SECURITY.md`.
 4. Superpowers as the primary process authority.
 5. Matt Pocock skills for deep engineering reasoning when useful.
 6. ECC or platform-specific skills for specialist security, backend, E2E, Supabase, Cloudflare, GitHub or similar work.
@@ -29,9 +29,9 @@ Incident severity and change risk are separate classifications.
 
 A `P0` incident does not automatically authorize an `R3` action.
 
-Routine, narrow, reversible containment that is already permitted by repository policy should proceed autonomously without waiting for owner approval. Actions that cross an existing Human Gate, production protection, provider-control boundary or destructive-recovery boundary must still follow `docs/agents/HUMAN-GATES.md`.
+Routine, narrow, reversible containment already permitted by repository policy should proceed autonomously. Actions that cross a protected R3 production, provider-control, policy, spending, or destructive-recovery boundary still require the exact owner decision or action defined by current authority.
 
-When immediate containment and a Human Gate are both relevant, perform every safe authorized containment action available first, preserve evidence, and escalate the gated action without treating this runbook as permission to bypass the gate.
+When immediate containment and an R3 boundary are both relevant, perform every safe authorized containment action first, preserve evidence, and escalate the protected action without treating this runbook as permission to bypass the boundary.
 
 ## Severity
 
@@ -55,7 +55,7 @@ Do not downgrade an incident merely because the visible symptom has stopped.
 5. Apply the narrowest safe containment already authorized for the affected environment and resource.
 6. For P0/P1, stop unrelated releases and mutations that could destroy evidence or complicate recovery.
 7. Notify the designated incident owner/contact promptly, but do not delay routine authorized containment while waiting for acknowledgement.
-8. Classify every non-trivial mutation separately as `R0`, `R1`, `R2` or `R3` and apply the existing Human Gates.
+8. Classify every non-trivial mutation separately as `R0`, `R1`, `R2`, or `R3` and apply the current risk controls.
 
 Examples of narrow containment can include, when authorized:
 
@@ -129,7 +129,7 @@ Incident response does not relax ordinary least-privilege rules.
 - Preserve legally or operationally required evidence without retaining unrelated personal data.
 - Keep secrets and sensitive evidence out of public or broadly accessible issue/PR history.
 
-If resolution requires a legal, privacy, business or policy decision, apply the appropriate Human Gate in `docs/agents/HUMAN-GATES.md` rather than inventing the decision inside the incident.
+If resolution requires a legal, privacy, business, or policy decision, stop at the applicable R3 owner-decision boundary rather than inventing the decision inside the incident.
 
 GDPR, DSA, GPSR or other statutory notification duties and timelines must be determined from verified facts through the project's applicable legal/privacy escalation boundary.
 
@@ -144,7 +144,7 @@ Before a production or external-provider mutation, determine:
 - whether the action is required for immediate containment;
 - whether a narrower authorized control exists;
 - its `R0`–`R3` classification;
-- whether an H1–H6 Human Gate applies;
+- whether an R3 protected owner decision or action applies;
 - whether the target and environment are positively verified;
 - whether rollback or recovery is understood.
 
@@ -154,17 +154,17 @@ Never treat a remembered project name, credential, environment variable or old p
 
 Shared hosted database migrations are forward-only. Do not use remote database reset, migration-history rewriting or destructive repair as normal incident remediation.
 
-If destructive recovery is genuinely required, stop at the applicable risk/Human Gate boundary and use the documented recovery process rather than improvising.
+If destructive recovery is genuinely required, stop at the protected R3 boundary and use the documented recovery process rather than improvising.
 
-## Active named gates and incidents
+## Active tasks and incidents
 
-An incident may justify pausing work on an active named gate when continuing would increase harm, alter evidence or make recovery harder.
+An incident may justify pausing active work when continuing would increase harm, alter evidence, or make recovery harder.
 
 It does not silently expand that gate's mutation scope.
 
-For example, an instruction such as `A9 only` remains a strict mutation boundary. Incident investigation may identify a required adjacent provider or gate action, but that action requires its own existing authorization before mutation.
+An explicitly scoped task remains a strict mutation boundary. Incident investigation may identify a required adjacent provider or protected action, but that action requires its own authorization before mutation.
 
-Document any incident-driven interruption clearly enough that the original gate can later determine whether previous evidence remains valid.
+Document any incident-driven interruption clearly enough that the original task can later determine whether previous evidence remains valid.
 
 ## Repair
 
@@ -177,13 +177,13 @@ Once the failure mechanism is understood:
 5. Use ECC/platform specialists for the relevant technical domain.
 6. Prefer a narrow reviewed forward code/configuration change or forward migration.
 7. Do not bundle unrelated cleanup or opportunistic redesign into the incident repair.
-8. Apply the normal `R0`–`R3` merge rules and Human Gates.
+8. Apply the current `R0`–`R3` implementation, verification, merge, and owner-action rules.
 
 R0/R1 incident fixes may proceed through normal autonomous review, verification and auto-merge rules.
 
-R2 work may be implemented autonomously, but still requires the existing H3 boundary before merge.
+R2 work may merge autonomously only after the required specialist review, adversarial security review, deterministic security checks, and full CI all pass.
 
-R3 protected production, destructive or policy actions require the owner involvement defined by the existing autonomy and Human Gate documents.
+R3 protected production, destructive, spending, commercial-term, or policy actions require the owner involvement defined by `AGENTS.md` and `docs/agents/SECURITY.md`.
 
 ## Verification
 
@@ -219,7 +219,7 @@ Do not:
 - treat a PostgreSQL backup as containing Storage objects;
 - restore objects without validating their expected integrity/provenance.
 
-A recovery operation must respect the target environment, backup set, encryption material, retention rules and Human Gate/risk classification applicable to that action.
+A recovery operation must respect the target environment, backup set, encryption material, retention rules, and risk classification applicable to that action.
 
 ## Reopening
 
@@ -230,13 +230,13 @@ Reopen an affected path only after:
 3. regression and repository verification pass;
 4. affected authorization/privacy boundaries have been rechecked;
 5. telemetry/logs show no continuing failure during the controlled observation window;
-6. any required Human Gate has been satisfied.
+6. any required R3 owner decision or action has been satisfied.
 
 Re-enable only the functionality that was contained.
 
 Do not reintroduce legacy invite-only or SMS/phone activation requirements as an incident workaround for normal users. Current regular-user activation remains public email/password registration with email confirmation. Staff/admin MFA/AAL2 requirements remain mandatory.
 
-Where the incident did not cross a Human Gate, routine reopening does not require new owner approval solely because an incident occurred.
+Where the incident did not cross an R3 boundary, routine reopening does not require new owner approval solely because an incident occurred.
 
 ## Communication
 
@@ -262,7 +262,7 @@ An incident can be operationally closed when:
 - containment is no longer required;
 - the affected path is safely restored or intentionally remains disabled;
 - required repair and verification have completed;
-- required Human Gates have been satisfied;
+- required R3 owner decisions or actions have been satisfied;
 - follow-up work has a canonical GitHub Issue and owner/state;
 - evidence needed for audit, security or legal purposes is retained appropriately;
 - temporary access or containment controls have been removed or intentionally documented.
@@ -281,9 +281,9 @@ Within the agreed internal window, document:
 - containment actions;
 - remediation;
 - verification evidence;
-- Human Gates or risk escalations used;
+- R3 owner decisions or risk escalations used;
 - follow-up GitHub Issues, owners and due dates.
 
 Remove temporary evidence when its approved retention period ends while preserving legally or operationally required audit records.
 
-Post-incident improvements return to the normal GitHub Issues queue and autonomy model. The incident itself is not continuing authorization for unrelated hardening, provider changes or production work.
+Post-incident improvements return to the normal GitHub Issues queue and current workflow. The incident itself is not continuing authorization for unrelated hardening, provider changes, or production work.

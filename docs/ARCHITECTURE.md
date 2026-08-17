@@ -150,7 +150,7 @@ RLS and database constraints are authoritative security boundaries.
 
 Application checks may provide earlier failures and better UX, but they do not replace database enforcement where the architecture requires it.
 
-Security-sensitive changes to RLS, authorization, identity, moderation access or privileged RPCs must follow the repository risk classification and Human Gate rules.
+Security-sensitive changes to RLS, authorization, identity, moderation access, or privileged RPCs must follow the current R2/R3 controls in `AGENTS.md` and `docs/agents/SECURITY.md`.
 
 ---
 
@@ -242,37 +242,19 @@ A named release or reconciliation gate authorizes only the mutations explicitly 
 
 ---
 
-## Deferred by design
+## Launch and deferred boundaries
 
-Perfume checkout, delivery, attachments in chat, decants/splits/attar formats, boosts, subscriptions, ads and all platform payments remain disabled.
+Perfume checkout, escrow, courier integration, chat attachments, complex decants or splits, subscriptions, and international expansion remain deferred unless separately approved.
 
-The provider-neutral payment code is future scaffolding and is outside the closed-beta transaction flow.
+Paid additional listings and paid promotion are part of the approved launch model, but existing provider-neutral payment and entitlement scaffolding is not proof that those journeys are implemented, secure, configured, or ready to activate.
 
-Deferred capabilities must not be activated incidentally while implementing adjacent work.
-
-Existing scaffolding does not itself authorize product exposure, provider configuration, database activation or production behavior.
+Commercial entitlements must remain server-authoritative and fail closed until their implementation, security, provider, business, and production gates pass.
 
 ---
 
 ## Architecture change discipline
 
-The existing architecture is the default constraint.
-
-A skill may identify a better implementation or architecture, but that observation alone does not supersede this document.
-
-### Ordinary implementation decisions
-
-Agents may autonomously choose implementation details when they:
-
-- preserve the documented user-visible behavior;
-- preserve security and privacy invariants;
-- remain inside existing application boundaries;
-- remain inside issue and named-gate scope;
-- stay within the applicable risk and repair budgets.
-
-### Architecture changes
-
-Treat a change as architectural when it materially changes boundaries such as:
+The existing architecture is the default constraint. Treat a change as architectural when it materially changes boundaries such as:
 
 - runtime/service topology;
 - authentication or authorization model;
@@ -286,58 +268,7 @@ Treat a change as architectural when it materially changes boundaries such as:
 - provider responsibility;
 - deployment or release safety model.
 
-Such changes must be explicit in issue scope.
-
-If they create materially different product behavior or cross an R2/R3 boundary, use the applicable Human Gate.
-
-Do not smuggle architectural redesign into an unrelated bug fix or cleanup.
-
----
-
-## Skill-assisted architecture work
-
-Skill routing follows `docs/agents/SKILL-ROUTER.md`.
-
-For architecture-related work:
-
-```text
-Repository architecture and issue scope
-        ↓
-Superpowers primary process
-        ↓
-Matt Pocock domain-modeling / codebase-design when deeper reasoning is useful
-        ↓
-ECC / platform specialist where domain expertise is required
-        ↓
-review and repository-defined verification
-```
-
-This is not a second workflow.
-
-Superpowers remains the process authority.
-
-Matt Pocock skills may help expose domain invariants, coupling, invalid states and better code boundaries.
-
-ECC and platform skills may contribute security, backend, Supabase, Cloudflare, E2E or other specialist constraints.
-
-Their output must be reconciled with this architecture and the current issue rather than becoming an independent architecture specification.
-
-Do not run competing planners, debugging loops, TDD systems or completion workflows merely because multiple skill systems provide overlapping capabilities.
-
----
-
-## Architecture/code contradictions
-
-If implementation and this document appear to disagree:
-
-1. do not automatically treat the code as authoritative;
-2. do not automatically rewrite the code to match stale documentation;
-3. inspect current approved plans, project status, issue scope and repository history as needed;
-4. determine whether the difference is a regression, incomplete migration, temporary rollout state or explicitly approved architecture change;
-5. use the appropriate issue or Human Gate if the intended behavior remains genuinely ambiguous;
-6. update durable documentation when an approved architecture change makes this file stale.
-
-Temporary provider state, failed deployments, disabled staging switches and incomplete gates do not by themselves redefine the intended architecture.
+Such changes must be explicit in task or issue scope, follow the applicable R2/R3 controls, and preserve the authority of `PRODUCT.md`, `DESIGN.md`, and the Launch Readiness design. Do not smuggle architectural redesign into an unrelated bug fix or cleanup.
 
 ---
 
@@ -350,5 +281,4 @@ Deterministic marketplace rules remain explicit domain logic.
 Sensitive state transitions are database-enforced and atomic where required.
 Private data remains private by default.
 Hosted/provider behavior must be verified when local evidence cannot prove it.
-Installed skills may reason about the architecture but do not override it.
 ```
