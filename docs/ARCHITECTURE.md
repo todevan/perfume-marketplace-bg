@@ -117,14 +117,17 @@ When code appears to violate an existing boundary, determine whether the code is
 email/password signup → email confirmation → onboarding/consent
   → listing draft/autosave → sanitized evidence → atomic activation
   → indexed search → structured offer → atomic acceptance/reservation
-  → private conversation/deal → two confirmations → completed deal → review
+  → private conversation/deal → seller completion OR either-party cancellation
+  → completed deal → review
 ```
 
 Material listing edits pause the listing and expire stale offers.
 
 Offer acceptance locks the physical listing(s), reserves them and creates the deal/conversation in one database transaction.
 
-Reviews are permitted only after both parties confirm completion.
+Reviews are permitted only after seller completion. Cancelled deals do not unlock reviews.
+
+The current mutual-confirmation implementation is a known product gap recorded in `docs/PROJECT-STATUS.md`; it is not the target architecture.
 
 Opening a dispute atomically marks the deal and creates its moderation case.
 

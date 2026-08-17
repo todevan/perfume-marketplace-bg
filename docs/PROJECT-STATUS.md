@@ -47,7 +47,7 @@ The branch began from synchronized `origin/main`; unrelated untracked local work
 ## Implemented repository behavior
 Current source and tests show:
 - public email/password registration requests email confirmation and routes to onboarding;
-- onboarding and authenticated route guards exist;
+- onboarding and authenticated route guards exist, but current onboarding accepts a blank city/location even though launch product truth requires it;
 - listing drafts, evidence uploads, publishing, discovery, structured offers, accepted-offer deals, private chat, cancellation, reviews, merchant applications, reports, moderation, and blocking have implementation surfaces;
 - the database/domain/UI still complete deals through confirmation by both participants, not seller-only completion;
 - a 10-active-listing quota and payment/entitlement scaffolding exist;
@@ -63,10 +63,10 @@ Repository history contains merged A9 operator source from PRs #12 and #19, but 
 
 ## Top launch blockers
 1. Replace the implemented mutual-confirmation deal flow with seller completion while preserving either-party cancellation and review safety.
-2. Implement and prove the paid 11th+ 30-day listing entitlement and paid promotion journeys with trusted server-side confirmation.
-3. Verify current staging deployment, Auth configuration, target identity, and the remaining A9 hosted evidence without inferring from merged code.
-4. Re-run adversarial cross-user, staff MFA, private-data, upload/evidence, chat, report, moderation, and paid-entitlement checks against the release candidate.
-5. Prove production operations: monitoring, secrets/configuration, backups, restore rehearsal, incident readiness, and staging/production isolation.
+2. Require a nonblank city/location across onboarding UI, server validation, database workflow, and negative regression coverage.
+3. Implement and prove the paid 11th+ 30-day listing entitlement and paid promotion journeys with trusted server-side confirmation.
+4. Verify current staging deployment, Auth configuration, target identity, and the remaining A9 hosted evidence without inferring from merged code.
+5. Re-run adversarial authorization/privacy checks and prove production monitoring, secrets, backups, restore, incident, and environment-isolation readiness.
 6. Obtain owner decisions for the payment provider, commercial terms, and exact launch prices after technical comparison.
 7. Verify the complete Bulgarian mobile golden path, legal/safety content, and honest loading/empty/error/success states.
 
@@ -75,7 +75,7 @@ Repository history contains merged A9 operator source from PRs #12 and #19, but 
 2. Execute the approved GitHub Safety + Launch Readiness Queue plan.
 3. Convert each evidence-backed launch blocker into a prioritized issue with dependencies and risk.
 4. Complete the seller-completion/cancellation product gap before claiming the core deal journey ready.
-5. Design and implement launch monetization only after provider and price decisions reach their protected owner gates.
+5. Close the required-location gap and design launch monetization before claiming the onboarding or commercial journeys ready.
 
 ## Not now
 - platform perfume checkout or escrow;

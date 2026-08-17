@@ -27,7 +27,7 @@ A gate is `PASS`, `BLOCKED`, or `NOT FRESHLY VERIFIED`. Never infer PASS from me
 - Private uploads and evidence boundaries are verified.
 - Deal, chat, report, and moderation ownership is verified.
 - Paid-entitlement authorization is verified.
-- No unresolved critical security finding remains.
+- No unresolved release-affecting security finding remains. A security finding blocks completion until disproved or fixed with regression coverage.
 
 ## Trust and moderation
 - Report flow works.

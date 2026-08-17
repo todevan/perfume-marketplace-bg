@@ -37,7 +37,7 @@ Aromatika offers paid time-limited visibility products such as:
 - Boost or bump;
 - Featured or promoted placement.
 
-Exact product names, prices, durations, placements, bundles, discounts, and launch availability are commercial settings requiring owner approval.
+Paid promotion is part of the approved launch model. Exact product names, prices, durations, placements, bundles, discounts, and commercial terms require owner approval.
 
 Promoted content must be clearly identified and must not purchase verification, evidence status, ratings, or other trust signals.
 

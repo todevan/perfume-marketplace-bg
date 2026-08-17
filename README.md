@@ -21,7 +21,7 @@ Current operational readiness is documented in `docs/PROJECT-STATUS.md`.
 - quarantine upload запис, реално MIME разпознаване, WebP/JPEG re-encode и премахване на EXIF;
 - in-app известия и идемпотентен Resend delivery ledger;
 - Cloudflare Worker конфигурация, автоматичен quality CI, ръчен staging deploy workflow и encrypted Storage backup;
-- защитен hosted baseline в Supabase проект `nuhkpqjjyuygiemrxbdp` (`eu-central-1`) с target guard преди всяка remote операция;
+- target-locked operator tooling е pinned към staging project ref `nuhkpqjjyuygiemrxbdp` в `eu-central-1`; текущото hosted състояние се доказва отделно в `docs/PROJECT-STATUS.md`;
 - billing/payment/entitlement scaffolding е fail-closed по подразбиране и не доказва, че launch monetization flow е готов.
 
 ## Runtime режими
@@ -68,16 +68,7 @@ Release gate-ът нарочно се проваля при чист checkout и
 
 ## Миграции
 
-`001` и `002` са запазени без промяна. Новите миграции са forward-only:
-
-1. `202607220003_beta_access_privacy.sql` — покани, beta membership, consent и public profile projection;
-2. `202607220004_workflow_invariants.sql` — атомарни listing/offer/deal transitions и lifecycle правила;
-3. `202607220005_uploads_evidence.sql` — quarantine/finalized upload records и cleanup;
-4. `202607220006_moderation_lifecycle.sql` — report-bound решения, suspension и audit;
-5. `202607220007_search_realtime_jobs.sql` — slugs, search RPC, Realtime, notifications, email ledger и scheduled jobs;
-6. `202607220008_first_admin_bootstrap.sql` — еднократен, service-role-only bootstrap за първия staging администратор;
-7. `202607260009_database_lint_hardening.sql` — forward-only корекции за PL/pgSQL ambiguity, fail-closed lint и запазени RPC ACL договори.
-8. `202607280010_hosted_runtime_correction.sql` — hosted ACL корекция, която отнема директния `anon` достъп до public profile проекцията.
+`001` и `002` са запазени без промяна. Всички следващи schema промени са forward-only. Каноничната и пълна migration верига е проследена директно в `supabase/migrations/`; README не дублира списък, който може да остарее.
 
 Каталогът се зарежда чрез една provenance-aware транзакция с `pnpm seed:catalog` локално или `pnpm seed:staging` след успешен hosted target guard. Провереният baseline съдържа 196 марки, 48 aliases и 335 editorial memberships. Точните редакционни колекции остават `80/80/80/80/15`.
 
