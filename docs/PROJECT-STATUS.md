@@ -20,10 +20,9 @@ Monetization:
 GitHub now provides the protected integration rail and a small evidence-backed queue. Queue creation does not prove that intended behavior is implemented or deployed.
 
 ## Local/GitHub sync state
-**Local ahead.**
+**Synchronized.**
 
 Verified operating state:
-- branch `codex/github-safety-launch-queue` contains the plan-owned workflow/status update pending protected PR integration;
 - GitHub `main` has an active repository ruleset requiring pull requests, current `app` and `database` CI checks, an up-to-date branch, and resolved review conversations;
 - the ruleset has no bypass actor or human-approval requirement and blocks force pushes and branch deletion;
 - Launch Readiness issues #22–#30 are the active synchronized engineering queue;
