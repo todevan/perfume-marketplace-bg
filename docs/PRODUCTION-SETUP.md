@@ -20,7 +20,7 @@ It is not legal, accounting or tax advice.
 
 It is also not independent authorization to mutate a hosted provider.
 
-Current GitHub issue scope, named gate scope, repository risk classification and Human Gates still apply.
+Current task or issue scope and the repository's R2/R3 controls still apply.
 
 In particular:
 
@@ -34,7 +34,7 @@ production runbook instruction
 authorization for production mutation
 ```
 
-Production/provider activation remains protected and must follow the repository's R3 and Human Gate rules.
+Production and provider activation remain protected R3 operations under `AGENTS.md` and `docs/agents/SECURITY.md`.
 
 ---
 
@@ -170,25 +170,25 @@ Before changing hosted state, establish:
 ```text
 correct target
 +
-current GitHub issue
+current task or GitHub issue
 +
-named gate/phase scope
+explicit environment and mutation scope
 +
 applicable risk authority
 +
-required Human Gate status
+required R3 owner decision or action
 ```
 
 For example, authorization for:
 
 ```text
-A9 only
+scoped hosted task only
 ```
 
 does not authorize:
 
-- an A8 provider mutation;
-- an A10 setup step;
+- a prerequisite provider mutation outside scope;
+- a later setup step;
 - unrelated Auth cleanup;
 - unrelated database migration;
 - production configuration;
@@ -353,12 +353,10 @@ Before any authorized production release, the intended production configuration 
 - regular-user public email/password registration follows the current approved product policy;
 - anonymous signup remains disabled;
 - staff/admin MFA remains enforced;
-- billing remains disabled until the paid-service gate explicitly passes;
-- listing fees remain disabled until authorized;
-- subscriptions remain disabled until authorized;
-- boosts remain disabled until authorized;
-- advertising remains disabled until authorized;
-- perfume-transaction payment processing remains disabled;
+- production billing remains fail-closed until the paid-service implementation and release gates pass;
+- paid additional-listing and promotion flags may activate only with verified server-side entitlements and approved commercial settings;
+- merchant subscriptions and advertising are outside the approved launch scope;
+- perfume-transaction payment processing is outside the platform model;
 - `PAYMENT_PROVIDER=disabled` until a separately authorized paid-platform-service activation;
 - trusted image processing is enabled only after its acceptance gate;
 - approved legal-content flags are true only after the actual published documents are approved;
@@ -582,11 +580,11 @@ pnpm db:staging:push:dry-run
 pnpm exec wrangler deploy --dry-run --env staging
 ```
 
-This is not a universal execution workflow and does not replace the current GitHub issue, Superpowers process or named gate plan.
+This is not a universal execution workflow and does not replace the current task or issue, Superpowers process, or applicable provider plan.
 
 Run the checks appropriate to the current task.
 
-Do not rerun or mutate completed gate evidence without cause.
+Do not rerun or mutate completed evidence without cause.
 
 ---
 
@@ -709,7 +707,7 @@ The scheduler must:
 - preserve idempotent/lease-safe overlapping execution;
 - expose failures for monitoring without logging private object paths.
 
-If retry semantics remain an unresolved product/operator decision in the current gate, do not invent them in this runbook; use the applicable Human Gate or approved gate plan.
+If retry semantics remain an unresolved product or operator decision, do not invent them in this runbook; use the current authority and protected decision boundary.
 
 ---
 
@@ -740,7 +738,7 @@ internal/synthetic
 → later authorized expansion
 ```
 
-These are rollout cohorts, not invite-only authentication requirements.
+These are rollout cohorts, not normal-user admission requirements.
 
 Stop or pause expansion for severe conditions such as:
 
@@ -773,7 +771,7 @@ Before production activation, the applicable repository gates must cover at leas
 
 Production operations are protected.
 
-An agent may prepare safe local/R1/R2 implementation work where repository policy allows, but must not cross the R3 production boundary without explicit owner authorization through the applicable Human Gate.
+Agents may prepare safe local, R1, and R2 implementation work where repository policy allows, but must not cross the R3 production boundary without the exact owner decision or action required by `AGENTS.md`.
 
 This includes, as applicable:
 
@@ -788,84 +786,6 @@ This includes, as applicable:
 
 ---
 
-# Agent and skill interaction
-
-This runbook defines operational constraints.
-
-It does not create another engineering workflow.
-
-Use:
-
-`docs/agents/SKILL-ROUTER.md`
-
-for skill routing.
-
-The relationship remains:
-
-```text
-repository / issue / gate authority
-        ↓
-Superpowers primary process
-        ↓
-Matt Pocock engineering-depth reasoning when useful
-        ↓
-ECC / platform specialist when useful
-        ↓
-repository-defined verification
-```
-
-For this runbook, ECC/platform expertise may be particularly useful for:
-
-- Supabase;
-- Cloudflare;
-- backend/security;
-- E2E/Playwright;
-- provider documentation;
-- release verification.
-
-Matt Pocock skills may help reason about architecture, failure states and implementation boundaries.
-
-Neither may:
-
-- bypass target locks;
-- change production authorization;
-- weaken security invariants;
-- replace the active gate plan;
-- establish a parallel deployment workflow.
-
-Do not run competing planning, debugging, TDD or completion loops.
-
----
-
-# Contradiction handling
-
-Operational documentation can become stale faster than architecture/business policy.
-
-If this file conflicts with:
-
-- current repository code;
-- executable release scripts;
-- `docs/PROJECT-STATUS.md`;
-- a newer approved gate plan;
-- a durable owner decision;
-
-do not silently choose whichever version makes execution easiest.
-
-Determine whether the discrepancy is:
-
-- stale documentation;
-- stale code;
-- incomplete migration;
-- temporary provider state;
-- an intentional gate-specific exception;
-- a real unresolved decision.
-
-Then update the appropriate durable authority through the normal issue/risk process.
-
-Never restore an obsolete product requirement merely because an old production checklist still mentions it.
-
----
-
 # Core production invariant
 
 ```text
@@ -876,9 +796,7 @@ Database history remains forward-only.
 Secrets remain outside source control.
 Staging evidence is tied to exact source and target.
 Rollback restores application runtime without destructively rewriting the database.
-Public email/password signup does not imply invite-only beta.
-Removed SMS requirements must not be resurrected by stale release receipts.
-Monetisation remains off until its business/legal/production gates pass.
+Public email/password signup does not require an invitation or SMS activation.
+Launch monetization remains fail-closed until its implementation, business, legal, security, and production gates pass.
 Production mutations remain protected R3 actions.
-Skills assist execution but never grant deployment authority.
 ```

@@ -1,5 +1,9 @@
 # Progress
 
+> **Historical artifact — not current authority.**
+>
+> This file records an earlier implementation state and may contain obsolete beta, invite, phone, transaction, monetization, or governance assumptions. Do not use it for current product, security, architecture, registration, release, or agent decisions. Use `AGENTS.md`, `docs/AROMATIKA-LAUNCH-READINESS-DESIGN.md`, `PRODUCT.md`, `DESIGN.md`, `docs/ARCHITECTURE.md`, and `docs/PROJECT-STATUS.md`.
+
 ## 2026-07-26 — GitHub Free staging bootstrap in progress
 
 - Replaced the deploy workflow with a `workflow_dispatch`-only, `main`-guarded

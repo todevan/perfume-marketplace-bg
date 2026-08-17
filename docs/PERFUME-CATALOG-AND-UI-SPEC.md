@@ -2,39 +2,13 @@
 
 Status: implementation baseline, originally established 20 July 2026 and reconciled with later owner-approved product decisions.
 
-## Role and authority
+## Visual and UX authority
 
-This document defines durable catalogue, listing, trust, interaction and UI behavior for the perfume marketplace.
+`DESIGN.md` is the sole authority for palette, typography, spacing, layout, component appearance, and responsive visual direction.
 
-It is a product/domain contract, not an execution workflow, release plan or source of current operational status.
+This document remains authoritative for catalogue semantics, listing behavior, trust/evidence states, interaction requirements, and accessibility acceptance specific to these domain flows.
 
-When implementing or reviewing this contract:
-
-- repository instructions and authoritative project documentation take precedence;
-- unresolved changes that would materially alter user-visible product behavior remain subject to the applicable Human Gate;
-- Superpowers remains the primary process authority;
-- Matt Pocock skills may be used for deeper domain-modeling, codebase-design, debugging or review reasoning when useful;
-- ECC/platform skills may be used for specialist security, backend, Supabase, E2E/Playwright or platform concerns when useful;
-- skills support implementation and reasoning but do not independently redefine the product contract.
-
-Do not introduce a second competing planning, debugging, TDD, execution or completion workflow from this document.
-
-## Visual system
-
-| Token               |     Value | Contract                                                            |
-| ------------------- | --------: | ------------------------------------------------------------------- |
-| `--brand-main`      | `#F3DFBF` | Warm highlights and selected surfaces; never the only state signal. |
-| `--brand-secondary` | `#F4ECE1` | Main background.                                                    |
-| `--brand-tertiary`  | `#D6CABA` | Muted panels and disabled tracks.                                   |
-| `--ink`             | `#241C16` | Primary text and icons.                                             |
-| `--action`          | `#4A3126` | Primary actions and selected control boundary.                      |
-| `--success`         | `#2F6B4F` | Confirmed/approved states.                                          |
-| `--warning`         | `#8A5B16` | Pending/caution states.                                             |
-| `--danger`          | `#8D2F36` | Errors, reports and destructive actions.                            |
-
-Use system Arial Bold Italic (`700 italic`) for headings, category labels and primary CTA text. Use Arial Regular for forms, descriptions, chat, reviews and any paragraph longer than one line. Body text is at least 16 px and interactive targets at least 44×44 px.
-
-The visual direction is a refined premium marketplace: generous editorial spacing in hero areas, dense and scannable product information in catalogue cards, warm paper texture, dark brown controls and strong user photography.
+If a visual rule here conflicts with `DESIGN.md`, follow `DESIGN.md` without changing the product/domain behavior defined here.
 
 ## Catalogue contract
 
@@ -99,8 +73,8 @@ Batch-code.com is an external manufacture-date/format reference. A valid result 
 - Merchant self-declaration and free manual verification are separate from paid plans. Merchant verification is a free trust status and is not sold.
 - An accepted structured offer only reserves a listing and starts or continues private chat; it does not create platform checkout or a binding perfume contract.
 - The underlying perfume transaction remains off-platform.
-- Payment, billing, listing-fee, subscription, boost, advertising and payment-provider scaffolding does not authorize those features for activation; they remain disabled until their applicable business, legal and production gates are satisfied.
-- Only independent confirmation by both participants completes a deal and unlocks one review per participant.
+- Payment, billing, listing-fee, promotion and payment-provider scaffolding does not authorize production activation. Launch behavior and protected commercial decisions follow `docs/BUSINESS-MODEL.md`, `docs/LAUNCH-GATES.md`, and the current risk model.
+- Accepted-offer chat leads to either seller completion or cancellation by either party with a required reason. Seller completion unlocks the applicable review flow. Cancelled deals do not unlock reviews.
 - General profile comments are visually separate and do not affect the transaction rating.
 - Chat is participant-only under RLS. A moderator receives scoped access only through an active report case; every access/action enters the audit log.
 
@@ -119,6 +93,6 @@ Legacy invite/bootstrap mechanisms may remain only where explicitly required for
 
 Changes to catalogue facts, listing semantics, trust states, registration requirements, deal completion, moderation access or user-visible marketplace behavior must not be inferred from a skill, implementation convenience or stale historical document.
 
-If an implementation task exposes a genuinely unresolved product choice, use the existing Human Gate process rather than silently changing this contract.
+If an implementation task exposes a genuinely unresolved product choice, obtain the applicable owner decision under the current repository risk model rather than silently changing this contract.
 
 Implementation details that preserve the behavior above may be decided through the normal autonomous execution process and repository verification requirements.

@@ -24,10 +24,9 @@ Before any hosted mutation, also apply:
 - `docs/STAGING-CREDENTIALS.md`;
 - the current GitHub issue;
 - the applicable release/recovery plan;
-- `docs/agents/AUTONOMY.md`;
-- `docs/agents/HUMAN-GATES.md`.
+- `docs/agents/SECURITY.md`.
 
-A production restore is a protected recovery operation and must follow the applicable R3/Human Gate authority.
+A production restore is a protected R3 recovery operation and requires the exact target, current backup and recovery evidence, rollback limitations, and owner action defined by current authority.
 
 ---
 
@@ -446,55 +445,6 @@ Preserve the failure evidence needed for diagnosis.
 
 ---
 
-# Agent and skill interaction
-
-This runbook defines backup/restore constraints.
-
-It does not create another planning, debugging, TDD or completion workflow.
-
-Skill routing remains defined by:
-
-`docs/agents/SKILL-ROUTER.md`
-
-The normal relationship is:
-
-```text
-repository / issue / recovery authority
-        ↓
-Superpowers primary process
-        ↓
-Matt Pocock engineering reasoning when useful
-        ↓
-ECC / platform specialist when useful
-        ↓
-repository-defined verification
-```
-
-Matt Pocock skills may help reason about:
-
-- failure states;
-- data invariants;
-- recovery boundaries;
-- implementation design.
-
-ECC/platform specialists may help with:
-
-- Supabase;
-- Storage;
-- backend/security;
-- cryptographic/tooling review;
-- provider-specific recovery behavior.
-
-Neither system may:
-
-- authorize production restore;
-- weaken integrity checks;
-- permit overwrite to bypass a failed rehearsal;
-- bypass target verification;
-- create a parallel recovery lifecycle.
-
----
-
 # Core backup/restore invariant
 
 ```text
@@ -506,5 +456,4 @@ Routine rehearsals never use production.
 Existing destination objects are a stop condition, not overwrite permission.
 A restore is not proven until database and Storage agree.
 Production restore remains a protected R3 action.
-Skills may assist recovery work but do not grant recovery authority.
 ```

@@ -13,7 +13,7 @@ This document defines:
 - guarded staging commands;
 - safe staging configuration invariants.
 
-It does not define the current Gate 3 execution step or authorize a hosted mutation by itself.
+It does not define the current execution step or authorize a hosted mutation by itself.
 
 Before changing hosted state, also consult:
 
@@ -21,10 +21,9 @@ Before changing hosted state, also consult:
 - `docs/PROJECT-STATUS.md`;
 - the current GitHub issue;
 - the applicable reconciliation/release plan;
-- `docs/agents/AUTONOMY.md`;
-- `docs/agents/HUMAN-GATES.md`.
+- `docs/agents/SECURITY.md`.
 
-A correct credential and a correct provider target are necessary but do not expand named-gate scope.
+A correct credential and a correct provider target are necessary but do not expand the active task or issue scope.
 
 For example:
 
@@ -33,7 +32,7 @@ valid staging credentials
 +
 correct Frankfurt target
 +
-A9 only
+scoped hosted task only
 ```
 
 still means only A9-authorized mutations may be performed.
@@ -64,7 +63,7 @@ Use the provider's protected secret store or the explicitly approved trusted loc
 
 # Current operational state
 
-Do not use historical checkpoint tables in this document as the source of current Gate 3 state.
+Do not use historical checkpoint tables in this document as the source of current staging state.
 
 Current operational state lives in:
 
@@ -78,7 +77,7 @@ This document intentionally avoids hard-coding volatile claims such as:
 - current Worker deployment ID;
 - current known-good rollback version;
 - current provider activation state;
-- active Gate 3 sub-step.
+- active task or issue.
 
 Verify those against the current repository/provider evidence required by the active gate.
 
@@ -541,7 +540,7 @@ https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/c
 https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev/auth/confirm
 ```
 
-Custom SMTP, CAPTCHA/Turnstile and other provider state must follow the active Gate 3 plan rather than old infrastructure-baseline assumptions.
+Custom SMTP, CAPTCHA or Turnstile, and other provider state must follow the active task and current launch authority rather than old infrastructure-baseline assumptions.
 
 Do not state that SMTP or CAPTCHA must remain unconfigured merely because an earlier bootstrap checkpoint deferred them.
 
@@ -563,7 +562,7 @@ against hosted staging when local configuration contains localhost/test-only val
 
 Make only the exact hosted Auth mutation authorized by the current gate.
 
-If signup state is a prerequisite owned by another gate or owner action, do not change it under an `A9 only` instruction merely because the desired final product configuration is known.
+If signup state is a prerequisite owned by another task or protected owner action, do not change it under a narrower instruction merely because the desired final product configuration is known.
 
 Product policy and current mutation authority are separate questions.
 
@@ -710,7 +709,7 @@ Verify notification provider behavior through the gate/test contract that curren
 
 Scheduler behavior must follow the currently approved operator/release contract.
 
-Do not invent retry semantics if a current Human Gate or later decision governs them.
+Do not invent retry semantics if a protected R3 decision or later approved design governs them.
 
 Never put cleanup secrets in URLs.
 
@@ -839,7 +838,7 @@ synthetic/internal actors
 
 This is a go-to-market/operational ramp.
 
-It is not invite-only authentication.
+It is not a normal-user admission requirement.
 
 Pause expansion for material failures such as:
 
@@ -868,7 +867,7 @@ Do not:
 
 under ordinary staging credentials/setup work.
 
-Production mutations require the applicable repository R3 and Human Gate authorization.
+Production mutations require the exact R3 owner decision or action defined by current repository authority.
 
 ---
 
@@ -903,55 +902,6 @@ Use Git/GitHub/Cloudflare/Supabase evidence when historical receipt details are 
 
 ---
 
-# Agent and skill interaction
-
-This document provides staging credential/configuration constraints.
-
-It does not create another planning, debugging, TDD, deployment or completion workflow.
-
-Use:
-
-`docs/agents/SKILL-ROUTER.md`
-
-for skill routing.
-
-The relationship remains:
-
-```text
-repository / issue / gate authority
-        ↓
-Superpowers primary process
-        ↓
-Matt Pocock engineering-depth reasoning when useful
-        ↓
-ECC / platform specialist when useful
-        ↓
-repository-defined verification
-```
-
-ECC/platform specialists may be especially useful for:
-
-- Supabase;
-- Cloudflare;
-- GitHub;
-- Resend;
-- Turnstile;
-- E2E/provider verification;
-- security.
-
-Their expertise does not authorize additional provider mutations.
-
-No skill may:
-
-- bypass target locks;
-- expose secrets;
-- broaden a named gate;
-- weaken MFA/RLS;
-- switch to production;
-- create a competing deployment process.
-
----
-
 # Core staging credential invariant
 
 ```text
@@ -962,6 +912,6 @@ Use target-locked hosted commands.
 Do not turn historical checkpoints into current expected state.
 Do not resurrect removed SMS/invite requirements.
 Do not weaken MFA, RLS or fail-closed behavior for testing.
-Correct credentials do not broaden named-gate authority.
+Correct credentials do not broaden task or issue authority.
 Production remains protected.
 ```

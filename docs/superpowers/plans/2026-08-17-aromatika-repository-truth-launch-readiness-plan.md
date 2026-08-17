@@ -851,7 +851,7 @@ Do not otherwise redesign the evidence system.
 - [ ] **Step 4: Verify obsolete tokens/rules are gone**
 
 ```powershell
-rg -n "Arial|#F3DFBF|#4A3126|--brand-main|--brand-secondary|both confirm|mutually confirm|mutual confirmation" docs/PERFUME-CATALOG-AND-UI-SPEC.md
+rg -n "Arial|#F3DFBF|#4A3126|--brand-main|--brand-secondary|both confirm|mutually confirm|mutual confirmation|two confirmations|both parties.*confirm" docs/PERFUME-CATALOG-AND-UI-SPEC.md
 ```
 
 Expected: no stale authority/transaction rule.
@@ -1047,7 +1047,7 @@ Expected: no active-authority contradictions.
 - [ ] **Step 2: Find obsolete mutual-confirmation rules outside history**
 
 ```powershell
-rg -n -i "both confirm|mutually confirm|mutual confirmation|dual confirmation" `
+rg -n -i "both confirm|mutually confirm|mutual confirmation|dual confirmation|two confirmations|both parties.*confirm" `
   --glob '*.md' `
   --glob '!docs/superpowers/plans/**' `
   --glob '!docs/superpowers/specs/**' `
@@ -1085,7 +1085,7 @@ Expected: no active visual-authority conflict.
 - [ ] **Step 5: Verify master/status roles**
 
 ```powershell
-rg -n "no longer the strategic master authority|AROMATIKA-LAUNCH-READINESS-DESIGN" MASTER-PLAN.md
+rg -n "no longer the strategic master authority|AROMATIKA-LAUNCH-READINESS-DESIGN" docs/MASTER-PLAN.md
 if ((rg -c '^# Project Status$' docs/PROJECT-STATUS.md) -ne 1) { throw "Invalid project status snapshot count" }
 ```
 
