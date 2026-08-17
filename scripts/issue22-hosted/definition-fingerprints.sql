@@ -83,7 +83,7 @@ relation_rows as (
     ) as definition
   from pg_catalog.pg_class c
   join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-  where n.nspname in ('public', 'private')
+  where (n.nspname in ('public', 'private') or (n.nspname = 'storage' and c.relname = 'objects'))
     and c.relkind in ('r', 'p', 'v', 'm', 'f', 'S')
 ),
 type_rows as (
@@ -163,11 +163,7 @@ policy_rows as (
     ) as definition
   from pg_catalog.pg_policies p
   where p.schemaname in ('public', 'private')
-     or (
-       p.schemaname = 'storage'
-       and p.tablename = 'objects'
-       and p.policyname like 'marketplace\_%' escape '\'
-     )
+     or (p.schemaname = 'storage' and p.tablename = 'objects')
 ),
 trigger_rows as (
   select
@@ -225,8 +221,9 @@ fingerprint_payloads as (
   select
     jsonb_build_object(
       'schemas', coalesce((select jsonb_agg(definition order by sort_key) from schema_rows), '[]'::jsonb),
-      'relations', coalesce((select jsonb_agg(definition order by sort_key) from relation_rows), '[]'::jsonb)
+      'relations', coalesce((select jsonb_agg(definition order by sort_key) from relation_rows where definition ->> 'schema' in ('public', 'private')), '[]'::jsonb)
     ) as relations,
+	coalesce((select jsonb_agg(definition order by sort_key) from relation_rows where definition ->> 'schema' = 'storage'), '[]'::jsonb) as storage_authorization,
     coalesce((select jsonb_agg(definition order by sort_key) from type_rows), '[]'::jsonb) as types,
     coalesce((select jsonb_agg(definition order by sort_key) from function_rows), '[]'::jsonb) as functions,
     coalesce((select jsonb_agg(definition order by sort_key) from policy_rows), '[]'::jsonb) as policies,
@@ -234,37 +231,45 @@ fingerprint_payloads as (
     jsonb_build_object(
       'brands', coalesce((
         select jsonb_agg(jsonb_build_object(
-          'registry_id', row.provenance ->> 'registryId',
+		  'registry_id', coalesce(row.provenance #>> '{editorialRegistry,registryId}', row.provenance ->> 'registryId'),
           'canonical_name', row.canonical_name::text,
           'slug', row.slug,
           'status', row.status,
           'normalized_key', row.normalized_key,
           'submitted_display_name', row.submitted_display_name,
-          'parent_registry_id', parent.provenance ->> 'registryId',
+		  'parent_registry_id', coalesce(parent.provenance #>> '{editorialRegistry,registryId}', parent.provenance ->> 'registryId'),
+		  'suggested_registry_id', coalesce(suggested.provenance #>> '{editorialRegistry,registryId}', suggested.provenance ->> 'registryId'),
+		  'merged_into_registry_id', coalesce(merged.provenance #>> '{editorialRegistry,registryId}', merged.provenance ->> 'registryId'),
+		  'created_by_username', creator.username,
+		  'canonicalized_by_username', canonicalizer.username,
           'stable_provenance', (row.provenance #- '{editorialRegistry,lastSyncRunId}') #- '{editorialRegistry,syncedAt}'
         ) order by row.normalized_key)
-        from public.brands row
-        left join public.brands parent on parent.id = row.parent_brand_id
+		from public.brands row
+		left join public.brands parent on parent.id = row.parent_brand_id
+		left join public.brands suggested on suggested.id = row.suggested_brand_id
+		left join public.brands merged on merged.id = row.merged_into_brand_id
+		left join public.profiles creator on creator.id = row.created_by
+		left join public.profiles canonicalizer on canonicalizer.id = row.canonicalized_by
       ), '[]'::jsonb),
       'aliases', coalesce((
         select jsonb_agg(jsonb_build_object(
-          'registry_id', brand.provenance ->> 'registryId',
+		  'registry_id', coalesce(brand.provenance #>> '{editorialRegistry,registryId}', brand.provenance ->> 'registryId'),
           'kind', row.kind,
           'alias', row.alias::text,
           'normalized_alias', row.normalized_alias,
           'stable_provenance', (row.provenance - 'lastSyncRunId') - 'syncedAt'
-        ) order by row.normalized_alias, brand.provenance ->> 'registryId')
+		) order by row.normalized_alias, coalesce(brand.provenance #>> '{editorialRegistry,registryId}', brand.provenance ->> 'registryId'))
         from public.brand_aliases row
         join public.brands brand on brand.id = row.brand_id
       ), '[]'::jsonb),
       'memberships', coalesce((
         select jsonb_agg(jsonb_build_object(
-          'registry_id', brand.provenance ->> 'registryId',
+		  'registry_id', coalesce(brand.provenance #>> '{editorialRegistry,registryId}', brand.provenance ->> 'registryId'),
           'collection', row.collection,
           'display_order', row.display_order,
           'reviewed_at', row.reviewed_at,
           'stable_provenance', (row.provenance - 'lastSyncRunId') - 'syncedAt'
-        ) order by row.collection::text, row.display_order, brand.provenance ->> 'registryId')
+		) order by row.collection::text, row.display_order, coalesce(brand.provenance #>> '{editorialRegistry,registryId}', brand.provenance ->> 'registryId'))
         from public.brand_collection_memberships row
         join public.brands brand on brand.id = row.brand_id
       ), '[]'::jsonb),
@@ -276,12 +281,33 @@ fingerprint_payloads as (
           'effective_at', row.effective_at,
           'retired_at', row.retired_at
         ) order by row.document_code, row.document_version)
-        from public.beta_legal_documents row
-      ), '[]'::jsonb)
+		from public.beta_legal_documents row
+	  ), '[]'::jsonb),
+	  'sync_runs', coalesce((
+		select jsonb_agg(definition order by definition::text)
+		from (
+		  select distinct jsonb_build_object(
+			'catalog_id', row.catalog_id,
+			'schema_version', row.schema_version,
+			'source_catalog_version', row.source_catalog_version,
+			'payload_sha256', row.payload_sha256,
+			'payload', row.payload,
+			'actor_role', row.actor_role,
+			'actor_username', actor.username,
+			'actor_present', row.actor_id is not null,
+			'brand_count', row.brand_count,
+			'alias_count', row.alias_count,
+			'membership_count', row.membership_count
+		  ) as definition
+		  from public.catalog_sync_runs row
+		  left join public.profiles actor on actor.id = row.actor_id
+		) stable_runs
+	  ), '[]'::jsonb)
     ) as catalog
 )
 select
   encode(extensions.digest(convert_to(relations::text, 'UTF8'), 'sha256'), 'hex') as relations_sha256,
+	encode(extensions.digest(convert_to(storage_authorization::text, 'UTF8'), 'sha256'), 'hex') as storage_authorization_sha256,
   encode(extensions.digest(convert_to(types::text, 'UTF8'), 'sha256'), 'hex') as types_sha256,
   encode(extensions.digest(convert_to(functions::text, 'UTF8'), 'sha256'), 'hex') as functions_sha256,
   encode(extensions.digest(convert_to(policies::text, 'UTF8'), 'sha256'), 'hex') as policies_sha256,

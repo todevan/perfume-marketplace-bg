@@ -18,7 +18,7 @@ const packageRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(packageRoot, '..', '..');
 const privateRoot = resolve(packageRoot, 'private');
 const runtimeRoot = resolve(privateRoot, 'migration-runtime');
-const baselineAdoptionReceiptPath = resolve(repoRoot, '.superpowers', 'issue22-hosted-new-target', 'baseline-adoption-receipt.json');
+const baselineAdoptionReceiptPath = resolve(repoRoot, '.superpowers', 'issue22-hosted-new-target', 'baseline-establishment-receipt.json');
 const manifest = JSON.parse(readFileSync(join(packageRoot, 'operator-manifest.json'), 'utf8'));
 const expectedVersions = manifest.migrations.map(({ file }) => file.split('_', 1)[0]);
 const candidateSha = process.env.ISSUE22_CANDIDATE_SHA?.trim();
@@ -171,6 +171,7 @@ async function inventory() {
 		const fingerprint = fingerprintRows[0];
 		definitionFingerprints = {
 			relationsSha256: fingerprint.relations_sha256,
+			storageAuthorizationSha256: fingerprint.storage_authorization_sha256,
 			typesSha256: fingerprint.types_sha256,
 			functionsSha256: fingerprint.functions_sha256,
 			policiesSha256: fingerprint.policies_sha256,

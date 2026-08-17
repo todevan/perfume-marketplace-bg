@@ -11,20 +11,28 @@ import {
 	assertAuthConfiguration,
 	assertCatalogCounts,
 	assertCurrentCleanupReceipt,
+	assertExactWorkerConfig,
 	assertFinalStorageState,
 	assertRecoveryAttribution,
+	assertRecoveryEnvelope,
 	assertRunOwnedActor,
 	assertSafeDisabledAuth,
 	classifyExactWorkerProbe,
 	clearAuthSafely,
+	buildIssue22ChildEnv,
 	cleanupExactWorkerSecrets,
+	deriveRecoverySealKey,
 	fileReceipt,
 	finalizeRecoveryArtifacts,
 	fixedWorkerSecretCommands,
 	resolveWidgetForCleanup,
+	resolveSavedWidgetForCleanup,
 	recoverCatalogForCleanup,
+	reconcileAuthenticatedRecoveryArtifacts,
+	runHostedExecutionWithRequiredCleanup,
 	runPriorityCleanup,
 	selectBaselineCleanupReceipt,
+	sealRecoveryState,
 	TARGET
 } from './operator-lib.mjs';
 
@@ -36,7 +44,7 @@ const ledgerPath = join(privateRoot, 'run-ledger.ndjson');
 const generatedConfig = join(privateRoot, 'wrangler.issue22.generated.json');
 const playwrightOutput = join(privateRoot, 'playwright-output');
 const cleanupReceiptPath = join(repo, '.superpowers', 'issue22-hosted-new-target', 'cleanup-receipt.json');
-const baselineAdoptionReceiptPath = join(repo, '.superpowers', 'issue22-hosted-new-target', 'baseline-adoption-receipt.json');
+const baselineAdoptionReceiptPath = join(repo, '.superpowers', 'issue22-hosted-new-target', 'baseline-establishment-receipt.json');
 const baseConfig = join(root, 'wrangler.issue22.jsonc');
 const rollbackConfig = join(root, 'wrangler.issue22.rollback.jsonc');
 const operatorManifest = JSON.parse(readFileSync(join(root, 'operator-manifest.json'), 'utf8'));
@@ -53,6 +61,8 @@ const MAX_SYNTHETIC_WORKER_CPU_MS = OPERATOR_CAPACITY_BUDGET.totalCpuMs;
 let ethereal = null;
 let serverKey = null;
 let completed = false;
+let authenticatedLedgerContent = null;
+let authenticatedGeneratedConfigContent = null;
 
 function stop(message) { throw new Error(`HOSTED STOP: ${message}`); }
 
@@ -80,10 +90,7 @@ function assertLiveCapacityNow() {
 }
 
 function childEnv(extra = {}) {
-	const keys = ['PATH', 'PATHEXT', 'SYSTEMROOT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOME', 'COMSPEC'];
-	const environment = { NO_COLOR: '1' };
-	for (const key of keys) if (process.env[key]) environment[key] = process.env[key];
-	return { ...environment, ...extra };
+	return buildIssue22ChildEnv(process.env, extra);
 }
 
 function run(command, args, { capture = false, input, env = {} } = {}) {
@@ -145,17 +152,71 @@ function readRecovery() {
 	return existsSync(recoveryPath) ? JSON.parse(readFileSync(recoveryPath, 'utf8')) : null;
 }
 
+function sha256Text(value) {
+	return typeof value === 'string' ? createHash('sha256').update(value).digest('hex') : null;
+}
+
+function recoveryArtifacts(recovery = readRecovery()) {
+	return {
+		recoverySha256: existsSync(recoveryPath) ? fileReceipt(recoveryPath).sha256 : undefined,
+		ledgerSha256: existsSync(ledgerPath) ? fileReceipt(ledgerPath).sha256 : sha256Text(recovery?.retainedLedger),
+		generatedConfigSha256: existsSync(generatedConfig) ? fileReceipt(generatedConfig).sha256 : sha256Text(recovery?.retainedGeneratedConfig),
+		authenticationKey: accessToken
+	};
+}
+
 function writeRecovery(value) {
 	mkdirSync(privateRoot, { recursive: true });
+	const artifacts = recoveryArtifacts(value);
+	const core = {
+		...value,
+		ledgerSha256: artifacts.ledgerSha256 ?? null,
+		generatedConfigSha256: artifacts.generatedConfigSha256 ?? null,
+		retainedLedgerSha256: sha256Text(value.retainedLedger),
+		retainedGeneratedConfigSha256: sha256Text(value.retainedGeneratedConfig)
+	};
+	const sealed = sealRecoveryState(core, accessToken);
 	const temporary = `${recoveryPath}.tmp`;
-	writeFileSync(temporary, JSON.stringify(value, null, 2));
+	writeFileSync(temporary, JSON.stringify(sealed, null, 2));
 	renameSync(temporary, recoveryPath);
 }
 
 function updateRecovery(patch) {
 	const current = readRecovery();
 	if (!current) stop('recovery state is missing');
-	writeRecovery({ ...current, ...patch, updatedAt: new Date().toISOString() });
+	const attribution = assertRecoveryAttribution(current, candidateSha, recoveryArtifacts(current));
+	const now = new Date().toISOString();
+	const base = current.candidateSha === candidateSha ? current : {
+		recoveryVersion: 2,
+		candidateSha,
+		projectRef: TARGET.projectRef,
+		cloudflareAccountId: TARGET.cloudflareAccountId,
+		workerName: TARGET.workerName,
+		runId: current.runId,
+		widgetIntent: current.widgetIntent ?? { name: `aromatika-issue22-${current.runId.slice(0, 12)}`, domain: TARGET.workerHostname },
+		widgetSitekey: current.widgetSitekey ?? null,
+		createdAt: /^\d{4}-/u.test(current.createdAt ?? '') ? current.createdAt : now,
+		updatedAt: now,
+		authQuiescedAt: current.authQuiescedAt ?? null,
+		baselineEstablishmentMode: null,
+		adoptedPredecessorSha: attribution.predecessorSha,
+		adoptedRecoverySha256: attribution.recoverySha256,
+		adoptedGeneratedConfigSha256: attribution.generatedConfigSha256,
+		sealedFinalState: false,
+		predecessorEvidenceMac: null,
+		cleanupFinalStateProvenAt: null,
+		ledgerSha256: null,
+		generatedConfigSha256: attribution.generatedConfigSha256,
+		retainedLedger: null,
+		retainedGeneratedConfig: existsSync(generatedConfig) ? readFileSync(generatedConfig, 'utf8') : null,
+		retainedLedgerSha256: null,
+		retainedGeneratedConfigSha256: attribution.generatedConfigSha256
+	};
+	writeRecovery({ ...base, ...patch, updatedAt: now });
+}
+
+function readExactWorkerConfig(path, options = {}) {
+	return assertExactWorkerConfig(JSON.parse(readFileSync(path, 'utf8')), options);
 }
 
 function authenticated(domain, core) {
@@ -167,6 +228,13 @@ function writeJsonAtomic(path, value) {
 	mkdirSync(dirname(path), { recursive: true });
 	const temporary = `${path}.tmp`;
 	writeFileSync(temporary, JSON.stringify(value, null, 2));
+	renameSync(temporary, path);
+}
+
+function writeTextAtomic(path, value) {
+	mkdirSync(dirname(path), { recursive: true });
+	const temporary = `${path}.tmp`;
+	writeFileSync(temporary, value);
 	renameSync(temporary, path);
 }
 
@@ -190,23 +258,41 @@ function beginRecovery() {
 		domain: TARGET.workerHostname
 	};
 	writeRecovery({
-		version: 1,
+		recoveryVersion: 2,
 		candidateSha,
 		projectRef: TARGET.projectRef,
 		cloudflareAccountId: TARGET.cloudflareAccountId,
 		workerName: TARGET.workerName,
 		runId,
 		widgetIntent,
-		createdAt: new Date().toISOString()
+		widgetSitekey: null,
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+		authQuiescedAt: null,
+		baselineEstablishmentMode: existsSync(baselineAdoptionReceiptPath) ? 'migrated-reuse' : 'pristine-migration',
+		adoptedPredecessorSha: null,
+		adoptedRecoverySha256: null,
+		adoptedGeneratedConfigSha256: null,
+		sealedFinalState: false,
+		predecessorEvidenceMac: null,
+		cleanupFinalStateProvenAt: null,
+		ledgerSha256: null,
+		generatedConfigSha256: null,
+		retainedLedger: null,
+		retainedGeneratedConfig: null,
+		retainedLedgerSha256: null,
+		retainedGeneratedConfigSha256: null
 	});
 	return widgetIntent;
 }
 
 function listWidgets() {
+	readExactWorkerConfig(baseConfig, { requireProjectBindings: true });
 	return JSON.parse(run('pnpm', ['exec', 'wrangler', 'turnstile', 'widget', 'list', '--json', '--config', baseConfig], { capture: true }));
 }
 
 function createWidget(intent) {
+	readExactWorkerConfig(baseConfig, { requireProjectBindings: true });
 	const output = run('pnpm', [
 		'exec', 'wrangler', 'turnstile', 'widget', 'create', intent.name,
 		'--domain', intent.domain,
@@ -250,6 +336,7 @@ async function quiesceAuthBoundary() {
 }
 
 async function attestOpenProvider(widget, expectedAuthConfig) {
+	readExactWorkerConfig(baseConfig, { requireProjectBindings: true });
 	const [auth, settings] = await Promise.all([
 		api(`/v1/projects/${TARGET.projectRef}/config/auth`),
 		publicSettings()
@@ -267,10 +354,10 @@ async function attestOpenProvider(widget, expectedAuthConfig) {
 }
 
 async function cleanupUsers() {
-	if (!existsSync(ledgerPath)) return;
+	if (authenticatedLedgerContent === null) return;
 	if (!serverKey) serverKey = await fetchServerKey();
 	const admin = createClient(supabaseUrl, serverKey, { auth: { persistSession: false, autoRefreshToken: false } });
-	const events = readFileSync(ledgerPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse);
+	const events = authenticatedLedgerContent.trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse);
 	const intents = events.filter((event) => event.event === 'create_intent');
 	const bound = events.filter((event) => event.event === 'actor_bound');
 	const migrationCount = (await api(`/v1/projects/${TARGET.projectRef}/database/migrations`)).length;
@@ -338,6 +425,7 @@ async function disableAuth() {
 }
 
 function deployRollbackArtifact() {
+	readExactWorkerConfig(rollbackConfig);
 	run('pnpm', ['exec', 'wrangler', 'deploy', '--config', rollbackConfig, '--var', `ROLLBACK_SOURCE_GIT_SHA:${candidateSha}`]);
 }
 
@@ -351,8 +439,8 @@ function deployRollback() {
 }
 
 async function cleanupSecrets() {
-	const config = existsSync(generatedConfig) ? generatedConfig : baseConfig;
-	const commands = fixedWorkerSecretCommands(config);
+	readExactWorkerConfig(baseConfig, { requireProjectBindings: true });
+	const commands = fixedWorkerSecretCommands(baseConfig);
 	await cleanupExactWorkerSecrets({
 		probe: exactWorkerState,
 		list: async () => JSON.parse(run('pnpm', commands.list, { capture: true })),
@@ -364,8 +452,7 @@ function cleanupWidget() {
 	const recovery = readRecovery();
 	if (!recovery?.widgetIntent) return;
 	const widgets = listWidgets();
-	const bySitekey = recovery.widgetSitekey ? widgets.find((item) => item.sitekey === recovery.widgetSitekey) : null;
-	const widget = bySitekey ?? resolveWidgetForCleanup(recovery.widgetIntent, widgets);
+	const widget = resolveSavedWidgetForCleanup(recovery.widgetIntent, recovery.widgetSitekey, widgets);
 	if (widget) run('pnpm', ['exec', 'wrangler', 'turnstile', 'widget', 'delete', widget.sitekey, '--skip-confirmation', '--json', '--config', baseConfig], { capture: true });
 	if (resolveWidgetForCleanup(recovery.widgetIntent, listWidgets())) stop('Turnstile widget remains after cleanup');
 }
@@ -382,6 +469,9 @@ async function attestFinalState() {
 	]);
 	assertSafeDisabledAuth(auth, settings);
 	if (rows[0].auth_users !== 0) stop('final Auth user inventory is not empty');
+	let catalog = { brands: 0, aliases: 0, memberships: 0 };
+	let applicationRows = 0;
+	let definitionFingerprints = null;
 	if (migrations.length === 0) {
 		if (rows[0].buckets.length !== 0 || rows[0].objects !== 0) stop('unmigrated target Storage inventory is not empty');
 	} else {
@@ -395,21 +485,24 @@ async function attestFinalState() {
 			body: JSON.stringify({ query: 'select (select count(*) from public.profiles)::int profiles,(select count(*) from public.beta_memberships)::int memberships,(select count(*) from public.beta_consent_events)::int consents,(select count(*) from public.brands)::int brands,(select count(*) from public.brand_aliases)::int aliases,(select count(*) from public.brand_collection_memberships)::int catalog_memberships' })
 		});
 		if (application[0].profiles !== 0 || application[0].memberships !== 0 || application[0].consents !== 0) stop('final run-owned application rows remain');
-		assertCatalogCounts({ brands: application[0].brands, aliases: application[0].aliases, memberships: application[0].catalog_memberships });
+		applicationRows = application[0].profiles + application[0].memberships + application[0].consents;
+		catalog = { brands: application[0].brands, aliases: application[0].aliases, memberships: application[0].catalog_memberships };
+		assertCatalogCounts(catalog);
 		const fingerprintRows = await api(`/v1/projects/${TARGET.projectRef}/database/query/read-only`, {
 			method: 'POST',
 			body: JSON.stringify({ query: readFileSync(join(root, 'definition-fingerprints.sql'), 'utf8') })
 		});
 		const fingerprint = fingerprintRows[0];
-		const actualFingerprints = {
+		definitionFingerprints = {
 			relationsSha256: fingerprint.relations_sha256,
+			storageAuthorizationSha256: fingerprint.storage_authorization_sha256,
 			typesSha256: fingerprint.types_sha256,
 			functionsSha256: fingerprint.functions_sha256,
 			policiesSha256: fingerprint.policies_sha256,
 			triggersSha256: fingerprint.triggers_sha256,
 			catalogSha256: fingerprint.catalog_sha256
 		};
-		if (JSON.stringify(actualFingerprints) !== JSON.stringify(operatorManifest.migrated_inventory.definition_fingerprints)) {
+		if (JSON.stringify(definitionFingerprints) !== JSON.stringify(operatorManifest.migrated_inventory.definition_fingerprints)) {
 			stop('final database definition/content fingerprint mismatch');
 		}
 		const applicationTableCounts = fingerprint.application_table_counts.map((entry) => ({ table: entry.table, rows: Number(entry.rows) }));
@@ -418,21 +511,38 @@ async function attestFinalState() {
 			applicationTableCounts.some((entry) => entry.rows !== 0)
 		) stop('final application-table inventory differs or contains rows');
 	}
+	let workerSecrets = 0;
 	if (await exactWorkerState() === 'present') {
-		const commands = fixedWorkerSecretCommands(existsSync(generatedConfig) ? generatedConfig : baseConfig);
-		if (JSON.parse(run('pnpm', commands.list, { capture: true })).length !== 0) stop('Worker secret list is not empty');
+		readExactWorkerConfig(baseConfig, { requireProjectBindings: true });
+		const commands = fixedWorkerSecretCommands(baseConfig);
+		workerSecrets = JSON.parse(run('pnpm', commands.list, { capture: true })).length;
+		if (workerSecrets !== 0) stop('Worker secret list is not empty');
 	}
 	const recovery = readRecovery();
 	if (recovery?.widgetIntent && resolveWidgetForCleanup(recovery.widgetIntent, listWidgets())) stop('Turnstile widget remains after final cleanup');
+	return {
+		baselineMode: migrations.length === 0 ? 'pristine' : 'migrated',
+		migrationCount: migrations.length,
+		storageBuckets: rows[0].buckets.length,
+		storageObjects: rows[0].objects,
+		catalog,
+		authUsers: rows[0].auth_users,
+		applicationRows,
+		workerSecrets,
+		widgetAbsent: true,
+		authDisabled: true,
+		definitionFingerprints
+	};
 }
 
-async function deleteRecovery(attribution) {
+async function deleteRecovery(attribution, observedFinalState) {
+	if (!observedFinalState) stop('observed final state is unavailable for cleanup receipt');
 	const recovery = readRecovery();
 	if (!recovery) stop('recovery state disappeared before local cleanup');
-	const retainedLedger = existsSync(ledgerPath) ? readFileSync(ledgerPath, 'utf8') : recovery.retainedLedger ?? null;
-	const retainedGeneratedConfig = existsSync(generatedConfig) ? readFileSync(generatedConfig, 'utf8') : recovery.retainedGeneratedConfig ?? null;
-	const ledgerHash = retainedLedger ? createHash('sha256').update(retainedLedger).digest('hex') : null;
-	if (attribution.adopted && ledgerHash !== null) stop('adopted predecessor ledger is unexpectedly nonempty');
+	const retainedLedger = authenticatedLedgerContent;
+	const retainedGeneratedConfig = authenticatedGeneratedConfigContent;
+	const ledgerSha256 = retainedLedger ? createHash('sha256').update(retainedLedger).digest('hex') : null;
+	if (attribution.adopted && ledgerSha256 !== null) stop('adopted predecessor ledger is unexpectedly nonempty');
 	const cleanupProvenAt = new Date().toISOString();
 	const existingBaselineReceipt = existsSync(baselineAdoptionReceiptPath) ? JSON.parse(readFileSync(baselineAdoptionReceiptPath, 'utf8')) : null;
 	const predecessorEvidenceMac = attribution.adopted
@@ -453,49 +563,43 @@ async function deleteRecovery(attribution) {
 			retainedGeneratedConfig
 		}),
 		writeReceipt: async () => {
-			const finalState = {
-				etherealCredentialPersisted: false,
-				maxSyntheticWorkerRequests: MAX_SYNTHETIC_WORKER_REQUESTS,
-				maxSyntheticWorkerCpuMs: MAX_SYNTHETIC_WORKER_CPU_MS,
-				finalAuthDisabled: true,
-				finalAuthUsers: 0,
-				finalApplicationRows: 0,
-				finalStorageBuckets: 4,
-				finalStorageObjects: 0,
-				finalWorkerSecrets: 0,
-				finalWidgetAbsent: true,
-				finalMigrationCount: 18,
-				finalCatalog: operatorManifest.catalog_baseline
-			};
-			const authenticatedAdoption = attribution.adopted ? authenticated('issue22:baseline-adoption:v1', {
-				receiptVersion: 2,
-				receiptKind: 'baseline-adoption',
+			const establishmentMode = attribution.adopted
+				? 'legacy-adoption'
+				: recovery.baselineEstablishmentMode === 'pristine-migration' ? 'pristine-migration' : null;
+			const authenticatedEstablishment = establishmentMode && observedFinalState.baselineMode === 'migrated'
+				? authenticated('issue22:baseline-establishment:v1', {
+				receiptVersion: 3,
+				receiptKind: 'baseline-establishment',
+				establishmentMode,
 				at: cleanupProvenAt,
 				candidateSha,
 				projectRef: TARGET.projectRef,
 				cloudflareAccountId: TARGET.cloudflareAccountId,
 				worker: TARGET.workerName,
-				runId: recovery.runId,
-				ledgerHash,
-				finalStateProven: true,
-				adoptedPredecessorSha: attribution.predecessorSha,
-				adoptedRecoverySha256: attribution.recoverySha256,
-				adoptedGeneratedConfigSha256: attribution.generatedConfigSha256,
-				predecessorEvidenceMac,
-				...finalState
+				originRunId: recovery.runId,
+				originLedgerSha256: ledgerSha256,
+				adoptedEvidence: attribution.adopted ? {
+					predecessorSha: attribution.predecessorSha,
+					recoverySha256: attribution.recoverySha256,
+					generatedConfigSha256: attribution.generatedConfigSha256,
+					predecessorEvidenceMac
+				} : null,
+				etherealCredentialPersisted: false,
+				maxSyntheticWorkerRequests: MAX_SYNTHETIC_WORKER_REQUESTS,
+				maxSyntheticWorkerCpuMs: MAX_SYNTHETIC_WORKER_CPU_MS,
+				observedFinalState
 			}) : null;
 			const baselineReceipt = selectBaselineCleanupReceipt({
 				existing: existingBaselineReceipt,
-				authenticatedAdoption,
-				attribution,
+				authenticatedEstablishment,
 				candidateSha,
 				authenticationKey: accessToken
 			});
-			if (attribution.adopted && !existingBaselineReceipt) {
+			if (authenticatedEstablishment && !existingBaselineReceipt) {
 				writeJsonAtomic(baselineAdoptionReceiptPath, baselineReceipt);
 			}
 			const currentReceipt = authenticated('issue22:current-run-cleanup:v1', {
-				receiptVersion: 2,
+				receiptVersion: 3,
 				receiptKind: 'current-run-cleanup',
 				at: cleanupProvenAt,
 				candidateSha,
@@ -503,12 +607,14 @@ async function deleteRecovery(attribution) {
 				cloudflareAccountId: TARGET.cloudflareAccountId,
 				worker: TARGET.workerName,
 				runId: recovery.runId,
-				ledgerHash,
-				finalStateProven: true,
-				...finalState
+				ledgerSha256,
+				etherealCredentialPersisted: false,
+				maxSyntheticWorkerRequests: MAX_SYNTHETIC_WORKER_REQUESTS,
+				maxSyntheticWorkerCpuMs: MAX_SYNTHETIC_WORKER_CPU_MS,
+				observedFinalState
 			});
 			writeJsonAtomic(cleanupReceiptPath, currentReceipt);
-			assertCurrentCleanupReceipt(JSON.parse(readFileSync(cleanupReceiptPath, 'utf8')), candidateSha, recovery.runId, accessToken);
+			assertCurrentCleanupReceipt(JSON.parse(readFileSync(cleanupReceiptPath, 'utf8')), candidateSha, recovery.runId, accessToken, observedFinalState);
 		},
 		deleteArtifacts: async () => {
 			if (existsSync(playwrightOutput)) rmSync(playwrightOutput, { recursive: true, force: true });
@@ -522,14 +628,24 @@ async function deleteRecovery(attribution) {
 async function finalCleanup() {
 	assertCandidateClean();
 	const recovery = readRecovery();
-	const retainedGeneratedConfigHash = typeof recovery?.retainedGeneratedConfig === 'string'
-		? createHash('sha256').update(recovery.retainedGeneratedConfig).digest('hex')
-		: null;
-	const attribution = assertRecoveryAttribution(recovery, candidateSha, {
-		recoverySha256: fileReceipt(recoveryPath).sha256,
-		generatedConfigSha256: existsSync(generatedConfig) ? fileReceipt(generatedConfig).sha256 : retainedGeneratedConfigHash,
-		authenticationKey: accessToken
-	});
+	let attribution;
+	if (recovery?.candidateSha === candidateSha) {
+		assertRecoveryEnvelope(recovery, candidateSha, accessToken);
+		const reconciled = reconcileAuthenticatedRecoveryArtifacts(recovery, {
+			ledgerContent: existsSync(ledgerPath) ? readFileSync(ledgerPath, 'utf8') : null,
+			generatedConfigContent: existsSync(generatedConfig) ? readFileSync(generatedConfig, 'utf8') : null
+		});
+		if (reconciled.restoreLedger) writeTextAtomic(ledgerPath, reconciled.ledgerContent);
+		if (reconciled.restoreGeneratedConfig) writeTextAtomic(generatedConfig, reconciled.generatedConfigContent);
+		authenticatedLedgerContent = reconciled.ledgerContent;
+		authenticatedGeneratedConfigContent = reconciled.generatedConfigContent;
+		attribution = assertRecoveryAttribution(recovery, candidateSha, recoveryArtifacts(recovery));
+	} else {
+		attribution = assertRecoveryAttribution(recovery, candidateSha, recoveryArtifacts(recovery));
+		authenticatedLedgerContent = null;
+		authenticatedGeneratedConfigContent = existsSync(generatedConfig) ? readFileSync(generatedConfig, 'utf8') : null;
+	}
+	let observedFinalState = null;
 	const result = await runPriorityCleanup({
 		disable: disableAuth,
 		rollbackDeploy: async () => deployRollbackArtifact(),
@@ -539,19 +655,20 @@ async function finalCleanup() {
 		cleanupData: cleanupUsers,
 		cleanupSecrets: async () => cleanupSecrets(),
 		cleanupWidget: async () => cleanupWidget(),
-		attestFinal: attestFinalState,
-		deleteRecovery: async () => deleteRecovery(attribution)
+		attestFinal: async () => { observedFinalState = await attestFinalState(); },
+		deleteRecovery: async () => deleteRecovery(attribution, observedFinalState)
 	}, MAX_CLEANUP_ATTEMPTS);
 	ethereal = null;
 	serverKey = null;
 	if (result.failures.length > 0) stop(`cleanup incomplete; recovery state retained: ${result.failures.join(',')}`);
 }
 
-async function execute() {
+async function execute(markCleanupRequired) {
 	if (!/^[0-9a-f]{40}$/u.test(candidateSha ?? '')) stop('candidate SHA missing');
 	assertCandidateClean();
 	assertLiveCapacityNow();
 	const widgetIntent = beginRecovery();
+	markCleanupRequired();
 	await quiesceAuthBoundary();
 	run('pnpm', ['install', '--dir', join(root, 'mailbox-runtime'), '--frozen-lockfile', '--ignore-scripts', '--ignore-workspace']);
 	const nodemailer = await import(pathToFileURL(join(root, 'mailbox-runtime', 'node_modules', 'nodemailer', 'lib', 'nodemailer.js')).href);
@@ -560,7 +677,11 @@ async function execute() {
 	const widget = createWidget(widgetIntent);
 	const base = readFileSync(baseConfig, 'utf8');
 	if (!base.includes('__ISSUE22_TURNSTILE_SITE_KEY__')) stop('unmaterialized config marker missing');
-	writeFileSync(generatedConfig, base.replace('__ISSUE22_TURNSTILE_SITE_KEY__', widget.sitekey));
+	const materializedConfig = base.replace('__ISSUE22_TURNSTILE_SITE_KEY__', widget.sitekey);
+	updateRecovery({ retainedGeneratedConfig: materializedConfig });
+	writeTextAtomic(generatedConfig, materializedConfig);
+	readExactWorkerConfig(generatedConfig, { requireProjectBindings: true, requireMaterializedSitekey: true });
+	assertRecoveryAttribution(readRecovery(), candidateSha, recoveryArtifacts(readRecovery()));
 	const authTemplate = JSON.parse(readFileSync(join(root, 'auth-config.template.json'), 'utf8'));
 	authTemplate.security_captcha_secret = widget.secret;
 	authTemplate.smtp_admin_email = ethereal.user;
@@ -570,10 +691,16 @@ async function execute() {
 	assertAuthConfiguration(configuredAuth, authTemplate);
 	assertAuthState(configuredAuth, await publicSettings(), { open: false, captcha: true });
 	serverKey = await fetchServerKey();
-	run('node', [join(root, 'migration-runner.mjs'), '--execute'], { env: { SUPABASE_ACCESS_TOKEN: accessToken, ISSUE22_CANDIDATE_SHA: candidateSha, ISSUE22_SERVER_KEY: serverKey } });
+	const migrationResult = JSON.parse(run('node', [join(root, 'migration-runner.mjs'), '--execute'], {
+		capture: true,
+		env: { SUPABASE_ACCESS_TOKEN: accessToken, ISSUE22_CANDIDATE_SHA: candidateSha, ISSUE22_SERVER_KEY: serverKey }
+	}).trim());
+	if (!['MIGRATED_AND_SEEDED', 'MIGRATED_BASELINE_REUSED'].includes(migrationResult.status)) stop('migration execution result is invalid');
+	updateRecovery({ baselineEstablishmentMode: migrationResult.status === 'MIGRATED_AND_SEEDED' ? 'pristine-migration' : 'migrated-reuse' });
 	assertCandidateClean();
 	run('pnpm', ['exec', 'vite', 'build']);
 	deployRollback();
+	readExactWorkerConfig(generatedConfig, { requireProjectBindings: true, requireMaterializedSitekey: true });
 	run('pnpm', ['exec', 'wrangler', 'secret', 'put', 'SUPABASE_SECRET_KEY', '--name', TARGET.workerName, '--config', generatedConfig], { capture: true, input: `${serverKey}\n` });
 	run('pnpm', ['exec', 'wrangler', 'secret', 'put', 'TURNSTILE_SECRET_KEY', '--name', TARGET.workerName, '--config', generatedConfig], { capture: true, input: `${widget.secret}\n` });
 	run('pnpm', ['exec', 'wrangler', 'deploy', '--config', generatedConfig]);
@@ -581,8 +708,15 @@ async function execute() {
 	await patchAuth({ disable_signup: false });
 	await attestOpenProvider(widget, authTemplate);
 	run('pnpm', ['exec', 'playwright', 'test', '--config', join(root, 'playwright.hosted.config.ts')], {
-		env: { ISSUE22_LEDGER_PATH: ledgerPath, ETHEREAL_USER: ethereal.user, ETHEREAL_PASS: ethereal.pass }
+		env: {
+			ISSUE22_LEDGER_PATH: ledgerPath,
+			ISSUE22_RECOVERY_PATH: recoveryPath,
+			ISSUE22_RECOVERY_SEAL_KEY: deriveRecoverySealKey(accessToken, candidateSha),
+			ETHEREAL_USER: ethereal.user,
+			ETHEREAL_PASS: ethereal.pass
+		}
 	});
+	assertRecoveryAttribution(readRecovery(), candidateSha, recoveryArtifacts());
 	completed = true;
 }
 
@@ -593,13 +727,14 @@ if (process.argv[2] === '--self-test') {
 	});
 	console.log(JSON.stringify({ status: 'HOSTED_LOCAL_READY', target: TARGET.projectRef, account: TARGET.cloudflareAccountId, maxSyntheticWorkerRequests: MAX_SYNTHETIC_WORKER_REQUESTS, maxSyntheticWorkerCpuMs: MAX_SYNTHETIC_WORKER_CPU_MS }));
 } else if (process.argv[2] === '--execute') {
-	try {
-		await execute();
-	} finally {
-		if (readRecovery()) await finalCleanup();
-	}
-	if (!completed) stop('hosted journey did not complete');
-	console.log(JSON.stringify({ status: 'HOSTED_VERIFIED_AND_CLEANED', projectRef: TARGET.projectRef, candidateSha }));
+	await runHostedExecutionWithRequiredCleanup({
+		execute,
+		cleanup: finalCleanup,
+		emitSuccess: () => {
+			if (!completed) stop('hosted journey did not complete');
+			console.log(JSON.stringify({ status: 'HOSTED_VERIFIED_AND_CLEANED', projectRef: TARGET.projectRef, candidateSha }));
+		}
+	});
 } else if (process.argv[2] === '--cleanup') {
 	if (!readRecovery()) stop('no retained recovery state exists');
 	await finalCleanup();

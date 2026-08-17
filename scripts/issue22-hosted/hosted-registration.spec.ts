@@ -1,28 +1,54 @@
-import { appendFileSync, closeSync, fsyncSync, openSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServerClient } from '@supabase/ssr';
 import { expect, test, type Browser, type BrowserContext } from '@playwright/test';
 import type { Database } from '../../src/lib/server/database.types';
+import {
+	assertRecoveryEnvelopeWithKey,
+	buildIssue22ChildEnv,
+	reconcileAuthenticatedRecoveryArtifacts,
+	sealRecoveryArtifactTransitionWithKey
+} from './operator-lib.mjs';
 
 const origin = 'https://perfume-marketplace-bg-issue22.perfume-marketplace-bg.workers.dev';
 const projectRef = 'zzrrutwlrkhevellwork';
 const supabaseUrl = `https://${projectRef}.supabase.co`;
 const publishableKey = 'sb_publishable_1imlAP3Eanrj-jXL1bpcTQ_rVKnHXUy';
 const ledger = process.env.ISSUE22_LEDGER_PATH!;
+const recoveryPath = process.env.ISSUE22_RECOVERY_PATH!;
+const recoverySealKey = process.env.ISSUE22_RECOVERY_SEAL_KEY!;
 const etherealUser = process.env.ETHEREAL_USER!;
 const etherealPass = process.env.ETHEREAL_PASS!;
 const here = dirname(fileURLToPath(import.meta.url));
 
 function record(event: object) {
-	const fd = openSync(ledger, 'a');
+	const recovery = JSON.parse(readFileSync(recoveryPath, 'utf8'));
+	assertRecoveryEnvelopeWithKey(recovery, recovery.candidateSha, recoverySealKey);
+	const observedLedger = existsSync(ledger) ? readFileSync(ledger, 'utf8') : null;
+	const authenticated = reconcileAuthenticatedRecoveryArtifacts(recovery, {
+		ledgerContent: observedLedger,
+		generatedConfigContent: recovery.retainedGeneratedConfig
+	});
+	const nextLedger = `${authenticated.ledgerContent ?? ''}${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`;
+	const pending = sealRecoveryArtifactTransitionWithKey(recovery, recovery.candidateSha, {
+		ledgerContent: nextLedger,
+		updatedAt: new Date().toISOString()
+	}, recoverySealKey);
+	const recoveryTemporary = `${recoveryPath}.tmp`;
+	writeFileSync(recoveryTemporary, JSON.stringify(pending, null, 2));
+	renameSync(recoveryTemporary, recoveryPath);
+
+	const ledgerTemporary = `${ledger}.tmp`;
+	const fd = openSync(ledgerTemporary, 'w');
 	try {
-		appendFileSync(fd, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`);
+		writeFileSync(fd, nextLedger);
 		fsyncSync(fd);
 	} finally {
 		closeSync(fd);
 	}
+	renameSync(ledgerTemporary, ledger);
 }
 
 function account(label: string) {
@@ -46,7 +72,7 @@ async function waitForRealTurnstile(context: BrowserContext) {
 function confirmationLink(email: string) {
 	const result = spawnSync('python', [join(here, 'ethereal-link.py')], {
 		encoding: 'utf8',
-		env: { ...process.env, ETHEREAL_USER: etherealUser, ETHEREAL_PASS: etherealPass, ISSUE22_RECIPIENT: email }
+		env: buildIssue22ChildEnv(process.env, { ETHEREAL_USER: etherealUser, ETHEREAL_PASS: etherealPass, ISSUE22_RECIPIENT: email })
 	});
 	if (result.status !== 0) throw new Error('Ethereal confirmation retrieval failed without credential disclosure');
 	return result.stdout.trim();

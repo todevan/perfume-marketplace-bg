@@ -13,10 +13,12 @@ import {
 	assertAuthConfiguration,
 	assertAuthState,
 	assertCatalogCounts,
+	assertExactWorkerConfig,
 	assertFinalStorageState,
 	assertLiveCloudflareCapacity,
 	assertNullableAuthUpdateSchema,
 	assertRecoveryAttribution,
+	assertRecoveryEnvelope,
 	assertSafeInventory,
 	assertSafeDisabledAuth,
 	buildAuthCredentialClearPatch,
@@ -27,10 +29,16 @@ import {
 	fixedMigrationCommands,
 	fixedWorkerSecretCommands,
 	finalizeRecoveryArtifacts,
+	buildIssue22ChildEnv,
+	reconcileAuthenticatedRecoveryArtifacts,
 	resolveWidgetForCleanup,
+	resolveSavedWidgetForCleanup,
 	recoverCatalogForCleanup,
 	runLinkedCommand,
-	runPriorityCleanup
+	runHostedExecutionWithRequiredCleanup,
+	runPriorityCleanup,
+	sealRecoveryArtifactTransition,
+	sealRecoveryState
 } from '../../scripts/issue22-hosted/operator-lib.mjs';
 
 const repo = resolve(import.meta.dirname, '..', '..');
@@ -44,51 +52,109 @@ const knownRecoveryChain = {
 	ledgerSha256: null
 };
 
+const migratedObservedState = {
+	baselineMode: 'migrated',
+	migrationCount: 18,
+	storageBuckets: 4,
+	storageObjects: 0,
+	catalog: { brands: 196, aliases: 48, memberships: 335 },
+	authUsers: 0,
+	applicationRows: 0,
+	workerSecrets: 0,
+	widgetAbsent: true,
+	authDisabled: true,
+	definitionFingerprints: {
+		relationsSha256: '1'.repeat(64),
+		storageAuthorizationSha256: '7'.repeat(64),
+		typesSha256: '2'.repeat(64),
+		functionsSha256: '3'.repeat(64),
+		policiesSha256: '4'.repeat(64),
+		triggersSha256: '5'.repeat(64),
+		catalogSha256: '6'.repeat(64)
+	}
+};
+
+const pristineObservedState = {
+	...migratedObservedState,
+	baselineMode: 'pristine',
+	migrationCount: 0,
+	storageBuckets: 0,
+	catalog: { brands: 0, aliases: 0, memberships: 0 },
+	definitionFingerprints: null
+};
+
 function authenticate(domain: string, payload: unknown) {
 	return createHmac('sha256', receiptAuthenticationKey)
 		.update(`${domain}\0${JSON.stringify(payload)}`)
 		.digest('hex');
 }
 
+function currentRecoveryCore(candidateSha = 'a'.repeat(40)) {
+	return {
+		recoveryVersion: 2,
+		candidateSha,
+		projectRef: TARGET.projectRef,
+		cloudflareAccountId: TARGET.cloudflareAccountId,
+		workerName: TARGET.workerName,
+		runId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+		widgetIntent: { name: 'aromatika-issue22-aaaaaaaa-aaa', domain: TARGET.workerHostname },
+		widgetSitekey: null,
+		createdAt: '2026-08-17T16:00:00.000Z',
+		updatedAt: '2026-08-17T16:00:00.000Z',
+		authQuiescedAt: null,
+		baselineEstablishmentMode: null,
+		adoptedPredecessorSha: null,
+		adoptedRecoverySha256: null,
+		adoptedGeneratedConfigSha256: null,
+		sealedFinalState: false,
+		predecessorEvidenceMac: null,
+		cleanupFinalStateProvenAt: null,
+		ledgerSha256: null,
+		generatedConfigSha256: null,
+		retainedLedger: null,
+		retainedGeneratedConfig: null,
+		retainedLedgerSha256: null,
+		retainedGeneratedConfigSha256: null
+	};
+}
+
 function receiptCore(candidateSha: string) {
 	return {
-		receiptVersion: 2,
-		receiptKind: 'baseline-adoption',
+		receiptVersion: 3,
+		receiptKind: 'baseline-establishment',
+		establishmentMode: 'legacy-adoption',
 		at: '2026-08-17T17:00:00.000Z',
 		candidateSha,
 		projectRef: TARGET.projectRef,
 		cloudflareAccountId: TARGET.cloudflareAccountId,
 		worker: TARGET.workerName,
-		runId: KNOWN_FAILED_RECOVERY.runId,
-		ledgerHash: null,
-		finalStateProven: true,
-		adoptedPredecessorSha: KNOWN_FAILED_RECOVERY.predecessorSha,
-		adoptedRecoverySha256: KNOWN_FAILED_RECOVERY.recoverySha256,
-		adoptedGeneratedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256,
-		predecessorEvidenceMac: authenticate('issue22:recovery-adoption:v1', knownRecoveryChain),
+		originRunId: KNOWN_FAILED_RECOVERY.runId,
+		originLedgerSha256: null,
+		adoptedEvidence: {
+			predecessorSha: KNOWN_FAILED_RECOVERY.predecessorSha,
+			recoverySha256: KNOWN_FAILED_RECOVERY.recoverySha256,
+			generatedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256,
+			predecessorEvidenceMac: authenticate('issue22:recovery-adoption:v1', knownRecoveryChain)
+		},
 		etherealCredentialPersisted: false,
 		maxSyntheticWorkerRequests: OPERATOR_CAPACITY_BUDGET.totalRequests,
 		maxSyntheticWorkerCpuMs: OPERATOR_CAPACITY_BUDGET.totalCpuMs,
-		finalAuthDisabled: true,
-		finalAuthUsers: 0,
-		finalApplicationRows: 0,
-		finalStorageBuckets: EXPECTED_STORAGE_BUCKETS.length,
-		finalStorageObjects: 0,
-		finalWorkerSecrets: 0,
-		finalWidgetAbsent: true,
-		finalMigrationCount: 18,
-		finalCatalog: { brands: 196, aliases: 48, memberships: 335 }
+		observedFinalState: migratedObservedState
 	};
 }
 
 function sealedReceipt(candidateSha: string) {
 	const core = receiptCore(candidateSha);
-	return { ...core, payloadMac: authenticate('issue22:baseline-adoption:v1', core) };
+	return { ...core, payloadMac: authenticate('issue22:baseline-establishment:v1', core) };
 }
 
-function currentReceipt(candidateSha: string, runId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
+function currentReceipt(
+	candidateSha: string,
+	runId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+	observedFinalState: typeof migratedObservedState | typeof pristineObservedState = migratedObservedState
+) {
 	const core = {
-		receiptVersion: 2,
+		receiptVersion: 3,
 		receiptKind: 'current-run-cleanup',
 		at: '2026-08-17T18:00:00.000Z',
 		candidateSha,
@@ -96,20 +162,11 @@ function currentReceipt(candidateSha: string, runId = 'aaaaaaaa-aaaa-4aaa-8aaa-a
 		cloudflareAccountId: TARGET.cloudflareAccountId,
 		worker: TARGET.workerName,
 		runId,
-		ledgerHash: null,
-		finalStateProven: true,
+		ledgerSha256: null,
 		etherealCredentialPersisted: false,
 		maxSyntheticWorkerRequests: OPERATOR_CAPACITY_BUDGET.totalRequests,
 		maxSyntheticWorkerCpuMs: OPERATOR_CAPACITY_BUDGET.totalCpuMs,
-		finalAuthDisabled: true,
-		finalAuthUsers: 0,
-		finalApplicationRows: 0,
-		finalStorageBuckets: EXPECTED_STORAGE_BUCKETS.length,
-		finalStorageObjects: 0,
-		finalWorkerSecrets: 0,
-		finalWidgetAbsent: true,
-		finalMigrationCount: 18,
-		finalCatalog: { brands: 196, aliases: 48, memberships: 335 }
+		observedFinalState
 	};
 	return { ...core, payloadMac: authenticate('issue22:current-run-cleanup:v1', core) };
 }
@@ -188,6 +245,7 @@ describe('issue-22 hosted migration boundary', () => {
 			catalog: { brands: 196, aliases: 48, memberships: 335 },
 			definitionFingerprints: {
 				relationsSha256: '1'.repeat(64),
+				storageAuthorizationSha256: '7'.repeat(64),
 				typesSha256: '2'.repeat(64),
 				functionsSha256: '3'.repeat(64),
 				policiesSha256: '4'.repeat(64),
@@ -218,7 +276,7 @@ describe('issue-22 hosted migration boundary', () => {
 		for (const field of ['publicRelations', 'publicFunctions', 'publicPolicies', 'unexpectedSchemas', 'userTriggers', 'realtimePublicationTables'] as const) {
 			expect(() => assertSafeInventory({ ...migrated, [field]: [...migrated[field], 'hostile.drift'] }, expectedVersions, exactInventory)).toThrow(/inventory/i);
 		}
-		for (const field of ['typesSha256', 'functionsSha256', 'triggersSha256', 'catalogSha256'] as const) {
+		for (const field of ['storageAuthorizationSha256', 'typesSha256', 'functionsSha256', 'triggersSha256', 'catalogSha256'] as const) {
 			expect(() => assertSafeInventory({
 				...migrated,
 				definitionFingerprints: { ...migrated.definitionFingerprints, [field]: 'f'.repeat(64) }
@@ -244,24 +302,6 @@ describe('issue-22 hosted migration boundary', () => {
 		}, expectedVersions, exactInventory)).toThrow(/application table/i);
 	});
 
-	it('fingerprints application-owned Storage policies and preserves null ACL semantics', () => {
-		const sql = readFileSync(resolve(operatorRoot, 'definition-fingerprints.sql'), 'utf8');
-		expect(sql).toContain("p.schemaname = 'storage'");
-		expect(sql).toContain("p.tablename = 'objects'");
-		expect(sql).toContain("p.policyname like 'marketplace\\_%' escape '\\'");
-		expect(sql.match(/'acl_is_null'/gu)?.length).toBeGreaterThanOrEqual(5);
-	});
-
-	it('catalog fingerprint uses stable semantic fields rather than generated audit identity', () => {
-		const sql = readFileSync(resolve(operatorRoot, 'definition-fingerprints.sql'), 'utf8');
-		expect(sql).not.toContain('to_jsonb(row)');
-		expect(sql).not.toContain('public.catalog_sync_runs row');
-		expect(sql).toContain("row.provenance - 'lastSyncRunId'");
-		expect(sql).toContain("row.provenance - 'lastSyncRunId') - 'syncedAt'");
-		expect(sql).toContain("'registry_id'");
-		expect(sql).toContain("'document_code'");
-	});
-
 	it('requires the production catalogue baseline after the repository-native seed', () => {
 		expect(() => assertCatalogCounts({ brands: 196, aliases: 48, memberships: 335 })).not.toThrow();
 		expect(() => assertCatalogCounts({ brands: 0, aliases: 0, memberships: 0 })).toThrow(/catalog/i);
@@ -269,17 +309,146 @@ describe('issue-22 hosted migration boundary', () => {
 });
 
 describe('issue-22 hosted cleanup boundary', () => {
+	it('fails closed without emitting success when recovery disappears after the journey starts', async () => {
+		let recoveryPresent = true;
+		const emitSuccess = vi.fn();
+		const writeReceipt = vi.fn();
+		await expect(runHostedExecutionWithRequiredCleanup({
+			execute: async (markCleanupRequired) => {
+				markCleanupRequired();
+				recoveryPresent = false;
+			},
+			cleanup: async () => {
+				if (!recoveryPresent) throw new Error('recovery state is missing');
+				writeReceipt();
+			},
+			emitSuccess
+		})).rejects.toThrow(/recovery state is missing/i);
+		expect(emitSuccess).not.toHaveBeenCalled();
+		expect(writeReceipt).not.toHaveBeenCalled();
+	});
+
+	it('preseals exact config and ledger transitions and recovers an interrupted materialization before provider cleanup', async () => {
+		const candidateSha = 'a'.repeat(40);
+		const initial = sealRecoveryState(currentRecoveryCore(candidateSha), receiptAuthenticationKey);
+		const generatedConfig = '{"name":"perfume-marketplace-bg-issue22"}\n';
+		const configPending = sealRecoveryArtifactTransition(initial, candidateSha, {
+			generatedConfigContent: generatedConfig,
+			updatedAt: '2026-08-17T16:00:01.000Z'
+		}, receiptAuthenticationKey);
+
+		expect(() => assertRecoveryEnvelope(configPending, candidateSha, receiptAuthenticationKey)).not.toThrow();
+		const restoredConfig = reconcileAuthenticatedRecoveryArtifacts(configPending, {
+			ledgerContent: null,
+			generatedConfigContent: null
+		});
+		expect(restoredConfig).toMatchObject({ generatedConfigContent: generatedConfig, restoreGeneratedConfig: true });
+		expect(() => assertRecoveryAttribution(configPending, candidateSha, {
+			authenticationKey: receiptAuthenticationKey,
+			ledgerSha256: null,
+			generatedConfigSha256: createHash('sha256').update(generatedConfig).digest('hex')
+		})).not.toThrow();
+
+		const firstLedgerLine = '{"event":"create_intent","label":"alice"}\n';
+		const ledgerPending = sealRecoveryArtifactTransition(configPending, candidateSha, {
+			ledgerContent: firstLedgerLine,
+			updatedAt: '2026-08-17T16:00:02.000Z'
+		}, receiptAuthenticationKey);
+		const restored = reconcileAuthenticatedRecoveryArtifacts(ledgerPending, {
+			ledgerContent: null,
+			generatedConfigContent: generatedConfig
+		});
+		expect(restored).toMatchObject({ ledgerContent: firstLedgerLine, restoreLedger: true });
+
+		const events: string[] = ['restore-authenticated-local-artifacts'];
+		await runPriorityCleanup({
+			disable: async () => { events.push('disable-auth'); },
+			rollbackDeploy: async () => { events.push('rollback'); },
+			capacity: async () => undefined,
+			rollbackSmoke: async () => undefined,
+			recoverCatalog: async () => undefined,
+			cleanupData: async () => { expect(restored.ledgerContent).toBe(firstLedgerLine); },
+			cleanupSecrets: async () => undefined,
+			cleanupWidget: async () => undefined,
+			attestFinal: async () => undefined,
+			deleteRecovery: async () => undefined
+		}, 1);
+		expect(events.slice(0, 3)).toEqual(['restore-authenticated-local-artifacts', 'disable-auth', 'rollback']);
+
+		const tampered = { ...ledgerPending, recoveryMac: '0'.repeat(64) };
+		expect(() => assertRecoveryEnvelope(tampered, candidateSha, receiptAuthenticationKey)).toThrow(/attribution/i);
+	});
+
+	it('allows only execution variables and Ethereal inputs into the Python child', () => {
+		const environment = buildIssue22ChildEnv({
+			PATH: 'python-path',
+			SYSTEMROOT: 'system-root',
+			ISSUE22_RECOVERY_SEAL_KEY: 'secret-seal-key',
+			ISSUE22_RECOVERY_PATH: 'private-recovery-path',
+			ISSUE22_LEDGER_PATH: 'private-ledger-path',
+			SUPABASE_ACCESS_TOKEN: 'provider-secret'
+		}, {
+			ETHEREAL_USER: 'mail-user',
+			ETHEREAL_PASS: 'mail-pass',
+			ISSUE22_RECIPIENT: 'recipient@example.invalid'
+		});
+		expect(environment).toEqual({
+			NO_COLOR: '1',
+			PATH: 'python-path',
+			SYSTEMROOT: 'system-root',
+			ETHEREAL_USER: 'mail-user',
+			ETHEREAL_PASS: 'mail-pass',
+			ISSUE22_RECIPIENT: 'recipient@example.invalid'
+		});
+		expect(environment).not.toHaveProperty('ISSUE22_RECOVERY_SEAL_KEY');
+	});
+
+	it('runs the executable Issue 22 fingerprint test in database CI after local reset', () => {
+		const packageJson = JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8'));
+		expect(packageJson.scripts['test:db:issue22-fingerprints']).toBe('node --test supabase/tests/issue22_fingerprints.local.test.mjs');
+		const workflow = readFileSync(resolve(repo, '.github', 'workflows', 'ci.yml'), 'utf8');
+		const reset = workflow.indexOf('run: pnpm db:reset');
+		const fingerprint = workflow.indexOf('run: pnpm test:db:issue22-fingerprints');
+		expect(reset).toBeGreaterThan(-1);
+		expect(fingerprint).toBeGreaterThan(reset);
+	});
+
 	it('binds recovery to the exact candidate and provider targets', () => {
 		const candidateSha = 'a'.repeat(40);
-		const recovery = {
+		const recoveryCore = {
+			recoveryVersion: 2,
 			candidateSha,
 			projectRef: TARGET.projectRef,
 			cloudflareAccountId: TARGET.cloudflareAccountId,
-			workerName: TARGET.workerName
+			workerName: TARGET.workerName,
+			runId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+			widgetIntent: { name: 'aromatika-issue22-aaaaaaaa-aaa', domain: TARGET.workerHostname },
+			widgetSitekey: null,
+			createdAt: '2026-08-17T16:00:00.000Z',
+			updatedAt: '2026-08-17T16:00:00.000Z',
+			authQuiescedAt: null,
+			baselineEstablishmentMode: null,
+			adoptedPredecessorSha: null,
+			adoptedRecoverySha256: null,
+			adoptedGeneratedConfigSha256: null,
+			sealedFinalState: false,
+			predecessorEvidenceMac: null,
+			cleanupFinalStateProvenAt: null,
+			ledgerSha256: null,
+			generatedConfigSha256: null,
+			retainedLedger: null,
+			retainedGeneratedConfig: null,
+			retainedLedgerSha256: null,
+			retainedGeneratedConfigSha256: null
 		};
-		expect(() => assertRecoveryAttribution(recovery, candidateSha)).not.toThrow();
+		const recovery = sealRecoveryState(recoveryCore, receiptAuthenticationKey);
+		expect(() => assertRecoveryAttribution(recovery, candidateSha, { authenticationKey: receiptAuthenticationKey, ledgerSha256: null, generatedConfigSha256: null })).not.toThrow();
+		expect(() => assertRecoveryAttribution(recoveryCore, candidateSha, { authenticationKey: receiptAuthenticationKey })).toThrow(/attribution/i);
 		expect(() => assertRecoveryAttribution({ ...recovery, candidateSha: 'b'.repeat(40) }, candidateSha)).toThrow(/attribution/i);
 		expect(() => assertRecoveryAttribution({ ...recovery, projectRef: TARGET.forbiddenProjectRef }, candidateSha)).toThrow(/attribution/i);
+		const replayedForAnotherCandidate = { ...recovery, candidateSha: 'b'.repeat(40) };
+		expect(() => assertRecoveryAttribution(replayedForAnotherCandidate, 'b'.repeat(40), { authenticationKey: receiptAuthenticationKey })).toThrow(/attribution/i);
+		expect(() => assertRecoveryAttribution({ ...recovery, widgetSitekey: 'tampered-sitekey' }, candidateSha, { authenticationKey: receiptAuthenticationKey })).toThrow(/attribution/i);
 	});
 
 	it('adopts only predecessor recovery chained by a secret-backed authenticator', () => {
@@ -302,17 +471,30 @@ describe('issue-22 hosted cleanup boundary', () => {
 			recoverySha256: KNOWN_FAILED_RECOVERY.recoverySha256,
 			generatedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256
 		});
-		const adoptedRetry = {
+		const adoptedRetryCore = {
 			...predecessorRecovery,
+			recoveryVersion: 2,
 			candidateSha: currentCandidate,
+			widgetIntent: { name: `aromatika-issue22-${KNOWN_FAILED_RECOVERY.runId.slice(0, 12)}`, domain: TARGET.workerHostname },
+			widgetSitekey: null,
+			createdAt: '2026-08-17T16:00:00.000Z',
+			updatedAt: '2026-08-17T17:00:00.000Z',
+			authQuiescedAt: null,
+			baselineEstablishmentMode: null,
 			adoptedPredecessorSha: KNOWN_FAILED_RECOVERY.predecessorSha,
 			adoptedRecoverySha256: KNOWN_FAILED_RECOVERY.recoverySha256,
 			adoptedGeneratedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256,
 			sealedFinalState: true,
 			predecessorEvidenceMac: authenticate('issue22:recovery-adoption:v1', knownRecoveryChain),
 			cleanupFinalStateProvenAt: '2026-08-17T17:00:00.000Z',
-			retainedLedger: null
+			ledgerSha256: null,
+			generatedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256,
+			retainedLedger: null,
+			retainedGeneratedConfig: null,
+			retainedLedgerSha256: null,
+			retainedGeneratedConfigSha256: null
 		};
+		const adoptedRetry = sealRecoveryState(adoptedRetryCore, receiptAuthenticationKey);
 		expect(() => assertRecoveryAttribution({ ...adoptedRetry, sealedFinalState: undefined }, currentCandidate, artifacts)).toThrow(/attribution/i);
 		expect(assertRecoveryAttribution(adoptedRetry, currentCandidate, artifacts)).toMatchObject({
 			adopted: true,
@@ -331,13 +513,13 @@ describe('issue-22 hosted cleanup boundary', () => {
 		const receipt = sealedReceipt(candidateSha);
 		expect(() => assertCleanupReceiptForMigratedBaseline(receipt, candidateSha, receiptAuthenticationKey)).not.toThrow();
 		for (const [field, forged] of [
-			['runId', 'forged-run'],
-			['ledgerHash', '0'.repeat(64)],
+			['originRunId', 'forged-run'],
+			['originLedgerSha256', '0'.repeat(64)],
 			['etherealCredentialPersisted', true],
 			['maxSyntheticWorkerRequests', 1],
 			['maxSyntheticWorkerCpuMs', 1],
-			['finalStorageBuckets', 0],
-			['predecessorEvidenceMac', '0'.repeat(64)]
+			['observedFinalState', pristineObservedState],
+			['adoptedEvidence', { ...receipt.adoptedEvidence, predecessorEvidenceMac: '0'.repeat(64) }]
 		] as const) {
 			const forgedCore = { ...receiptCore(candidateSha), [field]: forged };
 			const forgedReceipt = { ...forgedCore, payloadMac: createHash('sha256').update(JSON.stringify(forgedCore)).digest('hex') };
@@ -356,15 +538,30 @@ describe('issue-22 hosted cleanup boundary', () => {
 		if (typeof library.selectBaselineCleanupReceipt !== 'function') return;
 		const candidateSha = 'c'.repeat(40);
 		const adopted = sealedReceipt(candidateSha);
-		expect(library.selectBaselineCleanupReceipt({ existing: null, authenticatedAdoption: adopted, attribution: { adopted: true }, candidateSha, authenticationKey: receiptAuthenticationKey })).toEqual(adopted);
-		expect(library.selectBaselineCleanupReceipt({ existing: adopted, authenticatedAdoption: sealedReceipt(candidateSha), attribution: { adopted: true }, candidateSha, authenticationKey: receiptAuthenticationKey })).toBe(adopted);
-		expect(library.selectBaselineCleanupReceipt({ existing: adopted, authenticatedAdoption: null, attribution: { adopted: false }, candidateSha, authenticationKey: receiptAuthenticationKey })).toBe(adopted);
-		expect(library.selectBaselineCleanupReceipt({ existing: null, authenticatedAdoption: null, attribution: { adopted: false }, candidateSha, authenticationKey: receiptAuthenticationKey })).toBeNull();
-		expect(() => library.selectBaselineCleanupReceipt({ existing: null, authenticatedAdoption: { ...adopted, payloadMac: '0'.repeat(64) }, attribution: { adopted: true }, candidateSha, authenticationKey: receiptAuthenticationKey })).toThrow(/baseline.*receipt/i);
+		expect(library.selectBaselineCleanupReceipt({ existing: null, authenticatedEstablishment: adopted, candidateSha, authenticationKey: receiptAuthenticationKey })).toEqual(adopted);
+		expect(library.selectBaselineCleanupReceipt({ existing: adopted, authenticatedEstablishment: sealedReceipt(candidateSha), candidateSha, authenticationKey: receiptAuthenticationKey })).toBe(adopted);
+		expect(library.selectBaselineCleanupReceipt({ existing: adopted, authenticatedEstablishment: null, candidateSha, authenticationKey: receiptAuthenticationKey })).toBe(adopted);
+		expect(library.selectBaselineCleanupReceipt({ existing: null, authenticatedEstablishment: null, candidateSha, authenticationKey: receiptAuthenticationKey })).toBeNull();
+		expect(() => library.selectBaselineCleanupReceipt({ existing: null, authenticatedEstablishment: { ...adopted, payloadMac: '0'.repeat(64) }, candidateSha, authenticationKey: receiptAuthenticationKey })).toThrow(/baseline.*receipt/i);
 		expect(decideMigrationExecution({ mode: 'migrated' }, adopted, candidateSha, receiptAuthenticationKey)).toBe('reuse');
-		const pristineCleanup = currentReceipt(candidateSha);
-		expect(() => assertCurrentCleanupReceipt(pristineCleanup, candidateSha, pristineCleanup.runId, receiptAuthenticationKey)).not.toThrow();
-		expect(() => assertCurrentCleanupReceipt(pristineCleanup, candidateSha, pristineCleanup.runId, `sbp_${'b'.repeat(40)}`)).toThrow(/current.*receipt/i);
+		const pristineCleanup = currentReceipt(candidateSha, undefined, pristineObservedState);
+		expect(() => assertCurrentCleanupReceipt(pristineCleanup, candidateSha, pristineCleanup.runId, receiptAuthenticationKey, pristineObservedState)).not.toThrow();
+		expect(() => assertCurrentCleanupReceipt(pristineCleanup, candidateSha, pristineCleanup.runId, receiptAuthenticationKey, migratedObservedState)).toThrow(/current.*receipt/i);
+		expect(() => assertCurrentCleanupReceipt(pristineCleanup, candidateSha, pristineCleanup.runId, `sbp_${'b'.repeat(40)}`, pristineObservedState)).toThrow(/current.*receipt/i);
+	});
+
+	it('preserves a pristine migration establishment receipt for the next migrated reuse', () => {
+		const candidateSha = 'c'.repeat(40);
+		const core = {
+			...receiptCore(candidateSha),
+			establishmentMode: 'pristine-migration',
+			originRunId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+			originLedgerSha256: 'a'.repeat(64),
+			adoptedEvidence: null
+		};
+		const receipt = { ...core, payloadMac: authenticate('issue22:baseline-establishment:v1', core) };
+		expect(() => assertCleanupReceiptForMigratedBaseline(receipt, candidateSha, receiptAuthenticationKey)).not.toThrow();
+		expect(decideMigrationExecution({ mode: 'migrated' }, receipt, candidateSha, receiptAuthenticationKey)).toBe('reuse');
 	});
 
 	it('attests exact persistent migration-created buckets and zero objects', () => {
@@ -491,6 +688,22 @@ describe('issue-22 hosted cleanup boundary', () => {
 		const widget = { name: intent.name, domains: [intent.domain], sitekey: 'site-key' };
 		expect(resolveWidgetForCleanup(intent, [widget])).toEqual(widget);
 		expect(() => resolveWidgetForCleanup(intent, [widget, { ...widget }])).toThrow(/ambiguous/i);
+	});
+
+	it('never trusts a saved widget sitekey unless its fetched widget matches the saved intent', () => {
+		const intent = { name: 'aromatika-issue22-run-abc', domain: TARGET.workerHostname };
+		const matching = { name: intent.name, domains: [intent.domain], sitekey: 'saved-site-key' };
+		expect(resolveSavedWidgetForCleanup(intent, 'saved-site-key', [matching])).toEqual(matching);
+		expect(() => resolveSavedWidgetForCleanup(intent, 'saved-site-key', [{ ...matching, name: 'attacker-widget' }])).toThrow(/intent/i);
+		expect(() => resolveSavedWidgetForCleanup(intent, 'saved-site-key', [{ ...matching, domains: ['attacker.invalid'] }])).toThrow(/intent/i);
+	});
+
+	it('rejects a generated Wrangler config for any wrong target identity', () => {
+		const config = JSON.parse(readFileSync(resolve(operatorRoot, 'wrangler.issue22.jsonc'), 'utf8'));
+		config.vars.PUBLIC_TURNSTILE_SITE_KEY = 'materialized-site-key';
+		expect(() => assertExactWorkerConfig(config, { requireProjectBindings: true, requireMaterializedSitekey: true })).not.toThrow();
+		expect(() => assertExactWorkerConfig({ ...config, account_id: 'wrong-account' }, { requireProjectBindings: true, requireMaterializedSitekey: true })).toThrow(/identity/i);
+		expect(() => assertExactWorkerConfig({ ...config, name: 'wrong-worker' }, { requireProjectBindings: true, requireMaterializedSitekey: true })).toThrow(/identity/i);
 	});
 
 	it('prioritizes disable and rollback, retries faults, and retains recovery state on any failure', async () => {
@@ -824,15 +1037,22 @@ describe('issue-22 tracked operator attribution contracts', () => {
 		expect(preflight).not.toContain("'smoke.mjs') rollback");
 		const cleanupStart = operator.indexOf('async function finalCleanup()');
 		const cleanupCleanAttestation = operator.indexOf('assertCandidateClean();', cleanupStart);
-		const cleanupRecoveryAttestation = operator.indexOf('const attribution = assertRecoveryAttribution(', cleanupStart);
+		const cleanupEnvelopeAttestation = operator.indexOf('assertRecoveryEnvelope(', cleanupStart);
+		const cleanupRecoveryAttestation = operator.indexOf('attribution = assertRecoveryAttribution(', cleanupStart);
 		const cleanupMutation = operator.indexOf('runPriorityCleanup({', cleanupStart);
 		expect(cleanupStart).toBeGreaterThanOrEqual(0);
 		expect(cleanupCleanAttestation).toBeGreaterThan(cleanupStart);
 		expect(cleanupCleanAttestation).toBeLessThan(cleanupMutation);
+		expect(cleanupEnvelopeAttestation).toBeGreaterThan(cleanupCleanAttestation);
+		expect(cleanupEnvelopeAttestation).toBeLessThan(cleanupRecoveryAttestation);
 		expect(cleanupRecoveryAttestation).toBeGreaterThan(cleanupCleanAttestation);
 		expect(cleanupRecoveryAttestation).toBeLessThan(cleanupMutation);
-		const executeStart = operator.indexOf('async function execute()');
-		expect(operator.indexOf('assertLiveCapacityNow();', executeStart)).toBeLessThan(operator.indexOf('const widgetIntent = beginRecovery()', executeStart));
+		const executeStart = operator.indexOf('async function execute(markCleanupRequired)');
+		const beginRecovery = operator.indexOf('const widgetIntent = beginRecovery()', executeStart);
+		expect(operator.indexOf('assertLiveCapacityNow();', executeStart)).toBeLessThan(beginRecovery);
+		expect(operator.indexOf('markCleanupRequired();', executeStart)).toBeGreaterThan(beginRecovery);
+		expect(operator).toContain('runHostedExecutionWithRequiredCleanup({');
+		expect(operator).not.toContain('if (readRecovery()) await finalCleanup()');
 		for (const configName of ['wrangler.issue22.jsonc', 'wrangler.issue22.rollback.jsonc']) {
 			const config = JSON.parse(readFileSync(resolve(operatorRoot, configName), 'utf8'));
 			expect(config).not.toHaveProperty('limits');

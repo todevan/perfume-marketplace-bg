@@ -17,6 +17,7 @@
     "test": "node scripts/validate-catalog.mjs && vitest run && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && vite build",
     "test:unit": "vitest run",
     "test:db:contracts": "node --test supabase/tests/*.contract.test.mjs",
+    "test:db:issue22-fingerprints": "node --test supabase/tests/issue22_fingerprints.local.test.mjs",
     "test:unit:watch": "vitest",
     "test:e2e": "vite build && playwright test",
     "test:e2e:registration": "playwright test --config playwright.registration.config.ts",

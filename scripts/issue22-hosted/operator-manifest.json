@@ -553,11 +553,12 @@
     ],
     "definition_fingerprints": {
       "relationsSha256": "68ed9b3ed314344737d5c80865c84f6ffa8ddb351cb16fb39ebdc2c4c218783c",
+      "storageAuthorizationSha256": "c89488d66069a809bf2e23eb971d67bc191e51bba0c92ec8bfa66f411b1074f7",
       "typesSha256": "2b881160a5bd011001b1b955ce249c5812865ec7a3e44f3bc1647b44c38dd201",
       "functionsSha256": "c2fa140411d95ad7084ad8563c76603d8ea8aaaa17f743fd78025996d91d0c01",
       "policiesSha256": "dfaf95467de3ad0692b0c7901083e4f2dde2e9d6d55b2672a288f69941699713",
       "triggersSha256": "b9457ed932443257a0bdbe419e62b27cc9e0c61f41261c455df64177c9e69a76",
-      "catalogSha256": "a40402de40e9eb66c5ffcfce1368785134782fb1d4ab4f37771adda86b7d40be"
+      "catalogSha256": "14b54c75c19aa37df857cbd846a0219680430155e442731184f4bd596e60ee22"
     },
     "application_table_counts": [
       {
@@ -703,7 +704,7 @@
     ]
   },
   "definition_fingerprint_input": {
-    "bytes": 14765,
-    "sha256": "d95372b838792068632499560211c54095b2a058a4ee3a77696ec1767acd94a6"
+    "bytes": 16808,
+    "sha256": "ac1b0be82d5f696189716fa225b94a1d8fcfb65939a281fb4793cd06479febb8"
   }
 }

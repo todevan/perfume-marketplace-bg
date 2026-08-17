@@ -61,6 +61,8 @@ jobs:
         run: pnpm audit --prod
       - run: pnpm db:start
       - run: pnpm db:reset
+      - name: Run Issue 22 executable fingerprint drift tests
+        run: pnpm test:db:issue22-fingerprints
       - run: pnpm db:lint
       - run: pnpm db:test
       - name: Install Chromium for real registration journey

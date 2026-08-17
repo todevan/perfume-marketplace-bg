@@ -221,6 +221,7 @@ if ($baselineMode -eq 'pristine') {
   Assert-Exact ([int]$application.brands -eq 196 -and [int]$application.aliases -eq 48 -and [int]$application.catalog_memberships -eq 335) 'Migrated catalogue baseline differs.'
   $actualFingerprints = [ordered]@{
     relationsSha256 = $fingerprints.relations_sha256
+    storageAuthorizationSha256 = $fingerprints.storage_authorization_sha256
     typesSha256 = $fingerprints.types_sha256
     functionsSha256 = $fingerprints.functions_sha256
     policiesSha256 = $fingerprints.policies_sha256
@@ -230,38 +231,46 @@ if ($baselineMode -eq 'pristine') {
   Assert-Exact (($actualFingerprints | ConvertTo-Json -Compress) -ceq ($operatorManifest.migrated_inventory.definition_fingerprints | ConvertTo-Json -Compress)) 'Migrated definition/content fingerprints differ.'
   Assert-Exact ((@($fingerprints.application_table_counts) | ConvertTo-Json -Compress) -ceq (@($operatorManifest.migrated_inventory.application_table_counts) | ConvertTo-Json -Compress)) 'Migrated application-table inventory differs.'
   Assert-Exact (-not (@($fingerprints.application_table_counts) | Where-Object { [int64]$_.rows -ne 0 })) 'Migrated baseline contains application rows.'
-  $cleanupReceiptPath = Join-Path $repo '.superpowers\issue22-hosted-new-target\baseline-adoption-receipt.json'
+  $cleanupReceiptPath = Join-Path $repo '.superpowers\issue22-hosted-new-target\baseline-establishment-receipt.json'
   Assert-Exact (Test-Path -LiteralPath $cleanupReceiptPath) 'Migrated baseline cleanup receipt is missing.'
   $cleanupReceipt = Get-Content -LiteralPath $cleanupReceiptPath -Raw | ConvertFrom-Json
   Assert-Exact (
-    [int]$cleanupReceipt.receiptVersion -eq 2 -and
-    $cleanupReceipt.receiptKind -eq 'baseline-adoption' -and
+    [int]$cleanupReceipt.receiptVersion -eq 3 -and
+    $cleanupReceipt.receiptKind -eq 'baseline-establishment' -and
+    @('legacy-adoption', 'pristine-migration') -contains $cleanupReceipt.establishmentMode -and
     $cleanupReceipt.candidateSha -eq $safe.candidate_sha -and
     $cleanupReceipt.projectRef -eq $ref -and
     $cleanupReceipt.cloudflareAccountId -eq '0cb7373563c400a08bd46564320dd747' -and
     $cleanupReceipt.worker -eq 'perfume-marketplace-bg-issue22' -and
-    $cleanupReceipt.runId -eq '55ab019b-6818-42c8-8b0d-bf15864afe67' -and
-    $null -eq $cleanupReceipt.ledgerHash -and
-    $cleanupReceipt.finalStateProven -eq $true -and
-    $cleanupReceipt.adoptedPredecessorSha -eq 'a9d55c0ef1138dfb33c09328abdfa59bc3981cd0' -and
-    $cleanupReceipt.adoptedRecoverySha256 -eq '65a7312fe5a7829d7cd5850bc71bc3d29e57f40a991ba070c6523044b00518e3' -and
-    $cleanupReceipt.adoptedGeneratedConfigSha256 -eq 'afe2b4621b71c8a4a5bef19245084dfc3975ab6b0ee0f0d5af32ddf074e9b21f' -and
-    $cleanupReceipt.predecessorEvidenceMac -match '^[0-9a-f]{64}$' -and
+    $cleanupReceipt.originRunId -match '^[0-9a-f-]{36}$' -and
+    ($null -eq $cleanupReceipt.originLedgerSha256 -or $cleanupReceipt.originLedgerSha256 -match '^[0-9a-f]{64}$') -and
+    (
+      ($cleanupReceipt.establishmentMode -eq 'legacy-adoption' -and
+       $cleanupReceipt.originRunId -eq '55ab019b-6818-42c8-8b0d-bf15864afe67' -and
+       $null -eq $cleanupReceipt.originLedgerSha256 -and
+       $cleanupReceipt.adoptedEvidence.predecessorSha -eq 'a9d55c0ef1138dfb33c09328abdfa59bc3981cd0' -and
+       $cleanupReceipt.adoptedEvidence.recoverySha256 -eq '65a7312fe5a7829d7cd5850bc71bc3d29e57f40a991ba070c6523044b00518e3' -and
+       $cleanupReceipt.adoptedEvidence.generatedConfigSha256 -eq 'afe2b4621b71c8a4a5bef19245084dfc3975ab6b0ee0f0d5af32ddf074e9b21f' -and
+       $cleanupReceipt.adoptedEvidence.predecessorEvidenceMac -match '^[0-9a-f]{64}$') -or
+      ($cleanupReceipt.establishmentMode -eq 'pristine-migration' -and $null -eq $cleanupReceipt.adoptedEvidence)
+    ) -and
     $cleanupReceipt.payloadMac -match '^[0-9a-f]{64}$' -and
     $cleanupReceipt.etherealCredentialPersisted -eq $false -and
     [int64]$cleanupReceipt.maxSyntheticWorkerRequests -eq 587 -and
     [int64]$cleanupReceipt.maxSyntheticWorkerCpuMs -eq 17610000 -and
-    $cleanupReceipt.finalAuthDisabled -eq $true -and
-    [int]$cleanupReceipt.finalAuthUsers -eq 0 -and
-    [int]$cleanupReceipt.finalApplicationRows -eq 0 -and
-    [int]$cleanupReceipt.finalStorageBuckets -eq 4 -and
-    [int]$cleanupReceipt.finalStorageObjects -eq 0 -and
-    [int]$cleanupReceipt.finalWorkerSecrets -eq 0 -and
-    $cleanupReceipt.finalWidgetAbsent -eq $true -and
-    [int]$cleanupReceipt.finalMigrationCount -eq 18 -and
-    [int]$cleanupReceipt.finalCatalog.brands -eq 196 -and
-    [int]$cleanupReceipt.finalCatalog.aliases -eq 48 -and
-    [int]$cleanupReceipt.finalCatalog.memberships -eq 335
+    $cleanupReceipt.observedFinalState.baselineMode -eq 'migrated' -and
+    [int]$cleanupReceipt.observedFinalState.authUsers -eq 0 -and
+    [int]$cleanupReceipt.observedFinalState.applicationRows -eq 0 -and
+    [int]$cleanupReceipt.observedFinalState.storageBuckets -eq 4 -and
+    [int]$cleanupReceipt.observedFinalState.storageObjects -eq 0 -and
+    [int]$cleanupReceipt.observedFinalState.workerSecrets -eq 0 -and
+    $cleanupReceipt.observedFinalState.widgetAbsent -eq $true -and
+    $cleanupReceipt.observedFinalState.authDisabled -eq $true -and
+    [int]$cleanupReceipt.observedFinalState.migrationCount -eq 18 -and
+    [int]$cleanupReceipt.observedFinalState.catalog.brands -eq 196 -and
+    [int]$cleanupReceipt.observedFinalState.catalog.aliases -eq 48 -and
+    [int]$cleanupReceipt.observedFinalState.catalog.memberships -eq 335 -and
+    (($cleanupReceipt.observedFinalState.definitionFingerprints | ConvertTo-Json -Compress) -ceq ($operatorManifest.migrated_inventory.definition_fingerprints | ConvertTo-Json -Compress))
   ) 'Migrated baseline cleanup receipt attribution differs.'
   $receiptValidation = (& node (Join-Path $package 'validate-cleanup-receipt.mjs') $cleanupReceiptPath $safe.candidate_sha 2>&1 | Out-String)
   Assert-Exact ($LASTEXITCODE -eq 0 -and (($receiptValidation | ConvertFrom-Json).status -eq 'CLEANUP_RECEIPT_VALID')) 'Migrated baseline cleanup receipt hash/shape differs.'
@@ -274,6 +283,10 @@ Assert-Exact ($migrationSelfTest.status -eq 'LOCAL_READY' -and $migrationSelfTes
 
 $nativePreference = $PSNativeCommandUseErrorActionPreference
 $PSNativeCommandUseErrorActionPreference = $false
+$workerConfig = Get-Content -LiteralPath (Join-Path $package 'wrangler.issue22.jsonc') -Raw | ConvertFrom-Json
+$rollbackWorkerConfig = Get-Content -LiteralPath (Join-Path $package 'wrangler.issue22.rollback.jsonc') -Raw | ConvertFrom-Json
+Assert-Exact ($workerConfig.name -eq 'perfume-marketplace-bg-issue22' -and $workerConfig.account_id -eq '0cb7373563c400a08bd46564320dd747' -and $workerConfig.vars.EXPECTED_SUPABASE_PROJECT_REF -eq $ref -and $workerConfig.vars.PUBLIC_SUPABASE_URL -eq "https://$ref.supabase.co" -and $workerConfig.vars.TURNSTILE_EXPECTED_HOSTNAME -eq 'perfume-marketplace-bg-issue22.perfume-marketplace-bg.workers.dev') 'Tracked Worker config identity mismatch.'
+Assert-Exact ($rollbackWorkerConfig.name -eq 'perfume-marketplace-bg-issue22' -and $rollbackWorkerConfig.account_id -eq '0cb7373563c400a08bd46564320dd747') 'Tracked rollback Worker config identity mismatch.'
 $whoamiText = (& pnpm exec wrangler whoami --json 2>&1 | Out-String)
 Assert-Exact ($LASTEXITCODE -eq 0) 'Cloudflare identity lookup failed.'
 $whoami = $whoamiText | ConvertFrom-Json

@@ -68,6 +68,31 @@ export function fixedWorkerSecretCommands(config) {
 	});
 }
 
+/** @param {Record<string, any>} config @param {{requireProjectBindings?: boolean, requireMaterializedSitekey?: boolean}} options */
+export function assertExactWorkerConfig(config, options = {}) {
+	if (
+		!config ||
+		config.name !== TARGET.workerName ||
+		config.account_id !== TARGET.cloudflareAccountId
+	) throw new Error('Worker config identity mismatch');
+	if (options.requireProjectBindings) {
+		const vars = config.vars;
+		if (
+			!vars ||
+			vars.EXPECTED_SUPABASE_PROJECT_REF !== TARGET.projectRef ||
+			vars.PUBLIC_SUPABASE_URL !== `https://${TARGET.projectRef}.supabase.co` ||
+			vars.PUBLIC_APP_URL !== `https://${TARGET.workerHostname}` ||
+			vars.TURNSTILE_EXPECTED_HOSTNAME !== TARGET.workerHostname ||
+			(options.requireMaterializedSitekey && (
+				typeof vars.PUBLIC_TURNSTILE_SITE_KEY !== 'string' ||
+				vars.PUBLIC_TURNSTILE_SITE_KEY.length === 0 ||
+				vars.PUBLIC_TURNSTILE_SITE_KEY === '__ISSUE22_TURNSTILE_SITE_KEY__'
+			))
+		) throw new Error('Worker config project identity mismatch');
+	}
+	return config;
+}
+
 /**
  * @param {string[]} args
  * @param {() => void} assertLink
@@ -158,7 +183,7 @@ export function assertSafeInventory(value, expectedMigrationVersions = [], expec
 			JSON.stringify(value[runtimeField]) !== JSON.stringify(expectedMigratedInventory[manifestField])
 		)
 	) throw new Error('migrated provider inventory differs from the exact reviewed baseline');
-	const fingerprintFields = ['relationsSha256', 'typesSha256', 'functionsSha256', 'policiesSha256', 'triggersSha256', 'catalogSha256'];
+	const fingerprintFields = ['relationsSha256', 'storageAuthorizationSha256', 'typesSha256', 'functionsSha256', 'policiesSha256', 'triggersSha256', 'catalogSha256'];
 	if (
 		!value.definitionFingerprints ||
 		!expectedMigratedInventory.definition_fingerprints ||
@@ -212,37 +237,204 @@ export function assertFinalStorageState(buckets, objectCount) {
 	if (objectCount !== 0) throw new Error('final storage object inventory is not empty');
 }
 
+const RECOVERY_FIELDS = Object.freeze([
+	'recoveryVersion', 'candidateSha', 'projectRef', 'cloudflareAccountId', 'workerName', 'runId',
+	'widgetIntent', 'widgetSitekey', 'createdAt', 'updatedAt', 'authQuiescedAt', 'baselineEstablishmentMode',
+	'adoptedPredecessorSha', 'adoptedRecoverySha256', 'adoptedGeneratedConfigSha256', 'sealedFinalState',
+	'predecessorEvidenceMac', 'cleanupFinalStateProvenAt', 'ledgerSha256', 'generatedConfigSha256',
+	'retainedLedger', 'retainedGeneratedConfig', 'retainedLedgerSha256', 'retainedGeneratedConfigSha256'
+]);
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const SHA256 = /^[0-9a-f]{64}$/u;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+/** @param {Record<string, any>} recovery */
+function recoveryCore(recovery) {
+	return Object.fromEntries(RECOVERY_FIELDS.map((field) => [field, recovery[field]]));
+}
+
+/** @param {string | null | undefined} value */
+function validNullableSha(value) {
+	return value === null || SHA256.test(value ?? '');
+}
+
+/** @param {string | null | undefined} value */
+function sha256Text(value) {
+	return typeof value === 'string' ? createHash('sha256').update(value).digest('hex') : null;
+}
+
+/** @param {Record<string, any>} recovery @param {string} authenticationKey */
+export function sealRecoveryState(recovery, authenticationKey) {
+	const core = recoveryCore(recovery);
+	return sealRecoveryStateWithKey(core, deriveRecoverySealKey(authenticationKey, core.candidateSha));
+}
+
+/** @param {string} authenticationKey @param {string} candidateSha */
+export function deriveRecoverySealKey(authenticationKey, candidateSha) {
+	if (typeof authenticationKey !== 'string' || !/^sbp_/u.test(authenticationKey) || authenticationKey.length < 24 || !/^[0-9a-f]{40}$/u.test(candidateSha ?? '')) {
+		throw new Error('recovery authentication key is unavailable');
+	}
+	return createHmac('sha256', authenticationKey).update(`issue22:recovery-key:v1\0${candidateSha}`).digest('hex');
+}
+
+/** @param {Record<string, any>} recovery @param {string} recoveryKey */
+export function sealRecoveryStateWithKey(recovery, recoveryKey) {
+	if (!SHA256.test(recoveryKey ?? '')) throw new Error('recovery seal key is unavailable');
+	const core = recoveryCore(recovery);
+	const recoveryMac = createHmac('sha256', recoveryKey).update(`issue22:current-recovery:v2\0${JSON.stringify(core)}`).digest('hex');
+	return { ...core, recoveryMac };
+}
+
+/** @param {Record<string, any>} core @param {unknown} actual @param {string | undefined} authenticationKey */
+function verifyRecoveryMac(core, actual, authenticationKey) {
+	if (typeof authenticationKey !== 'string') return false;
+	try {
+		const recoveryKey = deriveRecoverySealKey(authenticationKey, core.candidateSha);
+		const expected = Buffer.from(sealRecoveryStateWithKey(core, recoveryKey).recoveryMac, 'hex');
+		const received = Buffer.from(typeof actual === 'string' ? actual : '', 'hex');
+		return expected.length === received.length && timingSafeEqual(expected, received);
+	} catch {
+		return false;
+	}
+}
+
+/** @param {Record<string, any>} core @param {unknown} actual @param {string | undefined} recoveryKey */
+function verifyRecoveryMacWithKey(core, actual, recoveryKey) {
+	if (typeof recoveryKey !== 'string' || !SHA256.test(recoveryKey)) return false;
+	try {
+		const expected = Buffer.from(sealRecoveryStateWithKey(core, recoveryKey).recoveryMac, 'hex');
+		const received = Buffer.from(typeof actual === 'string' ? actual : '', 'hex');
+		return expected.length === received.length && timingSafeEqual(expected, received);
+	} catch {
+		return false;
+	}
+}
+
+/** @param {Record<string, any>} recovery @param {string} candidateSha @param {(core: Record<string, any>, actual: unknown) => boolean} verifyMac */
+function assertCurrentRecoveryEnvelope(recovery, candidateSha, verifyMac) {
+	const core = recoveryCore(recovery);
+	if (
+		!recovery || recovery.candidateSha !== candidateSha ||
+		JSON.stringify(Object.keys(recovery)) !== JSON.stringify([...RECOVERY_FIELDS, 'recoveryMac']) ||
+		recovery.recoveryVersion !== 2 ||
+		recovery.projectRef !== TARGET.projectRef ||
+		recovery.cloudflareAccountId !== TARGET.cloudflareAccountId ||
+		recovery.workerName !== TARGET.workerName ||
+		!UUID.test(recovery.runId ?? '') ||
+		recovery.widgetIntent?.name !== `aromatika-issue22-${recovery.runId.slice(0, 12)}` ||
+		recovery.widgetIntent?.domain !== TARGET.workerHostname ||
+		!(recovery.widgetSitekey === null || (typeof recovery.widgetSitekey === 'string' && recovery.widgetSitekey.length > 0)) ||
+		!ISO_TIMESTAMP.test(recovery.createdAt ?? '') ||
+		!ISO_TIMESTAMP.test(recovery.updatedAt ?? '') ||
+		new Date(recovery.updatedAt).getTime() < new Date(recovery.createdAt).getTime() ||
+		!(recovery.authQuiescedAt === null || ISO_TIMESTAMP.test(recovery.authQuiescedAt ?? '')) ||
+		![null, 'pristine-migration', 'migrated-reuse'].includes(recovery.baselineEstablishmentMode) ||
+		typeof recovery.sealedFinalState !== 'boolean' ||
+		!(recovery.cleanupFinalStateProvenAt === null || ISO_TIMESTAMP.test(recovery.cleanupFinalStateProvenAt ?? '')) ||
+		!validNullableSha(recovery.ledgerSha256) ||
+		!validNullableSha(recovery.generatedConfigSha256) ||
+		!validNullableSha(recovery.retainedLedgerSha256) ||
+		!validNullableSha(recovery.retainedGeneratedConfigSha256) ||
+		sha256Text(recovery.retainedLedger) !== recovery.retainedLedgerSha256 ||
+		sha256Text(recovery.retainedGeneratedConfig) !== recovery.retainedGeneratedConfigSha256 ||
+		!verifyMac(core, recovery.recoveryMac)
+	) throw new Error('recovery attribution mismatch');
+	return core;
+}
+
+/** @param {Record<string, any>} recovery @param {string} candidateSha @param {string | undefined} authenticationKey */
+export function assertRecoveryEnvelope(recovery, candidateSha, authenticationKey) {
+	if (!recovery || !/^[0-9a-f]{40}$/u.test(candidateSha)) throw new Error('recovery attribution mismatch');
+	assertCurrentRecoveryEnvelope(recovery, candidateSha, (core, actual) => verifyRecoveryMac(core, actual, authenticationKey));
+}
+
+/** @param {Record<string, any>} recovery @param {string} candidateSha @param {string | undefined} recoveryKey */
+export function assertRecoveryEnvelopeWithKey(recovery, candidateSha, recoveryKey) {
+	if (!recovery || !/^[0-9a-f]{40}$/u.test(candidateSha)) throw new Error('recovery attribution mismatch');
+	assertCurrentRecoveryEnvelope(recovery, candidateSha, (core, actual) => verifyRecoveryMacWithKey(core, actual, recoveryKey));
+}
+
+/** @param {Record<string, any>} recovery @param {{ledgerContent?: string, generatedConfigContent?: string, updatedAt: string}} transition */
+function transitionRecoveryArtifacts(recovery, transition) {
+	const ledgerContent = Object.hasOwn(transition, 'ledgerContent') ? transition.ledgerContent : recovery.retainedLedger;
+	const generatedConfigContent = Object.hasOwn(transition, 'generatedConfigContent') ? transition.generatedConfigContent : recovery.retainedGeneratedConfig;
+	return {
+		...recovery,
+		updatedAt: transition.updatedAt,
+		ledgerSha256: sha256Text(ledgerContent),
+		generatedConfigSha256: sha256Text(generatedConfigContent),
+		retainedLedger: ledgerContent,
+		retainedGeneratedConfig: generatedConfigContent,
+		retainedLedgerSha256: sha256Text(ledgerContent),
+		retainedGeneratedConfigSha256: sha256Text(generatedConfigContent)
+	};
+}
+
+/** @param {Record<string, any>} recovery @param {string} candidateSha @param {{ledgerContent?: string, generatedConfigContent?: string, updatedAt: string}} transition @param {string} authenticationKey */
+export function sealRecoveryArtifactTransition(recovery, candidateSha, transition, authenticationKey) {
+	assertRecoveryEnvelope(recovery, candidateSha, authenticationKey);
+	return sealRecoveryState(transitionRecoveryArtifacts(recovery, transition), authenticationKey);
+}
+
+/** @param {Record<string, any>} recovery @param {string} candidateSha @param {{ledgerContent?: string, generatedConfigContent?: string, updatedAt: string}} transition @param {string} recoveryKey */
+export function sealRecoveryArtifactTransitionWithKey(recovery, candidateSha, transition, recoveryKey) {
+	assertRecoveryEnvelopeWithKey(recovery, candidateSha, recoveryKey);
+	return sealRecoveryStateWithKey(transitionRecoveryArtifacts(recovery, transition), recoveryKey);
+}
+
+/** @param {Record<string, any>} recovery @param {{ledgerContent: string | null, generatedConfigContent: string | null}} observed */
+export function reconcileAuthenticatedRecoveryArtifacts(recovery, observed) {
+	/** @param {string | null} expectedSha @param {string | null} retained @param {string | null} observedContent @param {string} label */
+	const resolve = (expectedSha, retained, observedContent, label) => {
+		if (sha256Text(observedContent) === expectedSha) return { content: observedContent, restore: false };
+		if (typeof retained === 'string' && sha256Text(retained) === expectedSha) return { content: retained, restore: true };
+		throw new Error(`authenticated ${label} artifact is unavailable`);
+	};
+	const ledger = resolve(recovery.ledgerSha256, recovery.retainedLedger, observed.ledgerContent, 'ledger');
+	const config = resolve(recovery.generatedConfigSha256, recovery.retainedGeneratedConfig, observed.generatedConfigContent, 'generated config');
+	return {
+		ledgerContent: ledger.content,
+		generatedConfigContent: config.content,
+		restoreLedger: ledger.restore,
+		restoreGeneratedConfig: config.restore
+	};
+}
+
+/** @param {Record<string, string | undefined>} source @param {Record<string, string>} extra */
+export function buildIssue22ChildEnv(source, extra = {}) {
+	const keys = ['PATH', 'PATHEXT', 'SYSTEMROOT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOME', 'COMSPEC'];
+	/** @type {Record<string, string>} */
+	const environment = { NO_COLOR: '1' };
+	for (const key of keys) if (source[key]) environment[key] = source[key];
+	return { ...environment, ...extra };
+}
+
+/**
+ * @param {{execute: (markCleanupRequired: () => void) => Promise<void>, cleanup: () => Promise<void>, emitSuccess: () => unknown}} steps
+ */
+export async function runHostedExecutionWithRequiredCleanup(steps) {
+	let cleanupRequired = false;
+	const markCleanupRequired = () => { cleanupRequired = true; };
+	try {
+		await steps.execute(markCleanupRequired);
+	} finally {
+		if (cleanupRequired) await steps.cleanup();
+	}
+	return steps.emitSuccess();
+}
+
 /**
  * @param {Record<string, any> | null} recovery
  * @param {string} candidateSha
- * @param {{recoverySha256?: string, generatedConfigSha256?: string, authenticationKey?: string}} artifacts
+ * @param {{recoverySha256?: string, ledgerSha256?: string | null, generatedConfigSha256?: string | null, authenticationKey?: string}} artifacts
  */
 export function assertRecoveryAttribution(recovery, candidateSha, artifacts = {}) {
-	if (
-		!recovery ||
-		!/^[0-9a-f]{40}$/u.test(candidateSha) ||
-		recovery.projectRef !== TARGET.projectRef ||
-		recovery.cloudflareAccountId !== TARGET.cloudflareAccountId ||
-		recovery.workerName !== TARGET.workerName
-	) {
-		throw new Error('recovery attribution mismatch');
-	}
-	if (recovery.candidateSha === candidateSha) {
-		const hasAdoption = [
-			recovery.adoptedPredecessorSha,
-			recovery.adoptedRecoverySha256,
-			recovery.adoptedGeneratedConfigSha256
-		].some((value) => value != null);
-		if (!hasAdoption) return { adopted: false, predecessorSha: null };
+	if (!recovery || !/^[0-9a-f]{40}$/u.test(candidateSha)) throw new Error('recovery attribution mismatch');
+	if (recovery.candidateSha !== candidateSha) {
 		if (
+			recovery.candidateSha !== KNOWN_FAILED_RECOVERY.predecessorSha ||
 			recovery.runId !== KNOWN_FAILED_RECOVERY.runId ||
-			recovery.adoptedPredecessorSha !== KNOWN_FAILED_RECOVERY.predecessorSha ||
-			recovery.adoptedRecoverySha256 !== KNOWN_FAILED_RECOVERY.recoverySha256 ||
-			recovery.adoptedGeneratedConfigSha256 !== KNOWN_FAILED_RECOVERY.generatedConfigSha256 ||
-			recovery.sealedFinalState !== true ||
-			!verifyMac('issue22:recovery-adoption:v1', predecessorEvidence(), recovery.predecessorEvidenceMac, artifacts.authenticationKey) ||
-			!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(recovery.cleanupFinalStateProvenAt ?? '') ||
-			recovery.retainedLedger != null ||
+			artifacts.recoverySha256 !== KNOWN_FAILED_RECOVERY.recoverySha256 ||
 			artifacts.generatedConfigSha256 !== KNOWN_FAILED_RECOVERY.generatedConfigSha256
 		) throw new Error('recovery attribution mismatch');
 		return {
@@ -252,18 +444,40 @@ export function assertRecoveryAttribution(recovery, candidateSha, artifacts = {}
 			generatedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256
 		};
 	}
+
+	assertRecoveryEnvelope(recovery, candidateSha, artifacts.authenticationKey);
 	if (
-		recovery.candidateSha !== KNOWN_FAILED_RECOVERY.predecessorSha ||
-		recovery.runId !== KNOWN_FAILED_RECOVERY.runId ||
-		artifacts.recoverySha256 !== KNOWN_FAILED_RECOVERY.recoverySha256 ||
-		artifacts.generatedConfigSha256 !== KNOWN_FAILED_RECOVERY.generatedConfigSha256
+		recovery.ledgerSha256 !== (artifacts.ledgerSha256 ?? null) ||
+		recovery.generatedConfigSha256 !== (artifacts.generatedConfigSha256 ?? null)
 	) throw new Error('recovery attribution mismatch');
-	return {
-		adopted: true,
-		predecessorSha: KNOWN_FAILED_RECOVERY.predecessorSha,
-		recoverySha256: KNOWN_FAILED_RECOVERY.recoverySha256,
-		generatedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256
-	};
+
+	const hasAdoption = [recovery.adoptedPredecessorSha, recovery.adoptedRecoverySha256, recovery.adoptedGeneratedConfigSha256].some((value) => value !== null);
+	if (hasAdoption) {
+		if (
+			recovery.runId !== KNOWN_FAILED_RECOVERY.runId ||
+			recovery.adoptedPredecessorSha !== KNOWN_FAILED_RECOVERY.predecessorSha ||
+			recovery.adoptedRecoverySha256 !== KNOWN_FAILED_RECOVERY.recoverySha256 ||
+			recovery.adoptedGeneratedConfigSha256 !== KNOWN_FAILED_RECOVERY.generatedConfigSha256 ||
+			recovery.sealedFinalState !== true ||
+			!verifyMac('issue22:recovery-adoption:v1', predecessorEvidence(), recovery.predecessorEvidenceMac, artifacts.authenticationKey) ||
+			!ISO_TIMESTAMP.test(recovery.cleanupFinalStateProvenAt ?? '') ||
+			recovery.retainedLedger !== null ||
+			recovery.generatedConfigSha256 !== KNOWN_FAILED_RECOVERY.generatedConfigSha256
+		) throw new Error('recovery attribution mismatch');
+		return {
+			adopted: true,
+			predecessorSha: KNOWN_FAILED_RECOVERY.predecessorSha,
+			recoverySha256: KNOWN_FAILED_RECOVERY.recoverySha256,
+			generatedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256
+		};
+	}
+	if (
+		recovery.adoptedPredecessorSha !== null ||
+		recovery.adoptedRecoverySha256 !== null ||
+		recovery.adoptedGeneratedConfigSha256 !== null ||
+		recovery.predecessorEvidenceMac !== null
+	) throw new Error('recovery attribution mismatch');
+	return { adopted: false, predecessorSha: null };
 }
 
 function predecessorEvidence() {
@@ -295,62 +509,89 @@ function verifyMac(domain, payload, actual, authenticationKey) {
 	}
 }
 
-/** @param {string} candidateSha @param {string} at @param {string} authenticationKey */
-function baselineReceiptCore(candidateSha, at, authenticationKey) {
-	return {
-		receiptVersion: 2,
-		receiptKind: 'baseline-adoption',
-		at,
-		candidateSha,
-		projectRef: TARGET.projectRef,
-		cloudflareAccountId: TARGET.cloudflareAccountId,
-		worker: TARGET.workerName,
-		runId: KNOWN_FAILED_RECOVERY.runId,
-		ledgerHash: null,
-		finalStateProven: true,
-		adoptedPredecessorSha: KNOWN_FAILED_RECOVERY.predecessorSha,
-		adoptedRecoverySha256: KNOWN_FAILED_RECOVERY.recoverySha256,
-		adoptedGeneratedConfigSha256: KNOWN_FAILED_RECOVERY.generatedConfigSha256,
-		predecessorEvidenceMac: computeMac('issue22:recovery-adoption:v1', predecessorEvidence(), authenticationKey),
-		etherealCredentialPersisted: false,
-		maxSyntheticWorkerRequests: OPERATOR_CAPACITY_BUDGET.totalRequests,
-		maxSyntheticWorkerCpuMs: OPERATOR_CAPACITY_BUDGET.totalCpuMs,
-		finalAuthDisabled: true,
-		finalAuthUsers: 0,
-		finalApplicationRows: 0,
-		finalStorageBuckets: EXPECTED_STORAGE_BUCKETS.length,
-		finalStorageObjects: 0,
-		finalWorkerSecrets: 0,
-		finalWidgetAbsent: true,
-		finalMigrationCount: 18,
-		finalCatalog: CATALOG_BASELINE
-	};
+const FINGERPRINT_FIELDS = Object.freeze(['relationsSha256', 'storageAuthorizationSha256', 'typesSha256', 'functionsSha256', 'policiesSha256', 'triggersSha256', 'catalogSha256']);
+const OBSERVED_STATE_FIELDS = Object.freeze(['baselineMode', 'migrationCount', 'storageBuckets', 'storageObjects', 'catalog', 'authUsers', 'applicationRows', 'workerSecrets', 'widgetAbsent', 'authDisabled', 'definitionFingerprints']);
+
+/** @param {Record<string, any>} value */
+function assertObservedFinalState(value) {
+	if (
+		!value ||
+		JSON.stringify(Object.keys(value)) !== JSON.stringify(OBSERVED_STATE_FIELDS) ||
+		!['pristine', 'migrated'].includes(value.baselineMode) ||
+		value.storageObjects !== 0 || value.authUsers !== 0 || value.applicationRows !== 0 || value.workerSecrets !== 0 ||
+		value.widgetAbsent !== true || value.authDisabled !== true
+	) throw new Error('observed final state mismatch');
+	if (value.baselineMode === 'pristine') {
+		if (
+			value.migrationCount !== 0 || value.storageBuckets !== 0 ||
+			JSON.stringify(value.catalog) !== JSON.stringify({ brands: 0, aliases: 0, memberships: 0 }) ||
+			value.definitionFingerprints !== null
+		) throw new Error('observed final state mismatch');
+	} else if (
+		value.migrationCount !== 18 || value.storageBuckets !== EXPECTED_STORAGE_BUCKETS.length ||
+		JSON.stringify(value.catalog) !== JSON.stringify(CATALOG_BASELINE) ||
+		!value.definitionFingerprints ||
+		FINGERPRINT_FIELDS.some((field) => !SHA256.test(value.definitionFingerprints[field] ?? '')) ||
+		JSON.stringify(Object.keys(value.definitionFingerprints)) !== JSON.stringify(FINGERPRINT_FIELDS)
+	) throw new Error('observed final state mismatch');
+	return value;
 }
 
 /** @param {Record<string, any> | null} receipt @param {string} candidateSha @param {string} authenticationKey */
 export function assertCleanupReceiptForMigratedBaseline(receipt, candidateSha, authenticationKey) {
-	if (!receipt || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(receipt.at ?? '')) {
+	if (!receipt || !ISO_TIMESTAMP.test(receipt.at ?? '')) {
 		throw new Error('migrated baseline cleanup receipt mismatch');
 	}
-	const core = baselineReceiptCore(candidateSha, receipt.at, authenticationKey);
-	const expectedKeys = [...Object.keys(core), 'payloadMac'];
+	const core = {
+		receiptVersion: 3,
+		receiptKind: 'baseline-establishment',
+		establishmentMode: receipt.establishmentMode,
+		at: receipt.at,
+		candidateSha,
+		projectRef: TARGET.projectRef,
+		cloudflareAccountId: TARGET.cloudflareAccountId,
+		worker: TARGET.workerName,
+		originRunId: receipt.originRunId,
+		originLedgerSha256: receipt.originLedgerSha256,
+		adoptedEvidence: receipt.adoptedEvidence,
+		etherealCredentialPersisted: false,
+		maxSyntheticWorkerRequests: OPERATOR_CAPACITY_BUDGET.totalRequests,
+		maxSyntheticWorkerCpuMs: OPERATOR_CAPACITY_BUDGET.totalCpuMs,
+		observedFinalState: receipt.observedFinalState
+	};
+	try { assertObservedFinalState(core.observedFinalState); } catch { throw new Error('migrated baseline cleanup receipt mismatch'); }
 	if (
-		JSON.stringify(Object.keys(receipt)) !== JSON.stringify(expectedKeys) ||
+		core.observedFinalState.baselineMode !== 'migrated' ||
+		!UUID.test(core.originRunId ?? '') ||
+		!validNullableSha(core.originLedgerSha256) ||
+		!['legacy-adoption', 'pristine-migration'].includes(core.establishmentMode)
+	) throw new Error('migrated baseline cleanup receipt mismatch');
+	if (core.establishmentMode === 'legacy-adoption') {
+		if (
+			core.originRunId !== KNOWN_FAILED_RECOVERY.runId || core.originLedgerSha256 !== null ||
+			core.adoptedEvidence?.predecessorSha !== KNOWN_FAILED_RECOVERY.predecessorSha ||
+			core.adoptedEvidence?.recoverySha256 !== KNOWN_FAILED_RECOVERY.recoverySha256 ||
+			core.adoptedEvidence?.generatedConfigSha256 !== KNOWN_FAILED_RECOVERY.generatedConfigSha256 ||
+			!verifyMac('issue22:recovery-adoption:v1', predecessorEvidence(), core.adoptedEvidence?.predecessorEvidenceMac, authenticationKey)
+		) throw new Error('migrated baseline cleanup receipt mismatch');
+	} else if (core.adoptedEvidence !== null) throw new Error('migrated baseline cleanup receipt mismatch');
+	if (
+		JSON.stringify(Object.keys(receipt)) !== JSON.stringify([...Object.keys(core), 'payloadMac']) ||
 		JSON.stringify(Object.fromEntries(Object.keys(core).map((key) => [key, receipt[key]]))) !== JSON.stringify(core) ||
-		!verifyMac('issue22:baseline-adoption:v1', core, receipt.payloadMac, authenticationKey)
+		!verifyMac('issue22:baseline-establishment:v1', core, receipt.payloadMac, authenticationKey)
 	) throw new Error('migrated baseline cleanup receipt mismatch');
 }
 
-/** @param {Record<string, any> | null} receipt @param {string} candidateSha @param {string} runId @param {string} authenticationKey */
-export function assertCurrentCleanupReceipt(receipt, candidateSha, runId, authenticationKey) {
+/** @param {Record<string, any> | null} receipt @param {string} candidateSha @param {string} runId @param {string} authenticationKey @param {Record<string, any>} expectedObservedState */
+export function assertCurrentCleanupReceipt(receipt, candidateSha, runId, authenticationKey, expectedObservedState) {
 	if (
 		!receipt ||
-		!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(receipt.at ?? '') ||
+		!ISO_TIMESTAMP.test(receipt.at ?? '') ||
 		receipt.runId !== runId ||
-		(receipt.ledgerHash !== null && !/^[0-9a-f]{64}$/u.test(receipt.ledgerHash ?? ''))
+		!validNullableSha(receipt.ledgerSha256)
 	) throw new Error('current cleanup receipt mismatch');
 	const core = {
-		receiptVersion: 2,
+		receiptVersion: 3,
 		receiptKind: 'current-run-cleanup',
 		at: receipt.at,
 		candidateSha,
@@ -358,40 +599,36 @@ export function assertCurrentCleanupReceipt(receipt, candidateSha, runId, authen
 		cloudflareAccountId: TARGET.cloudflareAccountId,
 		worker: TARGET.workerName,
 		runId,
-		ledgerHash: receipt.ledgerHash,
-		finalStateProven: true,
+		ledgerSha256: receipt.ledgerSha256,
 		etherealCredentialPersisted: false,
 		maxSyntheticWorkerRequests: OPERATOR_CAPACITY_BUDGET.totalRequests,
 		maxSyntheticWorkerCpuMs: OPERATOR_CAPACITY_BUDGET.totalCpuMs,
-		finalAuthDisabled: true,
-		finalAuthUsers: 0,
-		finalApplicationRows: 0,
-		finalStorageBuckets: EXPECTED_STORAGE_BUCKETS.length,
-		finalStorageObjects: 0,
-		finalWorkerSecrets: 0,
-		finalWidgetAbsent: true,
-		finalMigrationCount: 18,
-		finalCatalog: CATALOG_BASELINE
+		observedFinalState: receipt.observedFinalState
 	};
+	try {
+		assertObservedFinalState(core.observedFinalState);
+		assertObservedFinalState(expectedObservedState);
+	} catch { throw new Error('current cleanup receipt mismatch'); }
 	if (
 		JSON.stringify(Object.keys(receipt)) !== JSON.stringify([...Object.keys(core), 'payloadMac']) ||
 		JSON.stringify(Object.fromEntries(Object.keys(core).map((key) => [key, receipt[key]]))) !== JSON.stringify(core) ||
+		JSON.stringify(core.observedFinalState) !== JSON.stringify(expectedObservedState) ||
 		!verifyMac('issue22:current-run-cleanup:v1', core, receipt.payloadMac, authenticationKey)
 	) throw new Error('current cleanup receipt mismatch');
 }
 
 /**
  * Preserve the one immutable receipt that proves the adopted predecessor was fully cleaned.
- * @param {{existing: Record<string, any> | null, authenticatedAdoption: Record<string, any> | null, attribution: {adopted: boolean}, candidateSha: string, authenticationKey: string}} options
+ * @param {{existing: Record<string, any> | null, authenticatedEstablishment: Record<string, any> | null, candidateSha: string, authenticationKey: string}} options
  */
 export function selectBaselineCleanupReceipt(options) {
 	if (options.existing) {
 		assertCleanupReceiptForMigratedBaseline(options.existing, options.candidateSha, options.authenticationKey);
 		return options.existing;
 	}
-	if (options.attribution?.adopted === true) {
-		assertCleanupReceiptForMigratedBaseline(options.authenticatedAdoption, options.candidateSha, options.authenticationKey);
-		return options.authenticatedAdoption;
+	if (options.authenticatedEstablishment) {
+		assertCleanupReceiptForMigratedBaseline(options.authenticatedEstablishment, options.candidateSha, options.authenticationKey);
+		return options.authenticatedEstablishment;
 	}
 	return null;
 }
@@ -511,6 +748,20 @@ export function resolveWidgetForCleanup(intent, widgets) {
 	const matches = widgets.filter((item) => item?.name === intent.name && item?.domains?.includes(intent.domain));
 	if (matches.length > 1) throw new Error('ambiguous widget recovery state');
 	return matches[0] ?? null;
+}
+
+/** @param {{name: string, domain: string}} intent @param {string | null | undefined} savedSitekey @param {Array<Record<string, any>>} widgets */
+export function resolveSavedWidgetForCleanup(intent, savedSitekey, widgets) {
+	if (savedSitekey) {
+		const matches = widgets.filter((item) => item?.sitekey === savedSitekey);
+		if (matches.length !== 1) throw new Error('saved widget sitekey recovery state is ambiguous');
+		const [widget] = matches;
+		if (widget.name !== intent?.name || !widget.domains?.includes(intent?.domain)) {
+			throw new Error('saved widget sitekey does not match recovery intent');
+		}
+		return widget;
+	}
+	return resolveWidgetForCleanup(intent, widgets);
 }
 
 /** @param {() => Promise<unknown>} operation @param {number} attempts */
