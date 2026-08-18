@@ -718,7 +718,7 @@ export function assertServiceRoleOperation(operation) {
  *   config: HostedOperatorConfig,
  *   adapters: {
  *     provisionActor?: (scope: { role: string }) => Promise<{ role: string, userId: string, createdAt: string }>,
- *     attestActor?: (scope: { role: string, userId: string }) => Promise<{ role: string, userId: string, createdAt: string }>,
+ *     attestActor?: (scope: { manifest: HostedRunManifest, role: string, userId: string }) => Promise<ManifestActor>,
  *     inspectManifest: (scope: { target: typeof HOSTED_STAGING, runId: string, manifest: HostedRunManifest }) => Promise<InventoryCounts>,
  *     backdateExactUpload: (scope: { projectRef: string, runId: string, uploadId: string, uploaderId: string, objectPath: string }) => Promise<void>,
  *     uploadExactObject?: (scope: { manifest: HostedRunManifest, uploadId: string, bytes: Uint8Array }) => Promise<void>,
@@ -751,14 +751,14 @@ export function createHostedEvidenceOperator({ config, adapters }) {
 			}
 			return adapters.provisionActor({ role });
 		},
-		/** @param {string} role @param {string} userId */
-		async attestFreshActor(role, userId) {
+		/** @param {HostedRunManifest} manifest @param {string} role @param {string} userId */
+		async attestFreshActor(manifest, role, userId) {
 			assertServiceRoleOperation('inspect');
-			requireUuid(userId, 'actor ID');
+			exactFreshManifestActor(config, manifest, role, userId);
 			if (!Object.hasOwn(config.actorRoles, role) || !adapters.attestActor) {
 				throw new HostedEvidenceOperatorError('actor provenance adapter is unavailable');
 			}
-			return adapters.attestActor({ role, userId });
+			return adapters.attestActor({ manifest, role, userId });
 		},
 		/** @param {HostedRunManifest} manifest */
 		async inspect(manifest) {
@@ -2084,22 +2084,23 @@ export function createSupabaseHostedEvidenceAdapters({
 		return receipt;
 	}
 
-	/** @param {{ role: string, userId: string }} scope */
+	/** @param {{ manifest: HostedRunManifest, role: string, userId: string }} scope */
 	async function attestActor(scope) {
+		const actor = exactFreshManifestActor(
+			config,
+			scope.manifest,
+			scope.role,
+			scope.userId
+		);
 		const result = await serviceClient.auth.admin.getUserById(scope.userId);
 		const user = result.data.user;
 		if (result.error || !user || typeof user.created_at !== 'string') {
 			throw new HostedEvidenceOperatorError('fresh hosted actor provenance is unavailable');
 		}
-		const receipt = Object.freeze({
-			role: scope.role,
-			userId: scope.userId,
-			createdAt: user.created_at
-		});
-		if (!actorProvenanceMatches(config, receipt, user)) {
+		if (!actorProvenanceMatches(config, actor, user)) {
 			throw new HostedEvidenceOperatorError('fresh hosted actor provenance is invalid');
 		}
-		return receipt;
+		return actor;
 	}
 
 	/** @param {{ manifest: HostedRunManifest }} scope */
