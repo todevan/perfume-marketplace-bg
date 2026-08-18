@@ -34,7 +34,7 @@ jobs:
         run: pnpm test:db:contracts
       - name: Run Svelte checks
         run: pnpm check
-      - run: pnpm exec playwright install --with-deps chromium webkit
+      - run: pnpm exec playwright install --with-deps chromium
       - name: Build once and run stable Playwright suite
         run: pnpm test:e2e
       - name: Validate staging Cloudflare bundle
