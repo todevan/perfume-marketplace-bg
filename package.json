@@ -34,6 +34,7 @@
     "db:staging:types:check": "node scripts/generate-hosted-types.mjs --check",
     "db:staging:runtime:check": "node scripts/verify-hosted-runtime-inventory.mjs --check",
     "a9:staging:provision": "node scripts/hosted-a9-runner.mjs",
+    "gate3:recovery": "node scripts/hosted-abandoned-run-recovery-cli.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "seed:catalog": "node scripts/seed-catalog.mjs",
     "seed:staging": "node scripts/staging-db-operator.mjs seed",
