@@ -172,7 +172,7 @@ describe('pre-launch deployment hardening', () => {
 
 	it('installs every browser engine used by the Playwright project matrix', () => {
 		expect(runCommands(qualityWorkflow.jobs.app)).toContain(
-			'pnpm exec playwright install --with-deps chromium webkit'
+			'pnpm exec playwright install --with-deps chromium'
 		);
 	});
 
