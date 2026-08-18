@@ -19,6 +19,7 @@ type WorkflowStep = {
 	id?: string;
 	if?: string;
 	run?: string;
+	env?: Record<string, string>;
 };
 type WorkflowJob = {
 	if?: string;
@@ -354,6 +355,9 @@ describe('manual staging deploy workflow smoke contract', () => {
 		expect(
 			job.steps.find((step) => step.run === 'node scripts/smoke-staging.mjs --mode rollback')?.if
 		).toBe("failure() && steps.rollback.outcome == 'success'");
+		expect(
+			job.steps.find((step) => step.run === 'node scripts/smoke-staging.mjs --mode rollback')?.env
+		).toEqual({ STAGING_SMOKE_ATTEMPTS: '12' });
 		expect(commands.filter((command) => command === 'pnpm exec wrangler deploy --env staging')).toHaveLength(
 			1
 		);
