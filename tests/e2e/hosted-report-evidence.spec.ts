@@ -393,7 +393,7 @@ async function submitEvidenceReport(
 	const responsePromise = page.waitForResponse(
 		(response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/report'
 	);
-	await page.locator('form button[type="submit"]').click();
+	await page.getByRole('button', { name: 'Изпрати сигнала' }).click();
 	const response = await responsePromise;
 	const receipt = workerReceiptFromHeaders(response.status(), await response.allHeaders());
 	if (receipt.status >= 400) throw new Error('Synthetic report submission failed.');
@@ -901,7 +901,7 @@ test.describe('hosted report-evidence security matrix', () => {
 				const rejectionPromise = reporterPage.waitForResponse(
 					(response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/report'
 				);
-				await reporterPage.locator('form button[type="submit"]').click();
+				await reporterPage.getByRole('button', { name: 'Изпрати сигнала' }).click();
 				const rejectionResponse = await rejectionPromise;
 				const rejectionReceipt = workerReceiptFromHeaders(
 					rejectionResponse.status(),
