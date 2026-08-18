@@ -566,18 +566,18 @@ test.describe('hosted report-evidence security matrix', () => {
 		if (new Set([reporterId, crossUserId, assignedModeratorId, unassignedModeratorId]).size !== 4) {
 			throw new Error('Hosted synthetic actors are not distinct.');
 		}
-		const [reporterReceipt, crossUserReceipt, assignedReceipt, unassignedReceipt] =
-			await Promise.all([
-				operator.attestFreshActor('reporter', reporterId),
-				operator.attestFreshActor('cross-user', crossUserId),
-				operator.attestFreshActor('assigned-moderator', assignedModeratorId),
-				operator.attestFreshActor('unassigned-moderator', unassignedModeratorId)
-			]);
-
 		let manifest: RunManifest = await loadHostedRunManifest(
 			configuration,
 			requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH')
 		);
+		const [reporterReceipt, crossUserReceipt, assignedReceipt, unassignedReceipt] =
+			await Promise.all([
+				operator.attestFreshActor(manifest, 'reporter', reporterId),
+				operator.attestFreshActor(manifest, 'cross-user', crossUserId),
+				operator.attestFreshActor(manifest, 'assigned-moderator', assignedModeratorId),
+				operator.attestFreshActor(manifest, 'unassigned-moderator', unassignedModeratorId)
+			]);
+
 		const attestedActors = [reporterReceipt, crossUserReceipt, assignedReceipt, unassignedReceipt];
 		if (
 			manifest.credentialStoreId !== credentialStore.credentialStoreId ||
