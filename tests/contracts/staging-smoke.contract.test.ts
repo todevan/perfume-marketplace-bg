@@ -292,6 +292,7 @@ describe('hosted staging rollback smoke runner', () => {
 		) as unknown as typeof fetch;
 		const receipts = await runStagingRollbackSmoke({
 			origin: server.origin,
+			expectedGitSha,
 			attempts: 1,
 			fetchImpl,
 			logger: { log() {}, warn() {} }
@@ -308,6 +309,7 @@ describe('hosted staging rollback smoke runner', () => {
 		await expect(
 			runStagingRollbackSmoke({
 				origin: server.origin,
+				expectedGitSha,
 				attempts: 1,
 				logger: { log() {}, warn() {} }
 			})
@@ -324,21 +326,23 @@ describe('manual staging deploy workflow smoke contract', () => {
 		const smoke = commands.indexOf('node scripts/smoke-staging.mjs');
 		const turnstileEvidence = commands.indexOf('node scripts/verify-staging-turnstile.mjs');
 		const rollback = commands.findIndex((command) =>
-			command.includes('pnpm exec wrangler versions deploy "$SAFE_ROLLBACK_VERSION"')
+			command.includes('wrangler deploy --config wrangler.rollback.jsonc --env staging')
 		);
 		const rollbackSmoke = commands.indexOf('node scripts/smoke-staging.mjs --mode rollback');
 
 		expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
 		expect(workflow.on.workflow_dispatch).toBeNull();
 		expect(job.if).toBe("github.ref == 'refs/heads/main'");
-		expect(job.env?.A7_REQUIRE_DISABLED_SIGNUP).toBe('true');
+		expect(job.env?.A7_REQUIRE_OPEN_EMAIL_SIGNUP).toBe('true');
+		expect(job.env).not.toHaveProperty('A7_REQUIRE_DISABLED_SIGNUP');
 		expect(job.env).toMatchObject({
 			STAGING_ORIGIN: expectedOrigin,
 			EXPECTED_GIT_SHA: '${{ github.sha }}',
 			STAGING_SMOKE_ATTEMPTS: '6',
-			STAGING_SMOKE_DELAY_MS: '5000',
-			SAFE_ROLLBACK_VERSION: '75593db4-12fd-486d-ae8a-bdf9ebbb3ece'
+			STAGING_SMOKE_DELAY_MS: '5000'
 		});
+		expect(job.env).not.toHaveProperty('SAFE_ROLLBACK_VERSION');
+		expect(commands).toContain('node scripts/verify-hosted-auth-config.mjs');
 		expect(job).not.toHaveProperty('environment');
 		expect(commands.some((command) => command.includes('wrangler deploy --env production'))).toBe(
 			false

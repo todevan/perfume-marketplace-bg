@@ -51,6 +51,7 @@ describe('hosted backend baseline attestation', () => {
 		});
 		const input = {
 			publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
+			expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 			supabaseSecretKey: 'server-secret-value'
 		};
 
@@ -91,13 +92,27 @@ describe('hosted backend baseline attestation', () => {
 		expect(createClient).toHaveBeenCalledTimes(2);
 	});
 
-	it('rejects any non-Frankfurt target or missing server secret before creating a client', async () => {
+	it('accepts an explicitly bound isolated staging target with the reviewed baseline', async () => {
+		const isolatedOrigin = 'https://zzrrutwlrkhevellwork.supabase.co';
+		const createClient = vi.fn(() => mockClient(STAGING_BACKEND_BASELINE.counts));
+		const attest = createBackendAttestor({ createClient });
+
+		await expect(attest({
+			publicSupabaseUrl: isolatedOrigin,
+			expectedSupabaseProjectRef: 'zzrrutwlrkhevellwork',
+			supabaseSecretKey: 'isolated-server-secret'
+		})).resolves.toBeUndefined();
+		expect(createClient).toHaveBeenCalledWith(isolatedOrigin, 'isolated-server-secret');
+	});
+
+	it('rejects a missing or URL-mismatched project binding and missing server secret before creating a client', async () => {
 		const createClient = vi.fn(() => mockClient(STAGING_BACKEND_BASELINE.counts));
 		const attest = createBackendAttestor({ createClient });
 
 		await expect(
 			attest({
 				publicSupabaseUrl: 'https://zllqwlekadiuyejgbuxc.supabase.co',
+				expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 				supabaseSecretKey: 'stockholm-secret'
 			})
 		).rejects.toMatchObject({
@@ -107,6 +122,14 @@ describe('hosted backend baseline attestation', () => {
 		await expect(
 			attest({
 				publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
+				expectedSupabaseProjectRef: '',
+				supabaseSecretKey: 'server-secret'
+			})
+		).rejects.toMatchObject({ reason: 'invalid_target' });
+		await expect(
+			attest({
+				publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
+				expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 				supabaseSecretKey: ''
 			})
 		).rejects.toMatchObject({
@@ -132,6 +155,7 @@ describe('hosted backend baseline attestation', () => {
 		});
 		const input = {
 			publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
+			expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 			supabaseSecretKey: 'rotatable-server-secret'
 		};
 
@@ -159,6 +183,7 @@ describe('hosted backend baseline attestation', () => {
 		try {
 			await attest({
 				publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
+				expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 				supabaseSecretKey: secret
 			});
 		} catch (cause) {

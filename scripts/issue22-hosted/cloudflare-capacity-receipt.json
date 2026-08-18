@@ -1,0 +1,50 @@
+{
+  "captured_at": "2026-08-17T14:30:00Z",
+  "account_id": "0cb7373563c400a08bd46564320dd747",
+  "account_settings": {
+    "endpoint": "/accounts/0cb7373563c400a08bd46564320dd747/workers/account-settings",
+    "default_usage_model": "standard"
+  },
+  "observed_provider_error": {
+    "at": "2026-08-17T16:09:12Z",
+    "operation": "dedicated rollback Worker deployment",
+    "code": 100328,
+    "message": "CPU limits are not supported for the Free plan"
+  },
+  "usage_window": {
+    "start": "2026-08-01T00:00:00Z",
+    "end": "2026-08-17T14:30:00Z",
+    "dataset": "workersInvocationsAdaptive",
+    "requests": 820,
+    "subrequests": 449,
+    "errors": 1,
+    "cpu_time_us": 6407871
+  },
+  "documented_standard_included": {
+    "requests_per_month": 10000000,
+    "cpu_ms_per_month": 30000000,
+    "static_asset_requests": "free"
+  },
+  "documented_free": {
+    "requests_per_utc_day": 100000,
+    "cpu_ms_per_invocation": 10,
+    "subrequests_per_invocation": 50,
+    "static_asset_requests": "free"
+  },
+  "official_sources": [
+    "https://developers.cloudflare.com/workers/platform/limits/",
+    "https://developers.cloudflare.com/workers/platform/pricing/"
+  ],
+  "operator_budget": {
+    "browser_requests": 449,
+    "initial_rollback_smoke_requests": 15,
+    "candidate_smoke_requests": 78,
+    "cleanup_rollback_smoke_requests": 45,
+    "total_requests": 587,
+    "max_cpu_ms_per_invocation": 10,
+    "max_subrequests_per_invocation": 50,
+    "free_hard_total_cpu_ms": 5870,
+    "standard_default_cpu_ms_per_invocation": 30000,
+    "conservative_standard_total_cpu_ms": 17610000
+  }
+}

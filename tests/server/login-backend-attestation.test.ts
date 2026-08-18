@@ -14,6 +14,7 @@ const stagingRuntime: ProductionRuntimeConfiguration = {
 	demoMode: false,
 	appEnvironment: 'staging',
 	publicSupabaseUrl: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
+	expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 	publicSupabaseKey: 'browser-publishable-key',
 	publicSupabaseAnonKey: 'browser-publishable-key',
 	supabaseSecretKey: 'server-secret-key',
@@ -44,6 +45,7 @@ describe('login backend attestation boundary', () => {
 		expect(backendHealth.attestHostedBackendBaseline).toHaveBeenCalledOnce();
 		expect(backendHealth.attestHostedBackendBaseline).toHaveBeenCalledWith({
 			publicSupabaseUrl: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
+			expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 			supabaseSecretKey: 'server-secret-key'
 		});
 		expect(result).toMatchObject({
@@ -124,14 +126,15 @@ describe('open email registration', () => {
 		expect(signUp).not.toHaveBeenCalled();
 	});
 
-	it('rejects a Turnstile response bound to a different action before account creation', async () => {
-		const signUp = vi.fn();
+	it('passes the registration token once to Supabase Auth without consuming it in the action', async () => {
+		const signUp = vi.fn(async () => ({ data: { user: null, session: null }, error: new Error('invalid captcha') }));
 		const formData = new FormData();
 		formData.set('email', 'new.member@example.bg');
 		formData.set('password', 'correct-horse-battery-staple');
 		formData.set('username', 'scent_archive');
 		formData.set('ageAccepted', 'on');
-		formData.set('cf-turnstile-response', 'wrong-action-token');
+		formData.set('cf-turnstile-response', 'provider-validated-token');
+		const fetchImpl = vi.fn();
 
 		const result = await actions.register({
 			request: new Request('https://market.example/login?/register', {
@@ -139,9 +142,7 @@ describe('open email registration', () => {
 				body: formData
 			}),
 			url: new URL('https://market.example/login?/register'),
-			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'login' }), { status: 200 })
-			),
+			fetch: fetchImpl,
 			locals: {
 				runtime: {
 					...stagingRuntime,
@@ -152,7 +153,10 @@ describe('open email registration', () => {
 		} as never);
 
 		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(signUp).not.toHaveBeenCalled();
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(signUp).toHaveBeenCalledWith(expect.objectContaining({
+			options: expect.objectContaining({ captchaToken: 'provider-validated-token' })
+		}));
 	});
 
 	it('creates an email-password account and requests confirmation before onboarding', async () => {
@@ -192,6 +196,7 @@ describe('open email registration', () => {
 			email: 'new.member@example.bg',
 			password: 'correct-horse-battery-staple',
 			options: {
+				captchaToken: 'verified-registration-token',
 				emailRedirectTo: 'https://market.example/auth/confirm?next=%2Fonboarding%3Fnext%3D%252Fdashboard',
 				data: { username: 'scent_archive', account_kind: 'merchant' }
 			}

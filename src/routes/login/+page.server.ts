@@ -25,6 +25,7 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 		try {
 			await attestHostedBackendBaseline({
 				publicSupabaseUrl: locals.runtime.publicSupabaseUrl,
+				expectedSupabaseProjectRef: locals.runtime.expectedSupabaseProjectRef,
 				supabaseSecretKey: locals.runtime.supabaseSecretKey
 			});
 		} catch {
@@ -133,6 +134,7 @@ export const actions: Actions = {
 		const username = formData.get('username')?.toString().trim() ?? '';
 		const accountKind = formData.get('kind') === 'merchant' ? 'merchant' : 'private';
 		const next = safeRedirectPath(formData.get('next')?.toString(), '/dashboard');
+		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
 
 		if (event.locals.runtime.mode === 'demo') {
 			redirect(303, next);
@@ -143,29 +145,13 @@ export const actions: Actions = {
 			!USERNAME_PATTERN.test(username) ||
 			password.length < 12 ||
 			password.length > 128 ||
-			formData.get('ageAccepted') !== 'on'
+			formData.get('ageAccepted') !== 'on' ||
+			!captchaToken
 		) {
 			return fail(400, {
 				success: false,
 				email,
 				message: 'Провери имейла, потребителското име, паролата и потвърждението за възраст.'
-			});
-		}
-
-		const challenge = await verifyTurnstileForAction(
-			event,
-			formData,
-			event.locals.runtime,
-			'register'
-		);
-		if (!challenge.success) {
-			return fail(challenge.reason === 'not_configured' ? 503 : 400, {
-				success: false,
-				email,
-				message:
-					challenge.reason === 'not_configured'
-						? '\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f\u0442\u0430 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435 \u0435 \u0434\u043e\u0441\u0442\u044a\u043f\u043d\u0430.'
-						: '\u041f\u043e\u0442\u0432\u044a\u0440\u0434\u0438, \u0447\u0435 \u043d\u0435 \u0441\u0438 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0437\u0438\u0440\u0430\u043d \u043a\u043b\u0438\u0435\u043d\u0442.'
 			});
 		}
 
@@ -183,6 +169,7 @@ export const actions: Actions = {
 			email,
 			password,
 			options: {
+				captchaToken,
 				emailRedirectTo: confirmationUrl.toString(),
 				data: { username, account_kind: accountKind }
 			}

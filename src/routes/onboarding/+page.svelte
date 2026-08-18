@@ -26,8 +26,8 @@
 			<input type="hidden" name="next" value={data.next} />
 			<label for="onboarding-username">Потребителско име</label>
 			<input id="onboarding-username" class="input" name="username" value={submittedUsername ?? data.profile?.username ?? ''} minlength="3" maxlength="40" autocomplete="username" required />
-			<label for="onboarding-city">Град <span>(незадължително)</span></label>
-			<input id="onboarding-city" class="input" name="city" value={submittedCity ?? data.profile?.city ?? ''} maxlength="100" autocomplete="address-level2" />
+			<label for="onboarding-city">Град</label>
+			<input id="onboarding-city" class="input" name="city" value={submittedCity ?? data.profile?.city ?? ''} minlength="2" maxlength="100" autocomplete="address-level2" required />
 
 			{#if data.documents.length > 0}
 				<fieldset>

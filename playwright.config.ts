@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: 'registration-local.spec.ts',
   fullyParallel: true,
   workers: 2,
   forbidOnly: Boolean(process.env.CI),

@@ -66,10 +66,49 @@ describe('production data input contracts', () => {
 	});
 
 	it('normalizes empty optional profile URLs without accepting arbitrary strings', () => {
-		expect(updateProfileInputSchema.parse({ username: 'valid_user', avatarUrl: '' }).avatarUrl).toBeNull();
 		expect(
-			updateProfileInputSchema.safeParse({ username: 'valid_user', avatarUrl: 'javascript:alert(1)' }).success
+			updateProfileInputSchema.parse({ username: 'valid_user', city: ' Sofia ', avatarUrl: '' })
+		).toMatchObject({ city: 'Sofia', avatarUrl: null });
+		expect(
+			updateProfileInputSchema.safeParse({
+				username: 'valid_user',
+				city: 'Sofia',
+				avatarUrl: 'javascript:alert(1)'
+			}).success
 		).toBe(false);
 	});
+
+	it.each([undefined, null, '', ' ', 'S'])(
+		'rejects a profile update that would remove the required city (%s)',
+		(city) => {
+			expect(updateProfileInputSchema.safeParse({ username: 'valid_user', city }).success).toBe(
+				false
+			);
+		}
+	);
+
+	it.each([
+		'\t\t',
+		'\r\n',
+		'\u00a0\u00a0',
+		'\u00a0Sofia\u00a0',
+		' Sofia\t ',
+		'So\u200bfia',
+		'\u0085\u0085',
+		'\u2060\u2060',
+		'---'
+	])(
+		'rejects control or non-canonical whitespace in a profile city (%j)',
+		(city) => {
+			expect(updateProfileInputSchema.safeParse({ username: 'valid_user', city }).success).toBe(false);
+		}
+	);
+
+	it.each(['София', 'Велико Търново', 'Saint-Rémy', "L'Aquila", 'New York'])(
+		'accepts a meaningful Unicode city name (%s)',
+		(city) => {
+			expect(updateProfileInputSchema.parse({ username: 'valid_user', city }).city).toBe(city);
+		}
+	);
 });
 

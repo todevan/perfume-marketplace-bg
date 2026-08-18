@@ -58,7 +58,8 @@ insert into auth.users (
 );
 update public.profiles
 set email_verified_at = statement_timestamp(),
-    phone_verified_at = statement_timestamp()
+	phone_verified_at = statement_timestamp(),
+	city = 'Sofia'
 where id = '12111111-1111-4111-8111-111111111111';
 
 insert into public.beta_invites (
@@ -96,7 +97,8 @@ where d.required_for_access and d.retired_at is null;
 
 update public.profiles
 set email_verified_at = statement_timestamp(),
-    phone_verified_at = statement_timestamp()
+	phone_verified_at = statement_timestamp(),
+	city = 'Varna'
 where id = '12222222-2222-4222-8222-222222222222';
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 update public.profiles

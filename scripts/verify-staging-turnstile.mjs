@@ -31,7 +31,7 @@ const DOWNSTREAM_MESSAGES = {
  *   expectedGitSha: string;
  *   supabaseSettingsUrl: string;
  *   supabasePublishableKey: string;
- *   requireDisabledSignup?: boolean;
+ *   requireOpenEmailSignup?: boolean;
  *   attempts?: number;
  *   delayMs?: number;
  *   timeoutMs?: number;
@@ -270,7 +270,11 @@ async function readSignupState({
 	});
 	assertEvidence(response.status === 200, 'Supabase Auth settings must return HTTP 200.');
 
-	/** @type {{ disable_signup?: boolean }} */
+	/** @type {{
+	 *   disable_signup?: boolean;
+	 *   mailer_autoconfirm?: boolean;
+	 *   external?: { email?: boolean; phone?: boolean; anonymous_users?: boolean };
+	 * }} */
 	let settings;
 	try {
 		settings = await response.json();
@@ -281,7 +285,33 @@ async function readSignupState({
 		typeof settings?.disable_signup === 'boolean',
 		'Supabase Auth settings must declare disable_signup.'
 	);
-	return { disabled: settings.disable_signup, status: response.status };
+	assertEvidence(
+		typeof settings?.mailer_autoconfirm === 'boolean',
+		'Supabase Auth settings must declare mailer_autoconfirm.'
+	);
+	assertEvidence(
+		typeof settings?.external?.email === 'boolean' &&
+			typeof settings?.external?.phone === 'boolean' &&
+			typeof settings?.external?.anonymous_users === 'boolean',
+		'Supabase Auth settings must declare email, phone, and anonymous signup state.'
+	);
+	return {
+		disabled: settings.disable_signup === true,
+		emailEnabled: settings.external?.email === true,
+		phoneEnabled: settings.external?.phone === true,
+		anonymousEnabled: settings.external?.anonymous_users === true,
+		confirmationRequired: settings.mailer_autoconfirm === false,
+		status: response.status
+	};
+}
+
+/** @param {Awaited<ReturnType<typeof readSignupState>>} state */
+function assertOpenEmailRegistrationState(state) {
+	assertEvidence(!state.disabled, 'Public Supabase email signup must be enabled.');
+	assertEvidence(state.emailEnabled, 'Email/password signup must be enabled.');
+	assertEvidence(!state.phoneEnabled, 'Phone signup must remain disabled.');
+	assertEvidence(!state.anonymousEnabled, 'Anonymous signup must remain disabled.');
+	assertEvidence(state.confirmationRequired, 'Email confirmation must remain required.');
 }
 
 /** @param {TurnstileEvidenceOptions} options */
@@ -309,21 +339,20 @@ export async function runStagingTurnstileEvidence(options) {
 		supabasePublishableKey: options.supabasePublishableKey,
 		timeoutMs
 	});
-	if (options.requireDisabledSignup === true) {
-		assertEvidence(signupBefore.disabled, 'Public Supabase signup must remain disabled.');
+	if (options.requireOpenEmailSignup === true) {
+		assertOpenEmailRegistrationState(signupBefore);
 	}
 
 	/** @type {EvidenceReceipt[]} */
 	const receipts = [
 		{
-			check: `supabase-signup-${signupBefore.disabled ? 'disabled' : 'enabled'}-before`,
+			check: options.requireOpenEmailSignup
+				? 'supabase-open-email-registration-before'
+				: `supabase-signup-${signupBefore.disabled ? 'disabled' : 'enabled'}-before`,
 			status: signupBefore.status
 		}
 	];
-	/** @type {EvidenceAction[]} */
-	const actions = signupBefore.disabled ? ['login', 'register'] : ['login'];
-
-	for (const action of actions) {
+	for (const action of /** @type {EvidenceAction[]} */ (['login'])) {
 		const identity = createEvidenceIdentity(action);
 		const missing = await postAction({
 			fetchImpl,
@@ -360,18 +389,43 @@ export async function runStagingTurnstileEvidence(options) {
 		);
 		receipts.push({ check: `${action}-testing-token`, actionStatus: testing.status });
 	}
+
+	const registerIdentity = createEvidenceIdentity('register');
+	const registerMissing = await postAction({
+		fetchImpl,
+		origin,
+		expectedGitSha,
+		action: 'register',
+		identity: registerIdentity,
+		attempts,
+		delayMs,
+		timeoutMs,
+		logger
+	});
+	assertEvidence(
+		registerMissing.data.message === TURNSTILE_REJECTION_MESSAGE,
+		'register: expected the exact Turnstile rejection branch.'
+	);
+	receipts.push({ check: 'register-missing-token', actionStatus: registerMissing.status });
+
 	if (signupBefore.disabled) {
-		const signupAfter = await readSignupState({
+		const registerTesting = await postAction({
 			fetchImpl,
-			supabaseSettingsUrl: options.supabaseSettingsUrl,
-			supabasePublishableKey: options.supabasePublishableKey,
-			timeoutMs
+			origin,
+			expectedGitSha,
+			action: 'register',
+			identity: registerIdentity,
+			token: CLOUDFLARE_DUMMY_TOKEN,
+			attempts,
+			delayMs,
+			timeoutMs,
+			logger
 		});
 		assertEvidence(
-			signupAfter.disabled,
-			'Public Supabase signup changed during registration evidence.'
+			registerTesting.data.message === DOWNSTREAM_MESSAGES.register,
+			'register: official testing token did not reach the downstream Auth branch.'
 		);
-		receipts.push({ check: 'supabase-signup-disabled-after', status: signupAfter.status });
+		receipts.push({ check: 'register-testing-token', actionStatus: registerTesting.status });
 	} else {
 		receipts.push({
 			check: 'register-testing-token',
@@ -379,6 +433,24 @@ export async function runStagingTurnstileEvidence(options) {
 			reason: 'public-signup-enabled'
 		});
 	}
+
+	const signupAfter = await readSignupState({
+		fetchImpl,
+		supabaseSettingsUrl: options.supabaseSettingsUrl,
+		supabasePublishableKey: options.supabasePublishableKey,
+		timeoutMs
+	});
+	if (options.requireOpenEmailSignup === true) assertOpenEmailRegistrationState(signupAfter);
+	assertEvidence(
+		JSON.stringify(signupAfter) === JSON.stringify(signupBefore),
+		'Public Supabase signup settings changed during registration evidence.'
+	);
+	receipts.push({
+		check: options.requireOpenEmailSignup
+			? 'supabase-open-email-registration-after'
+			: `supabase-signup-${signupAfter.disabled ? 'disabled' : 'enabled'}-after`,
+		status: signupAfter.status
+	});
 	receipts.push({
 		check: 'report-submit-testing-token',
 		outcome: 'deferred',
@@ -450,9 +522,9 @@ async function main() {
 		expectedGitSha: cli['expected-git-sha'] ?? process.env.EXPECTED_GIT_SHA ?? '',
 		supabaseSettingsUrl,
 		supabasePublishableKey,
-		requireDisabledSignup: parseBooleanOption(
-			cli['require-disabled-signup'] ?? process.env.A7_REQUIRE_DISABLED_SIGNUP,
-			'A7_REQUIRE_DISABLED_SIGNUP'
+		requireOpenEmailSignup: parseBooleanOption(
+			cli['require-open-email-signup'] ?? process.env.A7_REQUIRE_OPEN_EMAIL_SIGNUP,
+			'A7_REQUIRE_OPEN_EMAIL_SIGNUP'
 		),
 		attempts: Number(cli.attempts ?? process.env.STAGING_SMOKE_ATTEMPTS ?? 1),
 		delayMs: Number(cli['delay-ms'] ?? process.env.STAGING_SMOKE_DELAY_MS ?? 0),
