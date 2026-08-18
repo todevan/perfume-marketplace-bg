@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createHash, createHmac } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
@@ -959,6 +960,43 @@ describe('issue-22 hosted Auth attestation', () => {
 });
 
 describe('issue-22 live Cloudflare capacity', () => {
+	it('treats an empty exact-account daily aggregate as zero observed usage', () => {
+		const exactAccountId = TARGET.cloudflareAccountId;
+		const scriptUrl = pathToFileURL(resolve(operatorRoot, 'cloudflare-live-capacity.mjs')).href;
+		const output = execFileSync(process.execPath, ['--input-type=module', '--eval', `
+const exactAccountId = ${JSON.stringify(exactAccountId)};
+const response = (body) => ({ ok: true, status: 200, json: async () => body });
+globalThis.fetch = async (input, init = {}) => {
+	const url = String(input);
+	if (url.endsWith(\`/accounts/\${exactAccountId}/workers/account-settings\`)) {
+		return response({ success: true, result: { default_usage_model: 'standard' } });
+	}
+	if (url.endsWith('/graphql')) {
+		const body = JSON.parse(init.body);
+		if (body.variables.accountTag !== exactAccountId) throw new Error('wrong account');
+		return response({
+			errors: null,
+			data: { viewer: { accounts: [{
+				daily: [],
+				monthly: [{ sum: { requests: 826, subrequests: 449, errors: 1, cpuTimeUs: 6423088 } }]
+			}] } }
+		});
+	}
+	throw new Error(\`unexpected Cloudflare request: \${url}\`);
+};
+await import(${JSON.stringify(scriptUrl)});
+		`], {
+			cwd: repo,
+			encoding: 'utf8',
+			env: { ...process.env, CLOUDFLARE_API_TOKEN: 't'.repeat(40) }
+		});
+		expect(JSON.parse(output)).toMatchObject({
+			accountId: exactAccountId,
+			dailyWindow: { currentRequests: 0, currentSubrequests: 0, currentErrors: 0, currentCpuMs: 0 },
+			monthlyWindow: { currentRequests: 826, currentSubrequests: 449, currentErrors: 1, currentCpuMs: 6423.088 }
+		});
+	});
+
 	it('covers every Worker request path and a bounded per-invocation CPU ceiling', () => {
 			expect(OPERATOR_CAPACITY_BUDGET).toEqual({
 			browserRequests: 449,

@@ -52,7 +52,8 @@ const [settings, analytics] = await Promise.all([
 ]);
 
 const account = analytics?.data?.viewer?.accounts;
-const daily = account?.length === 1 ? account[0]?.daily?.[0]?.sum : null;
+const dailyRows = account?.length === 1 ? account[0]?.daily : null;
+const daily = Array.isArray(dailyRows) && dailyRows.length === 0 ? {} : dailyRows?.[0]?.sum;
 const monthly = account?.length === 1 ? account[0]?.monthly?.[0]?.sum : null;
 if (!daily || !monthly) stop('exact-account UTC-day/current-month Worker aggregates are unavailable');
 
