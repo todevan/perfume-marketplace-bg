@@ -2103,13 +2103,48 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		}
 	});
 
+	it('treats an already-absent purge tombstone as completed missing-manifest recovery', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		const manifestPath = join(directory, 'missing-run.json');
+		const storePath = join(directory, 'missing-moderator-totp.enc');
+		const store = createEncryptedModeratorCredentialStore({
+			filePath: storePath,
+			encryptionKey: 'k'.repeat(48),
+			projectRef: config.target.projectRef,
+			runId: config.runId
+		});
+		const finalizePurgeTombstone = vi.fn(() => store.finalizePurgeTombstone());
+		try {
+			await expect(
+				cleanupHostedManifestFile({
+					config,
+					environment: approvedCleanupEnvironment,
+					manifestPath,
+					operator: { inspect: vi.fn(), remove: vi.fn() },
+					credentialStore: {
+						credentialStoreId: store.credentialStoreId,
+						purgeModeratorTotpSecrets: vi.fn(),
+						finalizePurgeTombstone
+					},
+					logger: { info: vi.fn() }
+				})
+			).resolves.toEqual({ cleaned: true, counts: cleanInventory() });
+			expect(finalizePurgeTombstone).toHaveBeenCalledOnce();
+			await expect(stat(manifestPath)).rejects.toMatchObject({ code: 'ENOENT' });
+			await expect(stat(storePath)).rejects.toMatchObject({ code: 'ENOENT' });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('fails closed for non-finalizable concrete stores when the manifest is absent', async () => {
 		const config = validateHostedOperatorEnvironment(baseEnvironment);
 		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
 		const encryptionKey = 'k'.repeat(48);
 		const wrongEncryptionKey = 'w'.repeat(48);
 		try {
-			for (const scenario of ['missing', 'active', 'wrong-key', 'corrupt'] as const) {
+			for (const scenario of ['active', 'wrong-key', 'corrupt'] as const) {
 				const manifestPath = join(directory, `${scenario}.json`);
 				const storePath = join(directory, `${scenario}.enc`);
 				const exactStore = createEncryptedModeratorCredentialStore({
@@ -2118,7 +2153,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 					projectRef: config.target.projectRef,
 					runId: config.runId
 				});
-				if (scenario !== 'missing') await exactStore.initializeModeratorTotpSecrets();
+				await exactStore.initializeModeratorTotpSecrets();
 				if (scenario === 'wrong-key' || scenario === 'corrupt') {
 					await exactStore.purgeModeratorTotpSecrets();
 				}
@@ -2157,11 +2192,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 				expect(remove).not.toHaveBeenCalled();
 				expect(purgeModeratorTotpSecrets).not.toHaveBeenCalled();
 				expect(finalizePurgeTombstone).toHaveBeenCalledOnce();
-				if (scenario === 'missing') {
-					await expect(stat(storePath)).rejects.toMatchObject({ code: 'ENOENT' });
-				} else {
-					await expect(readFile(storePath, 'utf8')).resolves.toBeTruthy();
-				}
+				await expect(readFile(storePath, 'utf8')).resolves.toBeTruthy();
 			}
 		} finally {
 			await rm(directory, { recursive: true, force: true });

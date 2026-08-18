@@ -307,13 +307,23 @@ export function createEncryptedModeratorCredentialStore({
 		},
 
 		async finalizePurgeTombstone() {
-			const state = await readState({ allowMissing: false });
+			let state;
+			try {
+				state = await readState({ allowMissing: false });
+			} catch (error) {
+				if (
+					error instanceof HostedA9CredentialStoreError &&
+					error.message === 'moderator credential store does not exist'
+				) return;
+				throw error;
+			}
 			if (state.status !== 'purged' || Object.keys(state.credentials).length !== 0) {
 				throw new HostedA9CredentialStoreError('moderator credential purge is incomplete');
 			}
 			try {
 				await unlink(exactPath);
-			} catch {
+			} catch (error) {
+				if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return;
 				throw new HostedA9CredentialStoreError('moderator credential store is unavailable');
 			}
 		},
