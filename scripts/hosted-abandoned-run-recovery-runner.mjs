@@ -146,7 +146,9 @@ export async function runAbandonedRecoveryCleanup({
   });
 
   const actorAttestations = await Promise.all(
-    manifest.actors.map((actor) => adapter.inspectActor(actor.userId))
+    manifest.actors.map((actor) =>
+      adapter.inspectActor(actor.userId, { allowMissing: true })
+    )
   );
 
   const inventory = await adapter.inspectInventory(manifest);
@@ -156,7 +158,9 @@ export async function runAbandonedRecoveryCleanup({
     expectedRunId: exactRunId,
     expectedProjectRef: exactProjectRef,
     inventory,
-    actorAttestations
+    actorAttestations,
+    allowAlreadyMissingActors: true,
+    initialVerifiedCounts: approvedCheckpoint.counts
   });
 
   const result = await executeAbandonedRecoveryCleanup({
@@ -165,6 +169,8 @@ export async function runAbandonedRecoveryCleanup({
     expectedProjectRef: exactProjectRef,
     inventory,
     actorAttestations,
+    allowAlreadyMissingActors: true,
+    initialVerifiedCounts: approvedCheckpoint.counts,
     deleteActorById: (userId) => adapter.deleteActorById(userId),
     inspectAfterCleanup: () => adapter.inspectInventory(manifest)
   });

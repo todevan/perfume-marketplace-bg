@@ -188,7 +188,9 @@ export function validateAbandonedRecoveryManifest({
  *   expectedRunId: string,
  *   expectedProjectRef: string,
  *   inventory: RecoveryInventory,
- *   actorAttestations?: readonly RecoveryActorAttestation[]
+ *   actorAttestations?: readonly RecoveryActorAttestation[],
+ *   allowAlreadyMissingActors?: boolean,
+ *   initialVerifiedCounts?: Readonly<Record<string, number>>
  * }} options
  * @returns {Readonly<RecoveryInventory>}
  */
@@ -197,7 +199,9 @@ export function assessAbandonedRecoveryDryRun({
   expectedRunId,
   expectedProjectRef,
   inventory,
-  actorAttestations
+  actorAttestations,
+  allowAlreadyMissingActors = false,
+  initialVerifiedCounts
 }) {
   const validatedManifest = validateAbandonedRecoveryManifest({
     manifest,
@@ -221,14 +225,35 @@ export function assessAbandonedRecoveryDryRun({
     );
   }
 
+  /** @type {Array<keyof RecoveryInventory>} */
+  const resumeZeroKeys = [
+    'pending',
+    'reports',
+    'uploads',
+    'objects',
+    'queueRows',
+    'foreignArtifacts',
+    'preExistingAccounts'
+  ];
+
+  const resumeWithAlreadyMissingActors =
+    allowAlreadyMissingActors === true &&
+    initialVerifiedCounts?.accounts === 4 &&
+    resumeZeroKeys.every((key) => initialVerifiedCounts?.[key] === 0) &&
+    resumeZeroKeys.every((key) => inventory[key] === 0);
+
   const invalidProvenance = validatedManifest.actors.some((actor) => {
     const attestation = actorAttestations.find(
       (candidate) => candidate.userId === actor.userId
     );
 
+    if (!attestation) return true;
+
+    if (attestation.exists !== true) {
+      return !resumeWithAlreadyMissingActors;
+    }
+
     return (
-      !attestation ||
-      attestation.exists !== true ||
       attestation.createdAt !== actor.createdAt ||
       attestation.runId !== expectedRunId ||
       attestation.provisioningNonce !== validatedManifest.provisioningAttemptId ||
@@ -242,6 +267,21 @@ export function assessAbandonedRecoveryDryRun({
     );
   }
 
+  if (resumeWithAlreadyMissingActors) {
+    const existingAttestationCount = actorAttestations.filter(
+      (attestation) => attestation.exists === true
+    ).length;
+
+    if (
+      !Number.isInteger(inventory.accounts) ||
+      inventory.accounts !== existingAttestationCount
+    ) {
+      throw new HostedAbandonedRunRecoveryError(
+        'recovery resume inventory does not match actor attestations'
+      );
+    }
+  }
+
   return Object.freeze({ ...inventory });
 }
 /**
@@ -251,6 +291,8 @@ export function assessAbandonedRecoveryDryRun({
  *   expectedProjectRef: string,
  *   inventory: RecoveryInventory,
  *   actorAttestations: readonly RecoveryActorAttestation[],
+ *   allowAlreadyMissingActors?: boolean,
+ *   initialVerifiedCounts?: Readonly<Record<string, number>>,
  *   deleteActorById: (userId: string) => Promise<unknown>,
  *   inspectAfterCleanup: () => Promise<RecoveryInventory>
  * }} options
@@ -261,6 +303,8 @@ export async function executeAbandonedRecoveryCleanup({
   expectedProjectRef,
   inventory,
   actorAttestations,
+  allowAlreadyMissingActors = false,
+  initialVerifiedCounts,
   deleteActorById,
   inspectAfterCleanup
 }) {
@@ -275,7 +319,9 @@ export async function executeAbandonedRecoveryCleanup({
     expectedRunId,
     expectedProjectRef,
     inventory,
-    actorAttestations
+    actorAttestations,
+    allowAlreadyMissingActors,
+    initialVerifiedCounts
   });
 
   if (typeof deleteActorById !== 'function') {
@@ -421,9 +467,27 @@ export function createAbandonedRecoverySupabaseAdapter({ serviceClient }) {
   }
 
   return Object.freeze({
-    /** @param {string} userId */
-    async inspectActor(userId) {
+    /**
+     * @param {string} userId
+     * @param {{ allowMissing?: boolean }} [options]
+     */
+    async inspectActor(userId, { allowMissing = false } = {}) {
       const result = await serviceClient.auth.admin.getUserById(userId);
+
+      if (
+        allowMissing &&
+        !result?.data?.user &&
+        result?.error?.status === 404
+      ) {
+        return Object.freeze({
+          userId,
+          exists: false,
+          createdAt: '',
+          runId: null,
+          provisioningNonce: null,
+          provisioningAttemptId: null
+        });
+      }
 
       if (result?.error || !result?.data?.user) {
         throw new HostedAbandonedRunRecoveryError(

@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 describe('abandoned Gate 3 recovery runner', () => {
   it('produces only a sanitized dry-run receipt for the exact abandoned manifest', async () => {
@@ -408,3 +408,132 @@ it('executes only the checkpoint-bound exact-manifest cleanup after explicit app
     expect(authReadCalls).toBe(0);
     expect(deleteCalls).toBe(0);
   });
+it('resumes an approved cleanup when one exact manifest actor is already missing', async () => {
+  const runnerModule = await import(
+    '../../scripts/hosted-abandoned-run-recovery-runner.mjs'
+  );
+  const coreModule = await import(
+    '../../scripts/hosted-abandoned-run-recovery.mjs'
+  );
+
+  const attempt = '11111111-1111-4111-8111-111111111111';
+  const actorIds = [
+    '11111111-1111-4111-8111-111111111112',
+    '11111111-1111-4111-8111-111111111113',
+    '11111111-1111-4111-8111-111111111114',
+    '11111111-1111-4111-8111-111111111115'
+  ];
+
+  const actors = actorIds.map((userId, index) => ({
+    role: `actor-${index + 1}`,
+    userId,
+    createdAt: `2026-08-18T12:00:0${index}.000Z`,
+    provisioningAttemptId: attempt
+  }));
+
+  const manifest = {
+    targetProjectRef: 'nuhkpqjjyuygiemrxbdp',
+    runId: 'gate3-587a06c3fe49',
+    provisioningAttemptId: attempt,
+    credentialStoreId: '0'.repeat(64),
+    pendingActors: [],
+    actors,
+    reports: [],
+    uploads: [],
+    queueRows: []
+  };
+
+  const manifestBytes = new TextEncoder().encode(
+    `${JSON.stringify(manifest)}\n`
+  );
+
+  const checkpoint = coreModule.createAbandonedRecoveryCheckpoint({
+    manifestBytes,
+    runId: 'gate3-587a06c3fe49',
+    projectRef: 'nuhkpqjjyuygiemrxbdp',
+    phase: 'dry-run-verified',
+    counts: {
+      accounts: 4,
+      pending: 0,
+      reports: 0,
+      uploads: 0,
+      objects: 0,
+      queueRows: 0,
+      foreignArtifacts: 0,
+      preExistingAccounts: 0
+    }
+  });
+
+  // Simulate a previous interrupted cleanup which already removed actor #1.
+  const existingIds = new Set(actorIds.slice(1));
+  const deletedIds: string[] = [];
+
+  const serviceClient = {
+    auth: {
+      admin: {
+        getUserById: async (userId: string) => {
+          if (!existingIds.has(userId)) {
+            return {
+              data: { user: null },
+              error: { status: 404 }
+            };
+          }
+
+          const actor = actors.find((candidate) => candidate.userId === userId)!;
+
+          return {
+            data: {
+              user: {
+                id: actor.userId,
+                created_at: actor.createdAt,
+                user_metadata: {
+                  gate3_report_evidence_run_id: 'gate3-587a06c3fe49',
+                  gate3_report_evidence_provisioning_nonce: attempt,
+                  gate3_report_evidence_provisioning_attempt_id: attempt
+                }
+              }
+            },
+            error: null
+          };
+        },
+
+        deleteUser: async (userId: string) => {
+          deletedIds.push(userId);
+          existingIds.delete(userId);
+          return { data: {}, error: null };
+        }
+      }
+    },
+
+    from(table: string) {
+      if (table === 'reports' || table === 'report_evidence_uploads') {
+        return {
+          select: () => ({
+            in: async () => ({ data: [], error: null })
+          })
+        };
+      }
+
+      throw new Error(`unexpected table: ${table}`);
+    },
+
+    storage: {
+      from: () => ({
+        list: async () => ({ data: [], error: null })
+      })
+    }
+  };
+
+  const result = await runnerModule.runAbandonedRecoveryCleanup({
+    approval: 'ABANDONED_GATE3_RECOVERY_CLEANUP',
+    manifestBytes,
+    checkpoint,
+    serviceClient,
+    expectedRunId: 'gate3-587a06c3fe49',
+    expectedProjectRef: 'nuhkpqjjyuygiemrxbdp'
+  });
+
+  expect(deletedIds).toEqual(actorIds.slice(1));
+  expect(result.status).toBe('CLEANUP_VERIFIED');
+  expect(result.counts.accounts).toBe(0);
+});
