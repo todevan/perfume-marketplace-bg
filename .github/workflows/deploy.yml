@@ -70,3 +70,5 @@ jobs:
       - name: Verify fail-closed rollback
         if: failure() && steps.rollback.outcome == 'success'
         run: node scripts/smoke-staging.mjs --mode rollback
+        env:
+          STAGING_SMOKE_ATTEMPTS: "12"
