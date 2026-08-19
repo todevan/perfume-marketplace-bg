@@ -1,0 +1,211 @@
+# Instincts generated from https://github.com/todevan/perfume-marketplace-bg
+# Generated: 2026-08-18T06:57:40.841Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: perfume-marketplace-bg-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix, docs, test
+
+## Evidence
+
+- 10 commits analyzed
+- Detected conventional commit pattern
+- Examples: fix(auth): enforce open registration activation, test(db): make issue22 drift check deterministic
+
+---
+id: perfume-marketplace-bg-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Commit Length
+
+## Action
+
+Write moderate-length commit messages (~55 characters)
+
+## Evidence
+
+- Average commit message length: 55 chars
+- Based on 10 commits
+
+---
+id: perfume-marketplace-bg-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Naming Files
+
+## Action
+
+Use kebab-case naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: kebab-case
+
+---
+id: perfume-marketplace-bg-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: perfume-marketplace-bg-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: lib, routes
+
+---
+id: perfume-marketplace-bg-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: perfume-marketplace-bg-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Test Framework
+
+## Action
+
+Use playwright as the test framework
+
+## Evidence
+
+- Test framework detected: playwright
+- File pattern: *.test.ts
+
+---
+id: perfume-marketplace-bg-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: perfume-marketplace-bg-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Test Types
+
+## Action
+
+Write unit, integration, e2e tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, integration, e2e
+- Coverage config: no
+
+---
+id: perfume-marketplace-bg-workflow-database-migration
+trigger: "when modifying the database schema or adding tables"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/todevan/perfume-marketplace-bg
+---
+
+# Perfume Marketplace Bg Workflow Database Migration
+
+## Action
+
+Follow the database-migration workflow:
+1. Create migration file
+2. Update schema definitions
+3. Generate/update types
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~12x per month
+- Files: migrations/*
+

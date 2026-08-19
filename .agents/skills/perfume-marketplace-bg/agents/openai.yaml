@@ -1,0 +1,6 @@
+interface:
+  display_name: "Perfume Marketplace Bg"
+  short_description: "Repo-specific patterns and workflows for perfume-marketplace-bg"
+  default_prompt: "Use the perfume-marketplace-bg repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
