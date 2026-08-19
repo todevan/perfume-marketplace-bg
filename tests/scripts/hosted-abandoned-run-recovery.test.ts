@@ -1080,3 +1080,88 @@ it('treats an exact manifest actor already missing from Auth as already cleaned'
 
   expect(requestedIds).toEqual([userId]);
 });
+
+
+it('accepts A9 provenance when the run nonce is distinct from the manifest provisioning attempt', async () => {
+  const {
+    assessAbandonedRecoveryDryRun
+  } = await import('../../scripts/hosted-abandoned-run-recovery.mjs');
+
+  const runId = 'gate3-587a06c3fe49';
+  const projectRef = 'nuhkpqjjyuygiemrxbdp';
+
+  const provisioningAttemptId =
+    '11111111-1111-4111-8111-111111111111';
+
+  const provisioningNonce =
+    '22222222-2222-4222-8222-222222222222';
+
+  const actors = [
+    {
+      role: 'reporter',
+      userId: '11111111-1111-4111-8111-111111111112',
+      createdAt: '2026-08-18T12:00:00.000Z',
+      provisioningAttemptId
+    },
+    {
+      role: 'cross-user',
+      userId: '11111111-1111-4111-8111-111111111113',
+      createdAt: '2026-08-18T12:00:01.000Z',
+      provisioningAttemptId
+    },
+    {
+      role: 'assigned-moderator',
+      userId: '11111111-1111-4111-8111-111111111114',
+      createdAt: '2026-08-18T12:00:02.000Z',
+      provisioningAttemptId
+    },
+    {
+      role: 'unassigned-moderator',
+      userId: '11111111-1111-4111-8111-111111111115',
+      createdAt: '2026-08-18T12:00:03.000Z',
+      provisioningAttemptId
+    }
+  ];
+
+  const manifest = {
+    targetProjectRef: projectRef,
+    runId,
+    provisioningAttemptId,
+    credentialStoreId: '0'.repeat(64),
+    pendingActors: [],
+    actors,
+    reports: [],
+    uploads: [],
+    queueRows: []
+  };
+
+  const actorAttestations = actors.map((actor) => ({
+    userId: actor.userId,
+    exists: true,
+    createdAt: actor.createdAt,
+    runId,
+    provisioningNonce,
+    provisioningAttemptId
+  }));
+
+  const inventory = {
+    accounts: 4,
+    pending: 0,
+    reports: 0,
+    uploads: 0,
+    objects: 0,
+    queueRows: 0,
+    foreignArtifacts: 0,
+    preExistingAccounts: 0
+  };
+
+  expect(() =>
+    assessAbandonedRecoveryDryRun({
+      manifest,
+      expectedRunId: runId,
+      expectedProjectRef: projectRef,
+      inventory,
+      actorAttestations
+    })
+  ).not.toThrow();
+});

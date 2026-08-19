@@ -242,24 +242,45 @@ export function assessAbandonedRecoveryDryRun({
     resumeZeroKeys.every((key) => initialVerifiedCounts?.[key] === 0) &&
     resumeZeroKeys.every((key) => inventory[key] === 0);
 
-  const invalidProvenance = validatedManifest.actors.some((actor) => {
-    const attestation = actorAttestations.find(
-      (candidate) => candidate.userId === actor.userId
+  const existingActorAttestations = actorAttestations.filter(
+    (attestation) => attestation.exists === true
+  );
+
+  const provisioningNoncePattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+  const sharedProvisioningNonce =
+    existingActorAttestations.length > 0
+      ? existingActorAttestations[0].provisioningNonce
+      : null;
+
+  const provisioningNonceValid =
+    existingActorAttestations.every(
+      (attestation) =>
+        typeof attestation.provisioningNonce === 'string' &&
+        provisioningNoncePattern.test(attestation.provisioningNonce) &&
+        attestation.provisioningNonce === sharedProvisioningNonce
     );
 
-    if (!attestation) return true;
+  const invalidProvenance =
+    !provisioningNonceValid ||
+    validatedManifest.actors.some((actor) => {
+      const attestation = actorAttestations.find(
+        (candidate) => candidate.userId === actor.userId
+      );
 
-    if (attestation.exists !== true) {
-      return !resumeWithAlreadyMissingActors;
-    }
+      if (!attestation) return true;
 
-    return (
-      attestation.createdAt !== actor.createdAt ||
-      attestation.runId !== expectedRunId ||
-      attestation.provisioningNonce !== validatedManifest.provisioningAttemptId ||
-      attestation.provisioningAttemptId !== actor.provisioningAttemptId
-    );
-  });
+      if (attestation.exists !== true) {
+        return !resumeWithAlreadyMissingActors;
+      }
+
+      return (
+        attestation.createdAt !== actor.createdAt ||
+        attestation.runId !== expectedRunId ||
+        attestation.provisioningAttemptId !== actor.provisioningAttemptId
+      );
+    });
 
   if (invalidProvenance) {
     throw new HostedAbandonedRunRecoveryError(
