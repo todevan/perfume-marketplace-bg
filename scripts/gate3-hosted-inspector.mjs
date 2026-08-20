@@ -477,6 +477,10 @@ export async function inspectGate3HostedRun({
 	const cleanupCompleteContradiction = Boolean(
 		cleanupPhase.status === 'complete' && hostedEvidenceAvailable && !zeroExactHosted
 	);
+	const archivedClassificationAllowed = Boolean(
+		archived &&
+		!(cleanupPhase.status === 'complete' && (cleanupCompleteContradiction || ownershipConflict))
+	);
 	const ambiguous =
 		!manifestMatches ||
 		authoritativeReleaseUnavailable ||
@@ -517,7 +521,7 @@ export async function inspectGate3HostedRun({
 		deletionScopeTrusted,
 		ambiguous,
 		cleanupCompleteContradiction,
-		archived,
+		archived: archivedClassificationAllowed,
 		secretStoreStatus,
 		secretStoreCiphertextSha256,
 		credentialsLost,

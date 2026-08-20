@@ -709,6 +709,160 @@ describe('universal Supabase inspection adapter', () => {
 		}
 	});
 
+	it('rejects hidden, inherited, symbolic, and accessor session-reader capabilities', async () => {
+		const inherited = Object.create({ deleteSession: vi.fn() });
+		Object.assign(inherited, {
+			targetProjectRef: HOSTED_STAGING.projectRef,
+			readActiveUserIds: vi.fn().mockResolvedValue({ activeUserIds: [actorIds.reporter] })
+		});
+		const symbolic = {
+			targetProjectRef: HOSTED_STAGING.projectRef,
+			readActiveUserIds: vi.fn().mockResolvedValue({ activeUserIds: [actorIds.reporter] }),
+			[Symbol('deleteSession')]: vi.fn()
+		};
+		const nonEnumerable = {
+			targetProjectRef: HOSTED_STAGING.projectRef,
+			readActiveUserIds: vi.fn().mockResolvedValue({ activeUserIds: [actorIds.reporter] })
+		};
+		Object.defineProperty(nonEnumerable, 'deleteSession', { value: vi.fn() });
+		const accessorRead = vi.fn().mockResolvedValue({ activeUserIds: [actorIds.reporter] });
+		const accessor = {
+			targetProjectRef: HOSTED_STAGING.projectRef,
+			get readActiveUserIds() {
+				return accessorRead;
+			}
+		};
+
+		for (const sessionCoverageReader of [inherited, symbolic, nonEnumerable, accessor]) {
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({ users: [exactReporter] }) as never,
+				sessionCoverageReader
+			});
+			await expect(
+				adapter.inspectRun({
+					runId: inspectorRunId,
+					createdAfter: '2026-08-09T11:59:00.000Z',
+					manifest: gate3Manifest(),
+					expectedIdentities
+				})
+			).resolves.toMatchObject({ activeSessionsProven: false });
+		}
+
+		expect(inherited.readActiveUserIds).not.toHaveBeenCalled();
+		expect(symbolic.readActiveUserIds).not.toHaveBeenCalled();
+		expect(nonEnumerable.readActiveUserIds).not.toHaveBeenCalled();
+		expect(accessorRead).not.toHaveBeenCalled();
+	});
+
+	it('rejects hidden, inherited, symbolic, accessor, and thenable session coverage results', async () => {
+		const privateFieldName = ['to', 'ken'].join('');
+		const inherited = Object.create({ [privateFieldName]: 'inherited-provider-value' });
+		inherited.activeUserIds = [actorIds.reporter];
+		const symbolic = {
+			activeUserIds: [actorIds.reporter],
+			[Symbol('sessionId')]: 'symbol-provider-session'
+		};
+		const nonEnumerable = { activeUserIds: [actorIds.reporter] };
+		Object.defineProperty(nonEnumerable, 'providerBody', { value: 'hidden-provider-body' });
+		const accessor = Object.defineProperty({}, 'activeUserIds', {
+			enumerable: true,
+			get: () => [actorIds.reporter]
+		});
+		const then = vi.fn((resolve) => resolve({ activeUserIds: [actorIds.reporter] }));
+		const malformedThenable = { then };
+		const extraEnumerable = {
+			activeUserIds: [actorIds.reporter],
+			providerBody: 'provider-body'
+		};
+		const symbolicIds = [actorIds.reporter];
+		Object.defineProperty(symbolicIds, Symbol('sessionId'), { value: 'array-symbol-session' });
+		const hiddenIds = [actorIds.reporter];
+		Object.defineProperty(hiddenIds, privateFieldName, { value: 'array-hidden-value' });
+		const accessorIds: string[] = [];
+		Object.defineProperty(accessorIds, '0', {
+			enumerable: true,
+			get: () => actorIds.reporter
+		});
+		accessorIds.length = 1;
+		const duplicate = { activeUserIds: [actorIds.reporter, actorIds.reporter] };
+		const outsideSubset = { activeUserIds: [actorIds['cross-user']] };
+
+		for (const coverage of [
+			inherited,
+			symbolic,
+			nonEnumerable,
+			accessor,
+			malformedThenable,
+			extraEnumerable,
+			{ activeUserIds: symbolicIds },
+			{ activeUserIds: hiddenIds },
+			{ activeUserIds: accessorIds },
+			duplicate,
+			outsideSubset
+		]) {
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({ users: [exactReporter] }) as never,
+				sessionCoverageReader: {
+					targetProjectRef: HOSTED_STAGING.projectRef,
+					readActiveUserIds: vi.fn(() => coverage as never)
+				}
+			});
+			const result = await adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			});
+			expect(result).toMatchObject({ activeSessionsProven: false });
+			expect(JSON.stringify(result)).not.toMatch(/provider|session-id|token/i);
+		}
+
+		expect(then).not.toHaveBeenCalled();
+	});
+
+	it('accepts exact plain and null-prototype readers and obtains fresh coverage per inspection', async () => {
+		for (const nullPrototype of [false, true]) {
+			const responses = [
+				{ activeUserIds: [actorIds.reporter] },
+				Object.assign(Object.create(null), { activeUserIds: [] })
+			];
+			const readActiveUserIds = vi
+				.fn()
+				.mockImplementation(() => Promise.resolve(responses.shift()));
+			const reader = Object.assign(nullPrototype ? Object.create(null) : {}, {
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds
+			});
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({ users: [exactReporter] }) as never,
+				sessionCoverageReader: reader
+			});
+			reader.targetProjectRef = 'mutated-foreign-project';
+			reader.readActiveUserIds = vi
+				.fn()
+				.mockRejectedValue(new Error('mutated-provider-body'));
+			const scope = {
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			};
+
+			await expect(adapter.inspectRun(scope)).resolves.toMatchObject({
+				activeSessionsProven: true,
+				actorsWithActiveSessions: 1
+			});
+			await expect(adapter.inspectRun(scope)).resolves.toMatchObject({
+				activeSessionsProven: true,
+				actorsWithActiveSessions: 0
+			});
+			expect(readActiveUserIds).toHaveBeenCalledTimes(2);
+		}
+	});
+
 	it.each([
 		['in-progress', 'complete', false, true],
 		['complete', 'complete', true, false]

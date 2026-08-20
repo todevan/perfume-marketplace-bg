@@ -2024,6 +2024,77 @@ function inspectorTimestamp(value) {
 	return Number.isFinite(Date.parse(text)) ? text : null;
 }
 
+/** @param {unknown} value @param {readonly string[]} expectedKeys */
+function exactInspectorDataRecord(value, expectedKeys) {
+	if (!value || typeof value !== 'object') return null;
+	try {
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) return null;
+		const keys = Reflect.ownKeys(value);
+		if (
+			keys.some((key) => typeof key !== 'string') ||
+			keys.length !== expectedKeys.length ||
+			!expectedKeys.every((key) => keys.includes(key))
+		) {
+			return null;
+		}
+		const entries = [];
+		for (const key of expectedKeys) {
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) return null;
+			entries.push([key, descriptor.value]);
+		}
+		return Object.freeze(Object.fromEntries(entries));
+	} catch {
+		return null;
+	}
+}
+
+/** @param {unknown} value */
+function exactInspectorStringArray(value) {
+	if (!Array.isArray(value)) return null;
+	try {
+		if (Object.getPrototypeOf(value) !== Array.prototype) return null;
+		const keys = Reflect.ownKeys(value);
+		const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+		if (
+			!lengthDescriptor ||
+			!('value' in lengthDescriptor) ||
+			!Number.isSafeInteger(lengthDescriptor.value) ||
+			lengthDescriptor.value < 0
+		) {
+			return null;
+		}
+		const expectedKeys = [
+			...Array.from({ length: lengthDescriptor.value }, (_, index) => String(index)),
+			'length'
+		];
+		if (
+			keys.some((key) => typeof key !== 'string') ||
+			keys.length !== expectedKeys.length ||
+			!expectedKeys.every((key) => keys.includes(key))
+		) {
+			return null;
+		}
+		const values = [];
+		for (let index = 0; index < lengthDescriptor.value; index += 1) {
+			const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+			if (
+				!descriptor ||
+				!descriptor.enumerable ||
+				!('value' in descriptor) ||
+				typeof descriptor.value !== 'string'
+			) {
+				return null;
+			}
+			values.push(descriptor.value);
+		}
+		return Object.freeze(values);
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Creates the narrow Supabase read capability used by the universal Gate 3
  * inspector. The returned object deliberately contains no mutation, upload,
@@ -2053,6 +2124,26 @@ export function createSupabaseHostedInspectionAdapter({
 	}
 	if (projectRef !== HOSTED_STAGING.projectRef || clientOrigin !== HOSTED_STAGING.supabaseUrl) {
 		throw new HostedEvidenceOperatorError('hosted_inspection_target_invalid');
+	}
+	/** @type {{ targetProjectRef: string, readActiveUserIds: (scope: { userIds: string[] }) => unknown } | null} */
+	let exactSessionReader = null;
+	try {
+		const reader = exactInspectorDataRecord(sessionCoverageReader, [
+			'targetProjectRef',
+			'readActiveUserIds'
+		]);
+		if (
+			reader?.targetProjectRef === projectRef &&
+			typeof reader.readActiveUserIds === 'function'
+		) {
+			const readActiveUserIds = reader.readActiveUserIds;
+			exactSessionReader = Object.freeze({
+				targetProjectRef: projectRef,
+				readActiveUserIds: (scope) => Reflect.apply(readActiveUserIds, undefined, [scope])
+			});
+		}
+	} catch {
+		exactSessionReader = null;
 	}
 	const postgrestPageSize = 1000;
 	const postgrestPageLimit = 100;
@@ -2253,34 +2344,29 @@ export function createSupabaseHostedInspectionAdapter({
 		const exactUserIds = new Set(exactUsers.map((user) => String(user.id)));
 		let activeSessionUserIds = [];
 		let activeSessionsProven = false;
-		const sessionReaderKeys =
-			sessionCoverageReader && typeof sessionCoverageReader === 'object'
-				? Object.keys(sessionCoverageReader).sort()
-				: [];
-		const sessionReaderValid = Boolean(
-			sessionCoverageReader?.targetProjectRef === projectRef &&
-			typeof sessionCoverageReader?.readActiveUserIds === 'function' &&
-			JSON.stringify(sessionReaderKeys) ===
-				JSON.stringify(['readActiveUserIds', 'targetProjectRef'])
-		);
-		const exactSessionReader = sessionReaderValid ? sessionCoverageReader : null;
 		if (exactUserIds.size > 0 && exactSessionReader) {
 			try {
 				const ids = [...exactUserIds];
-				const coverage = await exactSessionReader.readActiveUserIds({ userIds: ids });
+				const pendingCoverage = exactSessionReader.readActiveUserIds({ userIds: ids });
 				if (
-					!coverage ||
-					typeof coverage !== 'object' ||
-					JSON.stringify(Object.keys(coverage).sort()) !== JSON.stringify(['activeUserIds']) ||
-					!Array.isArray(coverage.activeUserIds) ||
-					coverage.activeUserIds.some(
-						(userId) => typeof userId !== 'string' || !exactUserIds.has(userId)
-					) ||
-					new Set(coverage.activeUserIds).size !== coverage.activeUserIds.length
+					!(pendingCoverage instanceof Promise) ||
+					Object.getPrototypeOf(pendingCoverage) !== Promise.prototype
 				) {
 					throw new Error('session coverage read failed');
 				}
-				activeSessionUserIds = [...coverage.activeUserIds];
+				const coverage = await pendingCoverage;
+				const coverageRecord = exactInspectorDataRecord(coverage, ['activeUserIds']);
+				const coverageIds = exactInspectorStringArray(coverageRecord?.activeUserIds);
+				if (
+					!coverageIds ||
+					coverageIds.some(
+						(userId) => typeof userId !== 'string' || !exactUserIds.has(userId)
+					) ||
+					new Set(coverageIds).size !== coverageIds.length
+				) {
+					throw new Error('session coverage read failed');
+				}
+				activeSessionUserIds = [...coverageIds];
 				activeSessionsProven = true;
 			} catch {
 				activeSessionUserIds = [];
