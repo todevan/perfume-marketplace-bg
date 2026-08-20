@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -163,7 +163,10 @@ describe('Gate 3 hosted run secrets', () => {
 		};
 		const dpapi = createPowerShellDpapi({ scriptPath: 'C:\\gate3\\gate3-dpapi.ps1', spawnImpl });
 
-		await expect(dpapi.protect(input)).resolves.toEqual(output);
+		const protectedResult = await dpapi.protect(input);
+		expect(protectedResult.toString('utf8')).toBe('protected-binary-output');
+		expect(output.every((byte) => byte === 0)).toBe(true);
+		protectedResult.fill(0);
 		expect(calls).toHaveLength(1);
 		expect(calls[0].command).toBe('powershell.exe');
 		expect(calls[0].args).toEqual([
@@ -282,5 +285,47 @@ describe('Gate 3 hosted run secrets', () => {
 		});
 		expect(await readdir(join(path, '..'))).toEqual([]);
 		expect(JSON.stringify(metadata).includes('ciphertext-only-fixture')).toBe(false);
+	});
+
+	it.each(['archive', 'other'])('rejects %s run paths before DPAPI invocation', async (parent) => {
+		const root = await mkdtemp(join(tmpdir(), 'gate3-path-scope-'));
+		temporaryRoots.push(root);
+		const path = join(root, parent, runId, 'gate3-secrets.dpapi');
+		await mkdir(join(path, '..'), { recursive: true });
+		const dpapi = { protect: vi.fn(), unprotect: vi.fn() };
+		deterministicDistinctBytes.calls = 0;
+		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		await expect(protectRunSecrets({ payload, path, dpapi })).rejects.toThrow('secret_path_invalid');
+		await expect(unprotectRunSecrets({ runId, path, dpapi })).rejects.toThrow('secret_path_invalid');
+		await expect(destroyRunSecretStore(path)).rejects.toThrow('secret_path_invalid');
+		expect(dpapi.protect).not.toHaveBeenCalled();
+		expect(dpapi.unprotect).not.toHaveBeenCalled();
+	});
+
+	it('rejects secret-shaped and mismatched actor payloads before DPAPI invocation', async () => {
+		const path = await createSecretPath();
+		deterministicDistinctBytes.calls = 0;
+		const base = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		const dpapi = { protect: vi.fn(), unprotect: vi.fn() };
+		for (const payload of [
+			{ ...base, actors: { ...base.actors, reporter: { ...base.actors.reporter, serviceKey: 'fixture' } } },
+			{ ...base, actors: { ...base.actors, reporter: { ...base.actors.reporter, email: 'wrong@example.invalid' } } }
+		]) await expect(protectRunSecrets({ payload, path, dpapi })).rejects.toThrow('secret_payload_invalid');
+		expect(dpapi.protect).not.toHaveBeenCalled();
+	});
+
+	it('preserves the existing final store when temp verification fails before rename', async () => {
+		const path = await createSecretPath();
+		const original = Buffer.from('existing-ciphertext');
+		await writeFile(path, original);
+		deterministicDistinctBytes.calls = 0;
+		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		const filesystem = { chmod: async (candidate: string, mode: number) => {
+			if (candidate !== path) throw new Error('injected chmod failure');
+			return chmod(candidate, mode);
+		}, lstat, open, readFile, realpath, rename, unlink };
+		await expect(protectRunSecrets({ payload, path, dpapi: { protect: async () => Buffer.from('replacement') }, filesystem: filesystem as any })).rejects.toThrow('secret_store_write_failed');
+		expect(await readFile(path)).toEqual(original);
+		expect(await readdir(join(path, '..'))).toEqual(['gate3-secrets.dpapi']);
 	});
 });

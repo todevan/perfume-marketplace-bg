@@ -37,17 +37,15 @@ windowsDescribe('Gate 3 CurrentUser DPAPI helper', () => {
 		expect(source.subarray(0, 3)).not.toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
 		const dpapi = createPowerShellDpapi({ scriptPath });
 		const plaintext = Buffer.from('windows-dpapi-sensitive-fixture', 'utf8');
-
-		const ciphertext = await dpapi.protect(plaintext);
-		expect(ciphertext.length).toBeGreaterThan(plaintext.length);
-		expect(ciphertext).not.toEqual(plaintext);
-		const restored = await dpapi.unprotect(ciphertext);
-		expect(createHash('sha256').update(restored).digest('hex')).toBe(
-			createHash('sha256').update(plaintext).digest('hex')
-		);
-		restored.fill(0);
-		ciphertext.fill(0);
-		plaintext.fill(0);
+		let ciphertext: Buffer | undefined;
+		let restored: Buffer | undefined;
+		try {
+			ciphertext = await dpapi.protect(plaintext);
+			expect(ciphertext.length).toBeGreaterThan(plaintext.length);
+			expect(ciphertext).not.toEqual(plaintext);
+			restored = await dpapi.unprotect(ciphertext);
+			expect(createHash('sha256').update(restored).digest('hex')).toBe(createHash('sha256').update(plaintext).digest('hex'));
+		} finally { restored?.fill(0); ciphertext?.fill(0); plaintext.fill(0); }
 	});
 
 	it('fails closed on corrupt ciphertext without echoing sensitive bytes', async () => {
@@ -73,8 +71,10 @@ windowsDescribe('Gate 3 CurrentUser DPAPI helper', () => {
 		const metadata = await protectRunSecrets({ payload, path, dpapi });
 		const directoryEntries = await readdir(dirname(path));
 		const stored = await readFile(path);
-		expect(directoryEntries).toEqual(['gate3-secrets.dpapi']);
-		expect(stored.includes(Buffer.from(plaintextMarker, 'utf8'))).toBe(false);
+		try {
+			expect(directoryEntries).toEqual(['gate3-secrets.dpapi']);
+			expect(stored.includes(Buffer.from(plaintextMarker, 'utf8'))).toBe(false);
+		} finally { stored.fill(0); }
 		expect(JSON.stringify(metadata).includes(plaintextMarker)).toBe(false);
 
 		const restored = await unprotectRunSecrets({ runId, path, dpapi });

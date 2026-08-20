@@ -25,6 +25,7 @@ const MODERATOR_ROLES = new Set(['assigned-moderator', 'unassigned-moderator']);
 const SECRET_FILE_NAME = 'gate3-secrets.dpapi';
 const MAX_PLAINTEXT_BYTES = 64 * 1024;
 const MAX_CIPHERTEXT_BYTES = 256 * 1024;
+const NODE_FILESYSTEM = Object.freeze({ chmod, lstat, open, readFile, realpath, rename, unlink });
 
 export const GATE3_SECRET_SCHEMA_VERSION = 1;
 export const GATE3_IDENTITY_SCHEME_VERSION = 1;
@@ -245,12 +246,14 @@ export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {Spawn
 
 	/** @param {'protect' | 'unprotect'} operation @param {Uint8Array} input */
 	async function invoke(operation, input) {
+		const outputLimit = operation === 'protect' ? MAX_CIPHERTEXT_BYTES : MAX_PLAINTEXT_BYTES;
 		const inputBytes = exactBoundedBuffer(
 			input,
 			operation === 'protect' ? MAX_PLAINTEXT_BYTES : MAX_CIPHERTEXT_BYTES,
 			'dpapi_input_invalid'
 		);
 		return await new Promise((resolvePromise, rejectPromise) => {
+			/** @type {SpawnedDpapiProcess | undefined} */
 			let child;
 			let settled = false;
 			let outputSize = 0;
@@ -266,6 +269,12 @@ export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {Spawn
 				inputBytes.fill(0);
 				for (const chunk of outputChunks) chunk.fill(0);
 				rejectPromise(new Gate3HostedSecretsError(reasonCode));
+			};
+			/** @param {string} reasonCode */
+			const fail = (reasonCode) => {
+				failureReason = reasonCode;
+				child?.stdin?.destroy?.(); child?.stdout?.destroy?.(); child?.stderr?.destroy?.(); child?.kill?.();
+				rejectSanitized(reasonCode);
 			};
 
 			try {
@@ -284,23 +293,23 @@ export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {Spawn
 				return;
 			}
 			child.stdout.on('data', (chunk) => {
-				if (settled || failureReason) return;
 				const bytes = Buffer.from(chunk);
+				chunk?.fill?.(0);
+				if (settled || failureReason) { bytes.fill(0); return; }
 				outputSize += bytes.length;
-				if (outputSize > MAX_CIPHERTEXT_BYTES) {
+				if (outputSize > outputLimit) {
 					bytes.fill(0);
-					failureReason = 'dpapi_output_too_large';
-					child.kill?.();
+					fail('dpapi_output_too_large');
 					return;
 				}
 				outputChunks.push(bytes);
 			});
 			// Drain stderr so the helper cannot block, but never retain or echo it.
-			child.stderr.on('data', () => {});
-			child.on('error', () => rejectSanitized('dpapi_unavailable'));
-			child.stdin.on('error', () => {
-				failureReason = 'dpapi_failed';
-			});
+			child.stderr.on('data', (chunk) => chunk?.fill?.(0));
+			child.stdout.on('error', () => fail('dpapi_failed'));
+			child.stderr.on('error', () => fail('dpapi_failed'));
+			child.on('error', () => fail('dpapi_unavailable'));
+			child.stdin.on('error', () => fail('dpapi_failed'));
 			child.on('close', (exitCode) => {
 				if (settled) return;
 				inputBytes.fill(0);
@@ -313,7 +322,7 @@ export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {Spawn
 				settled = true;
 				resolvePromise(output);
 			});
-			child.stdin.end(inputBytes);
+			try { child.stdin.end(inputBytes); } catch { fail('dpapi_failed'); }
 		});
 	}
 
@@ -324,28 +333,32 @@ export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {Spawn
 }
 
 /** @param {string} filePath @param {string | undefined} [expectedRunId] */
-async function assertExactSecretPath(filePath, expectedRunId) {
+async function assertExactSecretPath(filePath, expectedRunId, filesystem = NODE_FILESYSTEM) {
 	if (
 		typeof filePath !== 'string' ||
 		!isAbsolute(filePath) ||
 		basename(filePath) !== SECRET_FILE_NAME ||
 		!RUN_ID_PATTERN.test(basename(dirname(filePath))) ||
+		basename(dirname(dirname(filePath))) !== 'active' ||
 		(expectedRunId !== undefined && basename(dirname(filePath)) !== expectedRunId)
 	) {
 		throw new Gate3HostedSecretsError('secret_path_invalid');
 	}
 	try {
 		const parent = dirname(filePath);
-		const parentEntry = await lstat(parent);
+		const active = dirname(parent);
+		const activeEntry = await filesystem.lstat(active);
+		if (!activeEntry.isDirectory() || activeEntry.isSymbolicLink()) throw new Error('unsafe active');
+		const parentEntry = await filesystem.lstat(parent);
 		if (!parentEntry.isDirectory() || parentEntry.isSymbolicLink()) throw new Error('unsafe parent');
-		const exactParent = await realpath(parent);
+		const exactParent = await filesystem.realpath(parent);
 		const sameParent =
 			process.platform === 'win32'
 				? exactParent.toLowerCase() === resolve(parent).toLowerCase()
 				: exactParent === resolve(parent);
 		if (!sameParent) throw new Error('reparse parent');
 		try {
-			const entry = await lstat(filePath);
+			const entry = await filesystem.lstat(filePath);
 			if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('unsafe file');
 		} catch (error) {
 			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error;
@@ -358,9 +371,9 @@ async function assertExactSecretPath(filePath, expectedRunId) {
 }
 
 /** @param {string} filePath */
-async function readBoundedCiphertext(filePath) {
+async function readBoundedCiphertext(filePath, filesystem = NODE_FILESYSTEM) {
 	try {
-		const entry = await lstat(filePath);
+		const entry = await filesystem.lstat(filePath);
 		if (
 			!entry.isFile() ||
 			entry.isSymbolicLink() ||
@@ -369,7 +382,7 @@ async function readBoundedCiphertext(filePath) {
 		) {
 			throw new Gate3HostedSecretsError('secret_store_invalid');
 		}
-		const bytes = await readFile(filePath);
+		const bytes = await filesystem.readFile(filePath);
 		if (bytes.length === 0 || bytes.length > MAX_CIPHERTEXT_BYTES) {
 			bytes.fill(0);
 			throw new Gate3HostedSecretsError('secret_store_invalid');
@@ -382,27 +395,26 @@ async function readBoundedCiphertext(filePath) {
 }
 
 /** @param {string} filePath @param {Buffer} ciphertext */
-async function atomicCiphertextWrite(filePath, ciphertext) {
+async function atomicCiphertextWrite(filePath, ciphertext, filesystem = NODE_FILESYSTEM) {
 	const temporaryPath = resolve(
 		dirname(filePath),
 		`.${SECRET_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`
 	);
 	let handle;
 	try {
-		handle = await open(temporaryPath, 'wx', 0o600);
+		handle = await filesystem.open(temporaryPath, 'wx', 0o600);
 		await handle.writeFile(ciphertext);
 		await handle.sync();
 		await handle.close();
 		handle = undefined;
-		await chmod(temporaryPath, 0o600);
-		await rename(temporaryPath, filePath);
-		await chmod(filePath, 0o600);
-		const verified = await readBoundedCiphertext(filePath);
+		await filesystem.chmod(temporaryPath, 0o600);
+		const verified = await readBoundedCiphertext(temporaryPath, filesystem);
 		try {
 			if (!verified.equals(ciphertext)) throw new Error('replacement mismatch');
 		} finally {
 			verified.fill(0);
 		}
+		await filesystem.rename(temporaryPath, filePath);
 	} catch {
 		try {
 			await handle?.close();
@@ -410,7 +422,7 @@ async function atomicCiphertextWrite(filePath, ciphertext) {
 			// Only the sanitized store-write error crosses this boundary.
 		}
 		try {
-			await unlink(temporaryPath);
+			await filesystem.unlink(temporaryPath);
 		} catch {
 			// The replacement may already have been renamed or never created.
 		}
@@ -419,11 +431,11 @@ async function atomicCiphertextWrite(filePath, ciphertext) {
 }
 
 /**
- * @param {{ payload: unknown, path: string, dpapi: { protect: (input: Buffer) => Promise<Uint8Array> } }} options
+ * @param {{ payload: unknown, path: string, dpapi: { protect: (input: Buffer) => Promise<Uint8Array> }, filesystem?: typeof NODE_FILESYSTEM }} options
  */
-export async function protectRunSecrets({ payload, path, dpapi }) {
+export async function protectRunSecrets({ payload, path, dpapi, filesystem = NODE_FILESYSTEM }) {
 	const validPayload = validateRunSecretPayload(payload);
-	const exactPath = await assertExactSecretPath(path, validPayload.runId);
+	const exactPath = await assertExactSecretPath(path, validPayload.runId, filesystem);
 	if (!dpapi || typeof dpapi.protect !== 'function') {
 		throw new Gate3HostedSecretsError('dpapi_configuration_invalid');
 	}
@@ -437,7 +449,7 @@ export async function protectRunSecrets({ payload, path, dpapi }) {
 			MAX_CIPHERTEXT_BYTES,
 			'dpapi_output_too_large'
 		);
-		await atomicCiphertextWrite(exactPath, ciphertext);
+		await atomicCiphertextWrite(exactPath, ciphertext, filesystem);
 		return Object.freeze({
 			status: 'available',
 			ciphertextSha256: createHash('sha256').update(ciphertext).digest('hex')
