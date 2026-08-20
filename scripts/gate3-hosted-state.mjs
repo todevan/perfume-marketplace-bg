@@ -1,11 +1,34 @@
-import { lstat, mkdir, readFile, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { atomicPrivateWrite, reservePrivateFile } from './hosted-private-file.mjs';
 
 const RUN_ID_PATTERN = /^gate3-\d{8}-[a-f0-9]{8}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const COMMIT_SHA_PATTERN = /^[a-f0-9]{40}$/u;
-const SECRET_SHAPED_KEY_PATTERN = /(secret|token|password|credential|authorization|cookie|ciphertext|private.?key|api.?key)/iu;
+const SAFE_CACHE_KEYS = new Set([
+	'observedAt',
+	'classification',
+	'status',
+	'phase',
+	'step',
+	'reasonCode',
+	'runId',
+	'projectRef',
+	'workerOrigin',
+	'releaseCommitSha',
+	'manifestSha256',
+	'revision',
+	'archived',
+	'cleanupVerified',
+	'independentZeroVerified',
+	'counts',
+	'foreignCounts',
+	'scenarioId',
+	'operationId',
+	'destination',
+	'requestedAt',
+	'completedAt'
+]);
 const TOP_LEVEL_STATE_KEYS = new Set([
 	'schemaVersion',
 	'revision',
@@ -56,14 +79,24 @@ function assertSafeCachedValue(value) {
 		if (Number.isFinite(value)) return;
 		throw new Gate3HostedStateError('state_invalid');
 	}
-	if (Array.isArray(value)) {
-		for (const entry of value) assertSafeCachedValue(entry);
-		return;
-	}
 	if (!isPlainObject(value)) throw new Gate3HostedStateError('state_invalid');
 	for (const [key, entry] of Object.entries(value)) {
-		if (SECRET_SHAPED_KEY_PATTERN.test(key)) throw new Gate3HostedStateError('state_invalid');
-		assertSafeCachedValue(entry);
+		if (!SAFE_CACHE_KEYS.has(key)) throw new Gate3HostedStateError('state_invalid');
+		if (key === 'counts' || key === 'foreignCounts') {
+			assertSafeCountMap(entry);
+		} else {
+			assertSafeCachedValue(entry);
+		}
+	}
+}
+
+/** @param {unknown} value */
+function assertSafeCountMap(value) {
+	if (!isPlainObject(value)) throw new Gate3HostedStateError('state_invalid');
+	for (const count of Object.values(value)) {
+		if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
+			throw new Gate3HostedStateError('state_invalid');
+		}
 	}
 }
 
@@ -123,7 +156,7 @@ function validateRunState(state) {
 	}
 	if (!isPlainObject(state.scenarioCheckpoints)) throw new Gate3HostedStateError('state_invalid');
 	for (const [key, value] of Object.entries(state.scenarioCheckpoints)) {
-		if (SECRET_SHAPED_KEY_PATTERN.test(key)) throw new Gate3HostedStateError('state_invalid');
+		if (!/^scenario-[a-z0-9-]+$/u.test(key)) throw new Gate3HostedStateError('state_invalid');
 		assertSafeCachedValue(value);
 	}
 	if (state.lastInspection !== null && !isPlainObject(state.lastInspection)) {
@@ -188,7 +221,22 @@ async function assertRealDirectory(directory) {
 /** @param {Record<string, string>} paths @param {{ createRunDirectory?: boolean }} [options] */
 async function assertSafeRunPaths(paths, { createRunDirectory = false } = {}) {
 	await assertRealDirectory(paths.root);
-	if (createRunDirectory) await mkdir(paths.runDirectory, { recursive: true, mode: 0o700 });
+	if (createRunDirectory) {
+		try {
+			await assertRealDirectory(paths.activeRoot);
+		} catch (error) {
+			if (!(error instanceof Gate3HostedStateError)) throw error;
+			try {
+				await mkdir(paths.activeRoot, { recursive: false, mode: 0o700 });
+			} catch (mkdirError) {
+				if (/** @type {NodeJS.ErrnoException} */ (mkdirError).code !== 'EEXIST') throw mkdirError;
+			}
+			await assertRealDirectory(paths.activeRoot);
+		}
+		await mkdir(paths.runDirectory, { recursive: false, mode: 0o700 }).catch((error) => {
+			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
+		});
+	}
 	for (const directory of [paths.activeRoot, paths.runDirectory]) await assertRealDirectory(directory);
 	if (!pathIsInside(resolve(paths.statePath), resolve(paths.runDirectory))) {
 		throw new Gate3HostedStateError('state_path_invalid');
@@ -303,10 +351,16 @@ export async function writeNextRunState(paths, currentState, nextState) {
 	) {
 		throw new Gate3HostedStateError('revision_invalid');
 	}
-	for (const key of ['runId', 'createdAt', 'target', 'identitySchemeVersion', 'manifest', 'secretStore']) {
+	for (const key of ['runId', 'createdAt', 'target', 'identitySchemeVersion']) {
 		if (JSON.stringify(validNextState[key]) !== JSON.stringify(validCurrentState[key])) {
 			throw new Gate3HostedStateError('immutable_binding_changed');
 		}
+	}
+	if (
+		validNextState.manifest.path !== validCurrentState.manifest.path ||
+		validNextState.secretStore.path !== validCurrentState.secretStore.path
+	) {
+		throw new Gate3HostedStateError('immutable_binding_changed');
 	}
 	assertStateMatchesPaths(exactPaths, validNextState);
 	await assertSafeRunPaths(exactPaths);
@@ -350,6 +404,45 @@ export async function readActiveRun(root) {
 	}
 }
 
+/** @param {string} root @param {() => Promise<string | null | void>} operation */
+async function withActivePointerLock(root, operation) {
+	const lockPath = join(root, '.active-run.lock');
+	let handle;
+	let acquired = false;
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		try {
+			handle = await open(lockPath, 'wx', 0o600);
+			await handle.writeFile(`${process.pid}\n`, 'utf8');
+			await handle.sync();
+			await handle.close();
+			handle = undefined;
+			acquired = true;
+			break;
+		} catch (error) {
+			try {
+				await handle?.close();
+			} catch {
+				// The lock acquisition result remains fail-closed.
+			}
+			handle = undefined;
+			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') {
+				throw new Gate3HostedStateError('active_pointer_lock_failed');
+			}
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+		}
+	}
+	if (!acquired) throw new Gate3HostedStateError('active_pointer_lock_failed');
+	try {
+		return await operation();
+	} finally {
+		try {
+			await unlink(lockPath);
+		} catch {
+			throw new Gate3HostedStateError('active_pointer_lock_failed');
+		}
+	}
+}
+
 /** @param {{ root: string, runId: string, expectedCurrentRunId: string | null }} options */
 export async function setActiveRun({ root, runId, expectedCurrentRunId }) {
 	const paths = resolveGate3RunPaths({ root, runId });
@@ -357,29 +450,33 @@ export async function setActiveRun({ root, runId, expectedCurrentRunId }) {
 		throw new Gate3HostedStateError('active_pointer_invalid');
 	}
 	await assertSafeRunPaths(paths);
-	const currentRunId = await readActiveRun(root);
-	if (currentRunId !== expectedCurrentRunId) throw new Gate3HostedStateError('active_run_changed');
-	const contents = `${JSON.stringify({ schemaVersion: 1, runId })}\n`;
-	try {
-		await atomicPrivateWrite(paths.activePointerPath, contents, {
-			verify: (replacementBytes) => {
-				if (replacementBytes !== contents) throw new Gate3HostedStateError('active_pointer_invalid');
-			}
-		});
-	} catch (error) {
-		if (error instanceof Gate3HostedStateError) throw error;
-		throw new Gate3HostedStateError('active_pointer_write_failed');
-	}
-	return runId;
+	return withActivePointerLock(root, async () => {
+		const currentRunId = await readActiveRun(root);
+		if (currentRunId !== expectedCurrentRunId) throw new Gate3HostedStateError('active_run_changed');
+		const contents = `${JSON.stringify({ schemaVersion: 1, runId })}\n`;
+		try {
+			await atomicPrivateWrite(paths.activePointerPath, contents, {
+				verify: (replacementBytes) => {
+					if (replacementBytes !== contents) throw new Gate3HostedStateError('active_pointer_invalid');
+				}
+			});
+		} catch (error) {
+			if (error instanceof Gate3HostedStateError) throw error;
+			throw new Gate3HostedStateError('active_pointer_write_failed');
+		}
+		return runId;
+	});
 }
 
 /** @param {{ root: string, runId: string }} options */
 export async function clearActiveRun({ root, runId }) {
 	resolveGate3RunPaths({ root, runId });
-	if ((await readActiveRun(root)) !== runId) throw new Gate3HostedStateError('active_run_changed');
-	try {
-		await unlink(join(root, 'active-run.json'));
-	} catch {
-		throw new Gate3HostedStateError('active_pointer_write_failed');
-	}
+	return withActivePointerLock(root, async () => {
+		if ((await readActiveRun(root)) !== runId) throw new Gate3HostedStateError('active_run_changed');
+		try {
+			await unlink(join(root, 'active-run.json'));
+		} catch {
+			throw new Gate3HostedStateError('active_pointer_write_failed');
+		}
+	});
 }
