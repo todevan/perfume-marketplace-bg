@@ -133,6 +133,92 @@ describe('Gate 3 hosted state', () => {
 		}
 	);
 
+	it('rejects nested cached inspection objects under an otherwise allowed key', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await writeFile(paths.statePath, JSON.stringify({ ...state, lastInspection: { status: { status: 'x' } } }));
+
+		await expect(readRunState(paths)).rejects.toMatchObject({ reasonCode: 'state_invalid' });
+	});
+
+	it('validates a simulated reparse root before a pointer lock can be opened or unlinked', async () => {
+		const root = 'C:\\gate3-reparse-fixture';
+		const calls: string[] = [];
+		const filesystem = {
+			lstat: async () => {
+				calls.push('lstat');
+				return { isDirectory: () => true, isSymbolicLink: () => false };
+			},
+			realpath: async () => {
+				calls.push('realpath');
+				return 'C:\\outside-reparse-fixture';
+			},
+			mkdir: async () => {
+				calls.push('mkdir');
+			},
+			open: async () => {
+				calls.push('open');
+				throw new Error('must not open');
+			},
+			readFile: async () => {
+				calls.push('readFile');
+				return '';
+			},
+			unlink: async () => {
+				calls.push('unlink');
+			}
+		} as never;
+
+		await expect(
+			clearActiveRun({ root, runId: 'gate3-20260820-abcdef12', filesystem })
+		).rejects.toMatchObject({ reasonCode: 'state_path_invalid' });
+		expect(calls).toEqual(['lstat', 'realpath']);
+	});
+
+	it('rejects a simulated active-root reparse target before creating a run directory', async () => {
+		const paths = resolveGate3RunPaths({ root: 'C:\\gate3-active-reparse-fixture', runId: 'gate3-20260820-abcdef12' });
+		const state = createInitialRunState({
+			runId: paths.runId,
+			createdAt: '2026-08-20T10:00:00.000Z',
+			releaseCommitSha: 'a'.repeat(40),
+			manifestPath: paths.manifestPath,
+			secretPath: paths.secretPath
+		});
+		const calls: string[] = [];
+		const filesystem = {
+			lstat: async (path: string) => {
+				calls.push(`lstat:${path}`);
+				return { isDirectory: () => true, isSymbolicLink: () => false };
+			},
+			realpath: async (path: string) => {
+				calls.push(`realpath:${path}`);
+				return path === paths.activeRoot ? 'C:\\outside-active-reparse-fixture' : path;
+			},
+			mkdir: async () => {
+				calls.push('mkdir');
+			},
+			open: async () => {
+				calls.push('open');
+				throw new Error('must not open');
+			},
+			readFile: async () => '',
+			unlink: async () => {
+				calls.push('unlink');
+			}
+		} as never;
+
+		await expect(reserveRunState(paths, state, { filesystem })).rejects.toMatchObject({
+			reasonCode: 'state_path_invalid'
+		});
+			expect(calls).toEqual([
+			`lstat:${paths.root}`,
+			`realpath:${paths.root}`,
+			`lstat:${paths.activeRoot}`,
+			`lstat:${paths.activeRoot}`,
+			`realpath:${paths.activeRoot}`
+		]);
+	});
+
 	it('does not follow a Windows active-directory junction before rejecting it', async ({ skip }) => {
 		const { paths, state } = await createFixture();
 		const outside = await mkdtemp(join(tmpdir(), 'gate3-hosted-junction-target-'));

@@ -5,12 +5,20 @@ import { atomicPrivateWrite, reservePrivateFile } from './hosted-private-file.mj
 const RUN_ID_PATTERN = /^gate3-\d{8}-[a-f0-9]{8}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const COMMIT_SHA_PATTERN = /^[a-f0-9]{40}$/u;
-const SAFE_CACHE_KEYS = new Set([
+const CHECKPOINT_KEYS = new Set([
 	'observedAt',
-	'classification',
 	'status',
 	'phase',
 	'step',
+	'reasonCode',
+	'revision',
+	'scenarioId',
+	'operationId'
+]);
+const INSPECTION_KEYS = new Set([
+	'observedAt',
+	'classification',
+	'status',
 	'reasonCode',
 	'runId',
 	'projectRef',
@@ -22,12 +30,14 @@ const SAFE_CACHE_KEYS = new Set([
 	'cleanupVerified',
 	'independentZeroVerified',
 	'counts',
-	'foreignCounts',
-	'scenarioId',
-	'operationId',
+	'foreignCounts'
+]);
+const ARCHIVE_KEYS = new Set([
+	'status',
 	'destination',
 	'requestedAt',
-	'completedAt'
+	'completedAt',
+	'manifestSha256'
 ]);
 const TOP_LEVEL_STATE_KEYS = new Set([
 	'schemaVersion',
@@ -44,6 +54,7 @@ const TOP_LEVEL_STATE_KEYS = new Set([
 	'archive'
 ]);
 const PHASE_NAMES = ['preflight', 'provision', 'scenario', 'cleanup', 'recovery'];
+const NODE_FILESYSTEM = Object.freeze({ lstat, mkdir, open, readFile, realpath, unlink });
 
 export class Gate3HostedStateError extends Error {
 	/** @param {string} reasonCode */
@@ -73,19 +84,24 @@ function assertExactKeys(value, keys) {
 }
 
 /** @param {unknown} value */
-function assertSafeCachedValue(value) {
+function assertSafeCacheScalar(value) {
 	if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
 	if (typeof value === 'number') {
 		if (Number.isFinite(value)) return;
 		throw new Gate3HostedStateError('state_invalid');
 	}
+	throw new Gate3HostedStateError('state_invalid');
+}
+
+/** @param {unknown} value @param {Set<string>} allowedKeys @param {Set<string>} [countMapKeys] */
+function assertSafeCacheRecord(value, allowedKeys, countMapKeys = new Set()) {
 	if (!isPlainObject(value)) throw new Gate3HostedStateError('state_invalid');
 	for (const [key, entry] of Object.entries(value)) {
-		if (!SAFE_CACHE_KEYS.has(key)) throw new Gate3HostedStateError('state_invalid');
-		if (key === 'counts' || key === 'foreignCounts') {
+		if (!allowedKeys.has(key)) throw new Gate3HostedStateError('state_invalid');
+		if (countMapKeys.has(key)) {
 			assertSafeCountMap(entry);
 		} else {
-			assertSafeCachedValue(entry);
+			assertSafeCacheScalar(entry);
 		}
 	}
 }
@@ -152,12 +168,12 @@ function validateRunState(state) {
 		if (!isPlainObject(phase)) throw new Gate3HostedStateError('state_invalid');
 		assertExactKeys(phase, ['status', 'checkpoint']);
 		if (typeof phase.status !== 'string') throw new Gate3HostedStateError('state_invalid');
-		assertSafeCachedValue(phase.checkpoint);
+		if (phase.checkpoint !== null) assertSafeCacheRecord(phase.checkpoint, CHECKPOINT_KEYS);
 	}
 	if (!isPlainObject(state.scenarioCheckpoints)) throw new Gate3HostedStateError('state_invalid');
 	for (const [key, value] of Object.entries(state.scenarioCheckpoints)) {
 		if (!/^scenario-[a-z0-9-]+$/u.test(key)) throw new Gate3HostedStateError('state_invalid');
-		assertSafeCachedValue(value);
+		assertSafeCacheRecord(value, CHECKPOINT_KEYS);
 	}
 	if (state.lastInspection !== null && !isPlainObject(state.lastInspection)) {
 		throw new Gate3HostedStateError('state_invalid');
@@ -165,8 +181,10 @@ function validateRunState(state) {
 	if (state.archive !== null && !isPlainObject(state.archive)) {
 		throw new Gate3HostedStateError('state_invalid');
 	}
-	assertSafeCachedValue(state.lastInspection);
-	assertSafeCachedValue(state.archive);
+	if (state.lastInspection !== null) {
+		assertSafeCacheRecord(state.lastInspection, INSPECTION_KEYS, new Set(['counts', 'foreignCounts']));
+	}
+	if (state.archive !== null) assertSafeCacheRecord(state.archive, ARCHIVE_KEYS);
 	return /** @type {Record<string, any>} */ (state);
 }
 
@@ -204,12 +222,12 @@ function pathIsInside(candidate, root) {
 	return rootRelative === '' || (!rootRelative.startsWith('..') && !isAbsolute(rootRelative));
 }
 
-/** @param {string} directory */
-async function assertRealDirectory(directory) {
+/** @param {string} directory @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function assertRealDirectory(directory, filesystem = NODE_FILESYSTEM) {
 	try {
-		const entry = await lstat(directory);
+		const entry = await filesystem.lstat(directory);
 		if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('unsafe directory');
-		if ((await realpath(directory)).toLowerCase() !== resolve(directory).toLowerCase()) {
+		if ((await filesystem.realpath(directory)).toLowerCase() !== resolve(directory).toLowerCase()) {
 			throw new Error('reparse directory');
 		}
 	} catch (error) {
@@ -218,26 +236,30 @@ async function assertRealDirectory(directory) {
 	}
 }
 
-/** @param {Record<string, string>} paths @param {{ createRunDirectory?: boolean }} [options] */
-async function assertSafeRunPaths(paths, { createRunDirectory = false } = {}) {
-	await assertRealDirectory(paths.root);
+/** @param {string} directory @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function directoryIsMissing(directory, filesystem = NODE_FILESYSTEM) {
+	try {
+		await filesystem.lstat(directory);
+		return false;
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return true;
+		throw new Gate3HostedStateError('state_path_invalid');
+	}
+}
+
+/** @param {Record<string, string>} paths @param {{ createRunDirectory?: boolean, filesystem?: typeof NODE_FILESYSTEM }} [options] */
+async function assertSafeRunPaths(paths, { createRunDirectory = false, filesystem = NODE_FILESYSTEM } = {}) {
+	await assertRealDirectory(paths.root, filesystem);
 	if (createRunDirectory) {
-		try {
-			await assertRealDirectory(paths.activeRoot);
-		} catch (error) {
-			if (!(error instanceof Gate3HostedStateError)) throw error;
-			try {
-				await mkdir(paths.activeRoot, { recursive: false, mode: 0o700 });
-			} catch (mkdirError) {
-				if (/** @type {NodeJS.ErrnoException} */ (mkdirError).code !== 'EEXIST') throw mkdirError;
-			}
-			await assertRealDirectory(paths.activeRoot);
+		if (await directoryIsMissing(paths.activeRoot, filesystem)) {
+			await filesystem.mkdir(paths.activeRoot, { recursive: false, mode: 0o700 });
 		}
-		await mkdir(paths.runDirectory, { recursive: false, mode: 0o700 }).catch((error) => {
+		await assertRealDirectory(paths.activeRoot, filesystem);
+		await filesystem.mkdir(paths.runDirectory, { recursive: false, mode: 0o700 }).catch((error) => {
 			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
 		});
 	}
-	for (const directory of [paths.activeRoot, paths.runDirectory]) await assertRealDirectory(directory);
+	for (const directory of [paths.activeRoot, paths.runDirectory]) await assertRealDirectory(directory, filesystem);
 	if (!pathIsInside(resolve(paths.statePath), resolve(paths.runDirectory))) {
 		throw new Gate3HostedStateError('state_path_invalid');
 	}
@@ -325,11 +347,11 @@ export async function readRunState(paths) {
 	}
 }
 
-/** @param {Record<string, string>} paths @param {unknown} state */
-export async function reserveRunState(paths, state) {
+/** @param {Record<string, string>} paths @param {unknown} state @param {{ filesystem?: typeof NODE_FILESYSTEM }} [options] */
+export async function reserveRunState(paths, state, { filesystem = NODE_FILESYSTEM } = {}) {
 	const exactPaths = validatePaths(paths);
 	assertStateMatchesPaths(exactPaths, state);
-	await assertSafeRunPaths(exactPaths, { createRunDirectory: true });
+	await assertSafeRunPaths(exactPaths, { createRunDirectory: true, filesystem });
 	try {
 		await reservePrivateFile(exactPaths.statePath, `${JSON.stringify(state)}\n`);
 	} catch {
@@ -379,20 +401,20 @@ export async function writeNextRunState(paths, currentState, nextState) {
 	}
 }
 
-/** @param {string} root */
-export async function readActiveRun(root) {
+/** @param {string} root @param {{ filesystem?: typeof NODE_FILESYSTEM }} [options] */
+export async function readActiveRun(root, { filesystem = NODE_FILESYSTEM } = {}) {
 	if (typeof root !== 'string' || !isAbsolute(root)) throw new Gate3HostedStateError('root_invalid');
-	await assertRealDirectory(root);
+	await assertRealDirectory(root, filesystem);
 	const pointerPath = join(root, 'active-run.json');
 	try {
-		const entry = await lstat(pointerPath);
+		const entry = await filesystem.lstat(pointerPath);
 		if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('unsafe pointer');
 	} catch (error) {
 		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return null;
 		throw new Gate3HostedStateError('active_pointer_invalid');
 	}
 	try {
-		const pointer = JSON.parse(await readFile(pointerPath, 'utf8'));
+		const pointer = JSON.parse(await filesystem.readFile(pointerPath, 'utf8'));
 		if (!isPlainObject(pointer)) throw new Error('invalid pointer');
 		assertExactKeys(pointer, ['schemaVersion', 'runId']);
 		if (pointer.schemaVersion !== 1 || typeof pointer.runId !== 'string' || !RUN_ID_PATTERN.test(pointer.runId)) {
@@ -404,14 +426,14 @@ export async function readActiveRun(root) {
 	}
 }
 
-/** @param {string} root @param {() => Promise<string | null | void>} operation */
-async function withActivePointerLock(root, operation) {
+/** @param {string} root @param {() => Promise<string | null | void>} operation @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function withActivePointerLock(root, operation, filesystem = NODE_FILESYSTEM) {
 	const lockPath = join(root, '.active-run.lock');
 	let handle;
 	let acquired = false;
 	for (let attempt = 0; attempt < 100; attempt += 1) {
 		try {
-			handle = await open(lockPath, 'wx', 0o600);
+			handle = await filesystem.open(lockPath, 'wx', 0o600);
 			await handle.writeFile(`${process.pid}\n`, 'utf8');
 			await handle.sync();
 			await handle.close();
@@ -436,22 +458,22 @@ async function withActivePointerLock(root, operation) {
 		return await operation();
 	} finally {
 		try {
-			await unlink(lockPath);
+			await filesystem.unlink(lockPath);
 		} catch {
 			throw new Gate3HostedStateError('active_pointer_lock_failed');
 		}
 	}
 }
 
-/** @param {{ root: string, runId: string, expectedCurrentRunId: string | null }} options */
-export async function setActiveRun({ root, runId, expectedCurrentRunId }) {
+/** @param {{ root: string, runId: string, expectedCurrentRunId: string | null, filesystem?: typeof NODE_FILESYSTEM }} options */
+export async function setActiveRun({ root, runId, expectedCurrentRunId, filesystem = NODE_FILESYSTEM }) {
 	const paths = resolveGate3RunPaths({ root, runId });
 	if (expectedCurrentRunId !== null && (typeof expectedCurrentRunId !== 'string' || !RUN_ID_PATTERN.test(expectedCurrentRunId))) {
 		throw new Gate3HostedStateError('active_pointer_invalid');
 	}
-	await assertSafeRunPaths(paths);
+	await assertSafeRunPaths(paths, { filesystem });
 	return withActivePointerLock(root, async () => {
-		const currentRunId = await readActiveRun(root);
+		const currentRunId = await readActiveRun(root, { filesystem });
 		if (currentRunId !== expectedCurrentRunId) throw new Gate3HostedStateError('active_run_changed');
 		const contents = `${JSON.stringify({ schemaVersion: 1, runId })}\n`;
 		try {
@@ -465,18 +487,19 @@ export async function setActiveRun({ root, runId, expectedCurrentRunId }) {
 			throw new Gate3HostedStateError('active_pointer_write_failed');
 		}
 		return runId;
-	});
+	}, filesystem);
 }
 
-/** @param {{ root: string, runId: string }} options */
-export async function clearActiveRun({ root, runId }) {
-	resolveGate3RunPaths({ root, runId });
+/** @param {{ root: string, runId: string, filesystem?: typeof NODE_FILESYSTEM }} options */
+export async function clearActiveRun({ root, runId, filesystem = NODE_FILESYSTEM }) {
+	const paths = resolveGate3RunPaths({ root, runId });
+	await assertRealDirectory(paths.root, filesystem);
 	return withActivePointerLock(root, async () => {
-		if ((await readActiveRun(root)) !== runId) throw new Gate3HostedStateError('active_run_changed');
+		if ((await readActiveRun(root, { filesystem })) !== runId) throw new Gate3HostedStateError('active_run_changed');
 		try {
-			await unlink(join(root, 'active-run.json'));
+			await filesystem.unlink(join(root, 'active-run.json'));
 		} catch {
 			throw new Gate3HostedStateError('active_pointer_write_failed');
 		}
-	});
+	}, filesystem);
 }
