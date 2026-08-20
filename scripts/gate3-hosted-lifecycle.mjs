@@ -52,8 +52,6 @@ const REASON_BY_CLASSIFICATION = Object.freeze({
 	ARCHIVED: 'archived'
 });
 
-const CLASSIFICATIONS = new Set(Object.keys(COMMANDS_BY_CLASSIFICATION));
-const CANONICAL_LIFECYCLES = new WeakSet();
 const CLEANUP_TARGET_KINDS = new Set([
 	'auth-user',
 	'pending-confirmation',
@@ -171,7 +169,6 @@ function lifecycleResult(classification, inspection) {
 		reasonCode: REASON_BY_CLASSIFICATION[classification],
 		exitCodeKey: Object.hasOwn(GATE3_EXIT_CODES, classification) ? classification : 'success'
 	});
-	CANONICAL_LIFECYCLES.add(result);
 	return result;
 }
 
@@ -189,16 +186,13 @@ export function classifyGate3Lifecycle(candidate) {
 }
 
 /**
- * Returns one allow-listed boundary for an approved lifecycle command, or null when denied.
- * @param {unknown} lifecycle
+ * Recomputes one allow-listed boundary from inspection facts, or returns null when denied.
+ * @param {unknown} inspection
  * @param {unknown} requestedCommand
  */
-export function selectGate3NextBoundary(lifecycle, requestedCommand) {
+export function selectGate3NextBoundary(inspection, requestedCommand) {
+	const lifecycle = classifyGate3Lifecycle(inspection);
 	if (
-		!isPlainObject(lifecycle) ||
-		!CANONICAL_LIFECYCLES.has(lifecycle) ||
-		typeof lifecycle.classification !== 'string' ||
-		!CLASSIFICATIONS.has(lifecycle.classification) ||
 		typeof requestedCommand !== 'string' ||
 		!Object.hasOwn(PHASE_BY_COMMAND, requestedCommand)
 	) {
@@ -215,23 +209,25 @@ export function selectGate3NextBoundary(lifecycle, requestedCommand) {
 	) {
 		return null;
 	}
-	if (
-		command === 'cleanup' &&
-		isPlainObject(lifecycle.nextBoundary) &&
-		lifecycle.nextBoundary.command === 'cleanup'
-	) {
-		const target = isPlainObject(lifecycle.nextBoundary.target) ? lifecycle.nextBoundary.target : null;
-		if (
-			target !== null &&
-			typeof target.kind === 'string' &&
-			CLEANUP_TARGET_KINDS.has(target.kind) &&
-			typeof target.id === 'string' &&
-			!target.id.includes('*')
-		) {
-			return boundary('cleanup', Object.freeze({ kind: target.kind, id: target.id }));
-		}
-		return null;
+	if (command === 'cleanup') {
+		const target = exactCleanupTarget(/** @type {Record<string, unknown>} */ (inspection));
+		return target === null ? null : boundary('cleanup', target);
 	}
 	if (command !== 'inspect' && (!isPlainObject(lifecycle.nextBoundary) || lifecycle.nextBoundary.command !== command)) return null;
 	return boundary(command);
+}
+
+/** @param {unknown} inspection */
+export function selectNextProvisionStep(inspection) {
+	return selectGate3NextBoundary(inspection, 'provision');
+}
+
+/** @param {unknown} inspection */
+export function selectNextScenarioStep(inspection) {
+	return selectGate3NextBoundary(inspection, 'scenario');
+}
+
+/** @param {unknown} inspection */
+export function selectNextCleanupStep(inspection) {
+	return selectGate3NextBoundary(inspection, 'cleanup');
 }

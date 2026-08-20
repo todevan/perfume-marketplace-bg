@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
 	GATE3_EXIT_CODES,
 	classifyGate3Lifecycle,
-	selectGate3NextBoundary
+	selectGate3NextBoundary,
+	selectNextCleanupStep,
+	selectNextProvisionStep,
+	selectNextScenarioStep
 } from '../../scripts/gate3-hosted-lifecycle.mjs';
 
 function inspection(overrides: Record<string, unknown> = {}) {
@@ -100,7 +103,7 @@ describe('Gate 3 hosted lifecycle policy', () => {
 	});
 
 	it('does not select a scenario boundary before verified provisioning', () => {
-		const preflight = classifyGate3Lifecycle(inspection({ actors: 0 }));
+		const preflight = inspection({ actors: 0 });
 		expect(selectGate3NextBoundary(preflight, 'scenario')).toBeNull();
 		expect(selectGate3NextBoundary(preflight, 'provision')).toEqual({
 		command: 'provision',
@@ -125,13 +128,11 @@ describe('Gate 3 hosted lifecycle policy', () => {
 	});
 
 	it('selects one exact residual artifact for cleanup', () => {
-		const lifecycle = classifyGate3Lifecycle(
-			inspection({
-				cleanupPartial: true,
-				residualArtifacts: [{ kind: 'auth-user', id: 'user-123' }]
-			})
-		);
-		expect(selectGate3NextBoundary(lifecycle, 'cleanup')).toEqual({
+		const input = inspection({
+			cleanupPartial: true,
+			residualArtifacts: [{ kind: 'auth-user', id: 'user-123' }]
+		});
+		expect(selectGate3NextBoundary(input, 'cleanup')).toEqual({
 		command: 'cleanup',
 		phase: 'cleanup',
 		target: { kind: 'auth-user', id: 'user-123' }
@@ -207,5 +208,58 @@ describe('Gate 3 hosted lifecycle policy', () => {
 			nextBoundary: { ...canonical.nextBoundary }
 		};
 		expect(selectGate3NextBoundary(forged, 'provision')).toBeNull();
+	});
+
+	it('recomputes provision policy from equivalent serialized inspection facts', () => {
+		const source = inspection({ actors: 0 });
+		const restored = JSON.parse(JSON.stringify(source));
+		expect(selectNextProvisionStep(source)).toEqual({ command: 'provision', phase: 'provision' });
+		expect(selectNextProvisionStep(restored)).toEqual(selectNextProvisionStep(source));
+		expect(
+			selectNextProvisionStep({
+				classification: 'PREFLIGHT_READY',
+				allowedCommands: ['inspect', 'provision'],
+				nextBoundary: { command: 'provision', phase: 'provision' },
+				reasonCode: 'preflight_ready',
+				exitCodeKey: 'success'
+			})
+		).toBeNull();
+	});
+
+	it.each([
+		['provision partial', inspection({ actors: 2, residualArtifacts: [{ kind: 'auth-user', id: 'user-1' }] })],
+		[
+			'provision verified',
+			inspection({ actors: 4, provisionVerified: true, residualArtifacts: [{ kind: 'auth-user', id: 'user-2' }] })
+		],
+		[
+			'scenario partial',
+			inspection({
+				actors: 4,
+				provisionVerified: true,
+				scenarioPartial: true,
+				residualArtifacts: [{ kind: 'report', id: 'report-1' }]
+			})
+		]
+	])('selects exact cleanup for %s', (_name, input) => {
+		expect(selectNextCleanupStep(input)).toMatchObject({ command: 'cleanup', phase: 'cleanup' });
+	});
+
+	it.each([
+		[undefined],
+		[[{ kind: 'auth-user', id: '' }]],
+		[[{ kind: 'wildcard', id: 'user-1' }]],
+		[[{ kind: 'auth-user', id: 'user-1' }, { kind: 'report', id: 'report-1' }]]
+	])('does not select cleanup without one exact residual target', (residualArtifacts) => {
+		expect(selectNextCleanupStep(inspection({ actors: 2, residualArtifacts }))).toBeNull();
+	});
+
+	it('enforces provision and scenario preconditions through inspection selectors', () => {
+		expect(selectNextProvisionStep({ actors: 0 })).toBeNull();
+		expect(selectNextScenarioStep(inspection({ actors: 4, provisionVerified: true }))).toEqual({
+			command: 'scenario',
+			phase: 'scenario'
+		});
+		expect(selectNextScenarioStep(inspection({ actors: 2, provisionVerified: true }))).toBeNull();
 	});
 });
