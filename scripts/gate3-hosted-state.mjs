@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { atomicPrivateWrite, reservePrivateFile } from './hosted-private-file.mjs';
 
@@ -39,6 +39,7 @@ const ARCHIVE_KEYS = new Set([
 	'completedAt',
 	'manifestSha256'
 ]);
+const RUN_LOCK_COMMANDS = new Set(['preflight', 'provision', 'scenario', 'cleanup', 'recovery', 'archive']);
 const TOP_LEVEL_STATE_KEYS = new Set([
 	'schemaVersion',
 	'revision',
@@ -54,7 +55,7 @@ const TOP_LEVEL_STATE_KEYS = new Set([
 	'archive'
 ]);
 const PHASE_NAMES = ['preflight', 'provision', 'scenario', 'cleanup', 'recovery'];
-const NODE_FILESYSTEM = Object.freeze({ lstat, mkdir, open, readFile, realpath, unlink });
+const NODE_FILESYSTEM = Object.freeze({ lstat, mkdir, open, readFile, realpath, rename, unlink });
 
 export class Gate3HostedStateError extends Error {
 	/** @param {string} reasonCode */
@@ -184,7 +185,21 @@ function validateRunState(state) {
 	if (state.lastInspection !== null) {
 		assertSafeCacheRecord(state.lastInspection, INSPECTION_KEYS, new Set(['counts', 'foreignCounts']));
 	}
-	if (state.archive !== null) assertSafeCacheRecord(state.archive, ARCHIVE_KEYS);
+	if (state.archive !== null) {
+		assertExactKeys(state.archive, [...ARCHIVE_KEYS]);
+		if (!['pending', 'complete'].includes(state.archive.status)) throw new Gate3HostedStateError('state_invalid');
+		assertAbsolutePath(state.archive.destination);
+		if (typeof state.archive.requestedAt !== 'string' || Number.isNaN(Date.parse(state.archive.requestedAt))) {
+			throw new Gate3HostedStateError('state_invalid');
+		}
+		if (state.archive.completedAt !== null && (typeof state.archive.completedAt !== 'string' || Number.isNaN(Date.parse(state.archive.completedAt)))) {
+			throw new Gate3HostedStateError('state_invalid');
+		}
+		if ((state.archive.status === 'pending') !== (state.archive.completedAt === null)) {
+			throw new Gate3HostedStateError('state_invalid');
+		}
+		assertShaOrNull(state.archive.manifestSha256);
+	}
 	return /** @type {Record<string, any>} */ (state);
 }
 
@@ -265,6 +280,16 @@ async function assertSafeRunPaths(paths, { createRunDirectory = false, filesyste
 	}
 }
 
+/** @param {Record<string, string>} paths @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function assertSafeArchivePaths(paths, filesystem = NODE_FILESYSTEM) {
+	await assertRealDirectory(paths.root, filesystem);
+	await assertRealDirectory(paths.archiveRoot, filesystem);
+	await assertRealDirectory(paths.archiveDirectory, filesystem);
+	if (!pathIsInside(resolve(paths.archiveDirectory), resolve(paths.archiveRoot))) {
+		throw new Gate3HostedStateError('state_path_invalid');
+	}
+}
+
 /** @param {string} filePath */
 async function assertRegularFile(filePath) {
 	try {
@@ -273,6 +298,65 @@ async function assertRegularFile(filePath) {
 	} catch (error) {
 		if (error instanceof Gate3HostedStateError) throw error;
 		throw new Gate3HostedStateError('state_unavailable');
+	}
+}
+
+/** @param {string} filePath */
+async function regularFileIsMissing(filePath) {
+	try {
+		const entry = await lstat(filePath);
+		if (!entry.isFile() || entry.isSymbolicLink()) throw new Gate3HostedStateError('state_path_invalid');
+		return false;
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return true;
+		throw new Gate3HostedStateError('state_unavailable');
+	}
+}
+
+/** @param {string} value */
+function assertTimestamp(value) {
+	if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) throw new Gate3HostedStateError('lock_invalid');
+}
+
+/** @param {Record<string, string>} paths @param {unknown} lock */
+function validateRunLock(paths, lock) {
+	if (!isPlainObject(lock)) throw new Gate3HostedStateError('lock_invalid');
+	assertExactKeys(lock, ['runId', 'command', 'pid', 'startedAt']);
+	if (
+		lock.runId !== paths.runId ||
+		typeof lock.command !== 'string' ||
+		!RUN_LOCK_COMMANDS.has(lock.command) ||
+		typeof lock.pid !== 'number' ||
+		!Number.isSafeInteger(lock.pid) ||
+		lock.pid <= 0
+	) {
+		throw new Gate3HostedStateError('lock_invalid');
+	}
+	assertTimestamp(lock.startedAt);
+	return /** @type {{ runId: string, command: string, pid: number, startedAt: string }} */ (lock);
+}
+
+/** @param {number} pid */
+function pidIsRunning(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return /** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH';
+	}
+}
+
+/** @param {string} lockPath */
+async function readRunLockBytes(lockPath) {
+	try {
+		const entry = await lstat(lockPath);
+		if (!entry.isFile() || entry.isSymbolicLink()) throw new Gate3HostedStateError('lock_invalid');
+		return await readFile(lockPath, 'utf8');
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return null;
+		throw new Gate3HostedStateError('lock_unavailable');
 	}
 }
 
@@ -363,6 +447,7 @@ export async function reserveRunState(paths, state, { filesystem = NODE_FILESYST
 export async function writeNextRunState(paths, currentState, nextState) {
 	const exactPaths = validatePaths(paths);
 	const validCurrentState = assertStateMatchesPaths(exactPaths, currentState);
+	if (validCurrentState.archive?.status === 'complete') throw new Gate3HostedStateError('archive_terminal');
 	const persistedState = await readRunState(exactPaths);
 	if (JSON.stringify(persistedState) !== JSON.stringify(validCurrentState)) {
 		throw new Gate3HostedStateError('state_changed');
@@ -399,6 +484,209 @@ export async function writeNextRunState(paths, currentState, nextState) {
 		if (error instanceof Gate3HostedStateError) throw error;
 		throw new Gate3HostedStateError('state_write_failed');
 	}
+}
+
+/** @param {{ paths: Record<string, string>, command: string, pid?: number, startedAt?: string }} options */
+export async function acquireRunLock({ paths, command, pid = process.pid, startedAt = new Date().toISOString() }) {
+	const exactPaths = validatePaths(paths);
+	if (typeof command !== 'string' || !RUN_LOCK_COMMANDS.has(command)) {
+		throw new Gate3HostedStateError('lock_command_invalid');
+	}
+	const lock = validateRunLock(exactPaths, { runId: exactPaths.runId, command, pid, startedAt });
+	await assertSafeRunPaths(exactPaths);
+	const acquiredBytes = `${JSON.stringify(lock)}\n`;
+	let handle;
+	try {
+		handle = await open(exactPaths.lockPath, 'wx', 0o600);
+		await handle.writeFile(acquiredBytes, 'utf8');
+		await handle.sync();
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'EEXIST') throw new Gate3HostedStateError('lock_held');
+		throw new Gate3HostedStateError('lock_acquire_failed');
+	} finally {
+		try {
+			await handle?.close();
+		} catch {
+			throw new Gate3HostedStateError('lock_acquire_failed');
+		}
+	}
+	return Object.freeze({ lock: Object.freeze(lock), acquiredBytes });
+}
+
+/** @param {{ paths: Record<string, string>, isPidRunning?: (pid: number) => boolean }} options */
+export async function inspectRunLock({ paths, isPidRunning = pidIsRunning }) {
+	const exactPaths = validatePaths(paths);
+	await assertSafeRunPaths(exactPaths);
+	const acquiredBytes = await readRunLockBytes(exactPaths.lockPath);
+	if (acquiredBytes === null) return Object.freeze({ status: 'missing' });
+	let lock;
+	try {
+		lock = validateRunLock(exactPaths, JSON.parse(acquiredBytes));
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) return Object.freeze({ status: 'invalid', acquiredBytes });
+		return Object.freeze({ status: 'invalid', acquiredBytes });
+	}
+	return Object.freeze({ status: isPidRunning(lock.pid) ? 'held' : 'stale', lock: Object.freeze(lock), acquiredBytes });
+}
+
+/** @param {{ paths: Record<string, string>, acquiredLock: { acquiredBytes: string } }} options */
+export async function releaseRunLock({ paths, acquiredLock }) {
+	const exactPaths = validatePaths(paths);
+	if (!isPlainObject(acquiredLock) || typeof acquiredLock.acquiredBytes !== 'string') {
+		throw new Gate3HostedStateError('lock_invalid');
+	}
+	await assertSafeRunPaths(exactPaths);
+	const currentBytes = await readRunLockBytes(exactPaths.lockPath);
+	if (currentBytes === null) return false;
+	if (currentBytes !== acquiredLock.acquiredBytes) return false;
+	try {
+		await unlink(exactPaths.lockPath);
+		return true;
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
+		throw new Gate3HostedStateError('lock_release_failed');
+	}
+}
+
+/** @param {{ paths: Record<string, string>, observedLock: unknown, inspection: unknown, isPidRunning?: (pid: number) => boolean }} options */
+export async function recoverStaleRunLock({ paths, observedLock, inspection, isPidRunning = pidIsRunning }) {
+	const exactPaths = validatePaths(paths);
+	if (
+		!isPlainObject(observedLock) ||
+		observedLock.status !== 'stale' ||
+		!isPlainObject(inspection) ||
+		inspection.status !== 'stale' ||
+		inspection === observedLock ||
+		typeof observedLock.acquiredBytes !== 'string' ||
+		inspection.acquiredBytes !== observedLock.acquiredBytes
+	) {
+		throw new Gate3HostedStateError('fresh_inspection_required');
+	}
+	const freshInspection = await inspectRunLock({ paths: exactPaths, isPidRunning });
+	if (
+		freshInspection.status !== 'stale' ||
+		freshInspection.acquiredBytes !== inspection.acquiredBytes ||
+		freshInspection.acquiredBytes !== observedLock.acquiredBytes
+	) {
+		throw new Gate3HostedStateError('fresh_inspection_required');
+	}
+	try {
+		await unlink(exactPaths.lockPath);
+		return true;
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') throw new Gate3HostedStateError('fresh_inspection_required');
+		throw new Gate3HostedStateError('lock_recovery_failed');
+	}
+}
+
+/** @param {Record<string, string>} paths */
+export async function readArchivedRunState(paths) {
+	const exactPaths = validatePaths(paths);
+	await assertSafeArchivePaths(exactPaths);
+	const archiveStatePath = join(exactPaths.archiveDirectory, 'gate3-run-state.json');
+	await assertRegularFile(archiveStatePath);
+	try {
+		const state = assertStateMatchesPaths(exactPaths, JSON.parse(await readFile(archiveStatePath, 'utf8')));
+		if (state.archive?.status !== 'complete' && state.archive?.status !== 'pending') throw new Gate3HostedStateError('state_invalid');
+		return state;
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
+		throw new Gate3HostedStateError('state_invalid');
+	}
+}
+
+/** @param {Record<string, string>} paths @param {Record<string, any>} currentState @param {Record<string, any>} nextState */
+async function writeArchivedRunState(paths, currentState, nextState) {
+	const current = assertStateMatchesPaths(paths, currentState);
+	const next = assertStateMatchesPaths(paths, nextState);
+	if (next.revision !== current.revision + 1) throw new Gate3HostedStateError('revision_invalid');
+	if (next.archive?.status !== 'complete' || current.archive?.status !== 'pending') {
+		throw new Gate3HostedStateError('archive_invalid');
+	}
+	const archiveStatePath = join(paths.archiveDirectory, 'gate3-run-state.json');
+	try {
+		await atomicPrivateWrite(archiveStatePath, `${JSON.stringify(next)}\n`, {
+			verify: (replacementBytes) => {
+				if (replacementBytes !== `${JSON.stringify(next)}\n`) throw new Gate3HostedStateError('state_invalid');
+				assertStateMatchesPaths(paths, JSON.parse(replacementBytes));
+			}
+		});
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
+		throw new Gate3HostedStateError('state_write_failed');
+	}
+}
+
+/** @param {{ paths: Record<string, string>, currentState: unknown, completedAt: string, filesystem?: { rename?: (from: string, to: string) => Promise<void> } }} options */
+export async function finalizeRunArchive({ paths, currentState, completedAt, filesystem = {} }) {
+	const exactPaths = validatePaths(paths);
+	if (typeof completedAt !== 'string' || Number.isNaN(Date.parse(completedAt))) {
+		throw new Gate3HostedStateError('archive_invalid');
+	}
+	const activeMissing = await directoryIsMissing(exactPaths.runDirectory);
+	const archiveMissing = await directoryIsMissing(exactPaths.archiveDirectory);
+	if (!activeMissing && !archiveMissing) throw new Gate3HostedStateError('archive_destination_exists');
+
+	if (activeMissing) {
+		if (archiveMissing) throw new Gate3HostedStateError('state_unavailable');
+		const archived = await readArchivedRunState(exactPaths);
+		if (archived.archive.status === 'complete') return archived;
+		if (!(await regularFileIsMissing(join(exactPaths.archiveDirectory, 'gate3-secrets.dpapi')))) {
+			throw new Gate3HostedStateError('secret_file_present');
+		}
+		const complete = {
+			...archived,
+			revision: archived.revision + 1,
+			archive: { ...archived.archive, status: 'complete', completedAt }
+		};
+		await writeArchivedRunState(exactPaths, archived, complete);
+		if ((await readActiveRun(exactPaths.root)) === exactPaths.runId) {
+			try {
+				await clearActiveRun({ root: exactPaths.root, runId: exactPaths.runId });
+			} catch (error) {
+				if (!(error instanceof Gate3HostedStateError) || error.reasonCode !== 'active_run_changed') throw error;
+			}
+		}
+		return complete;
+	}
+
+	const persisted = await readRunState(exactPaths);
+	const expected = assertStateMatchesPaths(exactPaths, currentState);
+	if (JSON.stringify(persisted) !== JSON.stringify(expected)) throw new Gate3HostedStateError('state_changed');
+	if (
+		persisted.phases.cleanup.status !== 'complete' ||
+		persisted.lastInspection?.cleanupVerified !== true ||
+		persisted.lastInspection?.independentZeroVerified !== true
+	) {
+		throw new Gate3HostedStateError('cleanup_not_independently_verified');
+	}
+	if (!(await regularFileIsMissing(exactPaths.secretPath))) throw new Gate3HostedStateError('secret_file_present');
+	let pending = persisted;
+	if (pending.archive === null) {
+		pending = {
+			...persisted,
+			revision: persisted.revision + 1,
+			archive: {
+				status: 'pending',
+				destination: exactPaths.archiveDirectory,
+				requestedAt: completedAt,
+				completedAt: null,
+				manifestSha256: persisted.manifest.sha256
+			}
+		};
+		await writeNextRunState(exactPaths, persisted, pending);
+	} else if (pending.archive.status !== 'pending' || pending.archive.destination !== exactPaths.archiveDirectory) {
+		throw new Gate3HostedStateError('archive_invalid');
+	}
+	await mkdir(exactPaths.archiveRoot, { recursive: false, mode: 0o700 }).catch((error) => {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
+	});
+	try {
+		await (filesystem.rename ?? rename)(exactPaths.runDirectory, exactPaths.archiveDirectory);
+	} catch {
+		throw new Gate3HostedStateError('archive_rename_failed');
+	}
+	return finalizeRunArchive({ paths: exactPaths, currentState: pending, completedAt });
 }
 
 /** @param {string} root @param {{ filesystem?: typeof NODE_FILESYSTEM }} [options] */

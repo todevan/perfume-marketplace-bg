@@ -5,10 +5,16 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { atomicPrivateWrite } from '../../scripts/hosted-private-file.mjs';
 import {
+	acquireRunLock,
 	clearActiveRun,
 	createInitialRunState,
+	finalizeRunArchive,
+	inspectRunLock,
 	readActiveRun,
+	readArchivedRunState,
 	readRunState,
+	recoverStaleRunLock,
+	releaseRunLock,
 	reserveRunState,
 	resolveGate3RunPaths,
 	setActiveRun,
@@ -311,6 +317,170 @@ describe('Gate 3 hosted state', () => {
 		expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
 		expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
 		expect([null, anotherRun.runId]).toContain(await readActiveRun(paths.root));
+	});
+
+	it('does not treat elapsed time as stale while the recorded pid exists', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await writeFile(paths.lockPath, JSON.stringify({
+			runId: paths.runId,
+			command: 'scenario',
+			pid: 77,
+			startedAt: '2026-08-19T00:00:00.000Z'
+		}));
+
+		await expect(inspectRunLock({ paths, isPidRunning: (pid) => pid === 77 }))
+			.resolves.toMatchObject({ status: 'held' });
+	});
+
+	it('requires a fresh read-only inspection before removing a dead-pid lock', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await writeFile(paths.lockPath, JSON.stringify({
+			runId: paths.runId,
+			command: 'scenario',
+			pid: 77,
+			startedAt: '2026-08-19T00:00:00.000Z'
+		}));
+
+		const observed = await inspectRunLock({ paths, isPidRunning: () => false });
+		await expect(recoverStaleRunLock({ paths, observedLock: observed, inspection: null }))
+			.rejects.toThrow('fresh_inspection_required');
+	});
+
+	it('releases only the exact lock bytes acquired by its owner', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const acquired = await acquireRunLock({ paths, command: 'scenario', pid: 77, startedAt: '2026-08-20T10:00:00.000Z' });
+		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 78, startedAt: '2026-08-20T10:01:00.000Z' }));
+
+		await expect(releaseRunLock({ paths, acquiredLock: acquired })).resolves.toBe(false);
+		await expect(readFile(paths.lockPath, 'utf8')).resolves.toContain('"pid":78');
+	});
+
+	it('rejects unsupported per-run lock commands', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await expect(acquireRunLock({ paths, command: 'deploy', pid: 77, startedAt: '2026-08-20T10:00:00.000Z' }))
+			.rejects.toMatchObject({ reasonCode: 'lock_command_invalid' });
+	});
+
+	it('requires independently verified cleanup before archive finalization', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		const cleanupOnly = {
+			...state,
+			revision: 1,
+			phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } },
+			lastInspection: { cleanupVerified: true, independentZeroVerified: false }
+		};
+		await writeNextRunState(paths, state, cleanupOnly);
+
+		await expect(finalizeRunArchive({ paths, currentState: cleanupOnly, completedAt: '2026-08-20T11:00:00.000Z' }))
+			.rejects.toMatchObject({ reasonCode: 'cleanup_not_independently_verified' });
+	});
+
+	it('never archives a live DPAPI secret file', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await writeFile(paths.secretPath, 'ciphertext');
+		const verified = {
+			...state,
+			revision: 1,
+			phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } },
+			lastInspection: { cleanupVerified: true, independentZeroVerified: true }
+		};
+		await writeNextRunState(paths, state, verified);
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z' }))
+			.rejects.toMatchObject({ reasonCode: 'secret_file_present' });
+		await expect(readFile(paths.secretPath, 'utf8')).resolves.toBe('ciphertext');
+		await expect(readFile(join(paths.archiveDirectory, 'gate3-secrets.dpapi'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+	});
+
+	it('fails closed when the archive destination already exists', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await mkdir(paths.archiveDirectory, { recursive: true });
+		const verified = {
+			...state,
+			revision: 1,
+			phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } },
+			lastInspection: { cleanupVerified: true, independentZeroVerified: true }
+		};
+		await writeNextRunState(paths, state, verified);
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z' }))
+			.rejects.toMatchObject({ reasonCode: 'archive_destination_exists' });
+	});
+
+	it('resumes archive finalization after a crash following the pending state write', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		const verified = {
+			...state,
+			revision: 1,
+			phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } },
+			lastInspection: { cleanupVerified: true, independentZeroVerified: true }
+		};
+		await writeNextRunState(paths, state, verified);
+		const filesystem = {
+			rename: async () => { throw new Error('simulated crash'); }
+		};
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never }))
+			.rejects.toMatchObject({ reasonCode: 'archive_rename_failed' });
+		const pending = await readRunState(paths);
+		expect(pending.archive).toMatchObject({ status: 'pending', destination: paths.archiveDirectory });
+
+		await finalizeRunArchive({ paths, currentState: pending, completedAt: '2026-08-20T11:01:00.000Z' });
+		await expect(readArchivedRunState(paths)).resolves.toMatchObject({ archive: { status: 'complete' } });
+	});
+
+	it('resumes archive finalization after a crash following the directory rename', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		const verified = {
+			...state,
+			revision: 1,
+			phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } },
+			lastInspection: { cleanupVerified: true, independentZeroVerified: true }
+		};
+		await writeNextRunState(paths, state, verified);
+		const filesystem = {
+			rename: async (from: string, to: string) => {
+				const { rename } = await import('node:fs/promises');
+				await rename(from, to);
+				throw new Error('simulated crash');
+			}
+		};
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never }))
+			.rejects.toMatchObject({ reasonCode: 'archive_rename_failed' });
+		await expect(readArchivedRunState(paths)).resolves.toMatchObject({ archive: { status: 'pending' } });
+
+		await finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:01:00.000Z' });
+		const complete = await readArchivedRunState(paths);
+		expect(complete.archive).toMatchObject({ status: 'complete', completedAt: '2026-08-20T11:01:00.000Z' });
+		await expect(writeNextRunState(paths, complete, { ...complete, revision: complete.revision + 1 })).rejects.toMatchObject({ reasonCode: 'archive_terminal' });
+	});
+
+	it('preserves another run active pointer while finalizing this run archive', async () => {
+		const { paths, state } = await createFixture();
+		const anotherRun = resolveGate3RunPaths({ root: paths.root, runId: 'gate3-20260820-fedcba98' });
+		await reserveRunState(paths, state);
+		await mkdir(anotherRun.runDirectory, { recursive: true });
+		await setActiveRun({ root: paths.root, runId: anotherRun.runId, expectedCurrentRunId: null });
+		const verified = {
+			...state,
+			revision: 1,
+			phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } },
+			lastInspection: { cleanupVerified: true, independentZeroVerified: true }
+		};
+		await writeNextRunState(paths, state, verified);
+
+		await finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z' });
+		await expect(readActiveRun(paths.root)).resolves.toBe(anotherRun.runId);
 	});
 
 	it('keeps generated CodeGraph and ATL directories out of version control', () => {
