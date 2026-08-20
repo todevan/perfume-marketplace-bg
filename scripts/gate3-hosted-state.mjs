@@ -776,7 +776,8 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 			throw new Gate3HostedStateError('archive_ambiguous');
 		}
 		await (filesystem.rename ?? rename)(exactPaths.runDirectory, exactPaths.archiveDirectory);
-		if (!(await directoryIsMissing(exactPaths.runDirectory)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot)) || !sameDirectoryIdentity(sourceIdentity, await captureDirectoryIdentity(exactPaths.archiveDirectory))) {
+		const destinationIdentity = await captureDirectoryIdentity(exactPaths.archiveDirectory);
+		if (!(await directoryIsMissing(exactPaths.runDirectory)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot)) || sourceIdentity.dev !== destinationIdentity.dev || sourceIdentity.ino !== destinationIdentity.ino) {
 			throw new Gate3HostedStateError('archive_ambiguous');
 		}
 	} catch (error) {
