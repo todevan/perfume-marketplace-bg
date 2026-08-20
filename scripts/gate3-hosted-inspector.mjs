@@ -115,7 +115,13 @@ function sanitizeHostedFacts(value) {
 		duplicateRoles: safeCount(candidate.duplicateRoles),
 		metadataMismatches: safeCount(candidate.metadataMismatches),
 		manifestActorsAbsent: safeCount(candidate.manifestActorsAbsent),
+		actorIdentityConflicts: safeCount(candidate.actorIdentityConflicts),
 		hostedActorsManifestStale: safeCount(candidate.hostedActorsManifestStale),
+		confirmedActors: safeCount(candidate.confirmedActors),
+		completeProfiles: safeCount(candidate.completeProfiles),
+		verifiedModeratorTotpFactors: safeCount(candidate.verifiedModeratorTotpFactors),
+		actorsWithActiveSessions: safeCount(candidate.actorsWithActiveSessions),
+		activeSessionsProven: candidate.activeSessionsProven === true,
 		scenarioVerified: candidate.scenarioVerified === true,
 		scenarioPartial: candidate.scenarioPartial === true,
 		foreignEvidenceSha256
@@ -130,7 +136,13 @@ function emptyHostedFacts() {
 		duplicateRoles: 0,
 		metadataMismatches: 0,
 		manifestActorsAbsent: 0,
+		actorIdentityConflicts: 0,
 		hostedActorsManifestStale: 0,
+		confirmedActors: 0,
+		completeProfiles: 0,
+		verifiedModeratorTotpFactors: 0,
+		actorsWithActiveSessions: 0,
+		activeSessionsProven: false,
 		scenarioVerified: false,
 		scenarioPartial: false,
 		foreignEvidenceSha256: createHash('sha256').update('').digest('hex')
@@ -182,6 +194,42 @@ function assertReadOnlyInspectionAdapter(adapter) {
 /** @param {Buffer | Uint8Array} bytes */
 function sha256(bytes) {
 	return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** @param {Record<string, any>} manifest */
+function serializedManifestSha256(manifest) {
+	return sha256(Buffer.from(`${JSON.stringify(manifest)}\n`, 'utf8'));
+}
+
+/** @param {Record<string, any>} manifest */
+function emptyManifest(manifest) {
+	return ['pendingActors', 'actors', 'reports', 'uploads', 'queueRows'].every(
+		(field) => Array.isArray(manifest[field]) && manifest[field].length === 0
+	);
+}
+
+/** @param {Record<string, any>} manifest @param {string} expectedSha256 */
+function isOneStepManifestAhead(manifest, expectedSha256) {
+	/** @type {Array<Record<string, any>>} */
+	const predecessors = [];
+	for (const field of ['pendingActors', 'reports', 'uploads', 'queueRows']) {
+		if (manifest[field].length > 0) {
+			predecessors.push({ ...manifest, [field]: manifest[field].slice(0, -1) });
+		}
+	}
+	if (manifest.actors.length > 0) {
+		const actor = manifest.actors.at(-1);
+		predecessors.push({ ...manifest, actors: manifest.actors.slice(0, -1) });
+		predecessors.push({
+			...manifest,
+			pendingActors: [
+				...manifest.pendingActors,
+				{ role: actor.role, provisioningAttemptId: manifest.provisioningAttemptId }
+			],
+			actors: manifest.actors.slice(0, -1)
+		});
+	}
+	return predecessors.some((candidate) => serializedManifestSha256(candidate) === expectedSha256);
 }
 
 /** @param {Record<string, string>} paths @param {Record<string, any>} dependencies */
@@ -311,12 +359,35 @@ export async function inspectGate3HostedRun({
 	} catch {
 		manifest = null;
 	}
-	const manifestMismatch = Boolean(
+	const manifestExactMatch = Boolean(
 		manifestValid &&
 		state.manifest.sha256 !== null &&
-		state.manifest.sha256 !== manifestSha256
+		state.manifest.sha256 === manifestSha256
 	);
-	const manifestMatches = manifestValid && !manifestMismatch;
+	const unboundEmptyBaseline = Boolean(
+		manifestValid &&
+		state.revision === 0 &&
+		state.manifest.sha256 === null &&
+		emptyManifest(manifest)
+	);
+	const manifestAheadState = Boolean(
+		manifestValid &&
+		state.manifest.sha256 !== null &&
+		state.manifest.sha256 !== manifestSha256 &&
+		isOneStepManifestAhead(manifest, state.manifest.sha256)
+	);
+	const manifestMismatch = Boolean(
+		manifestValid && !manifestExactMatch && !unboundEmptyBaseline && !manifestAheadState
+	);
+	const manifestMatches = manifestExactMatch;
+	const manifestInspectable = manifestExactMatch || unboundEmptyBaseline || manifestAheadState;
+	const manifestBindingStatus = manifestExactMatch
+		? 'exact'
+		: unboundEmptyBaseline
+			? 'unbound-empty-baseline'
+			: manifestAheadState
+				? 'manifest-ahead-state'
+				: 'unexplained-mismatch';
 
 	let currentReleaseCommitSha = null;
 	let authoritativeReleaseAvailable = false;
@@ -365,7 +436,7 @@ export async function inspectGate3HostedRun({
 
 	let hosted = emptyHostedFacts();
 	let hostedEvidenceAvailable = false;
-	if (manifestMatches && typeof inspectionAdapter?.inspectRun === 'function') {
+	if (manifestInspectable && typeof inspectionAdapter?.inspectRun === 'function') {
 		try {
 			const expectedIdentities = ACTOR_ROLES.map((role) =>
 				deriveSyntheticIdentity({
@@ -379,7 +450,11 @@ export async function inspectGate3HostedRun({
 					runId: state.runId,
 					createdAfter: state.createdAt,
 					manifest,
-					expectedIdentities
+					expectedIdentities,
+					scenarioEvidence: {
+						phase: state.phases.scenario,
+						checkpoints: state.scenarioCheckpoints
+					}
 				})
 			);
 			hostedEvidenceAvailable = true;
@@ -391,8 +466,9 @@ export async function inspectGate3HostedRun({
 	const ownershipConflict =
 		!hostedEvidenceAvailable ||
 		hosted.duplicateRoles > 0 ||
-		hosted.metadataMismatches > 0;
-	const deletionScopeTrusted = manifestMatches && !ownershipConflict;
+		hosted.metadataMismatches > 0 ||
+		hosted.actorIdentityConflicts > 0;
+	const deletionScopeTrusted = manifestExactMatch && !ownershipConflict;
 	const authoritativeReleaseUnavailable = !authoritativeReleaseAvailable;
 	const ambiguous =
 		!manifestMatches ||
@@ -400,6 +476,13 @@ export async function inspectGate3HostedRun({
 		ownershipConflict ||
 		(credentialsLost && hosted.counts.actors === 0);
 	const zeroExactHosted = Object.values(hosted.counts).every((count) => count === 0);
+	const cleanupPhase = state.phases.cleanup;
+	const cleanupStarted =
+		cleanupPhase.status !== 'pending' || cleanupPhase.checkpoint !== null;
+	const cleanupExplicitlyRequired =
+		cleanupPhase.status === 'required' ||
+		cleanupPhase.checkpoint?.status === 'required' ||
+		cleanupPhase.checkpoint?.reasonCode === 'cleanup_required';
 	const facts = {
 		runId: state.runId,
 		projectRef: state.target.projectRef,
@@ -412,6 +495,9 @@ export async function inspectGate3HostedRun({
 		corruptState: false,
 		manifestValid,
 		manifestSha256,
+		manifestBindingStatus,
+		manifestExactMatch,
+		manifestAheadState,
 		manifestMatches,
 		manifestMismatch,
 		boundReleaseCommitSha: state.target.releaseCommitSha,
@@ -436,25 +522,38 @@ export async function inspectGate3HostedRun({
 		duplicateRoles: hosted.duplicateRoles,
 		metadataMismatches: hosted.metadataMismatches,
 		manifestActorsAbsent: hosted.manifestActorsAbsent,
+		actorIdentityConflicts: hosted.actorIdentityConflicts,
 		hostedActorsManifestStale: hosted.hostedActorsManifestStale,
+		confirmedActors: hosted.confirmedActors,
+		completeProfiles: hosted.completeProfiles,
+		verifiedModeratorTotpFactors: hosted.verifiedModeratorTotpFactors,
+		actorsWithActiveSessions: hosted.actorsWithActiveSessions,
+		activeSessionsProven: hosted.activeSessionsProven,
 		foreignEvidenceSha256: hosted.foreignEvidenceSha256,
 		actors: hosted.counts.actors,
 		provisionVerified:
 			hosted.counts.actors === ACTOR_ROLES.length &&
 			Object.values(hosted.roleCounts).every((count) => count === 1) &&
+			hosted.confirmedActors === ACTOR_ROLES.length &&
+			hosted.completeProfiles === ACTOR_ROLES.length &&
+			hosted.verifiedModeratorTotpFactors === 2 &&
+			hosted.activeSessionsProven &&
+			hosted.actorsWithActiveSessions === ACTOR_ROLES.length &&
 			!ownershipConflict,
 		scenarioVerified: hosted.scenarioVerified,
 		scenarioPartial: hosted.scenarioPartial,
 		cleanupVerified:
-			state.phases.cleanup.status === 'complete' &&
+			cleanupPhase.status === 'complete' &&
 			hostedEvidenceAvailable &&
 			deletionScopeTrusted &&
 			zeroExactHosted,
 		cleanupPartial:
 			hostedEvidenceAvailable &&
-			state.phases.cleanup.status !== 'pending' &&
-			!zeroExactHosted,
-		cleanupRequired: hostedEvidenceAvailable && !zeroExactHosted
+			cleanupStarted &&
+			cleanupPhase.status !== 'complete' &&
+			!cleanupExplicitlyRequired,
+		cleanupRequired:
+			hostedEvidenceAvailable && cleanupExplicitlyRequired && !zeroExactHosted
 	};
 	const classification = classifyGate3Lifecycle(facts).classification;
 	return deepFreeze({ ...facts, classification });

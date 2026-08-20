@@ -25,6 +25,7 @@ import {
 	persistHostedRunManifest,
 	registerHostedActor,
 	registerHostedActorIntent,
+	registerHostedQueueRow,
 	registerHostedReport,
 	registerHostedUpload,
 	validateHostedA9Environment,
@@ -152,32 +153,72 @@ function completeActorManifest(config: ReturnType<typeof validateHostedA9Environ
 
 function createInspectorServiceClient(options: {
 	users?: Array<Record<string, unknown>>;
+	authPages?: Record<number, { users: Array<Record<string, unknown>>; total?: number; lastPage?: number }>;
 	rows?: Record<string, Array<Record<string, unknown>>>;
 	objects?: Record<string, Array<Record<string, unknown>>>;
 	selectedColumns?: string[];
+	queryCalls?: Array<Record<string, unknown>>;
 } = {}) {
 	const rows = options.rows ?? {};
 	return {
 		supabaseUrl: HOSTED_STAGING.supabaseUrl,
 		auth: {
 			admin: {
-				listUsers: vi.fn().mockResolvedValue({
-					data: { users: options.users ?? [], lastPage: 1 },
-					error: null
+				listUsers: vi.fn(async ({ page }: { page: number }) => {
+					const selected = options.authPages?.[page];
+					return {
+						data: selected ?? {
+							users: page === 1 ? (options.users ?? []) : [],
+							total: options.users?.length ?? 0,
+							lastPage: 1
+						},
+						error: null
+					};
 				})
 			}
 		},
 		from(table: string) {
+			const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+			let orderColumn = 'id';
+			let ascending = true;
+			const execute = (from = 0, to = 999) => {
+				const matching = (rows[table] ?? [])
+					.filter((row) => filters.every((filter) => filter(row)))
+					.sort((left, right) => {
+						const comparison = String(left[orderColumn] ?? '').localeCompare(
+							String(right[orderColumn] ?? ''),
+							undefined,
+							{ numeric: true }
+						);
+						return ascending ? comparison : -comparison;
+					});
+				return { data: matching.slice(from, to + 1), error: null };
+			};
 			const query = {
 				select: (columns: string) => {
 					options.selectedColumns?.push(`${table}:${columns}`);
 					return query;
 				},
-				in: (column: string, values: string[]) =>
-					Promise.resolve({
-						data: (rows[table] ?? []).filter((row) => values.includes(String(row[column]))),
-						error: null
-					})
+				in: (column: string, values: Array<string | number>) => {
+					filters.push((row) => values.map(String).includes(String(row[column])));
+					return query;
+				},
+				like: (column: string, pattern: string) => {
+					const prefix = pattern.endsWith('%') ? pattern.slice(0, -1) : pattern;
+					filters.push((row) => String(row[column] ?? '').startsWith(prefix));
+					return query;
+				},
+				order: (column: string, settings: { ascending?: boolean } = {}) => {
+					orderColumn = column;
+					ascending = settings.ascending !== false;
+					return query;
+				},
+				range: (from: number, to: number) => {
+					options.queryCalls?.push({ table, from, to });
+					return Promise.resolve(execute(from, to));
+				},
+				then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) =>
+					Promise.resolve(execute()).then(resolve, reject)
 			};
 			return query;
 		},
@@ -286,8 +327,8 @@ describe('universal Supabase inspection adapter', () => {
 		).resolves.toMatchObject({
 			counts: {
 				actors: 1,
-				sessions: 1,
-				mfaFactors: 1,
+				sessions: 0,
+				mfaFactors: 0,
 				profiles: 1,
 				reports: 1,
 				uploads: 1,
@@ -401,6 +442,474 @@ describe('universal Supabase inspection adapter', () => {
 		}
 		expect(String(caught)).toContain('hosted_inspection_failed');
 		expect(String(caught)).not.toContain(providerBody);
+	});
+
+	it('distinguishes a same-role replacement from safe manifest absence after deletion', async () => {
+		const manifest = registerHostedActor(
+			gate3Manifest(),
+			'reporter',
+			actorIds.reporter,
+			actorCreatedAt
+		);
+		const replacement = { ...exactReporter, id: actorIds['cross-user'] };
+		for (const [users, expected] of [
+			[[replacement], { actorIdentityConflicts: 1, manifestActorsAbsent: 1 }],
+			[[], { actorIdentityConflicts: 0, manifestActorsAbsent: 1 }]
+		] as const) {
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({ users: [...users] }) as never
+			});
+			await expect(
+				adapter.inspectRun({
+					runId: inspectorRunId,
+					createdAfter: '2026-08-09T11:59:00.000Z',
+					manifest,
+					expectedIdentities
+				})
+			).resolves.toMatchObject(expected);
+		}
+	});
+
+	it('does not treat four incomplete Auth shells or last sign-in timestamps as A9 proof', async () => {
+		const users = expectedIdentities.map((identity, index) => ({
+			id: Object.values(actorIds)[index],
+			email: identity.email,
+			created_at: actorCreatedAt,
+			last_sign_in_at: actorCreatedAt,
+			factors: [{ factor_type: 'phone', status: 'verified' }],
+			user_metadata: {
+				gate3_report_evidence_run_id: inspectorRunId,
+				gate3_report_evidence_provisioning_attempt_id:
+					baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+			}
+		}));
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: createInspectorServiceClient({ users }) as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({
+			counts: { actors: 4, sessions: 0, mfaFactors: 0 },
+			confirmedActors: 0,
+			completeProfiles: 0,
+			verifiedModeratorTotpFactors: 0,
+			activeSessionsProven: false
+		});
+	});
+
+	it('derives complete A9 confirmation, profile, membership, and moderator TOTP proof', async () => {
+		const users = expectedIdentities.map((identity, index) => {
+			const moderator = identity.role.includes('moderator');
+			return {
+				id: Object.values(actorIds)[index],
+				email: identity.email,
+				created_at: actorCreatedAt,
+				email_confirmed_at: actorCreatedAt,
+				last_sign_in_at: actorCreatedAt,
+				factors: moderator
+					? [{ factor_type: 'totp', status: 'verified' }]
+					: [],
+				user_metadata: {
+					gate3_report_evidence_run_id: inspectorRunId,
+					gate3_report_evidence_provisioning_attempt_id:
+						baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+				}
+			};
+		});
+		const profiles = expectedIdentities.map((identity, index) => ({
+			id: Object.values(actorIds)[index],
+			username: identity.username,
+			role: identity.role.includes('moderator') ? 'moderator' : 'user',
+			is_suspended: false
+		}));
+		const memberships = expectedIdentities.map((_identity, index) => ({
+			profile_id: Object.values(actorIds)[index],
+			status: 'active',
+			onboarding_completed_at: actorCreatedAt
+		}));
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: createInspectorServiceClient({
+				users,
+				rows: { profiles, beta_memberships: memberships }
+			}) as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({
+			counts: { actors: 4, profiles: 4, sessions: 0, mfaFactors: 2 },
+			confirmedActors: 4,
+			completeProfiles: 4,
+			verifiedModeratorTotpFactors: 2,
+			activeSessionsProven: false
+		});
+	});
+
+	it('derives authoritative active-session proof only from fresh Auth session rows', async () => {
+		const users = expectedIdentities.map((identity, index) => ({
+			id: Object.values(actorIds)[index],
+			email: identity.email,
+			created_at: actorCreatedAt,
+			user_metadata: {
+				gate3_report_evidence_run_id: inspectorRunId,
+				gate3_report_evidence_provisioning_attempt_id:
+					baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+			}
+		}));
+		const client = createInspectorServiceClient({
+			users,
+			rows: {
+				'auth.sessions': users.map((user, index) => ({
+					id: `session-${index}`,
+					user_id: user.id,
+					not_after: '2099-01-01T00:00:00.000Z'
+				}))
+			}
+		}) as ReturnType<typeof createInspectorServiceClient> & {
+			schema: (name: string) => { from: (table: string) => ReturnType<ReturnType<typeof createInspectorServiceClient>['from']> };
+		};
+		client.schema = (name: string) => ({
+			from: (table: string) => client.from(`${name}.${table}`)
+		});
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: client as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({
+			counts: { sessions: 4 },
+			actorsWithActiveSessions: 4,
+			activeSessionsProven: true
+		});
+	});
+
+	it.each([
+		['in-progress', 'complete', false, true],
+		['complete', 'complete', true, false]
+	] as const)(
+		'derives %s scenario progress from persisted checkpoints and live hosted rows',
+		async (phaseStatus, checkpointStatus, scenarioVerified, scenarioPartial) => {
+			let manifest = gate3Manifest();
+			for (const [role, userId] of Object.entries(actorIds)) {
+				manifest = registerHostedActor(manifest, role, userId, actorCreatedAt);
+			}
+			const reportId = '66666666-6666-4666-8666-666666666666';
+			const uploadId = '77777777-7777-4777-8777-777777777777';
+			const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+			manifest = registerHostedReport(manifest, reportId, 'reporter');
+			manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+			const users = expectedIdentities.map((identity, index) => ({
+				id: Object.values(actorIds)[index],
+				email: identity.email,
+				created_at: actorCreatedAt,
+				user_metadata: {
+					gate3_report_evidence_run_id: inspectorRunId,
+					gate3_report_evidence_provisioning_attempt_id:
+						baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+				}
+			}));
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({
+					users,
+					rows: {
+						reports: [
+							{
+								id: reportId,
+								reporter_id: actorIds.reporter,
+								target_id: actorIds['cross-user'],
+								evidence_paths: [objectPath],
+								status: 'investigating',
+								assigned_to: actorIds['assigned-moderator']
+							}
+						],
+						report_evidence_uploads: [
+							{
+								id: uploadId,
+								uploader_id: actorIds.reporter,
+								storage_path: objectPath,
+								status: 'attached',
+								report_id: reportId,
+								created_at: actorCreatedAt,
+								finalized_at: actorCreatedAt,
+								attached_at: actorCreatedAt
+							}
+						]
+					},
+					objects: { [actorIds.reporter]: [{ name: `${uploadId}.webp` }] }
+				}) as never
+			});
+
+			await expect(
+				adapter.inspectRun({
+					runId: inspectorRunId,
+					createdAfter: '2026-08-09T11:59:00.000Z',
+					manifest,
+					expectedIdentities,
+					scenarioEvidence: {
+						phase: {
+							status: phaseStatus,
+							checkpoint: {
+								status: checkpointStatus,
+								step: 'primary-upload-attached-verified',
+								observedAt: actorCreatedAt
+							}
+						},
+						checkpoints: {
+							'scenario-primary-upload-attached-verified': {
+								status: checkpointStatus,
+								step: 'primary-upload-attached-verified',
+								observedAt: actorCreatedAt
+							}
+						}
+					}
+				})
+			).resolves.toMatchObject({ scenarioVerified, scenarioPartial });
+		}
+	);
+
+	it('finds a surviving manifest queue row by ID even when its path changed', async () => {
+		const uploadId = '77777777-7777-4777-8777-777777777777';
+		const expectedPath = `${actorIds.reporter}/${uploadId}.webp`;
+		let manifest = registerHostedActor(
+			gate3Manifest(),
+			'reporter',
+			actorIds.reporter,
+			actorCreatedAt
+		);
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', expectedPath);
+		manifest = registerHostedQueueRow(manifest, 51, uploadId);
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: createInspectorServiceClient({
+				users: [exactReporter],
+				rows: {
+					upload_cleanup_queue: [
+						{
+							id: 51,
+							storage_path: `${actorIds.reporter}/changed.webp`,
+							report_evidence_upload_id: uploadId,
+							upload_id: null
+						}
+					]
+				}
+			}) as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest,
+				expectedIdentities
+			})
+		).resolves.toMatchObject({ counts: { queueRows: 1 }, metadataMismatches: 1 });
+	});
+
+	it('finds owner-prefixed orphan queue rows outside manifest paths', async () => {
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: createInspectorServiceClient({
+				users: [exactReporter],
+				rows: {
+					upload_cleanup_queue: [
+						{
+							id: 99,
+							storage_path: `${actorIds.reporter}/orphan.webp`,
+							report_evidence_upload_id: null,
+							upload_id: null
+						}
+					]
+				}
+			}) as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({ counts: { queueRows: 1 } });
+	});
+
+	it('continues Auth enumeration past a misleading multi-digit lastPage', async () => {
+		const fillerUsers = Array.from({ length: 1000 }, (_, index) => ({
+			id: `ordinary-${index}`,
+			email: `ordinary-${index}@example.com`,
+			created_at: actorCreatedAt,
+			user_metadata: {}
+		}));
+		const client = createInspectorServiceClient({
+			authPages: {
+				1: { users: fillerUsers, total: 1001, lastPage: 1 },
+				2: { users: [exactReporter], total: 1001, lastPage: 1 }
+			}
+		});
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: client as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({ counts: { actors: 1 } });
+		expect(client.auth.admin.listUsers).toHaveBeenCalledTimes(2);
+	});
+
+	it('fails closed when Auth pagination total cannot be reconciled', async () => {
+		const fillerUsers = Array.from({ length: 1000 }, (_, index) => ({
+			id: `ordinary-${index}`,
+			email: `ordinary-${index}@example.com`,
+			created_at: actorCreatedAt,
+			user_metadata: {}
+		}));
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: createInspectorServiceClient({
+				authPages: {
+					1: { users: fillerUsers, total: 1001, lastPage: 99 },
+					2: { users: [], total: 1001, lastPage: 99 }
+				}
+			}) as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).rejects.toThrow('hosted_inspection_failed');
+	});
+
+	it('paginates every multirow hosted table and preserves the 100-ID query boundary', async () => {
+		const foreignUsers = Array.from({ length: 101 }, (_, index) => ({
+			id: `foreign-${index}`,
+			email: `gate3-v1-foreign-${index}-${index.toString(16).padStart(16, '0')}@example.invalid`,
+			created_at: actorCreatedAt,
+			user_metadata: {}
+		}));
+		const reports = Array.from({ length: 1001 }, (_, index) => ({
+			id: `report-${index}`,
+			reporter_id: foreignUsers[0]?.id,
+			target_id: actorIds.reporter,
+			evidence_paths: [],
+			status: 'open',
+			assigned_to: null
+		}));
+		const uploads = Array.from({ length: 1001 }, (_, index) => ({
+			id: `upload-${index}`,
+			uploader_id: foreignUsers[0]?.id,
+			storage_path: `${foreignUsers[0]?.id}/${index}.webp`,
+			status: 'pending',
+			report_id: null
+		}));
+		const queueRows = Array.from({ length: 1001 }, (_, index) => ({
+			id: index + 1,
+			storage_path: `${foreignUsers[0]?.id}/${index}.webp`,
+			report_evidence_upload_id: uploads[index]?.id,
+			upload_id: null
+		}));
+		const queryCalls: Array<Record<string, unknown>> = [];
+		const client = createInspectorServiceClient({
+			users: foreignUsers,
+			rows: {
+				profiles: foreignUsers.map((user) => ({ id: user.id })),
+				reports,
+				report_evidence_uploads: uploads,
+				upload_cleanup_queue: queueRows
+			},
+			queryCalls
+		});
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: client as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({
+			foreignCounts: { profiles: 101, reports: 1001, uploads: 1001, queueRows: 1001 }
+		});
+		expect(
+			queryCalls.filter(
+				(call) => call.table === 'profiles' && call.from === 0 && call.to === 999
+			)
+		).toHaveLength(2);
+		expect(queryCalls).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ table: 'reports', from: 1000, to: 1999 }),
+				expect.objectContaining({ table: 'report_evidence_uploads', from: 1000, to: 1999 }),
+				expect.objectContaining({ table: 'upload_cleanup_queue', from: 1000, to: 1999 })
+			])
+		);
+	});
+
+	it('includes foreign rows beyond the first PostgREST page in the preservation fingerprint', async () => {
+		const foreign = {
+			id: 'foreign-owner',
+			email: 'gate3-v1-foreign-0000000000000001@example.invalid',
+			created_at: actorCreatedAt,
+			user_metadata: {}
+		};
+		const inspect = async (tailId: string) =>
+			createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({
+					users: [foreign],
+					rows: {
+						reports: Array.from({ length: 1001 }, (_, index) => ({
+							id: index === 1000 ? tailId : `foreign-report-${index}`,
+							reporter_id: foreign.id
+						}))
+					}
+				}) as never
+			}).inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			});
+
+		const before = await inspect('foreign-tail-a');
+		const after = await inspect('foreign-tail-b');
+		expect(before.foreignCounts.reports).toBe(1001);
+		expect(after.foreignCounts.reports).toBe(1001);
+		expect(before.foreignEvidenceSha256).not.toBe(after.foreignEvidenceSha256);
 	});
 });
 

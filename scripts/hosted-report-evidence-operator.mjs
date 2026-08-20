@@ -2043,20 +2043,73 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 	if (projectRef !== HOSTED_STAGING.projectRef || clientOrigin !== HOSTED_STAGING.supabaseUrl) {
 		throw new HostedEvidenceOperatorError('hosted_inspection_target_invalid');
 	}
+	const postgrestPageSize = 1000;
+	const postgrestPageLimit = 100;
+	const tableOrderColumns = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
+		profiles: 'id',
+		beta_memberships: 'profile_id',
+		reports: 'id',
+		report_evidence_uploads: 'id',
+		upload_cleanup_queue: 'id',
+		sessions: 'id'
+	}));
 
-	/** @param {string} table @param {string} selection @param {string} column @param {readonly string[]} values */
+	/**
+	 * @param {string} table
+	 * @param {string} selection
+	 * @param {(query: any) => any} applyFilter
+	 * @param {{ from: (table: string) => any }} [queryClient]
+	 */
+	async function paginatedRows(table, selection, applyFilter, queryClient = serviceClient) {
+		const orderColumn = tableOrderColumns[table];
+		if (!orderColumn) throw new Error('provider read failed');
+		/** @type {Array<Record<string, unknown>>} */
+		const rows = [];
+		for (let page = 0; page < postgrestPageLimit; page += 1) {
+			const from = page * postgrestPageSize;
+			const query = applyFilter(queryClient.from(table).select(selection));
+			const result = await query
+				.order(orderColumn, { ascending: true })
+				.range(from, from + postgrestPageSize - 1);
+			if (
+				result.error ||
+				!Array.isArray(result.data) ||
+				result.data.length > postgrestPageSize
+			) {
+				throw new Error('provider read failed');
+			}
+			rows.push(
+				.../** @type {Array<Record<string, unknown>>} */ (/** @type {unknown} */ (result.data))
+			);
+			if (result.data.length < postgrestPageSize) return rows;
+		}
+		throw new Error('provider read failed');
+	}
+
+	/** @param {string} table @param {string} selection @param {string} column @param {readonly (string | number)[]} values */
 	async function rowsByValues(table, selection, column, values) {
 		if (values.length === 0) return [];
 		/** @type {Array<Record<string, unknown>>} */
 		const rows = [];
 		for (let offset = 0; offset < values.length; offset += 100) {
-			const result = await serviceClient
-				.from(table)
-				.select(selection)
-				.in(column, [...values.slice(offset, offset + 100)]);
-			if (result.error || !Array.isArray(result.data)) throw new Error('provider read failed');
 			rows.push(
-				.../** @type {Array<Record<string, unknown>>} */ (/** @type {unknown} */ (result.data))
+				...(await paginatedRows(table, selection, (query) =>
+					query.in(column, [...values.slice(offset, offset + 100)])
+				))
+			);
+		}
+		return rows;
+	}
+
+	/** @param {string} table @param {string} selection @param {string} column @param {readonly string[]} prefixes */
+	async function rowsByPrefixes(table, selection, column, prefixes) {
+		/** @type {Array<Record<string, unknown>>} */
+		const rows = [];
+		for (const prefix of prefixes) {
+			rows.push(
+				...(await paginatedRows(table, selection, (query) =>
+					query.like(column, `${prefix}/%`)
+				))
 			);
 		}
 		return rows;
@@ -2123,14 +2176,32 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 		/** @type {Array<Record<string, any>>} */
 		const users = [];
 		const perPage = 1000;
+		/** @type {number | null} */
+		let expectedTotal = null;
+		const seenUserIds = new Set();
 		for (let page = 1; page <= 100; page += 1) {
 			const listed = await serviceClient.auth.admin.listUsers({ page, perPage });
 			if (listed.error || !Array.isArray(listed.data?.users)) throw new Error('provider read failed');
-			users.push(...listed.data.users);
-			if (
-				listed.data.users.length < perPage ||
-				(Number.isSafeInteger(listed.data.lastPage) && page >= listed.data.lastPage)
-			) {
+			const pageUsers = listed.data.users;
+			if (pageUsers.length > perPage) throw new Error('provider read failed');
+			if (Object.prototype.hasOwnProperty.call(listed.data, 'total')) {
+				if (!Number.isSafeInteger(listed.data.total) || listed.data.total < 0) {
+					throw new Error('provider read failed');
+				}
+				if (expectedTotal === null) expectedTotal = listed.data.total;
+				else if (expectedTotal !== listed.data.total) throw new Error('provider read failed');
+			}
+			for (const user of pageUsers) {
+				const id = typeof user?.id === 'string' ? user.id : '';
+				if (!id || seenUserIds.has(id)) throw new Error('provider read failed');
+				seenUserIds.add(id);
+				users.push(user);
+			}
+			if (expectedTotal !== null) {
+				if (users.length > expectedTotal) throw new Error('provider read failed');
+				if (users.length === expectedTotal) break;
+				if (pageUsers.length < perPage) throw new Error('provider read failed');
+			} else if (pageUsers.length < perPage) {
 				break;
 			}
 			if (page === 100) throw new Error('provider read failed');
@@ -2170,6 +2241,44 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 
 		const exactUsers = [...exactByRole.values()].flat();
 		const exactUserIds = new Set(exactUsers.map((user) => String(user.id)));
+		/** @type {Array<Record<string, unknown>>} */
+		let activeSessionRows = [];
+		let activeSessionsProven = false;
+		if (
+			exactUserIds.size > 0 &&
+			typeof /** @type {{ schema?: unknown }} */ (serviceClient).schema === 'function'
+		) {
+			try {
+				const authClient = /** @type {{ schema: (name: string) => { from: (table: string) => any } }} */ (
+					serviceClient
+				).schema('auth');
+				const sessionRows = [];
+				const ids = [...exactUserIds];
+				for (let offset = 0; offset < ids.length; offset += 100) {
+					sessionRows.push(
+						...(await paginatedRows(
+							'sessions',
+							'id, user_id, not_after',
+							(query) => query.in('user_id', ids.slice(offset, offset + 100)),
+							authClient
+						))
+					);
+				}
+				activeSessionRows = sessionRows.filter((row) => {
+					if (!exactUserIds.has(String(row.user_id))) return false;
+					if (row.not_after === null || row.not_after === undefined) return true;
+					const expiresAt = inspectorTimestamp(row.not_after);
+					return expiresAt !== null && Date.parse(expiresAt) > Date.now();
+				});
+				activeSessionsProven = true;
+			} catch {
+				activeSessionRows = [];
+				activeSessionsProven = false;
+			}
+		}
+		const actorsWithActiveSessions = new Set(
+			activeSessionRows.map((session) => String(session.user_id))
+		).size;
 		const exactOwnerIds = new Set([
 			...exactUserIds,
 			...manifest.actors.map((actor) => String(actor.userId))
@@ -2186,12 +2295,28 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 		const foreignUserIds = new Set(foreignUsers.map((user) => String(user.id)));
 		const allOwnerIds = [...new Set([...exactOwnerIds, ...foreignUserIds])];
 
-		const profiles = await rowsByValues('profiles', 'id', 'id', allOwnerIds);
+		const profiles = await rowsByValues(
+			'profiles',
+			'id, username, role, is_suspended',
+			'id',
+			allOwnerIds
+		);
+		const memberships = await rowsByValues(
+			'beta_memberships',
+			'profile_id, status, onboarding_completed_at',
+			'profile_id',
+			allOwnerIds
+		);
 		const reports = uniqueRows([
-			...(await rowsByValues('reports', 'id, reporter_id', 'reporter_id', allOwnerIds)),
 			...(await rowsByValues(
 				'reports',
-				'id, reporter_id',
+				'id, reporter_id, target_id, evidence_paths, status, assigned_to',
+				'reporter_id',
+				allOwnerIds
+			)),
+			...(await rowsByValues(
+				'reports',
+				'id, reporter_id, target_id, evidence_paths, status, assigned_to',
 				'id',
 				manifest.reports.map((report) => String(report.id))
 			))
@@ -2199,13 +2324,13 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 		const uploads = uniqueRows([
 			...(await rowsByValues(
 				'report_evidence_uploads',
-				'id, uploader_id, storage_path',
+				'id, uploader_id, storage_path, status, report_id, created_at, finalized_at, attached_at',
 				'uploader_id',
 				allOwnerIds
 			)),
 			...(await rowsByValues(
 				'report_evidence_uploads',
-				'id, uploader_id, storage_path',
+				'id, uploader_id, storage_path, status, report_id, created_at, finalized_at, attached_at',
 				'id',
 				manifest.uploads.map((upload) => String(upload.id))
 			))
@@ -2232,12 +2357,41 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 			...uploads.map((upload) => String(upload.storage_path ?? '')),
 			...manifest.uploads.map((upload) => String(upload.objectPath))
 		].filter(Boolean);
-		const queueRows = await rowsByValues(
-			'upload_cleanup_queue',
-			'id, storage_path',
-			'storage_path',
-			[...new Set(queuePaths)]
-		);
+		const queueSelection =
+			'id, storage_path, report_evidence_upload_id, upload_id, processed_at';
+		const manifestUploadIds = manifest.uploads.map((upload) => String(upload.id));
+		const queueRows = uniqueRows([
+			...(await rowsByValues(
+				'upload_cleanup_queue',
+				queueSelection,
+				'storage_path',
+				[...new Set(queuePaths)]
+			)),
+			...(await rowsByValues(
+				'upload_cleanup_queue',
+				queueSelection,
+				'id',
+				manifest.queueRows.map((queue) => Number(queue.id))
+			)),
+			...(await rowsByValues(
+				'upload_cleanup_queue',
+				queueSelection,
+				'report_evidence_upload_id',
+				manifestUploadIds
+			)),
+			...(await rowsByValues(
+				'upload_cleanup_queue',
+				queueSelection,
+				'upload_id',
+				manifestUploadIds
+			)),
+			...(await rowsByPrefixes(
+				'upload_cleanup_queue',
+				queueSelection,
+				'storage_path',
+				allOwnerIds
+			))
+		]);
 
 		const exactProfiles = profiles.filter((row) => exactOwnerIds.has(String(row.id)));
 		const exactReports = reports.filter((row) => exactOwnerIds.has(String(row.reporter_id)));
@@ -2249,15 +2403,23 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 				.filter((upload) => exactOwnerIds.has(String(upload.uploaderId)))
 				.map((upload) => String(upload.objectPath))
 		]);
-		const exactQueueRows = queueRows.filter((row) => exactPaths.has(String(row.storage_path)));
+		const manifestQueueIds = new Set(manifest.queueRows.map((queue) => String(queue.id)));
+		const exactQueueRows = queueRows.filter((row) => {
+			const path = String(row.storage_path);
+			return (
+				manifestQueueIds.has(String(row.id)) ||
+				exactPaths.has(path) ||
+				[...exactOwnerIds].some((ownerId) => path.startsWith(`${ownerId}/`)) ||
+				manifestUploadIds.includes(String(row.report_evidence_upload_id)) ||
+				manifestUploadIds.includes(String(row.upload_id))
+			);
+		});
 
 		const foreignProfiles = profiles.filter((row) => foreignUserIds.has(String(row.id)));
 		const foreignReports = reports.filter((row) => !exactOwnerIds.has(String(row.reporter_id)));
 		const foreignUploads = uploads.filter((row) => !exactOwnerIds.has(String(row.uploader_id)));
 		const foreignObjects = objects.filter((object) => !exactOwnerIds.has(object.ownerId));
-		const foreignQueueRows = queueRows.filter(
-			(row) => !exactPaths.has(String(row.storage_path))
-		);
+		const foreignQueueRows = queueRows.filter((row) => !exactQueueRows.includes(row));
 
 		for (const report of manifest.reports) {
 			const actor = manifest.actors.find((entry) => entry.role === report.actorRole);
@@ -2274,13 +2436,30 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 				metadataMismatches += 1;
 			}
 		}
+		for (const queue of manifest.queueRows) {
+			const upload = manifest.uploads.find((entry) => entry.id === queue.uploadId);
+			const row = queueRows.find((entry) => String(entry.id) === String(queue.id));
+			if (
+				row &&
+				upload &&
+				(String(row.storage_path) !== String(upload.objectPath) ||
+					![row.report_evidence_upload_id, row.upload_id]
+						.map(String)
+						.includes(String(upload.id)))
+			) {
+				metadataMismatches += 1;
+			}
+		}
 		let manifestActorsAbsent = 0;
+		let actorIdentityConflicts = 0;
 		for (const actor of manifest.actors) {
-			const matchingUser = (exactByRole.get(actor.role) ?? []).find(
+			const roleUsers = exactByRole.get(actor.role) ?? [];
+			const matchingUser = roleUsers.find(
 				(user) => user.id === actor.userId
 			);
 			if (!matchingUser) {
 				manifestActorsAbsent += 1;
+				if (roleUsers.some((user) => user.id !== actor.userId)) actorIdentityConflicts += 1;
 			} else if (inspectorTimestamp(matchingUser.created_at) !== actor.createdAt) {
 				manifestActorsAbsent += 1;
 				metadataMismatches += 1;
@@ -2302,14 +2481,109 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 		);
 		const pendingRoles = new Set(manifest.pendingActors.map((actor) => actor.role));
 		const actorRoles = new Set(manifest.actors.map((actor) => actor.role));
+		const confirmedActors = exactUsers.filter((user) =>
+			Boolean(inspectorTimestamp(user.email_confirmed_at))
+		).length;
+		const completeProfiles = identities.filter((identity) => {
+			const exactUser = (exactByRole.get(String(identity.role)) ?? [])[0];
+			if (!exactUser) return false;
+			const profile = profiles.find((row) => String(row.id) === String(exactUser.id));
+			const membership = memberships.find(
+				(row) => String(row.profile_id) === String(exactUser.id)
+			);
+			const expectedRole = String(identity.role).includes('moderator') ? 'moderator' : 'user';
+			return (
+				profile?.username === identity.username &&
+				profile?.role === expectedRole &&
+				profile?.is_suspended === false &&
+				membership?.status === 'active' &&
+				Boolean(inspectorTimestamp(membership?.onboarding_completed_at))
+			);
+		}).length;
+		const verifiedModeratorTotpFactors = identities
+			.filter((identity) => String(identity.role).includes('moderator'))
+			.reduce((sum, identity) => {
+				const user = (exactByRole.get(String(identity.role)) ?? [])[0];
+				if (!user || !Array.isArray(user.factors)) return sum;
+				return (
+					sum +
+					user.factors.filter(
+						(factor) => factor?.factor_type === 'totp' && factor?.status === 'verified'
+					).length
+				);
+			}, 0);
+		const scenarioEvidence =
+			scope.scenarioEvidence &&
+			typeof scope.scenarioEvidence === 'object' &&
+			!Array.isArray(scope.scenarioEvidence)
+				? scope.scenarioEvidence
+				: { phase: { status: 'pending', checkpoint: null }, checkpoints: {} };
+		/** @param {unknown} checkpoint */
+		const checkpointIsComplete = (checkpoint) => {
+			if (!checkpoint || typeof checkpoint !== 'object') return false;
+			const value = /** @type {Record<string, unknown>} */ (checkpoint);
+			return (
+				value.status === 'complete' &&
+				typeof value.step === 'string' &&
+				value.step.length > 0 &&
+				Boolean(inspectorTimestamp(value.observedAt))
+			);
+		};
+		const scenarioPhase =
+			scenarioEvidence.phase && typeof scenarioEvidence.phase === 'object'
+				? scenarioEvidence.phase
+				: { status: 'pending', checkpoint: null };
+		const scenarioCheckpoints =
+			scenarioEvidence.checkpoints &&
+			typeof scenarioEvidence.checkpoints === 'object' &&
+			!Array.isArray(scenarioEvidence.checkpoints)
+				? Object.entries(scenarioEvidence.checkpoints).filter(
+						([key, checkpoint]) =>
+							/^scenario-[a-z0-9-]+$/u.test(key) && checkpointIsComplete(checkpoint)
+					)
+				: [];
+		const reporterId = (exactByRole.get('reporter') ?? [])[0]?.id;
+		const crossUserId = (exactByRole.get('cross-user') ?? [])[0]?.id;
+		const assignedModeratorId = (exactByRole.get('assigned-moderator') ?? [])[0]?.id;
+		const primaryReport = reports.find(
+			(row) =>
+				String(row.reporter_id) === String(reporterId) &&
+				String(row.target_id) === String(crossUserId) &&
+				String(row.assigned_to) === String(assignedModeratorId) &&
+				row.status === 'investigating'
+		);
+		const primaryEvidencePaths = Array.isArray(primaryReport?.evidence_paths)
+			? primaryReport.evidence_paths.map(String)
+			: [];
+		const liveScenarioAnchor = Boolean(
+			primaryReport &&
+			manifest.reports.some((report) => String(report.id) === String(primaryReport.id)) &&
+			uploads.some(
+				(upload) =>
+					String(upload.report_id) === String(primaryReport.id) &&
+					upload.status === 'attached' &&
+					Boolean(inspectorTimestamp(upload.attached_at)) &&
+					primaryEvidencePaths.includes(String(upload.storage_path))
+			)
+		);
+		const scenarioVerified = Boolean(
+			scenarioPhase.status === 'complete' &&
+			checkpointIsComplete(scenarioPhase.checkpoint) &&
+			scenarioCheckpoints.length > 0 &&
+			liveScenarioAnchor &&
+			metadataMismatches === 0
+		);
+		const scenarioPartial = Boolean(
+			!scenarioVerified &&
+			(scenarioPhase.status !== 'pending' || scenarioCheckpoints.length > 0) &&
+			liveScenarioAnchor &&
+			metadataMismatches === 0
+		);
 		return Object.freeze({
 			counts: Object.freeze({
 				actors: exactUsers.length,
-				sessions: exactUsers.filter((user) => inspectorTimestamp(user.last_sign_in_at)).length,
-				mfaFactors: exactUsers.reduce(
-					(sum, user) => sum + (Array.isArray(user.factors) ? user.factors.length : 0),
-					0
-				),
+				sessions: activeSessionRows.length,
+				mfaFactors: verifiedModeratorTotpFactors,
 				profiles: exactProfiles.length,
 				reports: exactReports.length,
 				uploads: exactUploads.length,
@@ -2328,6 +2602,14 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 			duplicateRoles: [...exactByRole.values()].filter((matches) => matches.length > 1).length,
 			metadataMismatches,
 			manifestActorsAbsent,
+			actorIdentityConflicts,
+			confirmedActors,
+			completeProfiles,
+			verifiedModeratorTotpFactors,
+			actorsWithActiveSessions,
+			activeSessionsProven,
+			scenarioVerified,
+			scenarioPartial,
 			hostedActorsManifestStale: exactUsers.filter((user) => {
 				const role = INSPECTOR_ROLES.find((candidate) =>
 					(exactByRole.get(candidate) ?? []).includes(user)

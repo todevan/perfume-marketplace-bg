@@ -13,10 +13,14 @@ import {
 } from '../../scripts/gate3-hosted-state.mjs';
 import { deriveSyntheticIdentity } from '../../scripts/gate3-hosted-secrets.mjs';
 import {
+	HOSTED_STAGING,
+	createSupabaseHostedInspectionAdapter,
 	createHostedRunManifest,
 	persistHostedRunManifest,
 	registerHostedActor,
-	registerHostedActorIntent
+	registerHostedActorIntent,
+	registerHostedReport,
+	registerHostedUpload
 } from '../../scripts/hosted-report-evidence-operator.mjs';
 import {
 	inspectGate3HostedRun,
@@ -29,6 +33,12 @@ const releaseCommitSha = 'a'.repeat(40);
 const provisioningAttemptId = '55555555-5555-4555-8555-555555555555';
 const actorCreatedAt = '2026-08-20T10:01:00.000Z';
 const actorId = '11111111-1111-4111-8111-111111111111';
+const actorIds = {
+	reporter: actorId,
+	'cross-user': '22222222-2222-4222-8222-222222222222',
+	'assigned-moderator': '33333333-3333-4333-8333-333333333333',
+	'unassigned-moderator': '44444444-4444-4444-8444-444444444444'
+} as const;
 
 function expectedIdentities() {
 	return ['reporter', 'cross-user', 'assigned-moderator', 'unassigned-moderator'].map(
@@ -68,7 +78,13 @@ function hostedFacts(overrides: Record<string, unknown> = {}) {
 		duplicateRoles: 0,
 		metadataMismatches: 0,
 		manifestActorsAbsent: 0,
+		actorIdentityConflicts: 0,
 		hostedActorsManifestStale: 0,
+		confirmedActors: 0,
+		completeProfiles: 0,
+		verifiedModeratorTotpFactors: 0,
+		actorsWithActiveSessions: 0,
+		activeSessionsProven: false,
 		foreignEvidenceSha256: createHash('sha256').update('').digest('hex'),
 		...overrides
 	};
@@ -89,7 +105,7 @@ afterEach(async () => {
 });
 
 async function createFixture(options: {
-	manifest?: 'empty' | 'pending' | 'actor';
+	manifest?: 'empty' | 'pending' | 'actor' | 'artifact';
 	manifestSha256?: string | null;
 	secret?: 'missing' | 'valid' | 'corrupt';
 	archived?: boolean;
@@ -110,8 +126,15 @@ async function createFixture(options: {
 	if (options.manifest === 'pending') {
 		manifest = registerHostedActorIntent(manifest, 'reporter');
 	}
-	if (options.manifest === 'actor') {
+	if (options.manifest === 'actor' || options.manifest === 'artifact') {
 		manifest = registerHostedActor(manifest, 'reporter', actorId, actorCreatedAt);
+	}
+	if (options.manifest === 'artifact') {
+		manifest = registerHostedReport(
+			manifest,
+			'66666666-6666-4666-8666-666666666666',
+			'reporter'
+		);
 	}
 	await persistHostedRunManifest(config, manifest, paths.manifestPath);
 	const manifestBytes = await readFile(paths.manifestPath);
@@ -165,6 +188,94 @@ function responseWith(sha: string) {
 	);
 }
 
+function realInspectionClient(options: {
+	users?: Array<Record<string, unknown>>;
+	rows?: Record<string, Array<Record<string, unknown>>>;
+	objects?: Record<string, Array<Record<string, unknown>>>;
+} = {}) {
+	const rows = options.rows ?? {};
+	const client = {
+		supabaseUrl: HOSTED_STAGING.supabaseUrl,
+		auth: {
+			admin: {
+				listUsers: async ({ page, perPage }: { page: number; perPage: number }) => ({
+					data: {
+						users: (options.users ?? []).slice((page - 1) * perPage, page * perPage),
+						total: options.users?.length ?? 0,
+						lastPage: 1
+					},
+					error: null
+				})
+			}
+		},
+		from(table: string) {
+			const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+			let orderColumn = 'id';
+			const query = {
+				select: () => query,
+				in: (column: string, values: Array<string | number>) => {
+					filters.push((row) => values.map(String).includes(String(row[column])));
+					return query;
+				},
+				like: (column: string, pattern: string) => {
+					const prefix = pattern.slice(0, -1);
+					filters.push((row) => String(row[column] ?? '').startsWith(prefix));
+					return query;
+				},
+				order: (column: string) => {
+					orderColumn = column;
+					return query;
+				},
+				range: (from: number, to: number) => {
+					const data = (rows[table] ?? [])
+						.filter((row) => filters.every((filter) => filter(row)))
+						.sort((left, right) =>
+							String(left[orderColumn] ?? '').localeCompare(String(right[orderColumn] ?? ''), undefined, {
+								numeric: true
+							})
+						)
+						.slice(from, to + 1);
+					return Promise.resolve({ data, error: null });
+				}
+			};
+			return query;
+		},
+		schema(name: string) {
+			return { from: (table: string) => client.from(`${name}.${table}`) };
+		},
+		storage: {
+			from: () => ({
+				list: (prefix: string, range: { offset: number; limit: number }) =>
+					Promise.resolve({
+						data: (options.objects?.[prefix] ?? []).slice(range.offset, range.offset + range.limit),
+						error: null
+					})
+			})
+		}
+	};
+	return client;
+}
+
+async function replaceFixtureManifest(
+	fixture: Awaited<ReturnType<typeof createFixture>>,
+	manifest: ReturnType<typeof createHostedRunManifest>,
+	stateOverrides: Record<string, unknown> = {}
+) {
+	const config = { target: { projectRef: GATE3_PROJECT_REF }, runId } as never;
+	await persistHostedRunManifest(config, manifest, fixture.paths.manifestPath);
+	const sha256 = createHash('sha256')
+		.update(await readFile(fixture.paths.manifestPath))
+		.digest('hex');
+	const next = {
+		...fixture.state,
+		...stateOverrides,
+		revision: fixture.state.revision + 1,
+		manifest: { ...fixture.state.manifest, sha256 }
+	};
+	await writeNextRunState(fixture.paths, fixture.state, next as never);
+	return next;
+}
+
 describe('Gate 3 deployed release evidence', () => {
 	it('accepts only the bound staging origin and exact response SHA header', async () => {
 		const fetchImpl = responseWith('a'.repeat(40));
@@ -207,6 +318,338 @@ describe('Gate 3 deployed release evidence', () => {
 });
 
 describe('universal read-only Gate 3 inspection', () => {
+	it.each([
+		['zero actors', hostedFacts(), 'PREFLIGHT_READY'],
+		[
+			'one actor',
+			hostedFacts({
+				counts: { ...emptyCounts, actors: 1 },
+				roleCounts: {
+					reporter: 1,
+					'cross-user': 0,
+					'assigned-moderator': 0,
+					'unassigned-moderator': 0
+				},
+				confirmedActors: 1,
+				completeProfiles: 1
+			}),
+			'PROVISION_PARTIAL'
+		],
+		[
+			'four fully proven actors',
+			hostedFacts({
+				counts: { ...emptyCounts, actors: 4, sessions: 4, profiles: 4, mfaFactors: 2 },
+				roleCounts: {
+					reporter: 1,
+					'cross-user': 1,
+					'assigned-moderator': 1,
+					'unassigned-moderator': 1
+				},
+				confirmedActors: 4,
+				completeProfiles: 4,
+				verifiedModeratorTotpFactors: 2,
+				actorsWithActiveSessions: 4,
+				activeSessionsProven: true
+			}),
+			'PROVISION_VERIFIED'
+		],
+		[
+			'verified scenario',
+			hostedFacts({
+				counts: {
+					...emptyCounts,
+					actors: 4,
+					sessions: 4,
+					profiles: 4,
+					mfaFactors: 2,
+					reports: 1
+				},
+				roleCounts: {
+					reporter: 1,
+					'cross-user': 1,
+					'assigned-moderator': 1,
+					'unassigned-moderator': 1
+				},
+				confirmedActors: 4,
+				completeProfiles: 4,
+				verifiedModeratorTotpFactors: 2,
+				actorsWithActiveSessions: 4,
+				activeSessionsProven: true,
+				scenarioVerified: true
+			}),
+			'SCENARIO_VERIFIED'
+		]
+	])('classifies %s without prematurely entering cleanup', async (_label, facts, expected) => {
+		const { paths } = await createFixture();
+		const result = await inspectGate3HostedRun({
+			paths,
+			inspectionAdapter: inspectionAdapter(facts),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+
+		expect(result.classification).toBe(expected);
+		expect(result.cleanupRequired).toBe(false);
+	});
+
+	it('classifies residuals as cleanup partial only after a persisted cleanup start', async () => {
+		const { paths, state } = await createFixture();
+		await writeNextRunState(paths, state, {
+			...state,
+			revision: state.revision + 1,
+			phases: {
+				...state.phases,
+				cleanup: {
+					status: 'in-progress',
+					checkpoint: { status: 'started', observedAt: '2026-08-20T10:30:00.000Z' }
+				}
+			}
+		});
+		const result = await inspectGate3HostedRun({
+			paths,
+			inspectionAdapter: inspectionAdapter({ counts: { ...emptyCounts, actors: 1 } }),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+
+		expect(result).toMatchObject({
+			cleanupRequired: false,
+			cleanupPartial: true,
+			classification: 'CLEANUP_PARTIAL'
+		});
+	});
+
+	it('classifies exact hosted lifecycle facts through the real read-only adapter path', async () => {
+		const identities = expectedIdentities();
+		const users = identities.map((identity) => ({
+			id: actorIds[identity.role as keyof typeof actorIds],
+			email: identity.email,
+			created_at: actorCreatedAt,
+			email_confirmed_at: actorCreatedAt,
+			factors: identity.role.includes('moderator')
+				? [{ factor_type: 'totp', status: 'verified' }]
+				: [],
+			user_metadata: {
+				gate3_report_evidence_run_id: runId,
+				gate3_report_evidence_provisioning_attempt_id: provisioningAttemptId
+			}
+		}));
+		const profiles = identities.map((identity) => ({
+			id: actorIds[identity.role as keyof typeof actorIds],
+			username: identity.username,
+			role: identity.role.includes('moderator') ? 'moderator' : 'user',
+			is_suspended: false
+		}));
+		const memberships = identities.map((identity) => ({
+			profile_id: actorIds[identity.role as keyof typeof actorIds],
+			status: 'active',
+			onboarding_completed_at: actorCreatedAt
+		}));
+		const inspect = async (
+			fixture: Awaited<ReturnType<typeof createFixture>>,
+			client: ReturnType<typeof realInspectionClient>
+		) =>
+			inspectGate3HostedRun({
+				paths: fixture.paths,
+				inspectionAdapter: createSupabaseHostedInspectionAdapter({
+					projectRef: GATE3_PROJECT_REF,
+					serviceClient: client as never
+				}),
+				fetchImpl: responseWith(releaseCommitSha)
+			});
+
+		const zero = await createFixture();
+		await expect(inspect(zero, realInspectionClient())).resolves.toMatchObject({
+			classification: 'PREFLIGHT_READY',
+			cleanupRequired: false
+		});
+
+		const one = await createFixture({ manifest: 'actor' });
+		await expect(
+			inspect(one, realInspectionClient({ users: [users[0] ?? {}] }))
+		).resolves.toMatchObject({
+			classification: 'PROVISION_PARTIAL',
+			cleanupRequired: false
+		});
+
+		const prepareFour = async (scenario: boolean, cleanupStatus?: 'in-progress' | 'required') => {
+			const fixture = await createFixture();
+			let manifest = fixture.manifest;
+			for (const identity of identities) {
+				manifest = registerHostedActor(
+					manifest,
+					identity.role,
+					actorIds[identity.role as keyof typeof actorIds],
+					actorCreatedAt
+				);
+			}
+			const reportId = '66666666-6666-4666-8666-666666666666';
+			const uploadId = '77777777-7777-4777-8777-777777777777';
+			const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+			if (scenario) {
+				manifest = registerHostedReport(manifest, reportId, 'reporter');
+				manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+			}
+			const checkpoint = {
+				status: 'complete',
+				step: 'primary-upload-attached-verified',
+				observedAt: actorCreatedAt
+			};
+			const phases = {
+				...fixture.state.phases,
+				...(scenario
+					? { scenario: { status: 'complete', checkpoint } }
+					: {}),
+				...(cleanupStatus
+					? {
+							cleanup: {
+								status: cleanupStatus,
+								checkpoint: {
+									status: cleanupStatus === 'required' ? 'required' : 'started',
+									observedAt: actorCreatedAt,
+									...(cleanupStatus === 'required'
+										? { reasonCode: 'cleanup_required' }
+										: {})
+								}
+							}
+						}
+					: {})
+			};
+			await replaceFixtureManifest(fixture, manifest, {
+				phases,
+				scenarioCheckpoints: scenario
+					? { 'scenario-primary-upload-attached-verified': checkpoint }
+					: {}
+			});
+			return {
+				fixture,
+				client: realInspectionClient({
+					users,
+					rows: {
+						'auth.sessions': users.map((user, index) => ({
+							id: `session-${index}`,
+							user_id: user.id,
+							not_after: '2099-01-01T00:00:00.000Z'
+						})),
+						profiles,
+						beta_memberships: memberships,
+						...(scenario
+							? {
+									reports: [
+										{
+											id: reportId,
+											reporter_id: actorIds.reporter,
+											target_id: actorIds['cross-user'],
+											evidence_paths: [objectPath],
+											status: 'investigating',
+											assigned_to: actorIds['assigned-moderator']
+										}
+									],
+									report_evidence_uploads: [
+										{
+											id: uploadId,
+											uploader_id: actorIds.reporter,
+											storage_path: objectPath,
+											status: 'attached',
+											report_id: reportId,
+											attached_at: actorCreatedAt
+										}
+									]
+								}
+							: {})
+					},
+					objects: scenario ? { [actorIds.reporter]: [{ name: `${uploadId}.webp` }] } : {}
+				})
+			};
+		};
+
+		const four = await prepareFour(false);
+		await expect(inspect(four.fixture, four.client)).resolves.toMatchObject({
+			classification: 'PROVISION_VERIFIED',
+			activeSessionsProven: true,
+			actorsWithActiveSessions: 4,
+			cleanupRequired: false
+		});
+		const scenario = await prepareFour(true);
+		await expect(inspect(scenario.fixture, scenario.client)).resolves.toMatchObject({
+			classification: 'SCENARIO_VERIFIED',
+			manifestMatches: true,
+			ownershipConflict: false,
+			metadataMismatches: 0,
+			scenarioVerified: true,
+			provisionVerified: true,
+			activeSessionsProven: true,
+			cleanupRequired: false
+		});
+		const cleanupStarted = await prepareFour(false, 'in-progress');
+		await expect(inspect(cleanupStarted.fixture, cleanupStarted.client)).resolves.toMatchObject({
+			classification: 'CLEANUP_PARTIAL',
+			cleanupRequired: false
+		});
+		const residualCleanup = await prepareFour(false, 'required');
+		await expect(inspect(residualCleanup.fixture, residualCleanup.client)).resolves.toMatchObject({
+			classification: 'CLEANUP_REQUIRED',
+			cleanupRequired: true
+		});
+	});
+
+	it('keeps four incomplete actor shells unverified until A9 proof is complete', async () => {
+		const { paths } = await createFixture();
+		const result = await inspectGate3HostedRun({
+			paths,
+			inspectionAdapter: inspectionAdapter({
+				counts: { ...emptyCounts, actors: 4, profiles: 4, mfaFactors: 2 },
+				roleCounts: {
+					reporter: 1,
+					'cross-user': 1,
+					'assigned-moderator': 1,
+					'unassigned-moderator': 1
+				},
+				confirmedActors: 3,
+				completeProfiles: 3,
+				verifiedModeratorTotpFactors: 1,
+				activeSessionsProven: false
+			}),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+
+		expect(result).toMatchObject({
+			provisionVerified: false,
+			classification: 'PROVISION_PARTIAL',
+			confirmedActors: 3,
+			completeProfiles: 3,
+			verifiedModeratorTotpFactors: 1,
+			activeSessionsProven: false
+		});
+	});
+
+	it('blocks provision verification when active sessions lack authoritative proof', async () => {
+		const { paths } = await createFixture();
+		const completeExceptSessions = hostedFacts({
+			counts: { ...emptyCounts, actors: 4, profiles: 4, mfaFactors: 2 },
+			roleCounts: {
+				reporter: 1,
+				'cross-user': 1,
+				'assigned-moderator': 1,
+				'unassigned-moderator': 1
+			},
+			confirmedActors: 4,
+			completeProfiles: 4,
+			verifiedModeratorTotpFactors: 2,
+			actorsWithActiveSessions: 0,
+			activeSessionsProven: false
+		});
+		const result = await inspectGate3HostedRun({
+			paths,
+			inspectionAdapter: inspectionAdapter(completeExceptSessions),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+
+		expect(result).toMatchObject({
+			provisionVerified: false,
+			classification: 'PROVISION_PARTIAL',
+			activeSessionsProven: false
+		});
+	});
+
 	it.each([
 		['zero actors', 'empty', hostedFacts()],
 		[
@@ -254,7 +697,8 @@ describe('universal read-only Gate 3 inspection', () => {
 
 	it.each([
 		['duplicate role matches', { duplicateRoles: 1 }],
-		['mismatched metadata', { metadataMismatches: 1 }]
+		['mismatched metadata', { metadataMismatches: 1 }],
+		['same-role live replacement', { actorIdentityConflicts: 1, manifestActorsAbsent: 1 }]
 	])('fails deletion-scope trust for %s', async (_label, override) => {
 		const { paths } = await createFixture({ manifest: 'actor' });
 		const result = await inspectGate3HostedRun({
@@ -362,6 +806,100 @@ describe('universal read-only Gate 3 inspection', () => {
 		});
 	});
 
+	it('recognizes only the initial empty manifest as a safe unbound baseline', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'gate3-hosted-inspector-unbound-'));
+		fixtureRoots.push(root);
+		const paths = resolveGate3RunPaths({ root, runId });
+		const state = createInitialRunState({
+			runId,
+			createdAt: '2026-08-20T10:00:00.000Z',
+			releaseCommitSha,
+			manifestPath: paths.manifestPath,
+			secretPath: paths.secretPath
+		});
+		await reserveRunState(paths, state);
+		await persistHostedRunManifest(
+			{ target: { projectRef: GATE3_PROJECT_REF }, runId } as never,
+			createHostedRunManifest(
+				{ target: { projectRef: GATE3_PROJECT_REF }, runId } as never,
+				{ provisioningAttemptId }
+			),
+			paths.manifestPath
+		);
+
+		const result = await inspectGate3HostedRun({
+			paths,
+			inspectionAdapter: inspectionAdapter(),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+
+		expect(result).toMatchObject({
+			manifestBindingStatus: 'unbound-empty-baseline',
+			manifestExactMatch: false,
+			manifestMatches: false,
+			manifestMismatch: false,
+			deletionScopeTrusted: false
+		});
+	});
+
+	it.each(['pending', 'actor', 'artifact'] as const)(
+		'treats a null-SHA %s manifest as unexplained and never deletion-trusted',
+		async (manifest) => {
+			const { paths } = await createFixture({ manifest, manifestSha256: null });
+			const result = await inspectGate3HostedRun({
+				paths,
+				inspectionAdapter: inspectionAdapter(),
+				fetchImpl: responseWith(releaseCommitSha)
+			});
+
+			expect(result).toMatchObject({
+				manifestBindingStatus: 'unexplained-mismatch',
+				manifestExactMatch: false,
+				manifestMatches: false,
+				manifestMismatch: true,
+				deletionScopeTrusted: false,
+				classification: 'AMBIGUOUS'
+			});
+		}
+	);
+
+	it('distinguishes a one-step manifest-ahead crash from an unexplained mismatch', async () => {
+		const emptyManifest = createHostedRunManifest(
+			{ target: { projectRef: GATE3_PROJECT_REF }, runId } as never,
+			{ provisioningAttemptId }
+		);
+		const emptySha = createHash('sha256')
+			.update(`${JSON.stringify(emptyManifest)}\n`)
+			.digest('hex');
+		const explained = await createFixture({ manifest: 'pending', manifestSha256: emptySha });
+		const explainedResult = await inspectGate3HostedRun({
+			paths: explained.paths,
+			inspectionAdapter: inspectionAdapter(),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+		expect(explainedResult).toMatchObject({
+			manifestBindingStatus: 'manifest-ahead-state',
+			manifestExactMatch: false,
+			manifestMatches: false,
+			manifestAheadState: true,
+			manifestMismatch: false,
+			deletionScopeTrusted: false
+		});
+
+		const unexplained = await createFixture({ manifest: 'pending', manifestSha256: 'b'.repeat(64) });
+		const unexplainedResult = await inspectGate3HostedRun({
+			paths: unexplained.paths,
+			inspectionAdapter: inspectionAdapter(),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+		expect(unexplainedResult).toMatchObject({
+			manifestBindingStatus: 'unexplained-mismatch',
+			manifestAheadState: false,
+			manifestMismatch: true,
+			deletionScopeTrusted: false
+		});
+	});
+
 	it('fails closed when the release changed or authoritative evidence is unavailable', async () => {
 		const { paths } = await createFixture();
 		const changed = await inspectGate3HostedRun({
@@ -441,6 +979,67 @@ describe('universal read-only Gate 3 inspection', () => {
 		});
 
 		expect(result.scenarioVerified).toBe(false);
+	});
+
+	it('passes persisted safe scenario checkpoints to the hosted adapter for fresh derivation', async () => {
+		const { paths, state } = await createFixture();
+		const checkpoint = {
+			status: 'complete',
+			step: 'primary-upload-attached-verified',
+			observedAt: '2026-08-20T10:30:00.000Z'
+		};
+		await writeNextRunState(paths, state, {
+			...state,
+			revision: state.revision + 1,
+			phases: {
+				...state.phases,
+				scenario: { status: 'complete', checkpoint }
+			},
+			scenarioCheckpoints: {
+				'scenario-primary-upload-attached-verified': checkpoint
+			}
+		});
+		const inspectRun = vi.fn(async (scope: Record<string, any>) =>
+			hostedFacts({
+				counts: {
+					...emptyCounts,
+					actors: 4,
+					sessions: 4,
+					profiles: 4,
+					mfaFactors: 2,
+					reports: 1
+				},
+				roleCounts: {
+					reporter: 1,
+					'cross-user': 1,
+					'assigned-moderator': 1,
+					'unassigned-moderator': 1
+				},
+				confirmedActors: 4,
+				completeProfiles: 4,
+				verifiedModeratorTotpFactors: 2,
+				actorsWithActiveSessions: 4,
+				activeSessionsProven: true,
+				scenarioVerified:
+					scope.scenarioEvidence?.phase?.status === 'complete' &&
+					Object.keys(scope.scenarioEvidence?.checkpoints ?? {}).length === 1
+			})
+		);
+		const result = await inspectGate3HostedRun({
+			paths,
+			inspectionAdapter: Object.freeze({ inspectRun }),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+
+		expect(inspectRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scenarioEvidence: {
+					phase: { status: 'complete', checkpoint },
+					checkpoints: { 'scenario-primary-upload-attached-verified': checkpoint }
+				}
+			})
+		);
+		expect(result.classification).toBe('SCENARIO_VERIFIED');
 	});
 
 	it('does not treat a stale local cleanup phase as hosted zero proof', async () => {
@@ -610,6 +1209,63 @@ describe('independent hosted zero verification', () => {
 					expectedForeignEvidenceSha256: hostedFacts().foreignEvidenceSha256
 				})
 			).resolves.toMatchObject({ independentZeroVerified: false });
+		}
+	});
+
+	it('fails independent zero on changed-path and owner-prefixed orphan queue survivors', async () => {
+		let manifest = createHostedRunManifest(
+			{ target: { projectRef: GATE3_PROJECT_REF }, runId } as never,
+			{ provisioningAttemptId }
+		);
+		manifest = registerHostedActor(manifest, 'reporter', actorId, actorCreatedAt);
+		const uploadId = '77777777-7777-4777-8777-777777777777';
+		const objectPath = `${actorId}/${uploadId}.webp`;
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+		const manifestWithQueue = {
+			...manifest,
+			queueRows: [{ id: 51, uploadId }]
+		};
+		for (const [candidateManifest, row] of [
+			[
+				manifestWithQueue,
+				{
+					id: 51,
+					storage_path: `${actorId}/changed.webp`,
+					report_evidence_upload_id: uploadId,
+					upload_id: null
+				}
+			],
+			[
+				manifest,
+				{
+					id: 99,
+					storage_path: `${actorId}/orphan.webp`,
+					report_evidence_upload_id: null,
+					upload_id: null
+				}
+			]
+		] as const) {
+			await expect(
+				verifyIndependentHostedZero({
+					adapterFactory: () =>
+						createSupabaseHostedInspectionAdapter({
+							projectRef: GATE3_PROJECT_REF,
+							serviceClient: realInspectionClient({
+								rows: { upload_cleanup_queue: [{ ...row }] }
+							}) as never
+						}),
+					scope: {
+						runId,
+						createdAfter: '2026-08-20T10:00:00.000Z',
+						manifest: candidateManifest,
+						expectedIdentities: expectedIdentities()
+					},
+					expectedForeignEvidenceSha256: hostedFacts().foreignEvidenceSha256
+				})
+			).resolves.toMatchObject({
+				independentZeroVerified: false,
+				counts: { queueRows: 1 }
+			});
 		}
 	});
 
