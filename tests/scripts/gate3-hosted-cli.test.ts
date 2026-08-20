@@ -125,8 +125,12 @@ async function cliFixture() {
 		inspectHostedAbsence,
 		lines,
 		errors,
-		output: (line: string) => lines.push(line),
-		errorOutput: (line: string) => errors.push(line)
+		output: (line: string) => {
+			lines.push(line);
+		},
+		errorOutput: (line: string) => {
+			errors.push(line);
+		}
 	};
 }
 
@@ -822,16 +826,28 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 		).resolves.toBe(GATE3_EXIT_CODES.precondition);
 	});
 
-	it.each(['rejected-promise', 'throwing-then-getter', 'proxied-thenable'] as const)(
-		'contains asynchronous %s failures from both normal and error sinks',
+	it.each([
+		'resolved-promise',
+		'rejected-promise',
+		'non-settling-thenable',
+		'throwing-then-getter',
+		'proxied-thenable'
+	] as const)(
+		'terminates synchronously and contains unsupported %s returns from both sinks',
 		async (kind) => {
 			const fixture = await cliFixture();
 			let thenTrapCalls = 0;
 			const sink = vi.fn(() => {
+				if (kind === 'resolved-promise') return Promise.resolve();
 				if (kind === 'rejected-promise') {
-					const rejected = Promise.reject(new Error('async sink raw material'));
-					void rejected.catch(() => {});
-					return rejected;
+					return Promise.reject(new Error('async sink raw material'));
+				}
+				if (kind === 'non-settling-thenable') {
+					return {
+						then() {
+							thenTrapCalls += 1;
+						}
+					};
 				}
 				if (kind === 'throwing-then-getter') {
 					return Object.defineProperty({}, 'then', {
@@ -855,8 +871,7 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 				);
 			});
 
-			await expect(
-				runGate3HostedCli({
+			const cliResult = runGate3HostedCli({
 					argv: ['inspect', '--run', runId],
 					environment: fixture.environment,
 					dependencies: {
@@ -867,10 +882,15 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 					input: async () => '',
 					output: sink,
 					errorOutput: sink
-				})
+				});
+			await expect(
+				Promise.race([
+					cliResult,
+					new Promise((resolve) => setTimeout(() => resolve('sink-timeout'), 100))
+				])
 			).resolves.toBe(GATE3_EXIT_CODES.precondition);
 			expect(sink).toHaveBeenCalledTimes(2);
-			if (kind !== 'rejected-promise') expect(thenTrapCalls).toBe(2);
+			expect(thenTrapCalls).toBe(0);
 		}
 	);
 });

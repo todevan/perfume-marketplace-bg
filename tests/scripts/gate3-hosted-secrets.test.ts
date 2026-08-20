@@ -300,6 +300,22 @@ describe('Gate 3 hosted run secrets', () => {
 		expect(returnedPlaintext?.every((byte) => byte === 0)).toBe(true);
 	});
 
+	it('zeroes captured ciphertext even when the run id is invalid before DPAPI invocation', async () => {
+		const capturedCiphertext = Buffer.from('captured-invalid-run-material', 'utf8');
+		const dpapi = { unprotect: vi.fn() };
+
+		await expect(
+			unprotectRunSecretBytes({
+				runId: '../invalid-run',
+				ciphertext: capturedCiphertext,
+				dpapi
+			})
+		).rejects.toThrow('identity_invalid');
+
+		expect(dpapi.unprotect).not.toHaveBeenCalled();
+		expect(capturedCiphertext.every((byte) => byte === 0)).toBe(true);
+	});
+
 	it('verifies secret-store destruction and returns no ciphertext', async () => {
 		const path = await createSecretPath();
 		deterministicDistinctBytes.calls = 0;

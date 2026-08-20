@@ -477,11 +477,11 @@ export async function protectRunSecrets({ payload, path, dpapi, filesystem = NOD
  * @param {{ runId: string, ciphertext: Uint8Array, dpapi: { unprotect: (input: Buffer) => Promise<Uint8Array> } }} options
  */
 export async function unprotectRunSecretBytes({ runId, ciphertext, dpapi }) {
-	assertRunId(runId);
 	let ciphertextBytes;
 	let unprotectedBytes;
 	let plaintext;
 	try {
+		assertRunId(runId);
 		if (!dpapi || typeof dpapi.unprotect !== 'function') {
 			throw new Gate3HostedSecretsError('dpapi_configuration_invalid');
 		}

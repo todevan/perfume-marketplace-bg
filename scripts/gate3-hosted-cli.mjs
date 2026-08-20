@@ -776,11 +776,19 @@ function safeReasonCode(error) {
 }
 
 /** @param {unknown} writer @param {Record<string, unknown>} value */
-async function writeSafe(writer, value) {
+function writeSafe(writer, value) {
 	try {
 		if (typeof writer !== 'function') return true;
-		await writer(`${JSON.stringify(value)}\n`);
-		return true;
+		const result = writer(`${JSON.stringify(value)}\n`);
+		if (result === undefined) return true;
+		if (utilTypes.isPromise(result)) {
+			try {
+				Promise.prototype.then.call(result, undefined, () => {});
+			} catch {
+				// The unsupported sink result is already a deterministic failure.
+			}
+		}
+		return false;
 	} catch {
 		return false;
 	}
@@ -805,14 +813,14 @@ export async function runGate3HostedCli({
 		}
 		if (parsed.command === 'preflight') {
 			const result = await executePreflight(parsed, environment, dependencies);
-			if (!(await writeSafe(output, result))) throw new Gate3HostedCliError('precondition_failed');
+			if (!writeSafe(output, result)) throw new Gate3HostedCliError('precondition_failed');
 			return GATE3_EXIT_CODES.success;
 		}
 		const { result, lifecycle } = await executeInspect(parsed, environment, dependencies);
-		if (!(await writeSafe(output, result))) throw new Gate3HostedCliError('precondition_failed');
+		if (!writeSafe(output, result)) throw new Gate3HostedCliError('precondition_failed');
 		return inspectionExitCode(lifecycle.classification);
 	} catch (error) {
-		await writeSafe(errorOutput, { reasonCode: safeReasonCode(error) });
+		writeSafe(errorOutput, { reasonCode: safeReasonCode(error) });
 		return GATE3_EXIT_CODES.precondition;
 	}
 }
