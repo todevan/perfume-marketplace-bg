@@ -1,5 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
 import { readFile, stat, unlink } from 'node:fs/promises';
+import { isPromise, isProxy } from 'node:util/types';
 import {
 	atomicPrivateWrite,
 	reservePrivateFile,
@@ -2026,7 +2027,7 @@ function inspectorTimestamp(value) {
 
 /** @param {unknown} value @param {readonly string[]} expectedKeys */
 function exactInspectorDataRecord(value, expectedKeys) {
-	if (!value || typeof value !== 'object') return null;
+	if (!value || typeof value !== 'object' || isProxy(value)) return null;
 	try {
 		const prototype = Object.getPrototypeOf(value);
 		if (prototype !== Object.prototype && prototype !== null) return null;
@@ -2052,7 +2053,7 @@ function exactInspectorDataRecord(value, expectedKeys) {
 
 /** @param {unknown} value */
 function exactInspectorStringArray(value) {
-	if (!Array.isArray(value)) return null;
+	if (isProxy(value) || !Array.isArray(value)) return null;
 	try {
 		if (Object.getPrototypeOf(value) !== Array.prototype) return null;
 		const keys = Reflect.ownKeys(value);
@@ -2134,7 +2135,8 @@ export function createSupabaseHostedInspectionAdapter({
 		]);
 		if (
 			reader?.targetProjectRef === projectRef &&
-			typeof reader.readActiveUserIds === 'function'
+			typeof reader.readActiveUserIds === 'function' &&
+			!isProxy(reader.readActiveUserIds)
 		) {
 			const readActiveUserIds = reader.readActiveUserIds;
 			exactSessionReader = Object.freeze({
@@ -2349,7 +2351,8 @@ export function createSupabaseHostedInspectionAdapter({
 				const ids = [...exactUserIds];
 				const pendingCoverage = exactSessionReader.readActiveUserIds({ userIds: ids });
 				if (
-					!(pendingCoverage instanceof Promise) ||
+					isProxy(pendingCoverage) ||
+					!isPromise(pendingCoverage) ||
 					Object.getPrototypeOf(pendingCoverage) !== Promise.prototype
 				) {
 					throw new Error('session coverage read failed');

@@ -1184,20 +1184,20 @@ describe('universal read-only Gate 3 inspection', () => {
 	});
 
 	it.each([
-		'reporter ownership',
-		'cross-user target',
-		'assigned moderator',
-		'report status',
-		'manifest report ID',
-		'manifest upload ID',
-		'upload status',
-		'attached_at',
-		'report-upload linkage',
-		'evidence path',
-		'live object'
+		['reporter ownership', 'AMBIGUOUS'],
+		['cross-user target', 'SCENARIO_PARTIAL'],
+		['assigned moderator', 'SCENARIO_PARTIAL'],
+		['report status', 'SCENARIO_PARTIAL'],
+		['manifest report ID', 'SCENARIO_PARTIAL'],
+		['manifest upload ID', 'SCENARIO_PARTIAL'],
+		['upload status', 'SCENARIO_PARTIAL'],
+		['attached_at', 'SCENARIO_PARTIAL'],
+		['report-upload linkage', 'SCENARIO_PARTIAL'],
+		['evidence path', 'SCENARIO_PARTIAL'],
+		['live object', 'SCENARIO_PARTIAL']
 	] as const)(
 		'requires exact %s evidence for adapter facts and outer scenario verification',
-		async (predicate) => {
+		async (predicate, expectedClassification) => {
 			const fixture = await createFixture();
 			const identities = expectedIdentities();
 			const reportId = '66666666-6666-4666-8666-666666666666';
@@ -1324,7 +1324,7 @@ describe('universal read-only Gate 3 inspection', () => {
 			});
 			expect(result.scenarioVerified).toBe(false);
 			expect(result.classification).not.toBe('SCENARIO_VERIFIED');
-			expect(['SCENARIO_PARTIAL', 'AMBIGUOUS']).toContain(result.classification);
+			expect(result.classification).toBe(expectedClassification);
 		}
 	);
 

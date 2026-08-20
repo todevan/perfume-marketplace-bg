@@ -755,6 +755,111 @@ describe('universal Supabase inspection adapter', () => {
 		expect(accessorRead).not.toHaveBeenCalled();
 	});
 
+	it('rejects fake promises and proxy-backed session coverage boundaries without invoking them', async () => {
+		const scope = {
+			runId: inspectorRunId,
+			createdAfter: '2026-08-09T11:59:00.000Z',
+			manifest: gate3Manifest(),
+			expectedIdentities
+		};
+		const inspectWith = async (sessionCoverageReader: unknown) => {
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({ users: [exactReporter] }) as never,
+				sessionCoverageReader: sessionCoverageReader as never
+			});
+			return adapter.inspectRun(scope);
+		};
+
+		const thenGetter = vi.fn(() =>
+			(resolve: (coverage: { activeUserIds: string[] }) => void) =>
+				resolve({ activeUserIds: [actorIds.reporter] })
+		);
+		const fakePromise = Object.defineProperty(Object.create(Promise.prototype), 'then', {
+			get: thenGetter
+		});
+		await expect(
+			inspectWith({
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds: () => fakePromise
+			})
+		).resolves.toMatchObject({ activeSessionsProven: false });
+		expect(thenGetter).not.toHaveBeenCalled();
+
+		const readerRecordTrap = vi.fn(() => {
+			throw new Error('reader-record-provider-token');
+		});
+		const proxyReaderRecord = new Proxy(
+			{
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds: vi.fn().mockResolvedValue({
+					activeUserIds: [actorIds.reporter]
+				})
+			},
+			{
+				getPrototypeOf: readerRecordTrap,
+				ownKeys: readerRecordTrap,
+				getOwnPropertyDescriptor: readerRecordTrap
+			}
+		);
+		await expect(inspectWith(proxyReaderRecord)).resolves.toMatchObject({
+			activeSessionsProven: false
+		});
+		expect(readerRecordTrap).not.toHaveBeenCalled();
+
+		const callableTrap = vi.fn(() => {
+			throw new Error('reader-callable-provider-token');
+		});
+		const proxyCallable = new Proxy(
+			() => Promise.resolve({ activeUserIds: [actorIds.reporter] }),
+			{ apply: callableTrap }
+		);
+		await expect(
+			inspectWith({
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds: proxyCallable
+			})
+		).resolves.toMatchObject({ activeSessionsProven: false });
+		expect(callableTrap).not.toHaveBeenCalled();
+
+		const coverageRecordTrap = vi.fn(() => {
+			throw new Error('coverage-record-provider-token');
+		});
+		const proxyCoverageRecord = new Proxy(
+			{ activeUserIds: [actorIds.reporter] },
+			{
+				getPrototypeOf: coverageRecordTrap,
+				ownKeys: coverageRecordTrap,
+				getOwnPropertyDescriptor: coverageRecordTrap
+			}
+		);
+		await expect(
+			inspectWith({
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds: vi.fn(() => Promise.resolve(proxyCoverageRecord))
+			})
+		).resolves.toMatchObject({ activeSessionsProven: false });
+		expect(coverageRecordTrap).not.toHaveBeenCalled();
+
+		const idArrayTrap = vi.fn(() => {
+			throw new Error('id-array-provider-token');
+		});
+		const proxyIdArray = new Proxy([actorIds.reporter], {
+			getPrototypeOf: idArrayTrap,
+			ownKeys: idArrayTrap,
+			getOwnPropertyDescriptor: idArrayTrap
+		});
+		await expect(
+			inspectWith({
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds: vi.fn(() =>
+					Promise.resolve({ activeUserIds: proxyIdArray })
+				)
+			})
+		).resolves.toMatchObject({ activeSessionsProven: false });
+		expect(idArrayTrap).not.toHaveBeenCalled();
+	});
+
 	it('rejects hidden, inherited, symbolic, accessor, and thenable session coverage results', async () => {
 		const privateFieldName = ['to', 'ken'].join('');
 		const inherited = Object.create({ [privateFieldName]: 'inherited-provider-value' });
