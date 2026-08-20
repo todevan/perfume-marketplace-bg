@@ -13,6 +13,7 @@ import {
 	destroyRunSecretStore,
 	protectRunSecrets,
 	recordProviderTotpSecret,
+	unprotectRunSecretBytes,
 	unprotectRunSecrets
 } from '../../scripts/gate3-hosted-secrets.mjs';
 
@@ -268,6 +269,35 @@ describe('Gate 3 hosted run secrets', () => {
 			'dpapi_output_too_large'
 		);
 		expect(await readdir(join(path, '..'))).toEqual([]);
+	});
+
+	it('consumes captured ciphertext bytes directly, validates the run binding, and zeroes every buffer', async () => {
+		deterministicDistinctBytes.calls = 0;
+		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		const capturedCiphertext = Buffer.from(JSON.stringify(payload), 'utf8');
+		const expectedCiphertext = Buffer.from(capturedCiphertext);
+		let receivedInput: Buffer | undefined;
+		let returnedPlaintext: Buffer | undefined;
+		const dpapi = {
+			unprotect: vi.fn(async (input: Buffer) => {
+				receivedInput = input;
+				expect(input).toEqual(expectedCiphertext);
+				returnedPlaintext = Buffer.from(input);
+				return returnedPlaintext;
+			})
+		};
+
+		const restored = await unprotectRunSecretBytes({
+			runId,
+			ciphertext: capturedCiphertext,
+			dpapi
+		});
+
+		expect(restored.runId).toBe(runId);
+		expect(dpapi.unprotect).toHaveBeenCalledTimes(1);
+		expect(capturedCiphertext.every((byte) => byte === 0)).toBe(true);
+		expect(receivedInput?.every((byte) => byte === 0)).toBe(true);
+		expect(returnedPlaintext?.every((byte) => byte === 0)).toBe(true);
 	});
 
 	it('verifies secret-store destruction and returns no ciphertext', async () => {

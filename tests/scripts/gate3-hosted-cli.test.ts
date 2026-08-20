@@ -574,6 +574,30 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 		).resolves.toBe(GATE3_EXIT_CODES.success);
 	});
 
+	it('rejects a proxied inspectRun capability without invoking its apply trap', async () => {
+		const fixture = await cliFixture();
+		let applyCalls = 0;
+		const inspectRun = new Proxy(async () => ({}), {
+			apply() {
+				applyCalls += 1;
+				throw new Error('proxied capability material');
+			}
+		});
+		const inspectGate3HostedRun = vi.fn(async ({ inspectionAdapter }: Record<string, any>) => {
+			await inspectionAdapter.inspectRun();
+			return inspectFacts();
+		});
+
+		await expect(
+			runCli(fixture, ['inspect', '--run', runId], {
+				inspectionAdapter: Object.freeze({ inspectRun }),
+				inspectGate3HostedRun
+			})
+		).resolves.toBe(GATE3_EXIT_CODES.precondition);
+		expect(applyCalls).toBe(0);
+		expect(inspectGate3HostedRun).not.toHaveBeenCalled();
+	});
+
 	it('drops secret-shaped count, phase, and checkpoint fields from inspected output', async () => {
 		const fixture = await cliFixture();
 		const inspectionAdapter = Object.freeze({ inspectRun: vi.fn(async () => ({})) });
@@ -797,4 +821,56 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 			})
 		).resolves.toBe(GATE3_EXIT_CODES.precondition);
 	});
+
+	it.each(['rejected-promise', 'throwing-then-getter', 'proxied-thenable'] as const)(
+		'contains asynchronous %s failures from both normal and error sinks',
+		async (kind) => {
+			const fixture = await cliFixture();
+			let thenTrapCalls = 0;
+			const sink = vi.fn(() => {
+				if (kind === 'rejected-promise') {
+					const rejected = Promise.reject(new Error('async sink raw material'));
+					void rejected.catch(() => {});
+					return rejected;
+				}
+				if (kind === 'throwing-then-getter') {
+					return Object.defineProperty({}, 'then', {
+						get() {
+							thenTrapCalls += 1;
+							throw new Error('then getter raw material');
+						}
+					});
+				}
+				return new Proxy(
+					{},
+					{
+						get(_target, property) {
+							if (property === 'then') {
+								thenTrapCalls += 1;
+								throw new Error('then proxy raw material');
+							}
+							return undefined;
+						}
+					}
+				);
+			});
+
+			await expect(
+				runGate3HostedCli({
+					argv: ['inspect', '--run', runId],
+					environment: fixture.environment,
+					dependencies: {
+						...fixture.dependencies,
+						inspectionAdapter: Object.freeze({ inspectRun: vi.fn(async () => ({})) }),
+						inspectGate3HostedRun: vi.fn(async () => inspectFacts())
+					},
+					input: async () => '',
+					output: sink,
+					errorOutput: sink
+				})
+			).resolves.toBe(GATE3_EXIT_CODES.precondition);
+			expect(sink).toHaveBeenCalledTimes(2);
+			if (kind !== 'rejected-promise') expect(thenTrapCalls).toBe(2);
+		}
+	);
 });

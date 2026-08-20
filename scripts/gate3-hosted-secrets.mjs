@@ -471,19 +471,26 @@ export async function protectRunSecrets({ payload, path, dpapi, filesystem = NOD
 }
 
 /**
- * @param {{ runId: string, path: string, dpapi: { unprotect: (input: Buffer) => Promise<Uint8Array> } }} options
+ * Destructively consumes already captured ciphertext bytes. The caller-provided
+ * buffer, the private DPAPI input copy, and all plaintext buffers are zeroed.
+ *
+ * @param {{ runId: string, ciphertext: Uint8Array, dpapi: { unprotect: (input: Buffer) => Promise<Uint8Array> } }} options
  */
-export async function unprotectRunSecrets({ runId, path, dpapi }) {
+export async function unprotectRunSecretBytes({ runId, ciphertext, dpapi }) {
 	assertRunId(runId);
-	const exactPath = await assertExactSecretPath(path, runId);
-	if (!dpapi || typeof dpapi.unprotect !== 'function') {
-		throw new Gate3HostedSecretsError('dpapi_configuration_invalid');
-	}
-	const ciphertext = await readBoundedCiphertext(exactPath);
+	let ciphertextBytes;
 	let unprotectedBytes;
 	let plaintext;
 	try {
-		unprotectedBytes = await dpapi.unprotect(ciphertext);
+		if (!dpapi || typeof dpapi.unprotect !== 'function') {
+			throw new Gate3HostedSecretsError('dpapi_configuration_invalid');
+		}
+		ciphertextBytes = exactBoundedBuffer(
+			ciphertext,
+			MAX_CIPHERTEXT_BYTES,
+			'secret_store_invalid'
+		);
+		unprotectedBytes = await dpapi.unprotect(ciphertextBytes);
 		plaintext = exactBoundedBuffer(
 			unprotectedBytes,
 			MAX_PLAINTEXT_BYTES,
@@ -500,10 +507,24 @@ export async function unprotectRunSecrets({ runId, path, dpapi }) {
 		if (error instanceof Gate3HostedSecretsError) throw error;
 		throw new Gate3HostedSecretsError('dpapi_failed');
 	} finally {
-		ciphertext.fill(0);
+		ciphertext?.fill?.(0);
+		ciphertextBytes?.fill(0);
 		unprotectedBytes?.fill?.(0);
 		plaintext?.fill(0);
 	}
+}
+
+/**
+ * @param {{ runId: string, path: string, dpapi: { unprotect: (input: Buffer) => Promise<Uint8Array> } }} options
+ */
+export async function unprotectRunSecrets({ runId, path, dpapi }) {
+	assertRunId(runId);
+	const exactPath = await assertExactSecretPath(path, runId);
+	if (!dpapi || typeof dpapi.unprotect !== 'function') {
+		throw new Gate3HostedSecretsError('dpapi_configuration_invalid');
+	}
+	const ciphertext = await readBoundedCiphertext(exactPath);
+	return unprotectRunSecretBytes({ runId, ciphertext, dpapi });
 }
 
 /** @param {string} path */

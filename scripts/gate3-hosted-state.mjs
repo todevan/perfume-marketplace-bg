@@ -266,21 +266,34 @@ function sameDirectoryIdentity(left, right) {
 	return left.dev === right.dev && left.ino === right.ino && left.realpath.toLowerCase() === right.realpath.toLowerCase();
 }
 
+/** @param {any} entry @param {boolean} rejectSymbolicLink */
+function privateFileIdentity(entry, rejectSymbolicLink) {
+	if (!entry.isFile() || (rejectSymbolicLink && entry.isSymbolicLink())) throw new Error('unsafe file');
+	if (process.platform !== 'win32' && (entry.mode & 0o077n) !== 0n) throw new Error('unsafe permissions');
+	return Object.freeze({
+		dev: entry.dev,
+		ino: entry.ino,
+		size: entry.size,
+		mtimeNs: entry.mtimeNs,
+		ctimeNs: entry.ctimeNs
+	});
+}
+
 /** @param {string} filePath @param {typeof NODE_FILESYSTEM} [filesystem] */
 async function capturePrivateFile(filePath, filesystem = NODE_FILESYSTEM) {
 	try {
-		const entry = await filesystem.lstat(filePath, { bigint: true });
-		if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('unsafe file');
-		if (process.platform !== 'win32' && (entry.mode & 0o077n) !== 0n) throw new Error('unsafe permissions');
-		return Object.freeze({
-			dev: entry.dev,
-			ino: entry.ino,
-			size: entry.size,
-			mtimeNs: entry.mtimeNs,
-			ctimeNs: entry.ctimeNs
-		});
+		return privateFileIdentity(await filesystem.lstat(filePath, { bigint: true }), true);
 	} catch (error) {
 		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') throw new Gate3HostedStateError('state_unavailable');
+		throw new Gate3HostedStateError('state_path_invalid');
+	}
+}
+
+/** @param {{ stat: (options: { bigint: true }) => Promise<any> }} handle */
+async function capturePrivateHandle(handle) {
+	try {
+		return privateFileIdentity(await handle.stat({ bigint: true }), false);
+	} catch {
 		throw new Gate3HostedStateError('state_path_invalid');
 	}
 }
@@ -528,22 +541,51 @@ export async function reserveGate3RunDirectory(paths, { filesystem = NODE_FILESY
 export async function readStableGate3PreflightSnapshot(paths, { filesystem = NODE_FILESYSTEM } = {}) {
 	const exactPaths = validatePaths(paths);
 	const snapshotFilesystem = /** @type {typeof NODE_FILESYSTEM} */ ({ ...NODE_FILESYSTEM, ...filesystem });
+	let stateBytes;
+	let manifestBytes;
+	let secretBytes;
 	try {
 		await assertSafeRunPaths(exactPaths, { filesystem: snapshotFilesystem });
 		const directoryBefore = await captureDirectoryIdentity(exactPaths.runDirectory, snapshotFilesystem);
 		/** @param {string} filePath */
 		const readStableFile = async (filePath) => {
-			const before = await capturePrivateFile(filePath, snapshotFilesystem);
-			const bytes = Buffer.from(await snapshotFilesystem.readFile(filePath));
-			const after = await capturePrivateFile(filePath, snapshotFilesystem);
-			if (!sameFileIdentity(before, after) || BigInt(bytes.byteLength) !== before.size) {
+			let handle;
+			let bytes;
+			try {
+				handle = await snapshotFilesystem.open(filePath, 'r');
+				const pathBefore = await capturePrivateFile(filePath, snapshotFilesystem);
+				const handleBefore = await capturePrivateHandle(handle);
+				if (!sameFileIdentity(pathBefore, handleBefore)) {
+					throw new Gate3HostedStateError('preflight_snapshot_changed');
+				}
+				bytes = Buffer.from(await handle.readFile());
+				const handleAfter = await capturePrivateHandle(handle);
+				const pathAfter = await capturePrivateFile(filePath, snapshotFilesystem);
+				if (
+					!sameFileIdentity(pathBefore, pathAfter) ||
+					!sameFileIdentity(handleBefore, handleAfter) ||
+					!sameFileIdentity(pathAfter, handleAfter) ||
+					BigInt(bytes.byteLength) !== handleAfter.size
+				) {
+					throw new Gate3HostedStateError('preflight_snapshot_changed');
+				}
+				return bytes;
+			} catch (error) {
+				bytes?.fill(0);
+				if (error instanceof Gate3HostedStateError) throw error;
 				throw new Gate3HostedStateError('preflight_snapshot_changed');
+			} finally {
+				try {
+					await handle?.close();
+				} catch {
+					bytes?.fill(0);
+					throw new Gate3HostedStateError('preflight_snapshot_changed');
+				}
 			}
-			return bytes;
 		};
-		const stateBytes = await readStableFile(exactPaths.statePath);
-		const manifestBytes = await readStableFile(exactPaths.manifestPath);
-		const secretBytes = await readStableFile(exactPaths.secretPath);
+		stateBytes = await readStableFile(exactPaths.statePath);
+		manifestBytes = await readStableFile(exactPaths.manifestPath);
+		secretBytes = await readStableFile(exactPaths.secretPath);
 		const directoryAfter = await captureDirectoryIdentity(exactPaths.runDirectory, snapshotFilesystem);
 		if (!sameDirectoryIdentity(directoryBefore, directoryAfter)) {
 			throw new Gate3HostedStateError('preflight_snapshot_changed');
@@ -557,6 +599,7 @@ export async function readStableGate3PreflightSnapshot(paths, { filesystem = NOD
 		}
 		return Object.freeze({ state, stateBytes, manifestBytes, secretBytes, directoryIdentity: directoryAfter });
 	} catch (error) {
+		secretBytes?.fill(0);
 		if (error instanceof Gate3HostedStateError) throw error;
 		throw new Gate3HostedStateError('preflight_snapshot_changed');
 	}

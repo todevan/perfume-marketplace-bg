@@ -19,7 +19,7 @@ import {
 import {
 	createRunSecretPayload,
 	protectRunSecrets,
-	unprotectRunSecrets
+	unprotectRunSecretBytes
 } from './gate3-hosted-secrets.mjs';
 import { inspectGate3HostedRun, resolveDeployedRelease } from './gate3-hosted-inspector.mjs';
 import { GATE3_EXIT_CODES, classifyGate3Lifecycle } from './gate3-hosted-lifecycle.mjs';
@@ -239,6 +239,7 @@ function exactInspectionAdapter(candidate) {
 			!descriptor ||
 			!Object.hasOwn(descriptor, 'value') ||
 			typeof descriptor.value !== 'function' ||
+			utilTypes.isProxy(descriptor.value) ||
 			descriptor.enumerable !== true ||
 			descriptor.writable !== false ||
 			descriptor.configurable !== false
@@ -314,6 +315,7 @@ async function assertExistingPreflightIntegrity(paths, dpapi) {
 		!SHA256_PATTERN.test(state.manifest?.sha256 ?? '') ||
 		!SHA256_PATTERN.test(state.secretStore?.ciphertextSha256 ?? '')
 	) {
+		first.secretBytes.fill(0);
 		throw new Gate3HostedCliError('preflight_recovery_required');
 	}
 	try {
@@ -357,16 +359,17 @@ async function assertExistingPreflightIntegrity(paths, dpapi) {
 		) {
 			throw new Error('DPAPI unavailable');
 		}
-		await unprotectRunSecrets({
+		const capturedCiphertextSha256 = createHash('sha256').update(first.secretBytes).digest('hex');
+		await unprotectRunSecretBytes({
 			runId: state.runId,
-			path: paths.secretPath,
+			ciphertext: first.secretBytes,
 			dpapi: /** @type {{ unprotect: (input: Buffer) => Promise<Uint8Array> }} */ (dpapi)
 		});
 		second = await readStableGate3PreflightSnapshot(paths);
 		if (
 			!first.stateBytes.equals(second.stateBytes) ||
 			!first.manifestBytes.equals(second.manifestBytes) ||
-			!first.secretBytes.equals(second.secretBytes) ||
+			createHash('sha256').update(second.secretBytes).digest('hex') !== capturedCiphertextSha256 ||
 			first.directoryIdentity.dev !== second.directoryIdentity.dev ||
 			first.directoryIdentity.ino !== second.directoryIdentity.ino ||
 			first.directoryIdentity.realpath.toLowerCase() !== second.directoryIdentity.realpath.toLowerCase()
@@ -375,6 +378,9 @@ async function assertExistingPreflightIntegrity(paths, dpapi) {
 		}
 	} catch {
 		throw new Gate3HostedCliError('preflight_recovery_required');
+	} finally {
+		first?.secretBytes?.fill(0);
+		second?.secretBytes?.fill(0);
 	}
 	return second.state;
 }
@@ -770,10 +776,10 @@ function safeReasonCode(error) {
 }
 
 /** @param {unknown} writer @param {Record<string, unknown>} value */
-function writeSafe(writer, value) {
+async function writeSafe(writer, value) {
 	try {
 		if (typeof writer !== 'function') return true;
-		writer(`${JSON.stringify(value)}\n`);
+		await writer(`${JSON.stringify(value)}\n`);
 		return true;
 	} catch {
 		return false;
@@ -799,14 +805,14 @@ export async function runGate3HostedCli({
 		}
 		if (parsed.command === 'preflight') {
 			const result = await executePreflight(parsed, environment, dependencies);
-			if (!writeSafe(output, result)) throw new Gate3HostedCliError('precondition_failed');
+			if (!(await writeSafe(output, result))) throw new Gate3HostedCliError('precondition_failed');
 			return GATE3_EXIT_CODES.success;
 		}
 		const { result, lifecycle } = await executeInspect(parsed, environment, dependencies);
-		if (!writeSafe(output, result)) throw new Gate3HostedCliError('precondition_failed');
+		if (!(await writeSafe(output, result))) throw new Gate3HostedCliError('precondition_failed');
 		return inspectionExitCode(lifecycle.classification);
 	} catch (error) {
-		writeSafe(errorOutput, { reasonCode: safeReasonCode(error) });
+		await writeSafe(errorOutput, { reasonCode: safeReasonCode(error) });
 		return GATE3_EXIT_CODES.precondition;
 	}
 }

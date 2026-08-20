@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { atomicPrivateWrite } from '../../scripts/hosted-private-file.mjs';
+import { createRunSecretPayload, unprotectRunSecretBytes } from '../../scripts/gate3-hosted-secrets.mjs';
 import {
 	acquireRunLock,
 	clearActiveRun,
@@ -1070,6 +1071,66 @@ describe('Gate 3 hosted state', () => {
 		await expect(
 			readStableGate3PreflightSnapshot(paths, { filesystem: filesystem as never })
 		).rejects.toMatchObject({ reasonCode: 'preflight_snapshot_changed' });
+	});
+
+	it('reads ciphertext through its opened handle during a transient pathname ABA substitution', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await atomicPrivateWrite(paths.manifestPath, '{}\n');
+		let randomCall = 0;
+		const payload = createRunSecretPayload({
+			runId: paths.runId,
+			randomBytesImpl: (size: number) => Buffer.alloc(size, ++randomCall)
+		});
+		const originalCiphertext = Buffer.from(JSON.stringify(payload), 'utf8');
+		const substituteCiphertext = Buffer.from(originalCiphertext);
+		substituteCiphertext[0] ^= 1;
+		await atomicPrivateWrite(paths.secretPath, originalCiphertext.toString('utf8'));
+		const stableSecretIdentity = await lstat(paths.secretPath, { bigint: true });
+		let pathnameSecretReads = 0;
+		const filesystem = {
+			lstat: async (path: Parameters<typeof lstat>[0], options?: { bigint?: boolean }) => {
+				if (String(path) === paths.secretPath && options?.bigint) return stableSecretIdentity;
+				return options?.bigint ? lstat(path, { bigint: true }) : lstat(path);
+			},
+			readFile: async (...args: Parameters<typeof readFile>) => {
+				if (String(args[0]) === paths.secretPath) {
+					pathnameSecretReads += 1;
+					return Buffer.from(substituteCiphertext);
+				}
+				return readFile(...args);
+			},
+			open: async (...args: Parameters<typeof open>) => {
+				const handle = await open(...args);
+				if (String(args[0]) !== paths.secretPath) return handle;
+				return {
+					stat: async () => stableSecretIdentity,
+					readFile: async () => Buffer.from(originalCiphertext),
+					close: handle.close.bind(handle)
+				};
+			}
+		};
+
+		const snapshot = await readStableGate3PreflightSnapshot(paths, {
+			filesystem: filesystem as never
+		});
+
+		expect(snapshot.secretBytes).toEqual(originalCiphertext);
+		expect(pathnameSecretReads).toBe(0);
+		let decryptedCiphertext: Buffer | undefined;
+		await unprotectRunSecretBytes({
+			runId: paths.runId,
+			ciphertext: snapshot.secretBytes,
+			dpapi: {
+				unprotect: async (input: Buffer) => {
+					decryptedCiphertext = Buffer.from(input);
+					return Buffer.from(input);
+				}
+			}
+		});
+		expect(decryptedCiphertext).toEqual(originalCiphertext);
+		expect(decryptedCiphertext).not.toEqual(substituteCiphertext);
+		expect(snapshot.secretBytes.every((byte) => byte === 0)).toBe(true);
 	});
 
 	it('keeps generated CodeGraph and ATL directories out of version control', () => {
