@@ -277,8 +277,8 @@ async function directoryIsMissing(directory, filesystem = NODE_FILESYSTEM) {
 	}
 }
 
-/** @param {Record<string, string>} paths @param {{ createRunDirectory?: boolean, filesystem?: typeof NODE_FILESYSTEM }} [options] */
-async function assertSafeRunPaths(paths, { createRunDirectory = false, filesystem = NODE_FILESYSTEM } = {}) {
+/** @param {Record<string, string>} paths @param {{ createRunDirectory?: boolean, exclusiveRunDirectory?: boolean, filesystem?: typeof NODE_FILESYSTEM }} [options] */
+async function assertSafeRunPaths(paths, { createRunDirectory = false, exclusiveRunDirectory = false, filesystem = NODE_FILESYSTEM } = {}) {
 	await assertRealDirectory(paths.root, filesystem);
 	if (createRunDirectory) {
 		if (await directoryIsMissing(paths.activeRoot, filesystem)) {
@@ -287,6 +287,7 @@ async function assertSafeRunPaths(paths, { createRunDirectory = false, filesyste
 		await assertRealDirectory(paths.activeRoot, filesystem);
 		await filesystem.mkdir(paths.runDirectory, { recursive: false, mode: 0o700 }).catch((error) => {
 			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
+			if (exclusiveRunDirectory) throw new Gate3HostedStateError('state_already_exists');
 		});
 	}
 	for (const directory of [paths.activeRoot, paths.runDirectory]) await assertRealDirectory(directory, filesystem);
@@ -466,6 +467,27 @@ export function resolveGate3RunPaths({ root, runId }) {
 		lockPath: join(runDirectory, '.gate3.lock'),
 		activePointerPath: join(root, 'active-run.json')
 	});
+}
+
+/**
+ * Exclusively reserves the validated active directory for one exact Gate 3 run.
+ * No state, manifest, secret, or pointer file is created by this operation.
+ *
+ * @param {unknown} paths
+ * @param {{ filesystem?: typeof NODE_FILESYSTEM }} [options]
+ */
+export async function reserveGate3RunDirectory(paths, { filesystem = NODE_FILESYSTEM } = {}) {
+	const exactPaths = validatePaths(paths);
+	try {
+		await assertSafeRunPaths(exactPaths, {
+			createRunDirectory: true,
+			exclusiveRunDirectory: true,
+			filesystem
+		});
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
+		throw new Gate3HostedStateError('state_path_invalid');
+	}
 }
 
 /** @param {{ runId: string, createdAt: string, releaseCommitSha: string, manifestPath: string, secretPath: string }} options */

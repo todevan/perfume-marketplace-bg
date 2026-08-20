@@ -27,6 +27,7 @@ import {
 	readRunState,
 	recoverStaleRunLock,
 	releaseRunLock,
+	reserveGate3RunDirectory,
 	reserveRunState,
 	resolveGate3RunPaths,
 	setActiveRun,
@@ -86,6 +87,43 @@ describe('Gate 3 hosted state', () => {
 		'rejects unsafe run id %s',
 		(runId) => expect(() => resolveGate3RunPaths({ root, runId })).toThrow('run_id_invalid')
 	);
+
+	it('reserves only the exact validated run directory with exclusive creation', async () => {
+		const { paths } = await createFixture();
+
+		await reserveGate3RunDirectory(paths);
+		expect((await lstat(paths.runDirectory)).isDirectory()).toBe(true);
+		expect(await readdir(paths.runDirectory)).toEqual([]);
+		await expect(reserveGate3RunDirectory(paths)).rejects.toMatchObject({
+			reasonCode: 'state_already_exists'
+		});
+	});
+
+	it('rejects an active-root reparse before an exclusive run-directory reservation', async () => {
+		const paths = resolveGate3RunPaths({
+			root: 'C:\\gate3-run-directory-reparse-fixture',
+			runId: 'gate3-20260820-abcdef12'
+		});
+		const calls: string[] = [];
+		const filesystem = {
+			lstat: async (path: string) => {
+				calls.push(`lstat:${path}`);
+				return { isDirectory: () => true, isSymbolicLink: () => false };
+			},
+			realpath: async (path: string) => {
+				calls.push(`realpath:${path}`);
+				return path === paths.activeRoot ? 'C:\\outside-active-root' : path;
+			},
+			mkdir: async (path: string) => {
+				calls.push(`mkdir:${path}`);
+			}
+		} as never;
+
+		await expect(reserveGate3RunDirectory(paths, { filesystem })).rejects.toMatchObject({
+			reasonCode: 'state_path_invalid'
+		});
+		expect(calls).not.toContain(`mkdir:${paths.runDirectory}`);
+	});
 
 	it('reserves the initial state exclusively and reads back its exact schema', async () => {
 		const { paths, state } = await createFixture();
