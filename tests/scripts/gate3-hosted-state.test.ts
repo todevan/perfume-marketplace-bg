@@ -22,13 +22,16 @@ import {
 	createInitialRunState,
 	finalizeRunArchive,
 	inspectRunLock,
+	publishActiveRunIfUnlocked,
 	readActiveRun,
 	readArchivedRunState,
 	readRunState,
+	readStableGate3PreflightSnapshot,
 	recoverStaleRunLock,
 	releaseRunLock,
 	reserveGate3RunDirectory,
 	reserveRunState,
+	rollbackGate3RunDirectory,
 	resolveGate3RunPaths,
 	setActiveRun,
 	writeNextRunState
@@ -649,6 +652,14 @@ describe('Gate 3 hosted state', () => {
 		const delayedRetireProceed = deferred();
 		const successorEntered = deferred();
 		const successorProceed = deferred();
+		const uncoordinatedFilesystem = {
+			open: async () => ({
+				writeFile: async () => {},
+				sync: async () => {},
+				close: async () => {}
+			}),
+			unlink: async () => {}
+		};
 		let guardOwnerReads = 0;
 		const ownerPromise = acquireRunLock({
 			paths,
@@ -662,7 +673,8 @@ describe('Gate 3 hosted state', () => {
 					await ownerProceed.promise;
 					return handle;
 				}
-			}
+			},
+			coordinationFilesystem: uncoordinatedFilesystem
 		} as never);
 		await Promise.race([
 			ownerEntered.promise,
@@ -697,7 +709,8 @@ describe('Gate 3 hosted state', () => {
 				rename,
 				rm,
 				writeFile
-			}
+			},
+			coordinationFilesystem: uncoordinatedFilesystem
 		} as never);
 
 		let successorPromise: ReturnType<typeof acquireRunLock> | undefined;
@@ -719,7 +732,8 @@ describe('Gate 3 hosted state', () => {
 						await successorProceed.promise;
 						return handle;
 					}
-				}
+				},
+				coordinationFilesystem: uncoordinatedFilesystem
 			} as never);
 			await successorEntered.promise;
 			const successorOwnerBytes = await readFile(ownerPath, 'utf8');
@@ -955,6 +969,107 @@ describe('Gate 3 hosted state', () => {
 		await expect(readArchivedRunState(paths)).resolves.toMatchObject({ archive: { status: 'pending' } });
 		await expect(readFile(join(paths.runDirectory, 'replacement.txt'), 'utf8')).resolves.toBe('replacement');
 		await expect(readActiveRun(paths.root)).resolves.toBe(paths.runId);
+	});
+
+	it('serializes active publication with run-lock acquisition so the old run cannot lock after the switch', async () => {
+		const { paths: oldPaths } = await createFixture();
+		await reserveGate3RunDirectory(oldPaths);
+		await setActiveRun({ root: oldPaths.root, runId: oldPaths.runId, expectedCurrentRunId: null });
+		const newPaths = resolveGate3RunPaths({
+			root: oldPaths.root,
+			runId: 'gate3-20260821-fedcba98'
+		});
+		await reserveGate3RunDirectory(newPaths);
+		const publisherEntered = deferred();
+		const publisherProceed = deferred();
+		const lockAttempted = deferred();
+		let pointerReads = 0;
+		const publisher = publishActiveRunIfUnlocked({
+			root: newPaths.root,
+			runId: newPaths.runId,
+			expectedCurrentRunId: oldPaths.runId,
+			filesystem: {
+				readFile: async (...args: Parameters<typeof readFile>) => {
+					if (String(args[0]) === newPaths.activePointerPath && pointerReads++ === 0) {
+						publisherEntered.resolve();
+						await publisherProceed.promise;
+					}
+					return readFile(...args);
+				}
+			} as never
+		});
+		await publisherEntered.promise;
+		const acquisition = acquireRunLock({
+			paths: oldPaths,
+			command: 'scenario',
+			coordinationFilesystem: {
+				open: async (...args: Parameters<typeof open>) => {
+					if (String(args[0]).endsWith('.active-run.lock')) lockAttempted.resolve();
+					return open(...args);
+				}
+			} as never
+		});
+		await lockAttempted.promise;
+		await expect(lstat(oldPaths.lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+		publisherProceed.resolve();
+		await expect(publisher).resolves.toBe(newPaths.runId);
+		await expect(acquisition).rejects.toMatchObject({ reasonCode: 'active_run_changed' });
+		await expect(lstat(oldPaths.lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+	});
+
+	it('refuses rollback after the reserved run is published and preserves its files', async () => {
+		const { paths } = await createFixture();
+		const reservation = await reserveGate3RunDirectory(paths);
+		await writeFile(paths.manifestPath, 'manifest');
+		await setActiveRun({ root: paths.root, runId: paths.runId, expectedCurrentRunId: null });
+
+		await expect(rollbackGate3RunDirectory({ paths, reservation })).rejects.toMatchObject({
+			reasonCode: 'active_run_changed'
+		});
+		await expect(readFile(paths.manifestPath, 'utf8')).resolves.toBe('manifest');
+	});
+
+	it('refuses rollback of a replacement directory and preserves both identities', async () => {
+		const { paths } = await createFixture();
+		const reservation = await reserveGate3RunDirectory(paths);
+		const originalDirectory = `${paths.runDirectory}-original`;
+		await rename(paths.runDirectory, originalDirectory);
+		await mkdir(paths.runDirectory);
+		const replacementMarker = join(paths.runDirectory, 'replacement.txt');
+		await writeFile(replacementMarker, 'preserve replacement');
+
+		await expect(rollbackGate3RunDirectory({ paths, reservation })).rejects.toMatchObject({
+			reasonCode: 'rollback_ambiguous'
+		});
+		await expect(readFile(replacementMarker, 'utf8')).resolves.toBe('preserve replacement');
+		await expect(lstat(originalDirectory)).resolves.toMatchObject({});
+	});
+
+	it('rejects a cooperative preflight file identity swap instead of returning mixed bytes', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await atomicPrivateWrite(paths.manifestPath, '{}\n');
+		await atomicPrivateWrite(paths.secretPath, 'ciphertext');
+		let manifestIdentityReads = 0;
+		const filesystem = {
+			lstat: async (path: Parameters<typeof lstat>[0], options?: { bigint?: boolean }) => {
+				const entry = options?.bigint ? await lstat(path, { bigint: true }) : await lstat(path);
+				if (String(path) !== paths.manifestPath || !options?.bigint) return entry;
+				manifestIdentityReads += 1;
+				if (manifestIdentityReads === 1 || typeof entry.ino !== 'bigint') return entry;
+				return {
+					...entry,
+					ino: entry.ino + 1n,
+					isFile: () => entry.isFile(),
+					isSymbolicLink: () => entry.isSymbolicLink()
+				};
+			}
+		};
+
+		await expect(
+			readStableGate3PreflightSnapshot(paths, { filesystem: filesystem as never })
+		).rejects.toMatchObject({ reasonCode: 'preflight_snapshot_changed' });
 	});
 
 	it('keeps generated CodeGraph and ATL directories out of version control', () => {

@@ -1,23 +1,25 @@
 import { createHash, randomBytes, randomUUID as nodeRandomUUID } from 'node:crypto';
-import { lstat, readFile, rmdir, unlink } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import { types as utilTypes } from 'node:util';
 import { reservePrivateFile } from './hosted-private-file.mjs';
 import {
 	GATE3_PROJECT_REF,
 	GATE3_WORKER_ORIGIN,
 	createInitialRunState,
-	inspectRunLock,
+	publishActiveRunIfUnlocked,
 	readActiveRun,
-	readRunState,
+	readStableGate3PreflightSnapshot,
 	reserveGate3RunDirectory,
 	reserveRunState,
+	rollbackGate3RunDirectory,
 	resolveGate3RunPaths,
-	setActiveRun,
 	writeNextRunState
 } from './gate3-hosted-state.mjs';
 import {
 	createRunSecretPayload,
-	protectRunSecrets
+	protectRunSecrets,
+	unprotectRunSecrets
 } from './gate3-hosted-secrets.mjs';
 import { inspectGate3HostedRun, resolveDeployedRelease } from './gate3-hosted-inspector.mjs';
 import { GATE3_EXIT_CODES, classifyGate3Lifecycle } from './gate3-hosted-lifecycle.mjs';
@@ -30,6 +32,7 @@ import {
 const RUN_ID_PATTERN = /^gate3-\d{8}-[a-f0-9]{8}$/u;
 const RELEASE_SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const CANONICAL_CHECKPOINTS = new Set(['scenario-primary-upload-attached']);
 /** @type {readonly ('reporter' | 'cross-user' | 'assigned-moderator' | 'unassigned-moderator')[]} */
 const ACTOR_ROLES = Object.freeze([
 	'reporter',
@@ -99,7 +102,15 @@ const SAFE_REASON_CODES = new Set([
 	'preflight_ready',
 	'inspection_ambiguous',
 	'release_changed',
-	'recovery_required'
+	'recovery_required',
+	'provision_partial',
+	'provision_verified',
+	'scenario_partial',
+	'scenario_verified',
+	'cleanup_required',
+	'cleanup_partial',
+	'cleanup_verified',
+	'archived'
 ]);
 
 class Gate3HostedCliError extends Error {
@@ -193,19 +204,51 @@ function dependency(dependencies, name, fallback) {
 	return candidate;
 }
 
+/** @param {unknown} error */
+function ownSafeReasonCode(error) {
+	try {
+		if (!error || typeof error !== 'object' || utilTypes.isProxy(error)) return null;
+		const descriptor = Object.getOwnPropertyDescriptor(error, 'reasonCode');
+		if (
+			!descriptor ||
+			!Object.hasOwn(descriptor, 'value') ||
+			typeof descriptor.value !== 'string' ||
+			!SAFE_REASON_CODES.has(descriptor.value)
+		) {
+			return null;
+		}
+		return descriptor.value;
+	} catch {
+		return null;
+	}
+}
+
 /** @param {unknown} candidate */
 function exactInspectionAdapter(candidate) {
-	if (
-		!candidate ||
-		typeof candidate !== 'object' ||
-		Object.getPrototypeOf(candidate) !== Object.prototype ||
-		Reflect.ownKeys(candidate).length !== 1 ||
-		Reflect.ownKeys(candidate)[0] !== 'inspectRun' ||
-		typeof /** @type {{ inspectRun?: unknown }} */ (candidate).inspectRun !== 'function'
-	) {
+	try {
+		if (!candidate || typeof candidate !== 'object' || utilTypes.isProxy(candidate)) {
+			throw new Error('invalid adapter');
+		}
+		const keys = Reflect.ownKeys(candidate);
+		const descriptor = Object.getOwnPropertyDescriptor(candidate, 'inspectRun');
+		if (
+			Object.getPrototypeOf(candidate) !== Object.prototype ||
+			!Object.isFrozen(candidate) ||
+			keys.length !== 1 ||
+			keys[0] !== 'inspectRun' ||
+			!descriptor ||
+			!Object.hasOwn(descriptor, 'value') ||
+			typeof descriptor.value !== 'function' ||
+			descriptor.enumerable !== true ||
+			descriptor.writable !== false ||
+			descriptor.configurable !== false
+		) {
+			throw new Error('invalid adapter');
+		}
+		return Object.freeze({ inspectRun: descriptor.value });
+	} catch {
 		throw new Gate3HostedCliError('inspection_adapter_not_read_only');
 	}
-	return /** @type {{ inspectRun: (scope: Record<string, unknown>) => Promise<unknown> }} */ (candidate);
 }
 
 /** @param {string} runId @param {Record<string, any>} state */
@@ -254,8 +297,17 @@ function localManifestConfig({
 	};
 }
 
-/** @param {Record<string, string>} paths @param {Record<string, any>} state */
-async function assertExistingPreflightIntegrity(paths, state) {
+/** @param {Record<string, string>} paths @param {unknown} dpapi */
+async function assertExistingPreflightIntegrity(paths, dpapi) {
+	let first;
+	let second;
+	let state;
+	try {
+		first = await readStableGate3PreflightSnapshot(paths);
+		state = first.state;
+	} catch {
+		throw new Gate3HostedCliError('preflight_recovery_required');
+	}
 	if (
 		state.revision < 1 ||
 		state.phases?.preflight?.status !== 'complete' ||
@@ -265,18 +317,14 @@ async function assertExistingPreflightIntegrity(paths, state) {
 		throw new Gate3HostedCliError('preflight_recovery_required');
 	}
 	try {
-		const [manifestBytes, secretBytes] = await Promise.all([
-			readFile(paths.manifestPath),
-			readFile(paths.secretPath)
-		]);
 		if (
-			createHash('sha256').update(manifestBytes).digest('hex') !== state.manifest.sha256 ||
-			createHash('sha256').update(secretBytes).digest('hex') !==
+			createHash('sha256').update(first.manifestBytes).digest('hex') !== state.manifest.sha256 ||
+			createHash('sha256').update(first.secretBytes).digest('hex') !==
 				state.secretStore.ciphertextSha256
 		) {
 			throw new Error('hash mismatch');
 		}
-		const parsedManifest = JSON.parse(manifestBytes.toString('utf8'));
+		const parsedManifest = JSON.parse(first.manifestBytes.toString('utf8'));
 		if (typeof parsedManifest?.provisioningAttemptId !== 'string') {
 			throw new Error('manifest attempt binding is invalid');
 		}
@@ -302,9 +350,33 @@ async function assertExistingPreflightIntegrity(paths, state) {
 		) {
 			throw new Error('manifest is no longer an empty baseline');
 		}
+		if (
+			!dpapi ||
+			typeof dpapi !== 'object' ||
+			typeof /** @type {{ unprotect?: unknown }} */ (dpapi).unprotect !== 'function'
+		) {
+			throw new Error('DPAPI unavailable');
+		}
+		await unprotectRunSecrets({
+			runId: state.runId,
+			path: paths.secretPath,
+			dpapi: /** @type {{ unprotect: (input: Buffer) => Promise<Uint8Array> }} */ (dpapi)
+		});
+		second = await readStableGate3PreflightSnapshot(paths);
+		if (
+			!first.stateBytes.equals(second.stateBytes) ||
+			!first.manifestBytes.equals(second.manifestBytes) ||
+			!first.secretBytes.equals(second.secretBytes) ||
+			first.directoryIdentity.dev !== second.directoryIdentity.dev ||
+			first.directoryIdentity.ino !== second.directoryIdentity.ino ||
+			first.directoryIdentity.realpath.toLowerCase() !== second.directoryIdentity.realpath.toLowerCase()
+		) {
+			throw new Error('preflight evidence changed');
+		}
 	} catch {
 		throw new Gate3HostedCliError('preflight_recovery_required');
 	}
+	return second.state;
 }
 
 /** @param {unknown} counts */
@@ -355,24 +427,6 @@ function defaultCreateSecretPayload(runId, randomBytesImpl) {
 	});
 }
 
-/** @param {Record<string, string>} paths */
-async function exactLocalRollback(paths) {
-	let failed = false;
-	for (const path of [paths.statePath, paths.manifestPath, paths.secretPath]) {
-		try {
-			await unlink(path);
-		} catch (error) {
-			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') failed = true;
-		}
-	}
-	try {
-		await rmdir(paths.runDirectory);
-	} catch (error) {
-		if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') failed = true;
-	}
-	if (failed) throw new Gate3HostedCliError('preflight_cleanup_failed');
-}
-
 /** @param {Record<string, any>} parsed @param {unknown} environment @param {Record<string, unknown>} dependencies */
 async function executePreflight(parsed, environment, dependencies) {
 	const root = verifiedRoot(environment);
@@ -407,20 +461,8 @@ async function executePreflight(parsed, environment, dependencies) {
 		}
 	}
 	if (selectedExists) {
-		let state;
-		try {
-			state = await dependency(dependencies, 'readRunState', readRunState)(paths);
-		} catch {
-			throw new Gate3HostedCliError('preflight_recovery_required');
-		}
-		await assertExistingPreflightIntegrity(paths, state);
+		const state = await assertExistingPreflightIntegrity(paths, dependencies.dpapi);
 		return preflightNoopResult(selectedRunId, state);
-	}
-
-	if (activeRunId !== null && activeRunId !== selectedRunId) {
-		const activePaths = resolveGate3RunPaths({ root, runId: activeRunId });
-		const lock = await dependency(dependencies, 'inspectRunLock', inspectRunLock)({ paths: activePaths });
-		if (lock.status !== 'missing') throw new Gate3HostedCliError('active_run_locked');
 	}
 
 	// Fixed target/config verification intentionally precedes any provider or filesystem side effect.
@@ -429,9 +471,16 @@ async function executePreflight(parsed, environment, dependencies) {
 	let releaseCommitSha;
 	try {
 		releaseCommitSha = await releaseResolver({ workerOrigin: GATE3_WORKER_ORIGIN });
-	} catch {
-		if (parsed.releaseSha === null) throw new Gate3HostedCliError('release_evidence_unavailable');
-		releaseCommitSha = parsed.releaseSha;
+	} catch (error) {
+		const reasonCode = ownSafeReasonCode(error);
+		if (reasonCode === 'release_evidence_unavailable') {
+			if (parsed.releaseSha === null) throw new Gate3HostedCliError(reasonCode);
+			releaseCommitSha = parsed.releaseSha;
+		} else if (reasonCode === 'release_evidence_invalid') {
+			throw new Gate3HostedCliError(reasonCode);
+		} else {
+			throw new Gate3HostedCliError('precondition_failed');
+		}
 	}
 	if (typeof releaseCommitSha !== 'string' || !RELEASE_SHA_PATTERN.test(releaseCommitSha)) {
 		throw new Gate3HostedCliError('release_evidence_invalid');
@@ -461,23 +510,17 @@ async function executePreflight(parsed, environment, dependencies) {
 		});
 	} catch (error) {
 		if (error instanceof Gate3HostedCliError) throw error;
-		if (
-			error &&
-			typeof error === 'object' &&
-			'reasonCode' in error &&
-			error.reasonCode === 'hosted_artifacts_present'
-		) {
+		if (ownSafeReasonCode(error) === 'hosted_artifacts_present') {
 			throw new Gate3HostedCliError('hosted_artifacts_present');
 		}
 		throw new Gate3HostedCliError('hosted_absence_unavailable');
 	}
 	assertExactHostedAbsence(absence?.counts);
 
-	let reserved = false;
+	let reservation = null;
 	let published = false;
 	try {
-		await dependency(dependencies, 'reserveGate3RunDirectory', reserveGate3RunDirectory)(paths);
-		reserved = true;
+		reservation = await dependency(dependencies, 'reserveGate3RunDirectory', reserveGate3RunDirectory)(paths);
 		const secretMetadata = await dependency(
 			dependencies,
 			'protectRunSecrets',
@@ -544,7 +587,11 @@ async function executePreflight(parsed, environment, dependencies) {
 			initialState,
 			verifiedState
 		);
-		await dependency(dependencies, 'setActiveRun', setActiveRun)({
+		await dependency(
+			dependencies,
+			'publishActiveRunIfUnlocked',
+			publishActiveRunIfUnlocked
+		)({
 			root,
 			runId: selectedRunId,
 			expectedCurrentRunId: activeRunId
@@ -552,20 +599,17 @@ async function executePreflight(parsed, environment, dependencies) {
 		published = true;
 		return preflightNoopResult(selectedRunId, verifiedState);
 	} catch (error) {
-		if (reserved && !published) {
-			let activeAfterFailure;
+		if (reservation !== null && !published) {
 			try {
-				activeAfterFailure = await readActiveRun(root);
+				await rollbackGate3RunDirectory({ paths, reservation });
 			} catch {
-				throw new Gate3HostedCliError('preflight_cleanup_failed');
-			}
-			if (activeAfterFailure === selectedRunId) published = true;
-		}
-		if (reserved && !published) {
-			try {
-				await exactLocalRollback(paths);
-			} catch {
-				throw new Gate3HostedCliError('preflight_cleanup_failed');
+				let activeAfterFailure = null;
+				try {
+					activeAfterFailure = await readActiveRun(root);
+				} catch {}
+				if (activeAfterFailure !== selectedRunId) {
+					throw new Gate3HostedCliError('preflight_cleanup_failed');
+				}
 			}
 		}
 		throw error;
@@ -628,15 +672,15 @@ function safeCheckpoint(value) {
 function safeInspectionResult(inspection, lifecycle) {
 	/** @type {Record<string, string>} */
 	const hashes = {};
-	for (const [key, value] of [
-		['stateSha256', inspection.stateSha256],
-		['manifestSha256', inspection.manifestSha256],
-		['ciphertextSha256', inspection.secretStoreCiphertextSha256],
-		['boundReleaseCommitSha', inspection.boundReleaseCommitSha],
-		['currentReleaseCommitSha', inspection.currentReleaseCommitSha],
-		['foreignEvidenceSha256', inspection.foreignEvidenceSha256]
+	for (const [key, value, pattern] of [
+		['stateSha256', inspection.stateSha256, SHA256_PATTERN],
+		['manifestSha256', inspection.manifestSha256, SHA256_PATTERN],
+		['ciphertextSha256', inspection.secretStoreCiphertextSha256, SHA256_PATTERN],
+		['boundReleaseCommitSha', inspection.boundReleaseCommitSha, RELEASE_SHA_PATTERN],
+		['currentReleaseCommitSha', inspection.currentReleaseCommitSha, RELEASE_SHA_PATTERN],
+		['foreignEvidenceSha256', inspection.foreignEvidenceSha256, SHA256_PATTERN]
 	]) {
-		if (typeof value === 'string' && (SHA256_PATTERN.test(value) || RELEASE_SHA_PATTERN.test(value))) {
+		if (typeof value === 'string' && pattern.test(value)) {
 			hashes[key] = value;
 		}
 	}
@@ -644,7 +688,7 @@ function safeInspectionResult(inspection, lifecycle) {
 	const checkpoints = {};
 	if (inspection.scenarioCheckpoints && typeof inspection.scenarioCheckpoints === 'object') {
 		for (const [key, value] of Object.entries(inspection.scenarioCheckpoints)) {
-			if (/^scenario-[a-z0-9-]+$/u.test(key)) checkpoints[key] = safeCheckpoint(value);
+			if (CANONICAL_CHECKPOINTS.has(key)) checkpoints[key] = safeCheckpoint(value);
 		}
 	}
 	/** @type {Record<string, Record<string, unknown>>} */
@@ -716,31 +760,24 @@ async function executeInspect(parsed, environment, dependencies) {
 		'inspectGate3HostedRun',
 		inspectGate3HostedRun
 	)({ paths, inspectionAdapter: adapter });
-	const lifecycle = dependency(
-		dependencies,
-		'classifyGate3Lifecycle',
-		classifyGate3Lifecycle
-	)(inspection);
+	const lifecycle = classifyGate3Lifecycle(inspection);
 	return { result: safeInspectionResult(inspection, lifecycle), lifecycle };
 }
 
 /** @param {unknown} error */
 function safeReasonCode(error) {
-	if (
-		error &&
-		typeof error === 'object' &&
-		'reasonCode' in error &&
-		typeof error.reasonCode === 'string' &&
-		SAFE_REASON_CODES.has(error.reasonCode)
-	) {
-		return error.reasonCode;
-	}
-	return 'precondition_failed';
+	return ownSafeReasonCode(error) ?? 'precondition_failed';
 }
 
 /** @param {unknown} writer @param {Record<string, unknown>} value */
 function writeSafe(writer, value) {
-	if (typeof writer === 'function') writer(`${JSON.stringify(value)}\n`);
+	try {
+		if (typeof writer !== 'function') return true;
+		writer(`${JSON.stringify(value)}\n`);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -762,11 +799,11 @@ export async function runGate3HostedCli({
 		}
 		if (parsed.command === 'preflight') {
 			const result = await executePreflight(parsed, environment, dependencies);
-			writeSafe(output, result);
+			if (!writeSafe(output, result)) throw new Gate3HostedCliError('precondition_failed');
 			return GATE3_EXIT_CODES.success;
 		}
 		const { result, lifecycle } = await executeInspect(parsed, environment, dependencies);
-		writeSafe(output, result);
+		if (!writeSafe(output, result)) throw new Gate3HostedCliError('precondition_failed');
 		return inspectionExitCode(lifecycle.classification);
 	} catch (error) {
 		writeSafe(errorOutput, { reasonCode: safeReasonCode(error) });

@@ -1,18 +1,19 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseGate3HostedArgs, runGate3HostedCli } from '../../scripts/gate3-hosted-cli.mjs';
+import { Gate3HostedInspectorError } from '../../scripts/gate3-hosted-inspector.mjs';
 import { GATE3_EXIT_CODES } from '../../scripts/gate3-hosted-lifecycle.mjs';
 import {
 	GATE3_PROJECT_REF,
 	GATE3_WORKER_ORIGIN,
 	acquireRunLock,
+	publishActiveRunIfUnlocked,
 	readActiveRun,
 	readRunState,
 	releaseRunLock,
-	resolveGate3RunPaths,
-	setActiveRun
+	resolveGate3RunPaths
 } from '../../scripts/gate3-hosted-state.mjs';
 
 const runId = 'gate3-20260820-abcdef12';
@@ -206,6 +207,27 @@ describe('Gate 3 hosted preflight CLI', () => {
 		expect(fixture.inspectHostedAbsence).not.toHaveBeenCalled();
 	});
 
+	it('selects a hard-crash-left exact run without falling through to a newer directory', async () => {
+		const fixture = await cliFixture();
+		const crashLeftRun = 'gate3-20260819-1111aaaa';
+		const newerRun = 'gate3-20260821-fedcba98';
+		const crashLeft = resolveGate3RunPaths({ root: fixture.root, runId: crashLeftRun });
+		const newer = resolveGate3RunPaths({ root: fixture.root, runId: newerRun });
+		await mkdir(crashLeft.runDirectory, { recursive: true });
+		await mkdir(newer.runDirectory, { recursive: true });
+		await writeFile(join(newer.runDirectory, 'newer-marker.txt'), 'preserve newer');
+
+		await expect(
+			runCli(fixture, ['preflight', '--run', crashLeftRun])
+		).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+		expect(fixture.errors.join('\n')).toContain('preflight_recovery_required');
+		expect(fixture.dependencies.createRunId).not.toHaveBeenCalled();
+		expect(await readFile(join(newer.runDirectory, 'newer-marker.txt'), 'utf8')).toBe(
+			'preserve newer'
+		);
+	});
+
 	it('selects an exact older completed run without switching the newer active pointer', async () => {
 		const fixture = await cliFixture();
 		await runCli(fixture, ['preflight', '--new']);
@@ -242,7 +264,9 @@ describe('Gate 3 hosted preflight CLI', () => {
 		const fallbackRun = 'gate3-20260820-bbbbbbbb';
 		const fallback = await cliFixture();
 		fallback.dependencies.createRunId.mockReturnValue(fallbackRun);
-		fallback.dependencies.resolveDeployedRelease.mockRejectedValue(new Error('offline'));
+		fallback.dependencies.resolveDeployedRelease.mockRejectedValue(
+			new Gate3HostedInspectorError('release_evidence_unavailable')
+		);
 		await expect(
 			runCli(fallback, ['preflight', '--new', '--release-sha', 'b'.repeat(40)])
 		).resolves.toBe(GATE3_EXIT_CODES.success);
@@ -267,6 +291,24 @@ describe('Gate 3 hosted preflight CLI', () => {
 
 		const state = await readRunState(resolveGate3RunPaths({ root: fixture.root, runId }));
 		expect(state.target.releaseCommitSha).toBe(releaseSha);
+	});
+
+	it('never overrides invalid or unexpected authoritative release failures with a fallback SHA', async () => {
+		for (const failure of [
+			new Gate3HostedInspectorError('release_evidence_invalid'),
+			new Error('unexpected resolver failure with provider material')
+		]) {
+			const fixture = await cliFixture();
+			fixture.dependencies.resolveDeployedRelease.mockRejectedValue(failure);
+
+			await expect(
+				runCli(fixture, ['preflight', '--new', '--release-sha', 'b'.repeat(40)])
+			).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+			await expect(
+				stat(resolveGate3RunPaths({ root: fixture.root, runId }).runDirectory)
+			).rejects.toMatchObject({ code: 'ENOENT' });
+		}
 	});
 
 	it('performs allow-list and hosted-absence reads before creating local files and passes no mutation capability', async () => {
@@ -331,7 +373,7 @@ describe('Gate 3 hosted preflight CLI', () => {
 		});
 
 		await expect(
-			runCli(fixture, ['preflight', '--new'], { setActiveRun: failPointer })
+			runCli(fixture, ['preflight', '--new'], { publishActiveRunIfUnlocked: failPointer })
 		).resolves.toBe(GATE3_EXIT_CODES.precondition);
 
 		expect(observedBeforeFailure).toBe(true);
@@ -344,15 +386,15 @@ describe('Gate 3 hosted preflight CLI', () => {
 
 	it('never rolls back a run whose active pointer was published before pointer-lock cleanup failed', async () => {
 		const fixture = await cliFixture();
-		const publishThenFail = vi.fn(async (options: Parameters<typeof setActiveRun>[0]) => {
-			await setActiveRun(options);
+		const publishThenFail = vi.fn(async (options: Parameters<typeof publishActiveRunIfUnlocked>[0]) => {
+			await publishActiveRunIfUnlocked(options);
 			throw Object.assign(new Error('pointer lock cleanup failed'), {
 				reasonCode: 'active_pointer_lock_failed'
 			});
 		});
 
 		await expect(
-			runCli(fixture, ['preflight', '--new'], { setActiveRun: publishThenFail })
+			runCli(fixture, ['preflight', '--new'], { publishActiveRunIfUnlocked: publishThenFail })
 		).resolves.toBe(GATE3_EXIT_CODES.precondition);
 
 		expect(await readActiveRun(fixture.root)).toBe(runId);
@@ -372,6 +414,40 @@ describe('Gate 3 hosted preflight CLI', () => {
 
 		expect(fixture.lines).toEqual([]);
 		expect(await readActiveRun(fixture.root)).toBe(runId);
+		expect(fixture.errors.join('\n')).toContain('preflight_recovery_required');
+	});
+
+	it('rejects an existing preflight whose ciphertext cannot be unprotected and rebound to the run', async () => {
+		const fixture = await cliFixture();
+		await runCli(fixture, ['preflight', '--new']);
+		fixture.dpapi.unprotect.mockRejectedValueOnce(new Error('undecryptable ciphertext material'));
+		fixture.lines.length = 0;
+
+		await expect(runCli(fixture, ['preflight'])).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+		expect(fixture.lines).toEqual([]);
+		expect(fixture.errors.join('\n')).toContain('preflight_recovery_required');
+		expect(fixture.errors.join('\n')).not.toContain('ciphertext material');
+	});
+
+	it('rejects a symlinked existing ciphertext even when the linked bytes match', async () => {
+		const fixture = await cliFixture();
+		await runCli(fixture, ['preflight', '--new']);
+		const paths = resolveGate3RunPaths({ root: fixture.root, runId });
+		const ciphertext = await readFile(paths.secretPath);
+		const outside = join(fixture.root, 'outside-ciphertext.dpapi');
+		await writeFile(outside, ciphertext);
+		await rm(paths.secretPath);
+		try {
+			await symlink(outside, paths.secretPath, 'file');
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+			throw error;
+		}
+		fixture.lines.length = 0;
+
+		await expect(runCli(fixture, ['preflight'])).resolves.toBe(GATE3_EXIT_CODES.precondition);
+		expect(fixture.lines).toEqual([]);
 		expect(fixture.errors.join('\n')).toContain('preflight_recovery_required');
 	});
 });
@@ -403,7 +479,8 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 		const inspectionAdapter = Object.freeze({ inspectRun: vi.fn(async () => ({})) });
 		const inspectGate3HostedRun = vi.fn(async (options: Record<string, unknown>) => {
 			expect(Reflect.ownKeys(options).sort()).toEqual(['inspectionAdapter', 'paths'].sort());
-			expect(options.inspectionAdapter).toBe(inspectionAdapter);
+			expect(options.inspectionAdapter).not.toBe(inspectionAdapter);
+			expect(Object.isFrozen(options.inspectionAdapter)).toBe(true);
 			return inspectFacts({
 				email: 'leak@example.invalid',
 				credentialMaterial: 'sensitive-material',
@@ -435,6 +512,68 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 		}
 	});
 
+	it('rejects accessor, proxy, and mutable inspection adapters without executing traps', async () => {
+		for (const fixtureKind of ['accessor', 'proxy', 'mutable'] as const) {
+			const fixture = await cliFixture();
+			let trapCalls = 0;
+			let adapter: object;
+			if (fixtureKind === 'accessor') {
+				adapter = Object.freeze(
+					Object.defineProperty({}, 'inspectRun', {
+						enumerable: true,
+						get() {
+							trapCalls += 1;
+							throw new Error('accessor material');
+						}
+					})
+				);
+			} else if (fixtureKind === 'proxy') {
+				adapter = new Proxy(Object.freeze({ inspectRun: async () => ({}) }), {
+					getPrototypeOf() {
+						trapCalls += 1;
+						throw new Error('proxy material');
+					},
+					ownKeys() {
+						trapCalls += 1;
+						throw new Error('proxy material');
+					}
+				});
+			} else {
+				adapter = { inspectRun: async () => ({}) };
+			}
+
+			await expect(
+				runCli(fixture, ['inspect', '--run', runId], {
+					inspectionAdapter: adapter,
+					inspectGate3HostedRun: vi.fn(async () => inspectFacts())
+				})
+			).resolves.toBe(GATE3_EXIT_CODES.precondition);
+			expect(trapCalls).toBe(0);
+		}
+	});
+
+	it('copies an exact frozen inspection capability before handing it to the inspector', async () => {
+		const fixture = await cliFixture();
+		let originalAdapter: Readonly<{ inspectRun: () => Promise<Record<string, never>> }>;
+		const inspectRun = vi.fn(async function (this: object) {
+			expect(this).not.toBe(originalAdapter);
+			expect(Object.isFrozen(this)).toBe(true);
+			return {};
+		});
+		originalAdapter = Object.freeze({ inspectRun });
+		const inspectGate3HostedRun = vi.fn(async ({ inspectionAdapter }: Record<string, any>) => {
+			await inspectionAdapter.inspectRun();
+			return inspectFacts();
+		});
+
+		await expect(
+			runCli(fixture, ['inspect', '--run', runId], {
+				inspectionAdapter: originalAdapter,
+				inspectGate3HostedRun
+			})
+		).resolves.toBe(GATE3_EXIT_CODES.success);
+	});
+
 	it('drops secret-shaped count, phase, and checkpoint fields from inspected output', async () => {
 		const fixture = await cliFixture();
 		const inspectionAdapter = Object.freeze({ inspectRun: vi.fn(async () => ({})) });
@@ -464,6 +603,34 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 		}
 	});
 
+	it('omits unknown checkpoint identifiers and cross-length named hashes', async () => {
+		const fixture = await cliFixture();
+		const inspectionAdapter = Object.freeze({ inspectRun: vi.fn(async () => ({})) });
+		const inspectGate3HostedRun = vi.fn(async () =>
+			inspectFacts({
+				stateSha256: 'a'.repeat(40),
+				manifestSha256: 'b'.repeat(40),
+				boundReleaseCommitSha: 'c'.repeat(64),
+				currentReleaseCommitSha: 'd'.repeat(64),
+				scenarioCheckpoints: {
+					'scenario-attacker-controlled': { status: 'complete' },
+					'scenario-primary-upload-attached': { status: 'complete' }
+				}
+			})
+		);
+
+		await runCli(fixture, ['inspect', '--run', runId], {
+			inspectionAdapter,
+			inspectGate3HostedRun
+		});
+
+		const output = JSON.parse(fixture.lines.at(-1) ?? '{}');
+		expect(output.hashes).toEqual({ ciphertextSha256: 'd'.repeat(64) });
+		expect(output.checkpoints).toEqual({
+			'scenario-primary-upload-attached': { status: 'complete' }
+		});
+	});
+
 	it.each([
 		[{ ambiguous: true }, GATE3_EXIT_CODES.AMBIGUOUS],
 		[{ releaseMismatch: true }, GATE3_EXIT_CODES.RELEASE_CHANGED],
@@ -484,22 +651,61 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 		).resolves.toBe(expectedExit);
 	});
 
-	it('does not accept a forged mutation exit key from an inspection dependency', async () => {
+	it.each([
+		['PREFLIGHT_READY', {}, 'preflight_ready'],
+		['PROVISION_PARTIAL', { actors: 1 }, 'provision_partial'],
+		['PROVISION_VERIFIED', { actors: 4, provisionVerified: true }, 'provision_verified'],
+		[
+			'SCENARIO_PARTIAL',
+			{ actors: 4, provisionVerified: true, scenarioPartial: true },
+			'scenario_partial'
+		],
+		[
+			'SCENARIO_VERIFIED',
+			{ actors: 4, provisionVerified: true, scenarioVerified: true },
+			'scenario_verified'
+		],
+		['CLEANUP_REQUIRED', { cleanupRequired: true }, 'cleanup_required'],
+		['CLEANUP_PARTIAL', { cleanupPartial: true }, 'cleanup_partial'],
+		['CLEANUP_VERIFIED', { cleanupVerified: true }, 'cleanup_verified'],
+		[
+			'RECOVERY_REQUIRED',
+			{ credentialsLost: true, exactRecoveryProvenance: true },
+			'recovery_required'
+		],
+		['RELEASE_CHANGED', { releaseMismatch: true }, 'release_changed'],
+		['AMBIGUOUS', { ambiguous: true }, 'inspection_ambiguous'],
+		['ARCHIVED', { archived: true }, 'archived']
+	] as const)(
+		'preserves canonical lifecycle reason for %s',
+		async (classification, overrides, expectedReason) => {
+			const fixture = await cliFixture();
+			await runCli(fixture, ['inspect', '--run', runId], {
+				inspectionAdapter: Object.freeze({ inspectRun: vi.fn(async () => ({})) }),
+				inspectGate3HostedRun: vi.fn(async () => inspectFacts({ ...overrides }))
+			});
+
+			const output = JSON.parse(fixture.lines.at(-1) ?? '{}');
+			expect(output.classification).toBe(classification);
+			expect(output.reasonCode).toBe(expectedReason);
+		}
+	);
+
+	it('recomputes lifecycle with the canonical classifier and never calls an injected classifier', async () => {
 		const fixture = await cliFixture();
 		const inspectionAdapter = Object.freeze({ inspectRun: vi.fn(async () => ({})) });
+		const forgedClassifier = vi.fn(() => {
+			throw new Error('forged classifier material');
+		});
 
 		await expect(
 			runCli(fixture, ['inspect', '--run', runId], {
 				inspectionAdapter,
 				inspectGate3HostedRun: vi.fn(async () => inspectFacts()),
-				classifyGate3Lifecycle: vi.fn(() => ({
-					classification: 'PREFLIGHT_READY',
-					allowedCommands: ['inspect', 'provision'],
-					reasonCode: 'preflight_ready',
-					exitCodeKey: 'uncertainMutation'
-				}))
+				classifyGate3Lifecycle: forgedClassifier
 			})
 		).resolves.toBe(GATE3_EXIT_CODES.success);
+		expect(forgedClassifier).not.toHaveBeenCalled();
 	});
 
 	it('fails parsed mutation commands closed until their runners are wired', async () => {
@@ -530,5 +736,65 @@ describe('Gate 3 hosted inspect CLI and safe output', () => {
 			})
 		).resolves.toBe(GATE3_EXIT_CODES.precondition);
 		expect(JSON.parse(fixture.errors.at(-1) ?? '{}')).toEqual({ reasonCode: 'precondition_failed' });
+	});
+
+	it('never invokes hostile reason accessors or proxy traps while sanitizing failures', async () => {
+		for (const kind of ['accessor', 'proxy'] as const) {
+			const fixture = await cliFixture();
+			let trapCalls = 0;
+			const failure =
+				kind === 'accessor'
+					? Object.defineProperty(new Error('raw accessor material'), 'reasonCode', {
+							get() {
+								trapCalls += 1;
+								throw new Error('getter material');
+							}
+						})
+					: new Proxy(new Error('raw proxy material'), {
+							has() {
+								trapCalls += 1;
+								throw new Error('has trap material');
+							},
+							getOwnPropertyDescriptor() {
+								trapCalls += 1;
+								throw new Error('descriptor trap material');
+							}
+						});
+
+			await expect(
+				runCli(fixture, ['inspect', '--run', runId], {
+					inspectionAdapter: Object.freeze({ inspectRun: vi.fn(async () => ({})) }),
+					inspectGate3HostedRun: vi.fn(async () => {
+						throw failure;
+					})
+				})
+			).resolves.toBe(GATE3_EXIT_CODES.precondition);
+			expect(trapCalls).toBe(0);
+			expect(JSON.parse(fixture.errors.at(-1) ?? '{}')).toEqual({
+				reasonCode: 'precondition_failed'
+			});
+		}
+	});
+
+	it('never rejects or exposes raw material when output and error sinks throw', async () => {
+		const fixture = await cliFixture();
+		const throwingSink = () => {
+			throw new Error('sink raw material');
+		};
+
+		await expect(
+			runGate3HostedCli({
+				argv: ['inspect', '--run', runId],
+				environment: fixture.environment,
+				dependencies: {
+					...fixture.dependencies,
+					inspectionAdapter: Object.freeze({ inspectRun: vi.fn(async () => ({})) }),
+					inspectGate3HostedRun: vi.fn(async () => inspectFacts())
+				},
+				input: async () => '',
+				output: throwingSink,
+				errorOutput: throwingSink
+			})
+		).resolves.toBe(GATE3_EXIT_CODES.precondition);
 	});
 });
