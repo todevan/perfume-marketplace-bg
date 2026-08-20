@@ -346,26 +346,47 @@ describe('Gate 3 hosted run secrets', () => {
 		expect((await readFile(path, 'utf8'))).toBe('existing-ciphertext');
 	});
 
+	it('prepares complete frozen metadata before the rename commit point', async () => {
+		const path = await createSecretPath();
+		deterministicDistinctBytes.calls = 0;
+		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		const order: string[] = [];
+		const metadataImpl = (value: unknown) => { order.push('metadata'); return Object.freeze(value as object); };
+		const filesystem = { chmod, lstat, open, readFile, realpath, rename: async (...args: Parameters<typeof rename>) => { order.push('rename'); return rename(...args); }, unlink };
+		await protectRunSecrets({ payload, path, dpapi: { protect: async () => Buffer.from('replacement') }, filesystem, metadataImpl } as any);
+		expect(order).toEqual(['metadata', 'rename']);
+	});
+
 	it.each(['stdout', 'stderr', 'stdin', 'child', 'stdin-end'])(
 		'sanitizes and settles once for %s pipe failures',
 		async (surface) => {
 			const sensitiveMessage = 'pipe-error-sensitive-fixture';
+			const lateStdout = Buffer.from('late-stdout-sensitive');
+			const lateStderr = Buffer.from('late-stderr-sensitive');
+			let settlements = 0;
 			const spawnImpl = () => {
 				const child = new EventEmitter() as any;
 				child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
 				child.kill = vi.fn();
-				if (surface === 'stdin-end') child.stdin.end = () => { throw new Error(sensitiveMessage); };
+				if (surface === 'stdin-end') child.stdin.end = () => { setImmediate(() => {
+					child.stdout.emit('data', lateStdout); child.stderr.emit('data', lateStderr); child.stdout.emit('error', new Error(sensitiveMessage)); child.emit('close', 1, null);
+				}); throw new Error(sensitiveMessage); };
 				else setImmediate(() => {
 					(surface === 'child' ? child : child[surface]).emit('error', new Error(sensitiveMessage));
+					child.stdout.emit('data', lateStdout); child.stderr.emit('data', lateStderr); child.stderr.emit('error', new Error(sensitiveMessage));
 					child.emit('close', 1, null);
 				});
 				return child;
 			};
 			let caught: unknown;
-			try { await createPowerShellDpapi({ scriptPath: 'C:\\gate3\\gate3-dpapi.ps1', spawnImpl }).protect(Buffer.from('input')); }
+			try { await createPowerShellDpapi({ scriptPath: 'C:\\gate3\\gate3-dpapi.ps1', spawnImpl, onSettle: () => { settlements += 1; } } as any).protect(Buffer.from('input')); }
 			catch (error) { caught = error; }
+			await new Promise((resolve) => setImmediate(resolve));
 			expect(['dpapi_failed', 'dpapi_unavailable'].some((code) => String(caught).includes(code))).toBe(true);
 			expect(String(caught).includes(sensitiveMessage)).toBe(false);
+			expect(settlements).toBe(1);
+			expect(lateStdout.every((byte) => byte === 0)).toBe(true);
+			expect(lateStderr.every((byte) => byte === 0)).toBe(true);
 		}
 	);
 

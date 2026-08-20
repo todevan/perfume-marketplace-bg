@@ -231,10 +231,10 @@ function exactBoundedBuffer(input, maximum, reasonCode) {
 }
 
 /**
- * @param {{ scriptPath: string, spawnImpl?: SpawnImpl }} options
+ * @param {{ scriptPath: string, spawnImpl?: SpawnImpl, onSettle?: () => void }} options
  * @returns {Readonly<{ protect: (input: Uint8Array) => Promise<Buffer>, unprotect: (input: Uint8Array) => Promise<Buffer> }>}
  */
-export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {SpawnImpl} */ (spawn) }) {
+export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {SpawnImpl} */ (spawn), onSettle = () => {} }) {
 	if (
 		typeof scriptPath !== 'string' ||
 		!isAbsolute(scriptPath) ||
@@ -266,6 +266,7 @@ export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {Spawn
 			const rejectSanitized = (reasonCode) => {
 				if (settled) return;
 				settled = true;
+				try { onSettle(); } catch { /* Test observation cannot affect settlement. */ }
 				inputBytes.fill(0);
 				for (const chunk of outputChunks) chunk.fill(0);
 				rejectPromise(new Gate3HostedSecretsError(reasonCode));
@@ -320,6 +321,7 @@ export function createPowerShellDpapi({ scriptPath, spawnImpl = /** @type {Spawn
 				const output = Buffer.concat(outputChunks, outputSize);
 				for (const chunk of outputChunks) chunk.fill(0);
 				settled = true;
+				try { onSettle(); } catch { /* Test observation cannot affect settlement. */ }
 				resolvePromise(output);
 			});
 			try { child.stdin.end(inputBytes); } catch { fail('dpapi_failed'); }
@@ -431,9 +433,9 @@ async function atomicCiphertextWrite(filePath, ciphertext, filesystem = NODE_FIL
 }
 
 /**
- * @param {{ payload: unknown, path: string, dpapi: { protect: (input: Buffer) => Promise<Uint8Array> }, filesystem?: typeof NODE_FILESYSTEM, hashImpl?: (input: Buffer) => string }} options
+ * @param {{ payload: unknown, path: string, dpapi: { protect: (input: Buffer) => Promise<Uint8Array> }, filesystem?: typeof NODE_FILESYSTEM, hashImpl?: (input: Buffer) => string, metadataImpl?: (value: { status: 'available', ciphertextSha256: string }) => Readonly<{ status: 'available', ciphertextSha256: string }> }} options
  */
-export async function protectRunSecrets({ payload, path, dpapi, filesystem = NODE_FILESYSTEM, hashImpl = (input) => createHash('sha256').update(input).digest('hex') }) {
+export async function protectRunSecrets({ payload, path, dpapi, filesystem = NODE_FILESYSTEM, hashImpl = (input) => createHash('sha256').update(input).digest('hex'), metadataImpl = Object.freeze }) {
 	const validPayload = validateRunSecretPayload(payload);
 	const exactPath = await assertExactSecretPath(path, validPayload.runId, filesystem);
 	if (!dpapi || typeof dpapi.protect !== 'function') {
@@ -451,11 +453,9 @@ export async function protectRunSecrets({ payload, path, dpapi, filesystem = NOD
 		);
 		const ciphertextSha256 = hashImpl(ciphertext);
 		if (!/^[a-f0-9]{64}$/u.test(ciphertextSha256)) throw new Gate3HostedSecretsError('secret_store_write_failed');
+		const metadata = metadataImpl({ status: 'available', ciphertextSha256 });
 		await atomicCiphertextWrite(exactPath, ciphertext, filesystem);
-		return Object.freeze({
-			status: 'available',
-			ciphertextSha256
-		});
+		return metadata;
 	} catch (error) {
 		if (error instanceof Gate3HostedSecretsError) throw error;
 		throw new Gate3HostedSecretsError('dpapi_failed');
