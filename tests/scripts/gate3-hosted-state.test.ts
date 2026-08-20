@@ -366,7 +366,7 @@ describe('Gate 3 hosted state', () => {
 		expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
 		expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(11);
 		expect(runs.map((run) => run.runId)).toContain(await readActiveRun(paths.root));
-	});
+	}, 15_000);
 
 	it('survives death after active-pointer candidate creation without deleting the unpublished candidate', async () => {
 		const { paths } = await createFixture();

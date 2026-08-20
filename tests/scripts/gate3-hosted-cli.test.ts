@@ -12,6 +12,7 @@ import {
 	publishActiveRunIfUnlocked,
 	readActiveRun,
 	readRunState,
+	reserveGate3RunDirectory,
 	releaseRunLock,
 	resolveGate3RunPaths
 } from '../../scripts/gate3-hosted-state.mjs';
@@ -264,6 +265,24 @@ describe('Gate 3 hosted preflight CLI', () => {
 		])).resolves.toEqual(evidenceBefore);
 	});
 
+	it('rejects a --new run ID that matches a pointer whose active evidence is missing', async () => {
+		const fixture = await cliFixture();
+		const paths = resolveGate3RunPaths({ root: fixture.root, runId });
+		await writeFile(paths.activePointerPath, `${JSON.stringify({ schemaVersion: 1, runId })}\n`, {
+			mode: 0o600
+		});
+		const pointerBefore = await readFile(paths.activePointerPath);
+
+		await expect(runCli(fixture, ['preflight', '--new'])).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+		expect(fixture.dependencies.resolveDeployedRelease).not.toHaveBeenCalled();
+		expect(fixture.inspectHostedAbsence).not.toHaveBeenCalled();
+		expect(fixture.dpapi.protect).not.toHaveBeenCalled();
+		expect(fixture.dpapi.unprotect).not.toHaveBeenCalled();
+		await expect(stat(paths.runDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+		expect(await readFile(paths.activePointerPath)).toEqual(pointerBefore);
+	});
+
 	it('rejects a --new run-ID collision with archived evidence before any side effect', async () => {
 		const fixture = await cliFixture();
 		const paths = resolveGate3RunPaths({ root: fixture.root, runId });
@@ -279,6 +298,34 @@ describe('Gate 3 hosted preflight CLI', () => {
 		expect(fixture.dpapi.unprotect).not.toHaveBeenCalled();
 		await expect(stat(paths.runDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
 		expect(await readFile(archivedMarker, 'utf8')).toBe('preserve archived evidence');
+		expect(await readActiveRun(fixture.root)).toBeNull();
+	});
+
+	it('rolls back when archived evidence appears after the active directory is reserved', async () => {
+		const fixture = await cliFixture();
+		const paths = resolveGate3RunPaths({ root: fixture.root, runId });
+		const archivedMarker = join(paths.archiveDirectory, 'archived-marker.txt');
+		const reserveDirectory = vi.fn(async (candidatePaths) => {
+			const reservation = await reserveGate3RunDirectory(candidatePaths);
+			await mkdir(paths.archiveDirectory, { recursive: true });
+			await writeFile(archivedMarker, 'preserve concurrent archived evidence');
+			return reservation;
+		});
+		const protectRunSecrets = vi.fn(async () => {
+			throw new Error('secret persistence must not run');
+		});
+
+		await expect(
+			runCli(fixture, ['preflight', '--new'], {
+				reserveGate3RunDirectory: reserveDirectory,
+				protectRunSecrets
+			})
+		).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+		expect(reserveDirectory).toHaveBeenCalledTimes(1);
+		expect(protectRunSecrets).not.toHaveBeenCalled();
+		await expect(stat(paths.runDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+		expect(await readFile(archivedMarker, 'utf8')).toBe('preserve concurrent archived evidence');
 		expect(await readActiveRun(fixture.root)).toBeNull();
 	});
 

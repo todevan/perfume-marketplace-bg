@@ -461,6 +461,9 @@ async function executePreflight(parsed, environment, dependencies) {
 		if (activeRunId === null) throw new Gate3HostedCliError('active_run_required');
 		selectedRunId = activeRunId;
 	}
+	if (parsed.createNew && selectedRunId === activeRunId) {
+		throw new Gate3HostedCliError('preflight_recovery_required');
+	}
 	const paths = dependency(dependencies, 'resolveGate3RunPaths', resolveGate3RunPaths)({
 		root,
 		runId: selectedRunId
@@ -536,6 +539,9 @@ async function executePreflight(parsed, environment, dependencies) {
 	let published = false;
 	try {
 		reservation = await dependency(dependencies, 'reserveGate3RunDirectory', reserveGate3RunDirectory)(paths);
+		if ((await exactRunDirectoryEvidence(paths.archiveDirectory)) !== 'missing') {
+			throw new Gate3HostedCliError('preflight_recovery_required');
+		}
 		const secretMetadata = await dependency(
 			dependencies,
 			'protectRunSecrets',
