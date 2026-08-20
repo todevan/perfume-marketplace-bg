@@ -41,6 +41,7 @@ const ARCHIVE_KEYS = new Set([
 	'manifestSha256'
 ]);
 const RUN_LOCK_COMMANDS = new Set(['preflight', 'provision', 'scenario', 'cleanup', 'recovery', 'archive']);
+const GUARD_PUBLICATION_CONFLICT_CODES = new Set(['EEXIST', 'ENOTEMPTY', 'EPERM']);
 const TOP_LEVEL_STATE_KEYS = new Set([
 	'schemaVersion',
 	'revision',
@@ -56,7 +57,7 @@ const TOP_LEVEL_STATE_KEYS = new Set([
 	'archive'
 ]);
 const PHASE_NAMES = ['preflight', 'provision', 'scenario', 'cleanup', 'recovery'];
-const NODE_FILESYSTEM = Object.freeze({ lstat, mkdir, open, readFile, realpath, rename, unlink });
+const NODE_FILESYSTEM = Object.freeze({ lstat, mkdir, open, readFile, realpath, rename, rm, unlink, writeFile });
 
 export class Gate3HostedStateError extends Error {
 	/** @param {string} reasonCode */
@@ -253,14 +254,14 @@ async function assertRealDirectory(directory, filesystem = NODE_FILESYSTEM) {
 	}
 }
 
-/** @param {string} directory */
-async function captureDirectoryIdentity(directory) {
-	await assertRealDirectory(directory);
-	const entry = await lstat(directory);
-	return Object.freeze({ dev: entry.dev, ino: entry.ino, realpath: await realpath(directory) });
+/** @param {string} directory @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function captureDirectoryIdentity(directory, filesystem = NODE_FILESYSTEM) {
+	await assertRealDirectory(directory, filesystem);
+	const entry = await filesystem.lstat(directory, { bigint: true });
+	return Object.freeze({ dev: entry.dev, ino: entry.ino, realpath: await filesystem.realpath(directory) });
 }
 
-/** @param {{ dev: number, ino: number, realpath: string }} left @param {{ dev: number, ino: number, realpath: string }} right */
+/** @param {{ dev: number | bigint, ino: number | bigint, realpath: string }} left @param {{ dev: number | bigint, ino: number | bigint, realpath: string }} right */
 function sameDirectoryIdentity(left, right) {
 	return left.dev === right.dev && left.ino === right.ino && left.realpath.toLowerCase() === right.realpath.toLowerCase();
 }
@@ -315,10 +316,10 @@ async function assertRegularFile(filePath) {
 	}
 }
 
-/** @param {string} filePath */
-async function regularFileIsMissing(filePath) {
+/** @param {string} filePath @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function regularFileIsMissing(filePath, filesystem = NODE_FILESYSTEM) {
 	try {
-		const entry = await lstat(filePath);
+		const entry = await filesystem.lstat(filePath);
 		if (!entry.isFile() || entry.isSymbolicLink()) throw new Gate3HostedStateError('state_path_invalid');
 		return false;
 	} catch (error) {
@@ -367,12 +368,12 @@ function runLockGuardPath(paths) {
 	return `${paths.lockPath}.guard`;
 }
 
-/** @param {string} guardPath */
-async function readRunLockGuard(guardPath) {
+/** @param {string} guardPath @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function readRunLockGuard(guardPath, filesystem = NODE_FILESYSTEM) {
 	try {
-		const entry = await lstat(guardPath);
+		const entry = await filesystem.lstat(guardPath);
 		if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Gate3HostedStateError('lock_guard_invalid');
-		const owner = JSON.parse(await readFile(join(guardPath, 'owner.json'), 'utf8'));
+		const owner = JSON.parse(await filesystem.readFile(join(guardPath, 'owner.json'), 'utf8'));
 		if (!isPlainObject(owner) || owner.version !== 1 || typeof owner.guardId !== 'string' || !/^[a-f0-9-]{36}$/u.test(owner.guardId) || typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) throw new Gate3HostedStateError('lock_guard_invalid');
 		return owner;
 	} catch (error) {
@@ -382,12 +383,12 @@ async function readRunLockGuard(guardPath) {
 	}
 }
 
-/** @param {string} guardPath @param {Record<string, any>} expectedOwner */
-async function retireRunLockGuard(guardPath, expectedOwner) {
-	const owner = await readRunLockGuard(guardPath);
+/** @param {string} guardPath @param {Record<string, any>} expectedOwner @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function retireRunLockGuard(guardPath, expectedOwner, filesystem = NODE_FILESYSTEM) {
+	const owner = await readRunLockGuard(guardPath, filesystem);
 	if (owner === null || owner.guardId !== expectedOwner.guardId || owner.pid !== expectedOwner.pid) return false;
 	try {
-		await rename(guardPath, `${guardPath}.retired-${owner.guardId}`);
+		await filesystem.rename(guardPath, `${guardPath}.retired-${owner.guardId}`);
 		return true;
 	} catch (error) {
 		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT' || /** @type {NodeJS.ErrnoException} */ (error).code === 'EEXIST') return false;
@@ -395,8 +396,9 @@ async function retireRunLockGuard(guardPath, expectedOwner) {
 	}
 }
 
-/** @param {Record<string, string>} paths @param {() => Promise<any>} operation */
-async function withRunLockGuard(paths, operation) {
+/** @param {Record<string, string>} paths @param {() => Promise<any>} operation @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function withRunLockGuard(paths, operation, filesystem = NODE_FILESYSTEM) {
+	const guardFilesystem = { ...NODE_FILESYSTEM, ...filesystem };
 	const guardPath = runLockGuardPath(paths);
 	let owner;
 	for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -404,26 +406,28 @@ async function withRunLockGuard(paths, operation) {
 		const candidateOwner = { version: 1, guardId: candidatePath.slice(candidatePath.lastIndexOf('-') + 1), pid: process.pid };
 		try {
 			candidateOwner.guardId = candidatePath.slice(`${guardPath}.candidate-`.length);
-			await mkdir(candidatePath, { mode: 0o700 });
-			await writeFile(join(candidatePath, 'owner.json'), JSON.stringify(candidateOwner), { mode: 0o600 });
-			await rename(candidatePath, guardPath);
+			await guardFilesystem.mkdir(candidatePath, { mode: 0o700 });
+			await guardFilesystem.writeFile(join(candidatePath, 'owner.json'), JSON.stringify(candidateOwner), { mode: 0o600 });
+			await guardFilesystem.rename(candidatePath, guardPath);
 			owner = candidateOwner;
 			break;
 		} catch (error) {
-			await rm(candidatePath, { recursive: true, force: true }).catch(() => {});
-			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw new Gate3HostedStateError('lock_guard_failed');
-			const held = await readRunLockGuard(guardPath);
+			await guardFilesystem.rm(candidatePath, { recursive: true, force: true }).catch(() => {});
+			if (!GUARD_PUBLICATION_CONFLICT_CODES.has(/** @type {NodeJS.ErrnoException} */ (error).code ?? '')) {
+				throw new Gate3HostedStateError('lock_guard_failed');
+			}
+			const held = await readRunLockGuard(guardPath, guardFilesystem);
 			if (held === null) continue;
 			if (typeof held.pid !== 'number') throw new Gate3HostedStateError('lock_guard_invalid');
 			if (pidIsRunning(held.pid)) await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
-			else await retireRunLockGuard(guardPath, held);
+			else await retireRunLockGuard(guardPath, held, guardFilesystem);
 		}
 	}
 	if (!owner) throw new Gate3HostedStateError('lock_guard_held');
 	try {
 		return await operation();
 	} finally {
-		if (!(await retireRunLockGuard(guardPath, owner))) throw new Gate3HostedStateError('lock_guard_failed');
+		if (!(await retireRunLockGuard(guardPath, owner, guardFilesystem))) throw new Gate3HostedStateError('lock_guard_failed');
 	}
 }
 
@@ -566,8 +570,8 @@ export async function writeNextRunState(paths, currentState, nextState) {
 	}
 }
 
-/** @param {{ paths: Record<string, string>, command: string, pid?: number, startedAt?: string }} options */
-export async function acquireRunLock({ paths, command, pid = process.pid, startedAt = new Date().toISOString() }) {
+/** @param {{ paths: Record<string, string>, command: string, pid?: number, startedAt?: string, filesystem?: Partial<typeof NODE_FILESYSTEM>, guardFilesystem?: Partial<typeof NODE_FILESYSTEM> }} options */
+export async function acquireRunLock({ paths, command, pid = process.pid, startedAt = new Date().toISOString(), filesystem = {}, guardFilesystem = {} }) {
 	const exactPaths = validatePaths(paths);
 	if (typeof command !== 'string' || !RUN_LOCK_COMMANDS.has(command)) {
 		throw new Gate3HostedStateError('lock_command_invalid');
@@ -575,11 +579,12 @@ export async function acquireRunLock({ paths, command, pid = process.pid, starte
 	const lock = validateRunLock(exactPaths, { runId: exactPaths.runId, command, pid, startedAt });
 	await assertSafeRunPaths(exactPaths);
 	const acquiredBytes = `${JSON.stringify(lock)}\n`;
+	const mainLockFilesystem = { ...NODE_FILESYSTEM, ...filesystem };
 	await withRunLockGuard(exactPaths, async () => {
 		let handle;
 		let created = false;
 		try {
-			handle = await open(exactPaths.lockPath, 'wx', 0o600);
+			handle = await mainLockFilesystem.open(exactPaths.lockPath, 'wx', 0o600);
 			created = true;
 			await handle.writeFile(acquiredBytes, 'utf8');
 			await handle.sync();
@@ -587,14 +592,14 @@ export async function acquireRunLock({ paths, command, pid = process.pid, starte
 			try { await handle?.close(); } catch {}
 			handle = undefined;
 			if (created) {
-				try { await unlink(exactPaths.lockPath); } catch { throw new Gate3HostedStateError('lock_cleanup_failed'); }
+				try { await mainLockFilesystem.unlink(exactPaths.lockPath); } catch { throw new Gate3HostedStateError('lock_cleanup_failed'); }
 			}
 			if (/** @type {NodeJS.ErrnoException} */ (error).code === 'EEXIST') throw new Gate3HostedStateError('lock_held');
 			throw new Gate3HostedStateError('lock_acquire_failed');
 		} finally {
 			try { await handle?.close(); } catch { throw new Gate3HostedStateError('lock_acquire_failed'); }
 		}
-	});
+	}, /** @type {typeof NODE_FILESYSTEM} */ ({ ...NODE_FILESYSTEM, ...guardFilesystem }));
 	return Object.freeze({ lock: Object.freeze(lock), acquiredBytes });
 }
 
@@ -696,25 +701,27 @@ async function writeArchivedRunState(paths, currentState, nextState) {
 	}
 }
 
-/** @param {{ paths: Record<string, string>, currentState: unknown, completedAt: string, filesystem?: { rename?: (from: string, to: string) => Promise<void> } }} options */
+/** @param {{ paths: Record<string, string>, currentState: unknown, completedAt: string, filesystem?: Partial<typeof NODE_FILESYSTEM> }} options */
 export async function finalizeRunArchive({ paths, currentState, completedAt, filesystem = {} }) {
 	const exactPaths = validatePaths(paths);
+	const archiveFilesystem = { ...NODE_FILESYSTEM, ...filesystem };
 	if (typeof completedAt !== 'string' || Number.isNaN(Date.parse(completedAt))) {
 		throw new Gate3HostedStateError('archive_invalid');
 	}
-	await assertRealDirectory(exactPaths.root);
-	if (await directoryIsMissing(exactPaths.archiveRoot)) {
-		await mkdir(exactPaths.archiveRoot, { recursive: false, mode: 0o700 });
+	await assertRealDirectory(exactPaths.root, archiveFilesystem);
+	if (await directoryIsMissing(exactPaths.archiveRoot, archiveFilesystem)) {
+		await archiveFilesystem.mkdir(exactPaths.archiveRoot, { recursive: false, mode: 0o700 });
 	}
-	await assertRealDirectory(exactPaths.archiveRoot);
-	const activeMissing = await directoryIsMissing(exactPaths.runDirectory);
-	const archiveMissing = await directoryIsMissing(exactPaths.archiveDirectory);
+	await assertRealDirectory(exactPaths.archiveRoot, archiveFilesystem);
+	const activeMissing = await directoryIsMissing(exactPaths.runDirectory, archiveFilesystem);
+	const archiveMissing = await directoryIsMissing(exactPaths.archiveDirectory, archiveFilesystem);
+	if (!archiveMissing) await assertRealDirectory(exactPaths.archiveDirectory, archiveFilesystem);
 	if (!activeMissing && !archiveMissing) throw new Gate3HostedStateError('archive_destination_exists');
 
 	if (activeMissing) {
 		if (archiveMissing) throw new Gate3HostedStateError('state_unavailable');
 		const archived = await readArchivedRunState(exactPaths);
-		if (!(await regularFileIsMissing(join(exactPaths.archiveDirectory, 'gate3-secrets.dpapi')))) {
+		if (!(await regularFileIsMissing(join(exactPaths.archiveDirectory, 'gate3-secrets.dpapi'), archiveFilesystem))) {
 			throw new Gate3HostedStateError('secret_file_present');
 		}
 		if (archived.archive.status === 'complete') {
@@ -742,8 +749,8 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 	}
 
 	const persisted = await readRunState(exactPaths);
-	const sourceIdentity = await captureDirectoryIdentity(exactPaths.runDirectory);
-	const archiveRootIdentity = await captureDirectoryIdentity(exactPaths.archiveRoot);
+	const sourceIdentity = await captureDirectoryIdentity(exactPaths.runDirectory, archiveFilesystem);
+	const archiveRootIdentity = await captureDirectoryIdentity(exactPaths.archiveRoot, archiveFilesystem);
 	const expected = assertStateMatchesPaths(exactPaths, currentState);
 	if (JSON.stringify(persisted) !== JSON.stringify(expected)) throw new Gate3HostedStateError('state_changed');
 	if (
@@ -753,7 +760,7 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 	) {
 		throw new Gate3HostedStateError('cleanup_not_independently_verified');
 	}
-	if (!(await regularFileIsMissing(exactPaths.secretPath))) throw new Gate3HostedStateError('secret_file_present');
+	if (!(await regularFileIsMissing(exactPaths.secretPath, archiveFilesystem))) throw new Gate3HostedStateError('secret_file_present');
 	let pending = persisted;
 	if (pending.archive === null) {
 		pending = {
@@ -772,12 +779,12 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 		throw new Gate3HostedStateError('archive_invalid');
 	}
 	try {
-		if (!sameDirectoryIdentity(sourceIdentity, await captureDirectoryIdentity(exactPaths.runDirectory)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot))) {
+		if (!sameDirectoryIdentity(sourceIdentity, await captureDirectoryIdentity(exactPaths.runDirectory, archiveFilesystem)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot, archiveFilesystem))) {
 			throw new Gate3HostedStateError('archive_ambiguous');
 		}
-		await (filesystem.rename ?? rename)(exactPaths.runDirectory, exactPaths.archiveDirectory);
-		const destinationIdentity = await captureDirectoryIdentity(exactPaths.archiveDirectory);
-		if (!(await directoryIsMissing(exactPaths.runDirectory)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot)) || sourceIdentity.dev !== destinationIdentity.dev || sourceIdentity.ino !== destinationIdentity.ino) {
+		await archiveFilesystem.rename(exactPaths.runDirectory, exactPaths.archiveDirectory);
+		const destinationIdentity = await captureDirectoryIdentity(exactPaths.archiveDirectory, archiveFilesystem);
+		if (!(await directoryIsMissing(exactPaths.runDirectory, archiveFilesystem)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot, archiveFilesystem)) || sourceIdentity.dev !== destinationIdentity.dev || sourceIdentity.ino !== destinationIdentity.ino) {
 			throw new Gate3HostedStateError('archive_ambiguous');
 		}
 	} catch (error) {

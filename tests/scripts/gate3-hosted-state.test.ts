@@ -1,8 +1,20 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+	lstat,
+	mkdir,
+	mkdtemp,
+	open,
+	readFile,
+	readdir,
+	realpath,
+	rename,
+	rm,
+	utimes,
+	writeFile
+} from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { atomicPrivateWrite } from '../../scripts/hosted-private-file.mjs';
 import {
 	acquireRunLock,
@@ -44,6 +56,14 @@ describe('Gate 3 hosted state', () => {
 				secretPath: paths.secretPath
 			})
 		};
+	}
+
+	function deferred() {
+		let resolve!: () => void;
+		const promise = new Promise<void>((resolvePromise) => {
+			resolve = resolvePromise;
+		});
+		return { promise, resolve };
 	}
 
 	it('maps an exact run into the established Aromatika hosted-fixture root', () => {
@@ -502,6 +522,241 @@ describe('Gate 3 hosted state', () => {
 		await expect(inspectRunLock({ paths, isPidRunning: () => true })).resolves.toMatchObject({ status: 'held' });
 	});
 
+	it('treats EPERM from the production process.kill PID probe as a live lock holder', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 77, startedAt: '2026-08-19T00:00:00.000Z' }));
+		const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+			throw Object.assign(new Error('access denied'), { code: 'EPERM' });
+		});
+
+		try {
+			await expect(inspectRunLock({ paths })).resolves.toMatchObject({ status: 'held' });
+		} finally {
+			killSpy.mockRestore();
+		}
+	});
+
+	it('never age-reaps malformed, unreadable, or ownerless management guards', async () => {
+		for (const ownerKind of ['malformed', 'unreadable', 'missing'] as const) {
+			const { paths } = await createFixture();
+			await mkdir(paths.runDirectory, { recursive: true });
+			const guardPath = `${paths.lockPath}.guard`;
+			const ownerPath = join(guardPath, 'owner.json');
+			await mkdir(guardPath);
+			if (ownerKind === 'malformed') await writeFile(ownerPath, '{not-json');
+			if (ownerKind === 'unreadable') await mkdir(ownerPath);
+			await utimes(guardPath, new Date(0), new Date(0));
+
+			await expect(acquireRunLock({ paths, command: 'scenario' })).rejects.toMatchObject({
+				reasonCode: ownerKind === 'missing' ? 'lock_guard_held' : 'lock_guard_invalid'
+			});
+			await expect(lstat(guardPath)).resolves.toMatchObject({});
+		}
+	});
+
+	it('does not let an injected main-lock PID probe reap a live management guard', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = `${paths.lockPath}.guard`;
+		const ownerPath = join(guardPath, 'owner.json');
+		const owner = { version: 1, guardId: '00000000-0000-4000-8000-000000000001', pid: process.pid };
+		await mkdir(guardPath);
+		await writeFile(ownerPath, JSON.stringify(owner));
+		const lockBytes = JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 77, startedAt: '2026-08-19T00:00:00.000Z' });
+		await writeFile(paths.lockPath, lockBytes);
+		const observed = await inspectRunLock({ paths, isPidRunning: () => false });
+		const inspection = await inspectRunLock({ paths, isPidRunning: () => false });
+
+		await expect(recoverStaleRunLock({ paths, observedLock: observed, inspection, isPidRunning: () => false }))
+			.rejects.toMatchObject({ reasonCode: 'lock_guard_held' });
+		await expect(readFile(ownerPath, 'utf8')).resolves.toBe(JSON.stringify(owner));
+		await expect(readFile(paths.lockPath, 'utf8')).resolves.toBe(lockBytes);
+	});
+
+	it('keeps a persistent stale-owner tombstone while two reapers serialize a successor lock', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = `${paths.lockPath}.guard`;
+		const staleOwner = { version: 1, guardId: '00000000-0000-4000-8000-000000000002', pid: 2147483647 };
+		await mkdir(guardPath);
+		await writeFile(join(guardPath, 'owner.json'), JSON.stringify(staleOwner));
+
+		const outcomes = await Promise.allSettled([
+			acquireRunLock({ paths, command: 'scenario', pid: 77, startedAt: '2026-08-20T10:00:00.000Z' }),
+			acquireRunLock({ paths, command: 'cleanup', pid: 78, startedAt: '2026-08-20T10:01:00.000Z' })
+		]);
+
+		const fulfilled = outcomes.filter((outcome) => outcome.status === 'fulfilled');
+		const rejected = outcomes.filter((outcome) => outcome.status === 'rejected');
+		expect(fulfilled).toHaveLength(1);
+		expect(rejected).toHaveLength(1);
+		expect(rejected[0]).toMatchObject({ reason: { reasonCode: 'lock_held' } });
+		if (fulfilled[0]?.status !== 'fulfilled') throw new Error('missing successor lock');
+		await expect(readFile(paths.lockPath, 'utf8')).resolves.toBe(fulfilled[0].value.acquiredBytes);
+		await expect(readFile(`${guardPath}.retired-${staleOwner.guardId}/owner.json`, 'utf8'))
+			.resolves.toBe(JSON.stringify(staleOwner));
+		const tombstones = (await readdir(paths.runDirectory)).filter((entry) => entry.startsWith('.gate3.lock.guard.retired-'));
+		expect(tombstones).toContain(`.gate3.lock.guard.retired-${staleOwner.guardId}`);
+	});
+
+	it('does not let a delayed stale observer move or delete a successor after normal guard release', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = `${paths.lockPath}.guard`;
+		const ownerPath = join(guardPath, 'owner.json');
+		const ownerEntered = deferred();
+		const ownerProceed = deferred();
+		const delayedRetireRead = deferred();
+		const delayedRetireProceed = deferred();
+		const successorEntered = deferred();
+		const successorProceed = deferred();
+		let guardOwnerReads = 0;
+		const ownerPromise = acquireRunLock({
+			paths,
+			command: 'scenario',
+			pid: 77,
+			startedAt: '2026-08-20T10:00:00.000Z',
+			filesystem: {
+				open: async (...args: Parameters<typeof open>) => {
+					const handle = await open(...args);
+					ownerEntered.resolve();
+					await ownerProceed.promise;
+					return handle;
+				}
+			}
+		} as never);
+		await Promise.race([
+			ownerEntered.promise,
+			ownerPromise.then(() => { throw new Error('main lock filesystem injection was ignored'); })
+		]);
+		const originalOwnerBytes = await readFile(ownerPath, 'utf8');
+		expect(JSON.parse(originalOwnerBytes)).toMatchObject({ pid: process.pid });
+
+		const killSpy = vi.spyOn(process, 'kill');
+		killSpy.mockImplementationOnce(() => {
+			throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+		});
+		killSpy.mockImplementation(() => true);
+		const delayedObserver = acquireRunLock({
+			paths,
+			command: 'cleanup',
+			pid: 78,
+			startedAt: '2026-08-20T10:01:00.000Z',
+			guardFilesystem: {
+				lstat,
+				mkdir,
+				readFile: async (...args: Parameters<typeof readFile>) => {
+					if (String(args[0]) === ownerPath) {
+						guardOwnerReads += 1;
+						if (guardOwnerReads === 2) {
+							delayedRetireRead.resolve();
+							await delayedRetireProceed.promise;
+						}
+					}
+					return readFile(...args);
+				},
+				rename,
+				rm,
+				writeFile
+			}
+		} as never);
+
+		let successorPromise: ReturnType<typeof acquireRunLock> | undefined;
+		try {
+			await delayedRetireRead.promise;
+			ownerProceed.resolve();
+			const originalLock = await ownerPromise;
+			await releaseRunLock({ paths, acquiredLock: originalLock });
+
+			successorPromise = acquireRunLock({
+				paths,
+				command: 'scenario',
+				pid: 79,
+				startedAt: '2026-08-20T10:02:00.000Z',
+				filesystem: {
+					open: async (...args: Parameters<typeof open>) => {
+						const handle = await open(...args);
+						successorEntered.resolve();
+						await successorProceed.promise;
+						return handle;
+					}
+				}
+			} as never);
+			await successorEntered.promise;
+			const successorOwnerBytes = await readFile(ownerPath, 'utf8');
+			delayedRetireProceed.resolve();
+
+			await expect(delayedObserver).rejects.toMatchObject({ reasonCode: 'lock_guard_held' });
+			await expect(readFile(ownerPath, 'utf8')).resolves.toBe(successorOwnerBytes);
+			successorProceed.resolve();
+			const successorLock = await successorPromise;
+			await releaseRunLock({ paths, acquiredLock: successorLock });
+		} finally {
+			ownerProceed.resolve();
+			delayedRetireProceed.resolve();
+			successorProceed.resolve();
+			killSpy.mockRestore();
+			await Promise.allSettled([ownerPromise, delayedObserver, ...(successorPromise ? [successorPromise] : [])]);
+		}
+	});
+
+	it.each(['writeFile', 'sync'] as const)('cleans only its created main lock after post-open %s failure', async (failure) => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const unrelatedPath = join(paths.runDirectory, 'unrelated-evidence.json');
+		await writeFile(unrelatedPath, 'preserve');
+
+		await expect(acquireRunLock({
+			paths,
+			command: 'scenario',
+			pid: 77,
+			startedAt: '2026-08-20T10:00:00.000Z',
+			filesystem: {
+				open: async (...args: Parameters<typeof open>) => {
+					const handle = await open(...args);
+					return {
+						writeFile: failure === 'writeFile'
+							? async () => { throw new Error('simulated write failure'); }
+							: handle.writeFile.bind(handle),
+						sync: failure === 'sync'
+							? async () => { throw new Error('simulated sync failure'); }
+							: handle.sync.bind(handle),
+						close: handle.close.bind(handle)
+					};
+				}
+			}
+		} as never)).rejects.toMatchObject({ reasonCode: 'lock_acquire_failed' });
+		await expect(readFile(paths.lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+		await expect(readFile(unrelatedPath, 'utf8')).resolves.toBe('preserve');
+	});
+
+	it('fails closed when created main-lock cleanup fails after a sync error', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+
+		await expect(acquireRunLock({
+			paths,
+			command: 'scenario',
+			pid: 77,
+			startedAt: '2026-08-20T10:00:00.000Z',
+			filesystem: {
+				open: async (...args: Parameters<typeof open>) => {
+					const handle = await open(...args);
+					return {
+						writeFile: handle.writeFile.bind(handle),
+						sync: async () => { throw new Error('simulated sync failure'); },
+						close: handle.close.bind(handle)
+					};
+				},
+				unlink: async () => {
+					throw Object.assign(new Error('access denied'), { code: 'EACCES' });
+				}
+			}
+		} as never)).rejects.toMatchObject({ reasonCode: 'lock_cleanup_failed' });
+		await expect(readFile(paths.lockPath, 'utf8')).resolves.toContain(`"runId":"${paths.runId}"`);
+	});
+
 	it('rejects an archived state whose destination is not this run canonical archive path', async () => {
 		const { paths, state } = await createFixture();
 		await reserveRunState(paths, state);
@@ -543,16 +798,112 @@ describe('Gate 3 hosted state', () => {
 		await mkdir(paths.runDirectory, { recursive: true });
 		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 77, startedAt: '2026-08-20T10:00:00.000Z' }));
 		const observed = await inspectRunLock({ paths, isPidRunning: () => false });
-		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 78, startedAt: '2026-08-20T10:01:00.000Z' }));
+		const successorBytes = JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 78, startedAt: '2026-08-20T10:01:00.000Z' });
+		await writeFile(paths.lockPath, successorBytes);
 		const inspection = await inspectRunLock({ paths, isPidRunning: () => false });
 
 		await expect(recoverStaleRunLock({ paths, observedLock: observed, inspection, isPidRunning: () => false })).rejects.toMatchObject({ reasonCode: 'fresh_inspection_required' });
-		await expect(readFile(paths.lockPath, 'utf8')).resolves.toContain('"pid":78');
+		await expect(readFile(paths.lockPath, 'utf8')).resolves.toBe(successorBytes);
+	});
+
+	it('rejects a simulated archive-root reparse before pending state or rename', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await mkdir(paths.archiveRoot);
+		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
+		await writeNextRunState(paths, state, verified);
+		const filesystem = {
+			lstat: async (path: Parameters<typeof lstat>[0]) => {
+				const entry = await lstat(path);
+				if (String(path) !== paths.archiveRoot) return entry;
+				return { ...entry, isDirectory: () => true, isSymbolicLink: () => true };
+			},
+			realpath,
+			rename: async () => { throw new Error('rename must not run'); }
+		};
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never }))
+			.rejects.toMatchObject({ reasonCode: 'state_path_invalid' });
+		await expect(readRunState(paths)).resolves.toMatchObject({ archive: null });
+	});
+
+	it('rejects a simulated archive-destination reparse before pending state or rename', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await mkdir(paths.archiveDirectory, { recursive: true });
+		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
+		await writeNextRunState(paths, state, verified);
+		const filesystem = {
+			lstat: async (path: Parameters<typeof lstat>[0]) => {
+				const entry = await lstat(path);
+				if (String(path) !== paths.archiveDirectory) return entry;
+				return { ...entry, isDirectory: () => true, isSymbolicLink: () => true };
+			},
+			realpath,
+			rename: async () => { throw new Error('rename must not run'); }
+		};
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never }))
+			.rejects.toMatchObject({ reasonCode: 'state_path_invalid' });
+		await expect(readRunState(paths)).resolves.toMatchObject({ archive: null });
+	});
+
+	it('never overwrites a destination that appears at the archive rename boundary', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await setActiveRun({ root: paths.root, runId: paths.runId, expectedCurrentRunId: null });
+		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
+		await writeNextRunState(paths, state, verified);
+		const markerPath = join(paths.archiveDirectory, 'successor-owner.txt');
+		const filesystem = {
+			rename: async (from: string, to: string) => {
+				await mkdir(to);
+				await writeFile(markerPath, 'preserve successor');
+				await rename(from, to);
+			}
+		};
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never }))
+			.rejects.toMatchObject({ reasonCode: 'archive_rename_failed' });
+		await expect(readFile(markerPath, 'utf8')).resolves.toBe('preserve successor');
+		await expect(readRunState(paths)).resolves.toMatchObject({ archive: { status: 'pending' } });
+		await expect(readActiveRun(paths.root)).resolves.toBe(paths.runId);
+	});
+
+	it('returns ambiguous on a cooperative pre-rename source identity swap and preserves pending recovery state', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		await setActiveRun({ root: paths.root, runId: paths.runId, expectedCurrentRunId: null });
+		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
+		await writeNextRunState(paths, state, verified);
+		let sourceLstatCount = 0;
+		const filesystem = {
+			lstat: async (path: Parameters<typeof lstat>[0], options?: { bigint?: boolean }) => {
+				const entry = options?.bigint ? await lstat(path, { bigint: true }) : await lstat(path);
+				if (String(path) !== paths.runDirectory) return entry;
+				sourceLstatCount += 1;
+				if (sourceLstatCount < 4 || typeof entry.ino !== 'bigint') return entry;
+				return {
+					...entry,
+					ino: entry.ino + 1n,
+					isDirectory: () => entry.isDirectory(),
+					isSymbolicLink: () => entry.isSymbolicLink()
+				};
+			},
+			realpath
+		};
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never }))
+			.rejects.toMatchObject({ reasonCode: 'archive_ambiguous' });
+		await expect(readRunState(paths)).resolves.toMatchObject({ archive: { status: 'pending' } });
+		await expect(readActiveRun(paths.root)).resolves.toBe(paths.runId);
+		await expect(lstat(paths.archiveDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
 	});
 
 	it('fails ambiguous archive completion after a cooperative source replacement during rename', async () => {
 		const { paths, state } = await createFixture();
 		await reserveRunState(paths, state);
+		await setActiveRun({ root: paths.root, runId: paths.runId, expectedCurrentRunId: null });
 		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
 		await writeNextRunState(paths, state, verified);
 		const filesystem = { rename: async (from: string, to: string) => {
@@ -564,6 +915,8 @@ describe('Gate 3 hosted state', () => {
 
 		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never })).rejects.toMatchObject({ reasonCode: 'archive_ambiguous' });
 		await expect(readArchivedRunState(paths)).resolves.toMatchObject({ archive: { status: 'pending' } });
+		await expect(readFile(join(paths.runDirectory, 'replacement.txt'), 'utf8')).resolves.toBe('replacement');
+		await expect(readActiveRun(paths.root)).resolves.toBe(paths.runId);
 	});
 
 	it('keeps generated CodeGraph and ATL directories out of version control', () => {
