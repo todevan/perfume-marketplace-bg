@@ -14,5 +14,7 @@ supabase/.branches
 .backups/
 .builder/checkpoints
 .builder/workflow-log.json
+.atl/
+.codegraph/
 .DS_Store
 *.log

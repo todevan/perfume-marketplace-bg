@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
-import { chmod, open, rename, unlink } from 'node:fs/promises';
+import { chmod, open, readFile, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -67,8 +67,12 @@ async function restrictFileAccess(filePath) {
 	}
 }
 
-/** @param {string} filePath @param {string} contents */
-export async function atomicPrivateWrite(filePath, contents) {
+/**
+ * @param {string} filePath
+ * @param {string} contents
+ * @param {{ verify?: (replacementBytes: string) => void | Promise<void> }} [options]
+ */
+export async function atomicPrivateWrite(filePath, contents, { verify } = {}) {
 	const temporaryPath = resolve(
 		dirname(filePath),
 		`.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
@@ -83,6 +87,7 @@ export async function atomicPrivateWrite(filePath, contents) {
 		await restrictFileAccess(temporaryPath);
 		await rename(temporaryPath, filePath);
 		await restrictFileAccess(filePath);
+		if (verify) await verify(await readFile(filePath, 'utf8'));
 	} catch (error) {
 		try {
 			await handle?.close();

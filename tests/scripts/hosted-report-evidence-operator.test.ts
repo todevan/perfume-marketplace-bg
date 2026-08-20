@@ -321,6 +321,7 @@ describe('hosted report-evidence target lock', () => {
 
 		try {
 			await persistHostedRunManifest(config, a9Manifest, manifestPath);
+			await expect(readFile(manifestPath, 'utf8')).resolves.toBe(`${JSON.stringify(a9Manifest)}\n`);
 			const persistedManifest = await loadHostedRunManifest(config, manifestPath);
 
 			await expect(
