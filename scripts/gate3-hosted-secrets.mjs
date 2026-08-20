@@ -431,9 +431,9 @@ async function atomicCiphertextWrite(filePath, ciphertext, filesystem = NODE_FIL
 }
 
 /**
- * @param {{ payload: unknown, path: string, dpapi: { protect: (input: Buffer) => Promise<Uint8Array> }, filesystem?: typeof NODE_FILESYSTEM }} options
+ * @param {{ payload: unknown, path: string, dpapi: { protect: (input: Buffer) => Promise<Uint8Array> }, filesystem?: typeof NODE_FILESYSTEM, hashImpl?: (input: Buffer) => string }} options
  */
-export async function protectRunSecrets({ payload, path, dpapi, filesystem = NODE_FILESYSTEM }) {
+export async function protectRunSecrets({ payload, path, dpapi, filesystem = NODE_FILESYSTEM, hashImpl = (input) => createHash('sha256').update(input).digest('hex') }) {
 	const validPayload = validateRunSecretPayload(payload);
 	const exactPath = await assertExactSecretPath(path, validPayload.runId, filesystem);
 	if (!dpapi || typeof dpapi.protect !== 'function') {
@@ -449,10 +449,12 @@ export async function protectRunSecrets({ payload, path, dpapi, filesystem = NOD
 			MAX_CIPHERTEXT_BYTES,
 			'dpapi_output_too_large'
 		);
+		const ciphertextSha256 = hashImpl(ciphertext);
+		if (!/^[a-f0-9]{64}$/u.test(ciphertextSha256)) throw new Gate3HostedSecretsError('secret_store_write_failed');
 		await atomicCiphertextWrite(exactPath, ciphertext, filesystem);
 		return Object.freeze({
 			status: 'available',
-			ciphertextSha256: createHash('sha256').update(ciphertext).digest('hex')
+			ciphertextSha256
 		});
 	} catch (error) {
 		if (error instanceof Gate3HostedSecretsError) throw error;

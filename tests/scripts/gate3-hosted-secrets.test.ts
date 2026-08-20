@@ -328,4 +328,60 @@ describe('Gate 3 hosted run secrets', () => {
 		expect(await readFile(path)).toEqual(original);
 		expect(await readdir(join(path, '..'))).toEqual(['gate3-secrets.dpapi']);
 	});
+
+	it('computes metadata before rename so no post-commit dependency can fail', async () => {
+		const path = await createSecretPath();
+		await writeFile(path, 'existing-ciphertext');
+		deterministicDistinctBytes.calls = 0;
+		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		const renameSpy = vi.fn(rename);
+		await expect(protectRunSecrets({
+			payload,
+			path,
+			dpapi: { protect: async () => Buffer.from('replacement') },
+			filesystem: { chmod, lstat, open, readFile, realpath, rename: renameSpy, unlink },
+			hashImpl: () => { throw new Error('post-commit-sensitive-fixture'); }
+		} as any)).rejects.toThrow('dpapi_failed');
+		expect(renameSpy).not.toHaveBeenCalled();
+		expect((await readFile(path, 'utf8'))).toBe('existing-ciphertext');
+	});
+
+	it.each(['stdout', 'stderr', 'stdin', 'child', 'stdin-end'])(
+		'sanitizes and settles once for %s pipe failures',
+		async (surface) => {
+			const sensitiveMessage = 'pipe-error-sensitive-fixture';
+			const spawnImpl = () => {
+				const child = new EventEmitter() as any;
+				child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+				child.kill = vi.fn();
+				if (surface === 'stdin-end') child.stdin.end = () => { throw new Error(sensitiveMessage); };
+				else setImmediate(() => {
+					(surface === 'child' ? child : child[surface]).emit('error', new Error(sensitiveMessage));
+					child.emit('close', 1, null);
+				});
+				return child;
+			};
+			let caught: unknown;
+			try { await createPowerShellDpapi({ scriptPath: 'C:\\gate3\\gate3-dpapi.ps1', spawnImpl }).protect(Buffer.from('input')); }
+			catch (error) { caught = error; }
+			expect(['dpapi_failed', 'dpapi_unavailable'].some((code) => String(caught).includes(code))).toBe(true);
+			expect(String(caught).includes(sensitiveMessage)).toBe(false);
+		}
+	);
+
+	it('rejects all secret-shaped payload additions before DPAPI', async () => {
+		const path = await createSecretPath();
+		deterministicDistinctBytes.calls = 0;
+		const base = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		const protect = vi.fn();
+		for (const [key, value] of Object.entries({ adminKey: 'admin-fixture', providerBody: 'body-fixture', sessionToken: 'token-fixture' })) {
+			const payload = { ...base, actors: { ...base.actors, reporter: { ...base.actors.reporter, [key]: value } } };
+			let caught: unknown;
+			try { await protectRunSecrets({ payload, path, dpapi: { protect } }); } catch (error) { caught = error; }
+			expect(String(caught)).toContain('secret_payload_invalid');
+			expect(String(caught).includes(value)).toBe(false);
+		}
+		await expect(protectRunSecrets({ payload: { ...base, actors: { ...base.actors, administrator: base.actors.reporter } }, path, dpapi: { protect } })).rejects.toThrow('secret_payload_invalid');
+		expect(protect).not.toHaveBeenCalled();
+	});
 });

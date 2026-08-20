@@ -56,10 +56,11 @@ windowsDescribe('Gate 3 CurrentUser DPAPI helper', () => {
 			await dpapi.unprotect(corrupt);
 		} catch (error) {
 			caught = error;
+		} finally {
+			corrupt.fill(0);
 		}
 		expect(String(caught)).toContain('dpapi_failed');
-		expect(String(caught).includes(corrupt.toString('utf8'))).toBe(false);
-		corrupt.fill(0);
+		expect(String(caught).includes('corrupt-sensitive-ciphertext-fixture')).toBe(false);
 	});
 
 	it('persists only ciphertext at the exact run path and verifies destruction', async () => {
