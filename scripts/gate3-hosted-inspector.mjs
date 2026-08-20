@@ -120,6 +120,7 @@ function sanitizeHostedFacts(value) {
 		confirmedActors: safeCount(candidate.confirmedActors),
 		completeProfiles: safeCount(candidate.completeProfiles),
 		verifiedModeratorTotpFactors: safeCount(candidate.verifiedModeratorTotpFactors),
+		moderatorsWithVerifiedTotp: safeCount(candidate.moderatorsWithVerifiedTotp),
 		actorsWithActiveSessions: safeCount(candidate.actorsWithActiveSessions),
 		activeSessionsProven: candidate.activeSessionsProven === true,
 		scenarioVerified: candidate.scenarioVerified === true,
@@ -141,6 +142,7 @@ function emptyHostedFacts() {
 		confirmedActors: 0,
 		completeProfiles: 0,
 		verifiedModeratorTotpFactors: 0,
+		moderatorsWithVerifiedTotp: 0,
 		actorsWithActiveSessions: 0,
 		activeSessionsProven: false,
 		scenarioVerified: false,
@@ -470,13 +472,17 @@ export async function inspectGate3HostedRun({
 		hosted.actorIdentityConflicts > 0;
 	const deletionScopeTrusted = manifestExactMatch && !ownershipConflict;
 	const authoritativeReleaseUnavailable = !authoritativeReleaseAvailable;
+	const zeroExactHosted = Object.values(hosted.counts).every((count) => count === 0);
+	const cleanupPhase = state.phases.cleanup;
+	const cleanupCompleteContradiction = Boolean(
+		cleanupPhase.status === 'complete' && hostedEvidenceAvailable && !zeroExactHosted
+	);
 	const ambiguous =
 		!manifestMatches ||
 		authoritativeReleaseUnavailable ||
 		ownershipConflict ||
+		cleanupCompleteContradiction ||
 		(credentialsLost && hosted.counts.actors === 0);
-	const zeroExactHosted = Object.values(hosted.counts).every((count) => count === 0);
-	const cleanupPhase = state.phases.cleanup;
 	const cleanupStarted =
 		cleanupPhase.status !== 'pending' || cleanupPhase.checkpoint !== null;
 	const cleanupExplicitlyRequired =
@@ -510,6 +516,7 @@ export async function inspectGate3HostedRun({
 		ownershipConflict,
 		deletionScopeTrusted,
 		ambiguous,
+		cleanupCompleteContradiction,
 		archived,
 		secretStoreStatus,
 		secretStoreCiphertextSha256,
@@ -527,6 +534,7 @@ export async function inspectGate3HostedRun({
 		confirmedActors: hosted.confirmedActors,
 		completeProfiles: hosted.completeProfiles,
 		verifiedModeratorTotpFactors: hosted.verifiedModeratorTotpFactors,
+		moderatorsWithVerifiedTotp: hosted.moderatorsWithVerifiedTotp,
 		actorsWithActiveSessions: hosted.actorsWithActiveSessions,
 		activeSessionsProven: hosted.activeSessionsProven,
 		foreignEvidenceSha256: hosted.foreignEvidenceSha256,
@@ -537,6 +545,7 @@ export async function inspectGate3HostedRun({
 			hosted.confirmedActors === ACTOR_ROLES.length &&
 			hosted.completeProfiles === ACTOR_ROLES.length &&
 			hosted.verifiedModeratorTotpFactors === 2 &&
+			hosted.moderatorsWithVerifiedTotp === 2 &&
 			hosted.activeSessionsProven &&
 			hosted.actorsWithActiveSessions === ACTOR_ROLES.length &&
 			!ownershipConflict,

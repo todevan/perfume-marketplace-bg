@@ -2029,9 +2029,20 @@ function inspectorTimestamp(value) {
  * inspector. The returned object deliberately contains no mutation, upload,
  * cleanup, RPC, or secret capability.
  *
- * @param {{ projectRef: string, serviceClient: SupabaseClient }} options
+ * @param {{
+ *   projectRef: string,
+ *   serviceClient: SupabaseClient,
+ *   sessionCoverageReader?: {
+ *     targetProjectRef: string,
+ *     readActiveUserIds: (scope: { userIds: string[] }) => Promise<{ activeUserIds: string[] }>
+ *   }
+ * }} options
  */
-export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClient }) {
+export function createSupabaseHostedInspectionAdapter({
+	projectRef,
+	serviceClient,
+	sessionCoverageReader
+}) {
 	let clientOrigin;
 	try {
 		clientOrigin = normalizeOrigin(
@@ -2050,8 +2061,7 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 		beta_memberships: 'profile_id',
 		reports: 'id',
 		report_evidence_uploads: 'id',
-		upload_cleanup_queue: 'id',
-		sessions: 'id'
+		upload_cleanup_queue: 'id'
 	}));
 
 	/**
@@ -2241,44 +2251,43 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 
 		const exactUsers = [...exactByRole.values()].flat();
 		const exactUserIds = new Set(exactUsers.map((user) => String(user.id)));
-		/** @type {Array<Record<string, unknown>>} */
-		let activeSessionRows = [];
+		let activeSessionUserIds = [];
 		let activeSessionsProven = false;
-		if (
-			exactUserIds.size > 0 &&
-			typeof /** @type {{ schema?: unknown }} */ (serviceClient).schema === 'function'
-		) {
+		const sessionReaderKeys =
+			sessionCoverageReader && typeof sessionCoverageReader === 'object'
+				? Object.keys(sessionCoverageReader).sort()
+				: [];
+		const sessionReaderValid = Boolean(
+			sessionCoverageReader?.targetProjectRef === projectRef &&
+			typeof sessionCoverageReader?.readActiveUserIds === 'function' &&
+			JSON.stringify(sessionReaderKeys) ===
+				JSON.stringify(['readActiveUserIds', 'targetProjectRef'])
+		);
+		const exactSessionReader = sessionReaderValid ? sessionCoverageReader : null;
+		if (exactUserIds.size > 0 && exactSessionReader) {
 			try {
-				const authClient = /** @type {{ schema: (name: string) => { from: (table: string) => any } }} */ (
-					serviceClient
-				).schema('auth');
-				const sessionRows = [];
 				const ids = [...exactUserIds];
-				for (let offset = 0; offset < ids.length; offset += 100) {
-					sessionRows.push(
-						...(await paginatedRows(
-							'sessions',
-							'id, user_id, not_after',
-							(query) => query.in('user_id', ids.slice(offset, offset + 100)),
-							authClient
-						))
-					);
+				const coverage = await exactSessionReader.readActiveUserIds({ userIds: ids });
+				if (
+					!coverage ||
+					typeof coverage !== 'object' ||
+					JSON.stringify(Object.keys(coverage).sort()) !== JSON.stringify(['activeUserIds']) ||
+					!Array.isArray(coverage.activeUserIds) ||
+					coverage.activeUserIds.some(
+						(userId) => typeof userId !== 'string' || !exactUserIds.has(userId)
+					) ||
+					new Set(coverage.activeUserIds).size !== coverage.activeUserIds.length
+				) {
+					throw new Error('session coverage read failed');
 				}
-				activeSessionRows = sessionRows.filter((row) => {
-					if (!exactUserIds.has(String(row.user_id))) return false;
-					if (row.not_after === null || row.not_after === undefined) return true;
-					const expiresAt = inspectorTimestamp(row.not_after);
-					return expiresAt !== null && Date.parse(expiresAt) > Date.now();
-				});
+				activeSessionUserIds = [...coverage.activeUserIds];
 				activeSessionsProven = true;
 			} catch {
-				activeSessionRows = [];
+				activeSessionUserIds = [];
 				activeSessionsProven = false;
 			}
 		}
-		const actorsWithActiveSessions = new Set(
-			activeSessionRows.map((session) => String(session.user_id))
-		).size;
+		const actorsWithActiveSessions = activeSessionUserIds.length;
 		const exactOwnerIds = new Set([
 			...exactUserIds,
 			...manifest.actors.map((actor) => String(actor.userId))
@@ -2512,20 +2521,33 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 					).length
 				);
 			}, 0);
+		const moderatorsWithVerifiedTotp = identities
+			.filter((identity) => String(identity.role).includes('moderator'))
+			.filter((identity) => {
+				const user = (exactByRole.get(String(identity.role)) ?? [])[0];
+				return Boolean(
+					user &&
+					Array.isArray(user.factors) &&
+					user.factors.some(
+						(factor) => factor?.factor_type === 'totp' && factor?.status === 'verified'
+					)
+				);
+			}).length;
 		const scenarioEvidence =
 			scope.scenarioEvidence &&
 			typeof scope.scenarioEvidence === 'object' &&
 			!Array.isArray(scope.scenarioEvidence)
 				? scope.scenarioEvidence
 				: { phase: { status: 'pending', checkpoint: null }, checkpoints: {} };
+		const scenarioCheckpointKey = 'scenario-primary-upload-attached';
+		const scenarioCheckpointStep = 'primary-upload-attached';
 		/** @param {unknown} checkpoint */
-		const checkpointIsComplete = (checkpoint) => {
+		const checkpointIsExactAndComplete = (checkpoint) => {
 			if (!checkpoint || typeof checkpoint !== 'object') return false;
 			const value = /** @type {Record<string, unknown>} */ (checkpoint);
 			return (
 				value.status === 'complete' &&
-				typeof value.step === 'string' &&
-				value.step.length > 0 &&
+				value.step === scenarioCheckpointStep &&
 				Boolean(inspectorTimestamp(value.observedAt))
 			);
 		};
@@ -2537,52 +2559,73 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 			scenarioEvidence.checkpoints &&
 			typeof scenarioEvidence.checkpoints === 'object' &&
 			!Array.isArray(scenarioEvidence.checkpoints)
-				? Object.entries(scenarioEvidence.checkpoints).filter(
-						([key, checkpoint]) =>
-							/^scenario-[a-z0-9-]+$/u.test(key) && checkpointIsComplete(checkpoint)
-					)
-				: [];
+				? /** @type {Record<string, unknown>} */ (scenarioEvidence.checkpoints)
+				: {};
+		const exactCheckpoint = scenarioCheckpoints[scenarioCheckpointKey];
+		const exactCheckpointComplete = checkpointIsExactAndComplete(exactCheckpoint);
+		const phaseCheckpointMatches = Boolean(
+			checkpointIsExactAndComplete(scenarioPhase.checkpoint) &&
+			scenarioPhase.checkpoint.observedAt ===
+				/** @type {Record<string, unknown>} */ (exactCheckpoint).observedAt
+		);
+		const scenarioStarted = Boolean(
+			scenarioPhase.status !== 'pending' || Object.keys(scenarioCheckpoints).length > 0
+		);
 		const reporterId = (exactByRole.get('reporter') ?? [])[0]?.id;
 		const crossUserId = (exactByRole.get('cross-user') ?? [])[0]?.id;
 		const assignedModeratorId = (exactByRole.get('assigned-moderator') ?? [])[0]?.id;
-		const primaryReport = reports.find(
-			(row) =>
-				String(row.reporter_id) === String(reporterId) &&
-				String(row.target_id) === String(crossUserId) &&
-				String(row.assigned_to) === String(assignedModeratorId) &&
-				row.status === 'investigating'
-		);
-		const primaryEvidencePaths = Array.isArray(primaryReport?.evidence_paths)
-			? primaryReport.evidence_paths.map(String)
-			: [];
-		const liveScenarioAnchor = Boolean(
-			primaryReport &&
-			manifest.reports.some((report) => String(report.id) === String(primaryReport.id)) &&
-			uploads.some(
-				(upload) =>
-					String(upload.report_id) === String(primaryReport.id) &&
-					upload.status === 'attached' &&
-					Boolean(inspectorTimestamp(upload.attached_at)) &&
-					primaryEvidencePaths.includes(String(upload.storage_path))
-			)
-		);
+		const liveScenarioAnchor = manifest.reports
+			.filter((report) => report.actorRole === 'reporter')
+			.some((manifestReport) => {
+				const liveReport = reports.find(
+					(row) =>
+						String(row.id) === String(manifestReport.id) &&
+						String(row.reporter_id) === String(reporterId) &&
+						String(row.target_id) === String(crossUserId) &&
+						String(row.assigned_to) === String(assignedModeratorId) &&
+						row.status === 'investigating'
+				);
+				if (!liveReport || !Array.isArray(liveReport.evidence_paths)) return false;
+				const evidencePaths = liveReport.evidence_paths.map(String);
+				return manifest.uploads
+					.filter(
+						(upload) =>
+							upload.actorRole === 'reporter' &&
+							String(upload.uploaderId) === String(reporterId)
+					)
+					.some((manifestUpload) => {
+						const liveUpload = uploads.find(
+							(upload) =>
+								String(upload.id) === String(manifestUpload.id) &&
+								String(upload.uploader_id) === String(reporterId) &&
+								String(upload.storage_path) === String(manifestUpload.objectPath) &&
+								String(upload.report_id) === String(manifestReport.id) &&
+								upload.status === 'attached' &&
+								Boolean(inspectorTimestamp(upload.attached_at))
+						);
+						return Boolean(
+							liveUpload &&
+							evidencePaths.includes(String(manifestUpload.objectPath)) &&
+							objects.some(
+								(object) =>
+									object.ownerId === String(reporterId) &&
+									object.path === String(manifestUpload.objectPath)
+							)
+						);
+					});
+			});
 		const scenarioVerified = Boolean(
 			scenarioPhase.status === 'complete' &&
-			checkpointIsComplete(scenarioPhase.checkpoint) &&
-			scenarioCheckpoints.length > 0 &&
+			exactCheckpointComplete &&
+			phaseCheckpointMatches &&
 			liveScenarioAnchor &&
 			metadataMismatches === 0
 		);
-		const scenarioPartial = Boolean(
-			!scenarioVerified &&
-			(scenarioPhase.status !== 'pending' || scenarioCheckpoints.length > 0) &&
-			liveScenarioAnchor &&
-			metadataMismatches === 0
-		);
+		const scenarioPartial = !scenarioVerified && scenarioStarted;
 		return Object.freeze({
 			counts: Object.freeze({
 				actors: exactUsers.length,
-				sessions: activeSessionRows.length,
+				sessions: activeSessionUserIds.length,
 				mfaFactors: verifiedModeratorTotpFactors,
 				profiles: exactProfiles.length,
 				reports: exactReports.length,
@@ -2606,6 +2649,7 @@ export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClien
 			confirmedActors,
 			completeProfiles,
 			verifiedModeratorTotpFactors,
+			moderatorsWithVerifiedTotp,
 			actorsWithActiveSessions,
 			activeSessionsProven,
 			scenarioVerified,

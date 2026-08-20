@@ -83,6 +83,7 @@ function hostedFacts(overrides: Record<string, unknown> = {}) {
 		confirmedActors: 0,
 		completeProfiles: 0,
 		verifiedModeratorTotpFactors: 0,
+		moderatorsWithVerifiedTotp: 0,
 		actorsWithActiveSessions: 0,
 		activeSessionsProven: false,
 		foreignEvidenceSha256: createHash('sha256').update('').digest('hex'),
@@ -348,6 +349,7 @@ describe('universal read-only Gate 3 inspection', () => {
 				confirmedActors: 4,
 				completeProfiles: 4,
 				verifiedModeratorTotpFactors: 2,
+				moderatorsWithVerifiedTotp: 2,
 				actorsWithActiveSessions: 4,
 				activeSessionsProven: true
 			}),
@@ -373,6 +375,7 @@ describe('universal read-only Gate 3 inspection', () => {
 				confirmedActors: 4,
 				completeProfiles: 4,
 				verifiedModeratorTotpFactors: 2,
+				moderatorsWithVerifiedTotp: 2,
 				actorsWithActiveSessions: 4,
 				activeSessionsProven: true,
 				scenarioVerified: true
@@ -445,13 +448,18 @@ describe('universal read-only Gate 3 inspection', () => {
 		}));
 		const inspect = async (
 			fixture: Awaited<ReturnType<typeof createFixture>>,
-			client: ReturnType<typeof realInspectionClient>
+			client: ReturnType<typeof realInspectionClient>,
+			activeUserIds: string[] = []
 		) =>
 			inspectGate3HostedRun({
 				paths: fixture.paths,
 				inspectionAdapter: createSupabaseHostedInspectionAdapter({
 					projectRef: GATE3_PROJECT_REF,
-					serviceClient: client as never
+					serviceClient: client as never,
+					sessionCoverageReader: Object.freeze({
+						targetProjectRef: GATE3_PROJECT_REF,
+						readActiveUserIds: vi.fn().mockResolvedValue({ activeUserIds })
+					})
 				}),
 				fetchImpl: responseWith(releaseCommitSha)
 			});
@@ -464,7 +472,7 @@ describe('universal read-only Gate 3 inspection', () => {
 
 		const one = await createFixture({ manifest: 'actor' });
 		await expect(
-			inspect(one, realInspectionClient({ users: [users[0] ?? {}] }))
+			inspect(one, realInspectionClient({ users: [users[0] ?? {}] }), [actorIds.reporter])
 		).resolves.toMatchObject({
 			classification: 'PROVISION_PARTIAL',
 			cleanupRequired: false
@@ -490,7 +498,7 @@ describe('universal read-only Gate 3 inspection', () => {
 			}
 			const checkpoint = {
 				status: 'complete',
-				step: 'primary-upload-attached-verified',
+				step: 'primary-upload-attached',
 				observedAt: actorCreatedAt
 			};
 			const phases = {
@@ -516,7 +524,7 @@ describe('universal read-only Gate 3 inspection', () => {
 			await replaceFixtureManifest(fixture, manifest, {
 				phases,
 				scenarioCheckpoints: scenario
-					? { 'scenario-primary-upload-attached-verified': checkpoint }
+					? { 'scenario-primary-upload-attached': checkpoint }
 					: {}
 			});
 			return {
@@ -562,14 +570,16 @@ describe('universal read-only Gate 3 inspection', () => {
 		};
 
 		const four = await prepareFour(false);
-		await expect(inspect(four.fixture, four.client)).resolves.toMatchObject({
+		await expect(inspect(four.fixture, four.client, Object.values(actorIds))).resolves.toMatchObject({
 			classification: 'PROVISION_VERIFIED',
 			activeSessionsProven: true,
 			actorsWithActiveSessions: 4,
 			cleanupRequired: false
 		});
 		const scenario = await prepareFour(true);
-		await expect(inspect(scenario.fixture, scenario.client)).resolves.toMatchObject({
+		await expect(
+			inspect(scenario.fixture, scenario.client, Object.values(actorIds))
+		).resolves.toMatchObject({
 			classification: 'SCENARIO_VERIFIED',
 			manifestMatches: true,
 			ownershipConflict: false,
@@ -580,12 +590,16 @@ describe('universal read-only Gate 3 inspection', () => {
 			cleanupRequired: false
 		});
 		const cleanupStarted = await prepareFour(false, 'in-progress');
-		await expect(inspect(cleanupStarted.fixture, cleanupStarted.client)).resolves.toMatchObject({
+		await expect(
+			inspect(cleanupStarted.fixture, cleanupStarted.client, Object.values(actorIds))
+		).resolves.toMatchObject({
 			classification: 'CLEANUP_PARTIAL',
 			cleanupRequired: false
 		});
 		const residualCleanup = await prepareFour(false, 'required');
-		await expect(inspect(residualCleanup.fixture, residualCleanup.client)).resolves.toMatchObject({
+		await expect(
+			inspect(residualCleanup.fixture, residualCleanup.client, Object.values(actorIds))
+		).resolves.toMatchObject({
 			classification: 'CLEANUP_REQUIRED',
 			cleanupRequired: true
 		});
@@ -648,6 +662,47 @@ describe('universal read-only Gate 3 inspection', () => {
 			classification: 'PROVISION_PARTIAL',
 			activeSessionsProven: false
 		});
+	});
+
+	it('requires verified TOTP coverage for both distinct moderator roles', async () => {
+		const { paths } = await createFixture();
+		const otherwiseComplete = {
+			counts: {
+				...emptyCounts,
+				actors: 4,
+				sessions: 4,
+				profiles: 4,
+				mfaFactors: 2
+			},
+			roleCounts: {
+				reporter: 1,
+				'cross-user': 1,
+				'assigned-moderator': 1,
+				'unassigned-moderator': 1
+			},
+			confirmedActors: 4,
+			completeProfiles: 4,
+			verifiedModeratorTotpFactors: 2,
+			actorsWithActiveSessions: 4,
+			activeSessionsProven: true
+		};
+		for (const [coverage, expectedVerified] of [
+			[1, false],
+			[2, true]
+		] as const) {
+			const result = await inspectGate3HostedRun({
+				paths,
+				inspectionAdapter: inspectionAdapter({
+					...otherwiseComplete,
+					moderatorsWithVerifiedTotp: coverage
+				}),
+				fetchImpl: responseWith(releaseCommitSha)
+			});
+			expect(result.provisionVerified).toBe(expectedVerified);
+			expect(result.classification).toBe(
+				expectedVerified ? 'PROVISION_VERIFIED' : 'PROVISION_PARTIAL'
+			);
+		}
 	});
 
 	it.each([
@@ -985,7 +1040,7 @@ describe('universal read-only Gate 3 inspection', () => {
 		const { paths, state } = await createFixture();
 		const checkpoint = {
 			status: 'complete',
-			step: 'primary-upload-attached-verified',
+			step: 'primary-upload-attached',
 			observedAt: '2026-08-20T10:30:00.000Z'
 		};
 		await writeNextRunState(paths, state, {
@@ -996,7 +1051,7 @@ describe('universal read-only Gate 3 inspection', () => {
 				scenario: { status: 'complete', checkpoint }
 			},
 			scenarioCheckpoints: {
-				'scenario-primary-upload-attached-verified': checkpoint
+				'scenario-primary-upload-attached': checkpoint
 			}
 		});
 		const inspectRun = vi.fn(async (scope: Record<string, any>) =>
@@ -1018,6 +1073,7 @@ describe('universal read-only Gate 3 inspection', () => {
 				confirmedActors: 4,
 				completeProfiles: 4,
 				verifiedModeratorTotpFactors: 2,
+				moderatorsWithVerifiedTotp: 2,
 				actorsWithActiveSessions: 4,
 				activeSessionsProven: true,
 				scenarioVerified:
@@ -1035,7 +1091,7 @@ describe('universal read-only Gate 3 inspection', () => {
 			expect.objectContaining({
 				scenarioEvidence: {
 					phase: { status: 'complete', checkpoint },
-					checkpoints: { 'scenario-primary-upload-attached-verified': checkpoint }
+					checkpoints: { 'scenario-primary-upload-attached': checkpoint }
 				}
 			})
 		);
@@ -1066,6 +1122,63 @@ describe('universal read-only Gate 3 inspection', () => {
 		});
 
 		expect(result.cleanupVerified).toBe(false);
+	});
+
+	it.each(['actors', 'reports', 'uploads', 'objects', 'queueRows'] as const)(
+		'classifies completed cleanup with a surviving %s row as ambiguous',
+		async (field) => {
+			const { paths, state } = await createFixture();
+			await writeNextRunState(paths, state, {
+				...state,
+				revision: state.revision + 1,
+				phases: {
+					...state.phases,
+					cleanup: {
+						status: 'complete',
+						checkpoint: { status: 'complete', observedAt: actorCreatedAt }
+					}
+				}
+			});
+			const result = await inspectGate3HostedRun({
+				paths,
+				inspectionAdapter: inspectionAdapter({
+					counts: { ...emptyCounts, [field]: 1 }
+				}),
+				fetchImpl: responseWith(releaseCommitSha)
+			});
+
+			expect(result).toMatchObject({
+				cleanupVerified: false,
+				ambiguous: true,
+				classification: 'AMBIGUOUS'
+			});
+		}
+	);
+
+	it('verifies completed cleanup only with fresh exact hosted zero', async () => {
+		const { paths, state } = await createFixture();
+		await writeNextRunState(paths, state, {
+			...state,
+			revision: state.revision + 1,
+			phases: {
+				...state.phases,
+				cleanup: {
+					status: 'complete',
+					checkpoint: { status: 'complete', observedAt: actorCreatedAt }
+				}
+			}
+		});
+		const result = await inspectGate3HostedRun({
+			paths,
+			inspectionAdapter: inspectionAdapter(),
+			fetchImpl: responseWith(releaseCommitSha)
+		});
+
+		expect(result).toMatchObject({
+			cleanupVerified: true,
+			ambiguous: false,
+			classification: 'CLEANUP_VERIFIED'
+		});
 	});
 
 	it('serializes only safe facts and hashes', async () => {

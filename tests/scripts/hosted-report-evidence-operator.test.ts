@@ -555,11 +555,51 @@ describe('universal Supabase inspection adapter', () => {
 			confirmedActors: 4,
 			completeProfiles: 4,
 			verifiedModeratorTotpFactors: 2,
+			moderatorsWithVerifiedTotp: 2,
 			activeSessionsProven: false
 		});
 	});
 
-	it('derives authoritative active-session proof only from fresh Auth session rows', async () => {
+	it('does not treat two verified TOTP factors on one moderator as coverage of both roles', async () => {
+		const users = expectedIdentities.map((identity, index) => ({
+			id: Object.values(actorIds)[index],
+			email: identity.email,
+			created_at: actorCreatedAt,
+			factors:
+				identity.role === 'assigned-moderator'
+					? [
+							{ factor_type: 'totp', status: 'verified' },
+							{ factor_type: 'totp', status: 'verified' },
+							{ factor_type: 'phone', status: 'verified' },
+							{ factor_type: 'totp', status: 'unverified' }
+						]
+					: [],
+			user_metadata: {
+				gate3_report_evidence_run_id: inspectorRunId,
+				gate3_report_evidence_provisioning_attempt_id:
+					baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+			}
+		}));
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: createInspectorServiceClient({ users }) as never
+		});
+
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({
+			counts: { mfaFactors: 2 },
+			verifiedModeratorTotpFactors: 2,
+			moderatorsWithVerifiedTotp: 1
+		});
+	});
+
+	it('derives authoritative active-session proof only from the constrained reader', async () => {
 		const users = expectedIdentities.map((identity, index) => ({
 			id: Object.values(actorIds)[index],
 			email: identity.email,
@@ -570,24 +610,22 @@ describe('universal Supabase inspection adapter', () => {
 					baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
 			}
 		}));
-		const client = createInspectorServiceClient({
-			users,
-			rows: {
-				'auth.sessions': users.map((user, index) => ({
-					id: `session-${index}`,
-					user_id: user.id,
-					not_after: '2099-01-01T00:00:00.000Z'
-				}))
-			}
-		}) as ReturnType<typeof createInspectorServiceClient> & {
-			schema: (name: string) => { from: (table: string) => ReturnType<ReturnType<typeof createInspectorServiceClient>['from']> };
-		};
-		client.schema = (name: string) => ({
-			from: (table: string) => client.from(`${name}.${table}`)
+		const client = createInspectorServiceClient({ users }) as ReturnType<
+			typeof createInspectorServiceClient
+		> & { schema: ReturnType<typeof vi.fn> };
+		client.schema = vi.fn(() => {
+			throw new Error('unreachable Auth schema must not be queried');
+		});
+		const readActiveUserIds = vi.fn().mockResolvedValue({
+			activeUserIds: users.map((user) => user.id)
 		});
 		const adapter = createSupabaseHostedInspectionAdapter({
 			projectRef: HOSTED_STAGING.projectRef,
-			serviceClient: client as never
+			serviceClient: client as never,
+			sessionCoverageReader: Object.freeze({
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds
+			})
 		});
 
 		await expect(
@@ -602,6 +640,73 @@ describe('universal Supabase inspection adapter', () => {
 			actorsWithActiveSessions: 4,
 			activeSessionsProven: true
 		});
+		expect(readActiveUserIds).toHaveBeenCalledWith({ userIds: Object.values(actorIds) });
+		expect(client.schema).not.toHaveBeenCalled();
+	});
+
+	it('does not query the unreachable Auth schema and fails closed on absent or failing readers', async () => {
+		const providerSecret = 'provider-session-body-never-returned';
+		for (const sessionCoverageReader of [
+			undefined,
+			Object.freeze({
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds: vi.fn().mockRejectedValue(new Error(providerSecret))
+			})
+		]) {
+			const client = createInspectorServiceClient({ users: [exactReporter] }) as ReturnType<
+				typeof createInspectorServiceClient
+		> & { schema: ReturnType<typeof vi.fn> };
+			client.schema = vi.fn(() => {
+				throw new Error('unreachable Auth schema must not be queried');
+			});
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: client as never,
+				sessionCoverageReader
+			});
+			const result = await adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			});
+			expect(result).toMatchObject({
+				counts: { sessions: 0 },
+				actorsWithActiveSessions: 0,
+				activeSessionsProven: false
+			});
+			expect(JSON.stringify(result)).not.toContain(providerSecret);
+			expect(client.schema).not.toHaveBeenCalled();
+		}
+	});
+
+	it('rejects foreign-target or mutation-capable session coverage readers as unavailable proof', async () => {
+		for (const sessionCoverageReader of [
+			{
+				targetProjectRef: 'foreign-project',
+				readActiveUserIds: vi.fn().mockResolvedValue({ activeUserIds: [actorIds.reporter] })
+			},
+			{
+				targetProjectRef: HOSTED_STAGING.projectRef,
+				readActiveUserIds: vi.fn().mockResolvedValue({ activeUserIds: [actorIds.reporter] }),
+				deleteSession: vi.fn()
+			}
+		]) {
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({ users: [exactReporter] }) as never,
+				sessionCoverageReader
+			});
+			await expect(
+				adapter.inspectRun({
+					runId: inspectorRunId,
+					createdAfter: '2026-08-09T11:59:00.000Z',
+					manifest: gate3Manifest(),
+					expectedIdentities
+				})
+			).resolves.toMatchObject({ activeSessionsProven: false });
+			expect(sessionCoverageReader.readActiveUserIds).not.toHaveBeenCalled();
+		}
 	});
 
 	it.each([
@@ -672,20 +777,121 @@ describe('universal Supabase inspection adapter', () => {
 							status: phaseStatus,
 							checkpoint: {
 								status: checkpointStatus,
-								step: 'primary-upload-attached-verified',
+								step: 'primary-upload-attached',
 								observedAt: actorCreatedAt
 							}
 						},
 						checkpoints: {
-							'scenario-primary-upload-attached-verified': {
+							'scenario-primary-upload-attached': {
 								status: checkpointStatus,
-								step: 'primary-upload-attached-verified',
+								step: 'primary-upload-attached',
 								observedAt: actorCreatedAt
 							}
 						}
 					}
 				})
 			).resolves.toMatchObject({ scenarioVerified, scenarioPartial });
+		}
+	);
+
+	it.each([
+		['unrelated checkpoint', 'scenario-unrelated', 'unrelated-step', true, actorIds.reporter, true, true, true, false],
+		['unmanifested upload', 'scenario-primary-upload-attached', 'primary-upload-attached', false, actorIds.reporter, true, true, true, false],
+		['wrong uploader', 'scenario-primary-upload-attached', 'primary-upload-attached', true, actorIds['cross-user'], true, true, true, false],
+		['missing object', 'scenario-primary-upload-attached', 'primary-upload-attached', true, actorIds.reporter, false, true, true, false],
+		['mismatched report linkage', 'scenario-primary-upload-attached', 'primary-upload-attached', true, actorIds.reporter, true, false, true, false],
+		['mismatched evidence path', 'scenario-primary-upload-attached', 'primary-upload-attached', true, actorIds.reporter, true, true, false, false],
+		['exact valid shape', 'scenario-primary-upload-attached', 'primary-upload-attached', true, actorIds.reporter, true, true, true, true]
+	] as const)(
+		'accepts only the exact scenario evidence contract: %s',
+		async (
+			_label,
+			checkpointKey,
+			checkpointStep,
+			manifestUpload,
+			uploaderId,
+			objectPresent,
+			correctReportLink,
+			correctEvidencePath,
+			expectedVerified
+		) => {
+			let manifest = gate3Manifest();
+			for (const [role, userId] of Object.entries(actorIds)) {
+				manifest = registerHostedActor(manifest, role, userId, actorCreatedAt);
+			}
+			const reportId = '66666666-6666-4666-8666-666666666666';
+			const uploadId = '77777777-7777-4777-8777-777777777777';
+			const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+			manifest = registerHostedReport(manifest, reportId, 'reporter');
+			if (manifestUpload) {
+				manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+			}
+			const users = expectedIdentities.map((identity, index) => ({
+				id: Object.values(actorIds)[index],
+				email: identity.email,
+				created_at: actorCreatedAt,
+				user_metadata: {
+					gate3_report_evidence_run_id: inspectorRunId,
+					gate3_report_evidence_provisioning_attempt_id:
+						baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+				}
+			}));
+			const checkpoint = {
+				status: 'complete',
+				step: checkpointStep,
+				observedAt: actorCreatedAt
+			};
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({
+					users,
+					rows: {
+						reports: [
+							{
+								id: reportId,
+								reporter_id: actorIds.reporter,
+								target_id: actorIds['cross-user'],
+								evidence_paths: [
+									correctEvidencePath ? objectPath : `${actorIds.reporter}/other.webp`
+								],
+								status: 'investigating',
+								assigned_to: actorIds['assigned-moderator']
+							}
+						],
+						report_evidence_uploads: [
+							{
+								id: uploadId,
+								uploader_id: uploaderId,
+								storage_path: objectPath,
+								status: 'attached',
+								report_id: correctReportLink
+									? reportId
+									: '88888888-8888-4888-8888-888888888888',
+								attached_at: actorCreatedAt
+							}
+						]
+					},
+					objects: objectPresent
+						? { [actorIds.reporter]: [{ name: `${uploadId}.webp` }] }
+						: {}
+				}) as never
+			});
+
+			await expect(
+				adapter.inspectRun({
+					runId: inspectorRunId,
+					createdAfter: '2026-08-09T11:59:00.000Z',
+					manifest,
+					expectedIdentities,
+					scenarioEvidence: {
+						phase: { status: 'complete', checkpoint },
+						checkpoints: { [checkpointKey]: checkpoint }
+					}
+				})
+			).resolves.toMatchObject({
+				scenarioVerified: expectedVerified,
+				scenarioPartial: !expectedVerified
+			});
 		}
 	);
 
