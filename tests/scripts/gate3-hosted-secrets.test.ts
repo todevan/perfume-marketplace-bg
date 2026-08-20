@@ -243,6 +243,8 @@ describe('Gate 3 hosted run secrets', () => {
 			status: 'available',
 			ciphertextSha256: '808c07913790c01939b93c5b6de8b706a2736ffeb75fe5ba985c44d623874788'
 		});
+		expect(Object.keys(metadata)).toEqual(['status', 'ciphertextSha256']);
+		expect(Object.isFrozen(metadata)).toBe(true);
 		expect(await readFile(path)).toEqual(ciphertext);
 		expect(await readdir(join(path, '..'))).toEqual(['gate3-secrets.dpapi']);
 		expect(JSON.stringify(metadata).includes('JBSWY3DPEHPK3PXP')).toBe(false);
@@ -346,15 +348,82 @@ describe('Gate 3 hosted run secrets', () => {
 		expect((await readFile(path, 'utf8'))).toBe('existing-ciphertext');
 	});
 
-	it('prepares complete frozen metadata before the rename commit point', async () => {
+	it('owns exact frozen metadata and ignores mutable callback substitutions before rename', async () => {
 		const path = await createSecretPath();
 		deterministicDistinctBytes.calls = 0;
 		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
 		const order: string[] = [];
-		const metadataImpl = (value: unknown) => { order.push('metadata'); return Object.freeze(value as object); };
+		const expected = {
+			status: 'available',
+			ciphertextSha256: '95713e9cbdd1dfcb2d4080c2537f418d43ca0da25f0d7d6631f4f7c97b89dc47'
+		};
+		const mutableSubstitute = { status: 'substituted', ciphertextSha256: '0'.repeat(64) };
+		const metadataImpl = vi.fn(() => mutableSubstitute);
+		let observed: unknown;
+		let frozenWhenObserved = false;
+		const onMetadataPrepared = vi.fn((metadata: unknown) => {
+			order.push('metadata');
+			observed = metadata;
+			frozenWhenObserved = Object.isFrozen(metadata);
+			return mutableSubstitute;
+		});
 		const filesystem = { chmod, lstat, open, readFile, realpath, rename: async (...args: Parameters<typeof rename>) => { order.push('rename'); return rename(...args); }, unlink };
-		await protectRunSecrets({ payload, path, dpapi: { protect: async () => Buffer.from('replacement') }, filesystem, metadataImpl } as any);
+		const metadata = await protectRunSecrets({
+			payload,
+			path,
+			dpapi: { protect: async () => Buffer.from('replacement') },
+			filesystem,
+			metadataImpl,
+			onMetadataPrepared
+		} as any);
+		expect(Object.keys(metadata)).toEqual(['status', 'ciphertextSha256']);
+		expect(metadata).toEqual(expected);
+		expect(Object.isFrozen(metadata)).toBe(true);
+		expect(metadata).not.toBe(mutableSubstitute);
+		expect(observed).toBe(metadata);
+		expect(frozenWhenObserved).toBe(true);
+		expect(metadataImpl).not.toHaveBeenCalled();
+		expect(onMetadataPrepared).toHaveBeenCalledTimes(1);
 		expect(order).toEqual(['metadata', 'rename']);
+		expect(await readFile(path, 'utf8')).toBe('replacement');
+	});
+
+	it('never adopts a thenable observation result after committing ciphertext', async () => {
+		const path = await createSecretPath();
+		deterministicDistinctBytes.calls = 0;
+		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		let thenCalls = 0;
+		const thenable = {
+			then: (_resolve: unknown, reject: (error: Error) => void) => {
+				thenCalls += 1;
+				reject(new Error('post-commit-sensitive-fixture'));
+			}
+		};
+		const metadataImpl = vi.fn(() => thenable);
+		const onMetadataPrepared = vi.fn(() => thenable);
+		let metadata: unknown;
+		let caught: unknown;
+		try {
+			metadata = await protectRunSecrets({
+				payload,
+				path,
+				dpapi: { protect: async () => Buffer.from('replacement') },
+				metadataImpl,
+				onMetadataPrepared
+			} as any);
+		} catch (error) {
+			caught = error;
+		}
+		expect(await readFile(path, 'utf8')).toBe('replacement');
+		expect(caught).toBeUndefined();
+		expect(metadata).toEqual({
+			status: 'available',
+			ciphertextSha256: '95713e9cbdd1dfcb2d4080c2537f418d43ca0da25f0d7d6631f4f7c97b89dc47'
+		});
+		expect(Object.isFrozen(metadata)).toBe(true);
+		expect(metadataImpl).not.toHaveBeenCalled();
+		expect(onMetadataPrepared).toHaveBeenCalledTimes(1);
+		expect(thenCalls).toBe(0);
 	});
 
 	it.each(['stdout', 'stderr', 'stdin', 'child', 'stdin-end'])(
