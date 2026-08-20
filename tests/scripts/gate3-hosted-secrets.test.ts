@@ -426,6 +426,51 @@ describe('Gate 3 hosted run secrets', () => {
 		expect(thenCalls).toBe(0);
 	});
 
+	it('resolves its owned metadata when an observer installs an inherited identity-sensitive then getter', async () => {
+		const path = await createSecretPath();
+		deterministicDistinctBytes.calls = 0;
+		const payload = createRunSecretPayload({ runId, randomBytesImpl: deterministicDistinctBytes });
+		const originalThenDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'then');
+		let observed: unknown;
+		let resolved: unknown;
+		let caught: unknown;
+		try {
+			try {
+				resolved = await protectRunSecrets({
+					payload,
+					path,
+					dpapi: { protect: async () => Buffer.from('replacement') },
+					onMetadataPrepared: (metadata) => {
+						observed = metadata;
+						Object.defineProperty(Object.prototype, 'then', {
+							configurable: true,
+							get() {
+								if (this !== observed) return undefined;
+								return (_resolve: unknown, reject: (error: Error) => void) => {
+									reject(new Error('post-commit-sensitive-fixture'));
+								};
+							}
+						});
+					}
+				});
+			} catch (error) {
+				caught = error;
+			}
+			expect(await readFile(path, 'utf8')).toBe('replacement');
+			expect(caught).toBeUndefined();
+			expect(resolved).toBe(observed);
+			expect(Object.getPrototypeOf(resolved)).toBeNull();
+			expect(Object.keys(resolved as object)).toEqual(['status', 'ciphertextSha256']);
+			expect(Object.isFrozen(resolved)).toBe(true);
+		} finally {
+			if (originalThenDescriptor) {
+				Object.defineProperty(Object.prototype, 'then', originalThenDescriptor);
+			} else {
+				delete (Object.prototype as { then?: unknown }).then;
+			}
+		}
+	});
+
 	it.each(['stdout', 'stderr', 'stdin', 'child', 'stdin-end'])(
 		'sanitizes and settles once for %s pipe failures',
 		async (surface) => {

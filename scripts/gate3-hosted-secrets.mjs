@@ -453,7 +453,10 @@ export async function protectRunSecrets({ payload, path, dpapi, filesystem = NOD
 		);
 		const ciphertextSha256 = hashImpl(ciphertext);
 		if (!/^[a-f0-9]{64}$/u.test(ciphertextSha256)) throw new Gate3HostedSecretsError('secret_store_write_failed');
-		const metadata = Object.freeze({ status: /** @type {const} */ ('available'), ciphertextSha256 });
+		const metadata = Object.freeze(Object.assign(Object.create(null), {
+			status: /** @type {const} */ ('available'),
+			ciphertextSha256
+		}));
 		try { onMetadataPrepared?.(metadata); } catch { /* Test observation cannot affect persistence. */ }
 		await atomicCiphertextWrite(exactPath, ciphertext, filesystem);
 		return metadata;
