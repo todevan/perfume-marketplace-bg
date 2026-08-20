@@ -1198,6 +1198,19 @@ async function retireActivePointerGuard(guardPath, expectedOwner, filesystem) {
 	}
 }
 
+/** @param {string} guardPath @param {{ version: 1, guardId: string, pid: number }} expectedOwner @param {typeof NODE_FILESYSTEM} filesystem */
+async function releaseActivePointerGuard(guardPath, expectedOwner, filesystem) {
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		if (await retireActivePointerGuard(guardPath, expectedOwner, filesystem)) return;
+		const held = await readActivePointerGuard(guardPath, filesystem);
+		if (held === null || held.guardId !== expectedOwner.guardId || held.pid !== expectedOwner.pid) {
+			throw new Gate3HostedStateError('active_pointer_lock_failed');
+		}
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
+	}
+	throw new Gate3HostedStateError('active_pointer_lock_failed');
+}
+
 /** @param {string} root @param {() => Promise<any>} operation @param {typeof NODE_FILESYSTEM} [filesystem] */
 async function withActivePointerLock(root, operation, filesystem = NODE_FILESYSTEM) {
 	await assertRealDirectory(root, filesystem);
@@ -1226,9 +1239,7 @@ async function withActivePointerLock(root, operation, filesystem = NODE_FILESYST
 	try {
 		return await operation();
 	} finally {
-		if (!(await retireActivePointerGuard(guardPath, owner, filesystem))) {
-			throw new Gate3HostedStateError('active_pointer_lock_failed');
-		}
+		await releaseActivePointerGuard(guardPath, owner, filesystem);
 	}
 }
 

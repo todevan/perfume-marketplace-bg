@@ -366,7 +366,7 @@ describe('Gate 3 hosted state', () => {
 		expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
 		expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(11);
 		expect(runs.map((run) => run.runId)).toContain(await readActiveRun(paths.root));
-	}, 15_000);
+	});
 
 	it('survives death after active-pointer candidate creation without deleting the unpublished candidate', async () => {
 		const { paths } = await createFixture();
@@ -459,6 +459,38 @@ describe('Gate 3 hosted state', () => {
 			await expect(readActiveRun(paths.root)).resolves.toBeNull();
 		}
 	);
+
+	it('retries transient contention while retiring the exact active-pointer owner', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = join(paths.root, '.active-run.lock');
+		let transientRetireFailures = 0;
+		const contendedFilesystem = {
+			...testFilesystem,
+			rename: async (from: Parameters<typeof rename>[0], to: Parameters<typeof rename>[1]) => {
+				if (
+					String(from) === guardPath &&
+					String(to).startsWith(`${guardPath}.retired-`) &&
+					transientRetireFailures < 3
+				) {
+					transientRetireFailures += 1;
+					throw Object.assign(new Error('simulated transient contention'), { code: 'EPERM' });
+				}
+				return rename(from, to);
+			}
+		};
+
+		await expect(setActiveRun({
+			root: paths.root,
+			runId: paths.runId,
+			expectedCurrentRunId: null,
+			filesystem: contendedFilesystem as never
+		})).resolves.toBe(paths.runId);
+
+		expect(transientRetireFailures).toBe(3);
+		await expect(lstat(guardPath)).rejects.toMatchObject({ code: 'ENOENT' });
+		await expect(readActiveRun(paths.root)).resolves.toBe(paths.runId);
+	});
 
 	it('retains attributable active-pointer ownership after final cleanup failure for later stale recovery', async () => {
 		const { paths } = await createFixture();
