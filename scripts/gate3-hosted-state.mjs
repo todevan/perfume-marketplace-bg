@@ -1,4 +1,5 @@
-import { lstat, mkdir, open, readFile, realpath, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { atomicPrivateWrite, reservePrivateFile } from './hosted-private-file.mjs';
 
@@ -40,6 +41,7 @@ const ARCHIVE_KEYS = new Set([
 	'manifestSha256'
 ]);
 const RUN_LOCK_COMMANDS = new Set(['preflight', 'provision', 'scenario', 'cleanup', 'recovery', 'archive']);
+const LOCK_GUARD_STALE_MS = 60_000;
 const TOP_LEVEL_STATE_KEYS = new Set([
 	'schemaVersion',
 	'revision',
@@ -187,7 +189,8 @@ function validateRunState(state) {
 	}
 	if (state.archive !== null) {
 		assertExactKeys(state.archive, [...ARCHIVE_KEYS]);
-		if (!['pending', 'complete'].includes(state.archive.status)) throw new Gate3HostedStateError('state_invalid');
+		if (typeof state.archive.status !== 'string' || !['pending', 'complete'].includes(state.archive.status)) throw new Gate3HostedStateError('state_invalid');
+		if (typeof state.archive.destination !== 'string') throw new Gate3HostedStateError('state_invalid');
 		assertAbsolutePath(state.archive.destination);
 		if (typeof state.archive.requestedAt !== 'string' || Number.isNaN(Date.parse(state.archive.requestedAt))) {
 			throw new Gate3HostedStateError('state_invalid');
@@ -333,6 +336,7 @@ function validateRunLock(paths, lock) {
 	) {
 		throw new Gate3HostedStateError('lock_invalid');
 	}
+	if (typeof lock.startedAt !== 'string') throw new Gate3HostedStateError('lock_invalid');
 	assertTimestamp(lock.startedAt);
 	return /** @type {{ runId: string, command: string, pid: number, startedAt: string }} */ (lock);
 }
@@ -344,6 +348,68 @@ function pidIsRunning(pid) {
 		return true;
 	} catch (error) {
 		return /** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH';
+	}
+}
+
+/** @param {Record<string, string>} paths */
+function runLockGuardPath(paths) {
+	return `${paths.lockPath}.guard`;
+}
+
+/** @param {string} guardPath @param {(pid: number) => boolean} isPidRunning */
+async function quarantineStaleRunLockGuard(guardPath, isPidRunning) {
+	let entry;
+	try {
+		entry = await lstat(guardPath);
+		if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Gate3HostedStateError('lock_guard_invalid');
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
+		throw new Gate3HostedStateError('lock_guard_failed');
+	}
+	let stale = Date.now() - entry.mtimeMs > LOCK_GUARD_STALE_MS;
+	try {
+		const owner = JSON.parse(await readFile(join(guardPath, 'owner.json'), 'utf8'));
+		stale = typeof owner.pid === 'number' && Number.isSafeInteger(owner.pid) && owner.pid > 0 && !isPidRunning(owner.pid);
+	} catch {
+		// An owner crash between mkdir and write is recovered only after a bounded grace period.
+	}
+	if (!stale) return false;
+	const quarantinePath = `${guardPath}.quarantine-${randomUUID()}`;
+	try {
+		await rename(guardPath, quarantinePath);
+		await rm(quarantinePath, { recursive: true, force: true });
+		return true;
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
+		throw new Gate3HostedStateError('lock_guard_failed');
+	}
+}
+
+/** @param {Record<string, string>} paths @param {() => Promise<any>} operation @param {(pid: number) => boolean} [isPidRunning] */
+async function withRunLockGuard(paths, operation, isPidRunning = pidIsRunning) {
+	const guardPath = runLockGuardPath(paths);
+	let acquired = false;
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		try {
+			await mkdir(guardPath, { mode: 0o700 });
+			await writeFile(join(guardPath, 'owner.json'), JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+			acquired = true;
+			break;
+		} catch (error) {
+			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw new Gate3HostedStateError('lock_guard_failed');
+			if (!(await quarantineStaleRunLockGuard(guardPath, isPidRunning))) await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+		}
+	}
+	if (!acquired) throw new Gate3HostedStateError('lock_guard_held');
+	try {
+		return await operation();
+	} finally {
+		try {
+			await rm(guardPath, { recursive: true, force: true });
+		} catch {
+			throw new Gate3HostedStateError('lock_guard_failed');
+		}
 	}
 }
 
@@ -495,21 +561,22 @@ export async function acquireRunLock({ paths, command, pid = process.pid, starte
 	const lock = validateRunLock(exactPaths, { runId: exactPaths.runId, command, pid, startedAt });
 	await assertSafeRunPaths(exactPaths);
 	const acquiredBytes = `${JSON.stringify(lock)}\n`;
-	let handle;
-	try {
-		handle = await open(exactPaths.lockPath, 'wx', 0o600);
-		await handle.writeFile(acquiredBytes, 'utf8');
-		await handle.sync();
-	} catch (error) {
-		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'EEXIST') throw new Gate3HostedStateError('lock_held');
-		throw new Gate3HostedStateError('lock_acquire_failed');
-	} finally {
+	await withRunLockGuard(exactPaths, async () => {
+		let handle;
 		try {
-			await handle?.close();
-		} catch {
+			handle = await open(exactPaths.lockPath, 'wx', 0o600);
+			await handle.writeFile(acquiredBytes, 'utf8');
+			await handle.sync();
+		} catch (error) {
+			try { await handle?.close(); } catch {}
+			handle = undefined;
+			await unlink(exactPaths.lockPath).catch(() => {});
+			if (/** @type {NodeJS.ErrnoException} */ (error).code === 'EEXIST') throw new Gate3HostedStateError('lock_held');
 			throw new Gate3HostedStateError('lock_acquire_failed');
+		} finally {
+			try { await handle?.close(); } catch { throw new Gate3HostedStateError('lock_acquire_failed'); }
 		}
-	}
+	});
 	return Object.freeze({ lock: Object.freeze(lock), acquiredBytes });
 }
 
@@ -536,16 +603,14 @@ export async function releaseRunLock({ paths, acquiredLock }) {
 		throw new Gate3HostedStateError('lock_invalid');
 	}
 	await assertSafeRunPaths(exactPaths);
-	const currentBytes = await readRunLockBytes(exactPaths.lockPath);
-	if (currentBytes === null) return false;
-	if (currentBytes !== acquiredLock.acquiredBytes) return false;
-	try {
-		await unlink(exactPaths.lockPath);
-		return true;
-	} catch (error) {
-		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
-		throw new Gate3HostedStateError('lock_release_failed');
-	}
+	return withRunLockGuard(exactPaths, async () => {
+		const currentBytes = await readRunLockBytes(exactPaths.lockPath);
+		if (currentBytes === null || currentBytes !== acquiredLock.acquiredBytes) return false;
+		try { await unlink(exactPaths.lockPath); return true; } catch (error) {
+			if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
+			throw new Gate3HostedStateError('lock_release_failed');
+		}
+	});
 }
 
 /** @param {{ paths: Record<string, string>, observedLock: unknown, inspection: unknown, isPidRunning?: (pid: number) => boolean }} options */
@@ -562,21 +627,16 @@ export async function recoverStaleRunLock({ paths, observedLock, inspection, isP
 	) {
 		throw new Gate3HostedStateError('fresh_inspection_required');
 	}
-	const freshInspection = await inspectRunLock({ paths: exactPaths, isPidRunning });
-	if (
-		freshInspection.status !== 'stale' ||
-		freshInspection.acquiredBytes !== inspection.acquiredBytes ||
-		freshInspection.acquiredBytes !== observedLock.acquiredBytes
-	) {
-		throw new Gate3HostedStateError('fresh_inspection_required');
-	}
-	try {
-		await unlink(exactPaths.lockPath);
-		return true;
-	} catch (error) {
-		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') throw new Gate3HostedStateError('fresh_inspection_required');
-		throw new Gate3HostedStateError('lock_recovery_failed');
-	}
+	return withRunLockGuard(exactPaths, async () => {
+		const freshInspection = await inspectRunLock({ paths: exactPaths, isPidRunning });
+		if (freshInspection.status !== 'stale' || freshInspection.acquiredBytes !== inspection.acquiredBytes || freshInspection.acquiredBytes !== observedLock.acquiredBytes) {
+			throw new Gate3HostedStateError('fresh_inspection_required');
+		}
+		try { await unlink(exactPaths.lockPath); return true; } catch (error) {
+			if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') throw new Gate3HostedStateError('fresh_inspection_required');
+			throw new Gate3HostedStateError('lock_recovery_failed');
+		}
+	}, isPidRunning);
 }
 
 /** @param {Record<string, string>} paths */
@@ -588,6 +648,7 @@ export async function readArchivedRunState(paths) {
 	try {
 		const state = assertStateMatchesPaths(exactPaths, JSON.parse(await readFile(archiveStatePath, 'utf8')));
 		if (state.archive?.status !== 'complete' && state.archive?.status !== 'pending') throw new Gate3HostedStateError('state_invalid');
+		if (state.archive.destination !== exactPaths.archiveDirectory) throw new Gate3HostedStateError('state_invalid');
 		return state;
 	} catch (error) {
 		if (error instanceof Gate3HostedStateError) throw error;
@@ -623,6 +684,11 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 	if (typeof completedAt !== 'string' || Number.isNaN(Date.parse(completedAt))) {
 		throw new Gate3HostedStateError('archive_invalid');
 	}
+	await assertRealDirectory(exactPaths.root);
+	if (await directoryIsMissing(exactPaths.archiveRoot)) {
+		await mkdir(exactPaths.archiveRoot, { recursive: false, mode: 0o700 });
+	}
+	await assertRealDirectory(exactPaths.archiveRoot);
 	const activeMissing = await directoryIsMissing(exactPaths.runDirectory);
 	const archiveMissing = await directoryIsMissing(exactPaths.archiveDirectory);
 	if (!activeMissing && !archiveMissing) throw new Gate3HostedStateError('archive_destination_exists');
@@ -630,9 +696,16 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 	if (activeMissing) {
 		if (archiveMissing) throw new Gate3HostedStateError('state_unavailable');
 		const archived = await readArchivedRunState(exactPaths);
-		if (archived.archive.status === 'complete') return archived;
 		if (!(await regularFileIsMissing(join(exactPaths.archiveDirectory, 'gate3-secrets.dpapi')))) {
 			throw new Gate3HostedStateError('secret_file_present');
+		}
+		if (archived.archive.status === 'complete') {
+			if ((await readActiveRun(exactPaths.root)) === exactPaths.runId) {
+				try { await clearActiveRun({ root: exactPaths.root, runId: exactPaths.runId }); } catch (error) {
+					if (!(error instanceof Gate3HostedStateError) || error.reasonCode !== 'active_run_changed') throw error;
+				}
+			}
+			return archived;
 		}
 		const complete = {
 			...archived,
@@ -678,9 +751,6 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 	} else if (pending.archive.status !== 'pending' || pending.archive.destination !== exactPaths.archiveDirectory) {
 		throw new Gate3HostedStateError('archive_invalid');
 	}
-	await mkdir(exactPaths.archiveRoot, { recursive: false, mode: 0o700 }).catch((error) => {
-		if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
-	});
 	try {
 		await (filesystem.rename ?? rename)(exactPaths.runDirectory, exactPaths.archiveDirectory);
 	} catch {

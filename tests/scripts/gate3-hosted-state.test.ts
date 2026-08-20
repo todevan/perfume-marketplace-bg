@@ -483,6 +483,52 @@ describe('Gate 3 hosted state', () => {
 		await expect(readActiveRun(paths.root)).resolves.toBe(anotherRun.runId);
 	});
 
+	it('removes a stale lock after a separately refreshed inspection', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 77, startedAt: '2026-08-19T00:00:00.000Z' }));
+		const observed = await inspectRunLock({ paths, isPidRunning: () => false });
+		const inspection = await inspectRunLock({ paths, isPidRunning: () => false });
+
+		await expect(recoverStaleRunLock({ paths, observedLock: observed, inspection, isPidRunning: () => false })).resolves.toBe(true);
+		await expect(inspectRunLock({ paths })).resolves.toMatchObject({ status: 'missing' });
+	});
+
+	it('treats access-denied PID probes as a live lock holder', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 77, startedAt: '2026-08-19T00:00:00.000Z' }));
+
+		await expect(inspectRunLock({ paths, isPidRunning: () => true })).resolves.toMatchObject({ status: 'held' });
+	});
+
+	it('rejects an archived state whose destination is not this run canonical archive path', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
+		await writeNextRunState(paths, state, verified);
+		await finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z' });
+		const archived = await readArchivedRunState(paths);
+		await writeFile(join(paths.archiveDirectory, 'gate3-run-state.json'), JSON.stringify({ ...archived, archive: { ...archived.archive, destination: join(paths.root, 'archive', 'other-run') } }));
+
+		await expect(readArchivedRunState(paths)).rejects.toMatchObject({ reasonCode: 'state_invalid' });
+	});
+
+	it('completed archive retries reject secrets and clear a surviving self pointer', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
+		await writeNextRunState(paths, state, verified);
+		await finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z' });
+		await writeFile(paths.activePointerPath, JSON.stringify({ schemaVersion: 1, runId: paths.runId }));
+		await writeFile(join(paths.archiveDirectory, 'gate3-secrets.dpapi'), 'ciphertext');
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:01:00.000Z' })).rejects.toMatchObject({ reasonCode: 'secret_file_present' });
+		await rm(join(paths.archiveDirectory, 'gate3-secrets.dpapi'));
+		await finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:01:00.000Z' });
+		await expect(readActiveRun(paths.root)).resolves.toBeNull();
+	});
+
 	it('keeps generated CodeGraph and ATL directories out of version control', () => {
 		for (const localToolDirectory of ['.codegraph/', '.atl/']) {
 			const result = spawnSync('git', ['check-ignore', '-q', localToolDirectory], {
