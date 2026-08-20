@@ -433,6 +433,17 @@ function defaultCreateSecretPayload(runId, randomBytesImpl) {
 	});
 }
 
+/** @param {string} directory @returns {Promise<'directory' | 'invalid' | 'missing'>} */
+async function exactRunDirectoryEvidence(directory) {
+	try {
+		const entry = await lstat(directory);
+		return entry.isDirectory() && !entry.isSymbolicLink() ? 'directory' : 'invalid';
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return 'missing';
+		return 'invalid';
+	}
+}
+
 /** @param {Record<string, any>} parsed @param {unknown} environment @param {Record<string, unknown>} dependencies */
 async function executePreflight(parsed, environment, dependencies) {
 	const root = verifiedRoot(environment);
@@ -455,18 +466,16 @@ async function executePreflight(parsed, environment, dependencies) {
 		runId: selectedRunId
 	});
 
-	let selectedExists = false;
-	try {
-		const entry = await lstat(paths.runDirectory);
-		selectedExists = entry.isDirectory() && !entry.isSymbolicLink();
-		if (!selectedExists) throw new Gate3HostedCliError('preflight_recovery_required');
-	} catch (error) {
-		if (error instanceof Gate3HostedCliError) throw error;
-		if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') {
+	const selectedEvidence = await exactRunDirectoryEvidence(paths.runDirectory);
+	if (parsed.createNew) {
+		const archivedEvidence = await exactRunDirectoryEvidence(paths.archiveDirectory);
+		if (selectedEvidence !== 'missing' || archivedEvidence !== 'missing') {
 			throw new Gate3HostedCliError('preflight_recovery_required');
 		}
-	}
-	if (selectedExists) {
+	} else {
+		if (selectedEvidence !== 'directory') {
+			throw new Gate3HostedCliError('preflight_recovery_required');
+		}
 		const state = await assertExistingPreflightIntegrity(paths, dependencies.dpapi);
 		return preflightNoopResult(selectedRunId, state);
 	}

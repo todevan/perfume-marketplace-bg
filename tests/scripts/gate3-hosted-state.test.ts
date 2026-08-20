@@ -8,6 +8,8 @@ import {
 	realpath,
 	rename,
 	rm,
+	rmdir,
+	unlink,
 	utimes,
 	writeFile
 } from 'node:fs/promises';
@@ -42,6 +44,7 @@ const root = 'C:\\gate3-hosted-fixtures';
 
 describe('Gate 3 hosted state', () => {
 	const fixtureRoots: string[] = [];
+	const testFilesystem = { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, unlink, writeFile };
 
 	afterEach(async () => {
 		await Promise.all(fixtureRoots.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -365,6 +368,245 @@ describe('Gate 3 hosted state', () => {
 		expect(runs.map((run) => run.runId)).toContain(await readActiveRun(paths.root));
 	});
 
+	it('survives death after active-pointer candidate creation without deleting the unpublished candidate', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = join(paths.root, '.active-run.lock');
+		const crashLeftCandidate = `${guardPath}.candidate-00000000-0000-4000-8000-000000000010`;
+		await mkdir(crashLeftCandidate, { mode: 0o700 });
+
+		await expect(setActiveRun({
+			root: paths.root,
+			runId: paths.runId,
+			expectedCurrentRunId: null
+		})).resolves.toBe(paths.runId);
+
+		await expect(lstat(crashLeftCandidate)).resolves.toMatchObject({});
+		const retired = (await readdir(paths.root)).filter((entry) => entry.startsWith('.active-run.lock.retired-'));
+		expect(retired).toHaveLength(1);
+		const owner = JSON.parse(await readFile(join(paths.root, retired[0], 'owner.json'), 'utf8'));
+		expect(Reflect.ownKeys(owner).sort()).toEqual(['guardId', 'pid', 'version']);
+		expect(owner).toMatchObject({ version: 1, pid: process.pid, guardId: expect.stringMatching(/^[a-f0-9-]{36}$/) });
+	});
+
+	it('recovers death after active-pointer guard publication by exact owner tombstone identity', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = join(paths.root, '.active-run.lock');
+		const staleOwner = { version: 1, guardId: '00000000-0000-4000-8000-000000000011', pid: 2147483647 };
+		await mkdir(guardPath, { mode: 0o700 });
+		await writeFile(join(guardPath, 'owner.json'), JSON.stringify(staleOwner), { mode: 0o600 });
+		const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+			if (pid === staleOwner.pid) throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+			return true;
+		});
+
+		try {
+			await expect(setActiveRun({
+				root: paths.root,
+				runId: paths.runId,
+				expectedCurrentRunId: null
+			})).resolves.toBe(paths.runId);
+		} finally {
+			killSpy.mockRestore();
+		}
+
+		await expect(readFile(`${guardPath}.retired-${staleOwner.guardId}/owner.json`, 'utf8'))
+			.resolves.toBe(JSON.stringify(staleOwner));
+		await expect(readActiveRun(paths.root)).resolves.toBe(paths.runId);
+	});
+
+	it.each(['writeFile', 'sync', 'close'] as const)(
+		'cleans only the exact unpublished active-pointer candidate after owner %s failure',
+		async (failure) => {
+			const { paths } = await createFixture();
+			await mkdir(paths.runDirectory, { recursive: true });
+			const unrelatedPath = join(paths.root, 'unrelated-evidence.json');
+			await writeFile(unrelatedPath, 'preserve');
+			let closeAttempts = 0;
+			const filesystem = {
+				...testFilesystem,
+				open: async (...args: Parameters<typeof open>) => {
+					const handle = await open(...args);
+					if (!String(args[0]).includes('.active-run.lock.candidate-') || !String(args[0]).endsWith('owner.json')) {
+						return handle;
+					}
+					return {
+						writeFile: failure === 'writeFile'
+							? async () => { throw new Error('simulated owner write failure'); }
+							: handle.writeFile.bind(handle),
+						sync: failure === 'sync'
+							? async () => { throw new Error('simulated owner sync failure'); }
+							: handle.sync.bind(handle),
+						close: async () => {
+							if (failure === 'close' && closeAttempts++ === 0) throw new Error('simulated owner close failure');
+							await handle.close();
+						}
+					};
+				}
+			};
+
+			await expect(setActiveRun({
+				root: paths.root,
+				runId: paths.runId,
+				expectedCurrentRunId: null,
+				filesystem: filesystem as never
+			})).rejects.toMatchObject({ reasonCode: 'active_pointer_lock_failed' });
+
+			const guards = (await readdir(paths.root)).filter((entry) => entry.startsWith('.active-run.lock'));
+			expect(guards).toEqual([]);
+			await expect(readFile(unrelatedPath, 'utf8')).resolves.toBe('preserve');
+			await expect(readActiveRun(paths.root)).resolves.toBeNull();
+		}
+	);
+
+	it('retains attributable active-pointer ownership after final cleanup failure for later stale recovery', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = join(paths.root, '.active-run.lock');
+		let cleanupFailed = false;
+		const failingFilesystem = {
+			...testFilesystem,
+			rename: async (from: Parameters<typeof rename>[0], to: Parameters<typeof rename>[1]) => {
+				if (String(from) === guardPath && String(to).startsWith(`${guardPath}.retired-`) && !cleanupFailed) {
+					cleanupFailed = true;
+					throw Object.assign(new Error('simulated cleanup failure'), { code: 'EACCES' });
+				}
+				return rename(from, to);
+			}
+		};
+
+		await expect(setActiveRun({
+			root: paths.root,
+			runId: paths.runId,
+			expectedCurrentRunId: null,
+			filesystem: failingFilesystem as never
+		})).rejects.toMatchObject({ reasonCode: 'active_pointer_lock_failed' });
+
+		const ownerBytes = await readFile(join(guardPath, 'owner.json'), 'utf8');
+		const owner = JSON.parse(ownerBytes);
+		await expect(readActiveRun(paths.root)).resolves.toBe(paths.runId);
+		const killSpy = vi.spyOn(process, 'kill').mockImplementationOnce(() => {
+			throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+		}).mockImplementation(() => true);
+		try {
+			await expect(clearActiveRun({ root: paths.root, runId: paths.runId })).resolves.toBeUndefined();
+		} finally {
+			killSpy.mockRestore();
+		}
+
+		await expect(readFile(`${guardPath}.retired-${owner.guardId}/owner.json`, 'utf8'))
+			.resolves.toBe(ownerBytes);
+		await expect(lstat(guardPath)).rejects.toMatchObject({ code: 'ENOENT' });
+		await expect(readActiveRun(paths.root)).resolves.toBeNull();
+	});
+
+	it('never steals a live active-pointer owner based on elapsed time', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		const guardPath = join(paths.root, '.active-run.lock');
+		const liveOwner = { version: 1, guardId: '00000000-0000-4000-8000-000000000012', pid: process.pid };
+		await mkdir(guardPath, { mode: 0o700 });
+		await writeFile(join(guardPath, 'owner.json'), JSON.stringify(liveOwner), { mode: 0o600 });
+		await utimes(guardPath, new Date(0), new Date(0));
+
+		await expect(setActiveRun({
+			root: paths.root,
+			runId: paths.runId,
+			expectedCurrentRunId: null
+		})).rejects.toMatchObject({ reasonCode: 'active_pointer_lock_failed' });
+
+		await expect(readFile(join(guardPath, 'owner.json'), 'utf8')).resolves.toBe(JSON.stringify(liveOwner));
+		await expect(readActiveRun(paths.root)).resolves.toBeNull();
+	});
+
+	it('uses stale-owner tombstones to stop a delayed observer from retiring an active successor guard', async () => {
+		const { paths } = await createFixture();
+		const successorPaths = resolveGate3RunPaths({ root: paths.root, runId: 'gate3-20260821-fedcba98' });
+		await Promise.all([
+			mkdir(paths.runDirectory, { recursive: true }),
+			mkdir(successorPaths.runDirectory, { recursive: true })
+		]);
+		const guardPath = join(paths.root, '.active-run.lock');
+		const ownerPath = join(guardPath, 'owner.json');
+		const staleOwner = { version: 1, guardId: '00000000-0000-4000-8000-000000000013', pid: 2147483647 };
+		await mkdir(guardPath, { mode: 0o700 });
+		await writeFile(ownerPath, JSON.stringify(staleOwner), { mode: 0o600 });
+		const delayedRetireRead = deferred();
+		const delayedRetireProceed = deferred();
+		const delayedRetireAttempted = deferred();
+		const successorEntered = deferred();
+		const successorProceed = deferred();
+		let ownerReads = 0;
+		const staleTombstone = `${guardPath}.retired-${staleOwner.guardId}`;
+		const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+			if (pid === staleOwner.pid) throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+			return true;
+		});
+		const delayedObserver = setActiveRun({
+			root: paths.root,
+			runId: paths.runId,
+			expectedCurrentRunId: null,
+			filesystem: {
+				...testFilesystem,
+				readFile: async (...args: Parameters<typeof readFile>) => {
+					const bytes = await readFile(...args);
+					if (String(args[0]) === ownerPath && ++ownerReads === 2) {
+						delayedRetireRead.resolve();
+						await delayedRetireProceed.promise;
+					}
+					return bytes;
+				},
+				rename: async (from: Parameters<typeof rename>[0], to: Parameters<typeof rename>[1]) => {
+					try {
+						return await rename(from, to);
+					} finally {
+						if (String(from) === guardPath && String(to) === staleTombstone) delayedRetireAttempted.resolve();
+					}
+				}
+			} as never
+		});
+		let successor: ReturnType<typeof setActiveRun> | undefined;
+
+		try {
+			await Promise.race([
+				delayedRetireRead.promise,
+				delayedObserver.then(
+					() => { throw new Error('delayed observer acquired before stale-owner inspection'); },
+					() => { throw new Error('active-pointer guard owner metadata was not inspected'); }
+				)
+			]);
+			successor = setActiveRun({
+				root: successorPaths.root,
+				runId: successorPaths.runId,
+				expectedCurrentRunId: null,
+				filesystem: {
+					...testFilesystem,
+					lstat: async (...args: Parameters<typeof lstat>) => {
+						if (String(args[0]) === successorPaths.activePointerPath) {
+							successorEntered.resolve();
+							await successorProceed.promise;
+						}
+						return lstat(...args);
+					}
+				} as never
+			});
+			await successorEntered.promise;
+			const successorOwnerBytes = await readFile(ownerPath, 'utf8');
+			delayedRetireProceed.resolve();
+			await delayedRetireAttempted.promise;
+			await expect(readFile(ownerPath, 'utf8')).resolves.toBe(successorOwnerBytes);
+			successorProceed.resolve();
+			await expect(successor).resolves.toBe(successorPaths.runId);
+			await expect(delayedObserver).rejects.toMatchObject({ reasonCode: 'active_run_changed' });
+		} finally {
+			delayedRetireProceed.resolve();
+			successorProceed.resolve();
+			killSpy.mockRestore();
+			await Promise.allSettled([delayedObserver, ...(successor ? [successor] : [])]);
+		}
+	});
+
 	it('does not clear a pointer installed by a concurrent compare-and-swap', async () => {
 		const { paths } = await createFixture();
 		const anotherRun = resolveGate3RunPaths({ root: paths.root, runId: 'gate3-20260820-fedcba98' });
@@ -647,57 +889,34 @@ describe('Gate 3 hosted state', () => {
 		await mkdir(paths.runDirectory, { recursive: true });
 		const guardPath = `${paths.lockPath}.guard`;
 		const ownerPath = join(guardPath, 'owner.json');
-		const ownerEntered = deferred();
-		const ownerProceed = deferred();
-		const delayedRetireRead = deferred();
-		const delayedRetireProceed = deferred();
-		const successorEntered = deferred();
-		const successorProceed = deferred();
-		const uncoordinatedFilesystem = {
-			open: async () => ({
-				writeFile: async () => {},
-				sync: async () => {},
-				close: async () => {}
-			}),
-			unlink: async () => {}
-		};
-		let guardOwnerReads = 0;
-		const ownerPromise = acquireRunLock({
-			paths,
+		const staleOwner = { version: 1, guardId: '00000000-0000-4000-8000-000000000014', pid: 2147483647 };
+		const acquiredBytes = `${JSON.stringify({
+			runId: paths.runId,
 			command: 'scenario',
 			pid: 77,
-			startedAt: '2026-08-20T10:00:00.000Z',
-			filesystem: {
-				open: async (...args: Parameters<typeof open>) => {
-					const handle = await open(...args);
-					ownerEntered.resolve();
-					await ownerProceed.promise;
-					return handle;
-				}
-			},
-			coordinationFilesystem: uncoordinatedFilesystem
-		} as never);
-		await Promise.race([
-			ownerEntered.promise,
-			ownerPromise.then(() => { throw new Error('main lock filesystem injection was ignored'); })
-		]);
-		const originalOwnerBytes = await readFile(ownerPath, 'utf8');
-		expect(JSON.parse(originalOwnerBytes)).toMatchObject({ pid: process.pid });
-
-		const killSpy = vi.spyOn(process, 'kill');
-		killSpy.mockImplementationOnce(() => {
-			throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+			startedAt: '2026-08-20T10:00:00.000Z'
+		})}\n`;
+		await mkdir(guardPath);
+		await writeFile(ownerPath, JSON.stringify(staleOwner));
+		await writeFile(paths.lockPath, acquiredBytes);
+		const delayedRetireRead = deferred();
+		const delayedRetireProceed = deferred();
+		const delayedRetireAttempted = deferred();
+		const successorEntered = deferred();
+		const successorProceed = deferred();
+		let guardOwnerReads = 0;
+		const staleTombstone = `${guardPath}.retired-${staleOwner.guardId}`;
+		const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+			if (pid === staleOwner.pid) throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+			return true;
 		});
-		killSpy.mockImplementation(() => true);
-		const delayedObserver = acquireRunLock({
+		const delayedObserver = releaseRunLock({
 			paths,
-			command: 'cleanup',
-			pid: 78,
-			startedAt: '2026-08-20T10:01:00.000Z',
+			acquiredLock: { acquiredBytes },
 			guardFilesystem: {
-				lstat,
-				mkdir,
+				...testFilesystem,
 				readFile: async (...args: Parameters<typeof readFile>) => {
+					const bytes = await readFile(...args);
 					if (String(args[0]) === ownerPath) {
 						guardOwnerReads += 1;
 						if (guardOwnerReads === 2) {
@@ -705,52 +924,51 @@ describe('Gate 3 hosted state', () => {
 							await delayedRetireProceed.promise;
 						}
 					}
-					return readFile(...args);
+					return bytes;
 				},
-				rename,
-				rm,
-				writeFile
-			},
-			coordinationFilesystem: uncoordinatedFilesystem
+				rename: async (from: Parameters<typeof rename>[0], to: Parameters<typeof rename>[1]) => {
+					try {
+						return await rename(from, to);
+					} finally {
+						if (String(from) === guardPath && String(to) === staleTombstone) delayedRetireAttempted.resolve();
+					}
+				}
+			}
 		} as never);
 
-		let successorPromise: ReturnType<typeof acquireRunLock> | undefined;
+		let successorPromise: ReturnType<typeof releaseRunLock> | undefined;
 		try {
-			await delayedRetireRead.promise;
-			ownerProceed.resolve();
-			const originalLock = await ownerPromise;
-			await releaseRunLock({ paths, acquiredLock: originalLock });
-
-			successorPromise = acquireRunLock({
+			await Promise.race([
+				delayedRetireRead.promise,
+				delayedObserver.then(() => { throw new Error('release guard filesystem injection was ignored'); })
+			]);
+			successorPromise = releaseRunLock({
 				paths,
-				command: 'scenario',
-				pid: 79,
-				startedAt: '2026-08-20T10:02:00.000Z',
+				acquiredLock: { acquiredBytes },
 				filesystem: {
-					open: async (...args: Parameters<typeof open>) => {
-						const handle = await open(...args);
-						successorEntered.resolve();
-						await successorProceed.promise;
-						return handle;
+					...testFilesystem,
+					readFile: async (...args: Parameters<typeof readFile>) => {
+						if (String(args[0]) === paths.lockPath) {
+							successorEntered.resolve();
+							await successorProceed.promise;
+						}
+						return readFile(...args);
 					}
-				},
-				coordinationFilesystem: uncoordinatedFilesystem
+				}
 			} as never);
 			await successorEntered.promise;
 			const successorOwnerBytes = await readFile(ownerPath, 'utf8');
 			delayedRetireProceed.resolve();
-
-			await expect(delayedObserver).rejects.toMatchObject({ reasonCode: 'lock_guard_held' });
+			await delayedRetireAttempted.promise;
 			await expect(readFile(ownerPath, 'utf8')).resolves.toBe(successorOwnerBytes);
 			successorProceed.resolve();
-			const successorLock = await successorPromise;
-			await releaseRunLock({ paths, acquiredLock: successorLock });
+			await expect(successorPromise).resolves.toBe(true);
+			await expect(delayedObserver).rejects.toMatchObject({ reasonCode: 'lock_guard_failed' });
 		} finally {
-			ownerProceed.resolve();
 			delayedRetireProceed.resolve();
 			successorProceed.resolve();
 			killSpy.mockRestore();
-			await Promise.allSettled([ownerPromise, delayedObserver, ...(successorPromise ? [successorPromise] : [])]);
+			await Promise.allSettled([delayedObserver, ...(successorPromise ? [successorPromise] : [])]);
 		}
 	});
 
@@ -1004,9 +1222,9 @@ describe('Gate 3 hosted state', () => {
 			paths: oldPaths,
 			command: 'scenario',
 			coordinationFilesystem: {
-				open: async (...args: Parameters<typeof open>) => {
-					if (String(args[0]).endsWith('.active-run.lock')) lockAttempted.resolve();
-					return open(...args);
+				rename: async (...args: Parameters<typeof rename>) => {
+					if (String(args[1]) === join(oldPaths.root, '.active-run.lock')) lockAttempted.resolve();
+					return rename(...args);
 				}
 			} as never
 		});

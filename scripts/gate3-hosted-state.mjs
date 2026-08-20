@@ -853,21 +853,23 @@ export async function inspectRunLock({ paths, isPidRunning = pidIsRunning, files
 	return Object.freeze({ status: isPidRunning(lock.pid) ? 'held' : 'stale', lock: Object.freeze(lock), acquiredBytes });
 }
 
-/** @param {{ paths: Record<string, string>, acquiredLock: { acquiredBytes: string } }} options */
-export async function releaseRunLock({ paths, acquiredLock }) {
+/** @param {{ paths: Record<string, string>, acquiredLock: { acquiredBytes: string }, filesystem?: Partial<typeof NODE_FILESYSTEM>, guardFilesystem?: Partial<typeof NODE_FILESYSTEM> }} options */
+export async function releaseRunLock({ paths, acquiredLock, filesystem = {}, guardFilesystem = {} }) {
 	const exactPaths = validatePaths(paths);
 	if (!isPlainObject(acquiredLock) || typeof acquiredLock.acquiredBytes !== 'string') {
 		throw new Gate3HostedStateError('lock_invalid');
 	}
-	await assertSafeRunPaths(exactPaths);
+	const mainLockFilesystem = /** @type {typeof NODE_FILESYSTEM} */ ({ ...NODE_FILESYSTEM, ...filesystem });
+	const managementFilesystem = /** @type {typeof NODE_FILESYSTEM} */ ({ ...NODE_FILESYSTEM, ...guardFilesystem });
+	await assertSafeRunPaths(exactPaths, { filesystem: mainLockFilesystem });
 	return withRunLockGuard(exactPaths, async () => {
-		const currentBytes = await readRunLockBytes(exactPaths.lockPath);
+		const currentBytes = await readRunLockBytes(exactPaths.lockPath, mainLockFilesystem);
 		if (currentBytes === null || currentBytes !== acquiredLock.acquiredBytes) return false;
-		try { await unlink(exactPaths.lockPath); return true; } catch (error) {
+		try { await mainLockFilesystem.unlink(exactPaths.lockPath); return true; } catch (error) {
 			if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
 			throw new Gate3HostedStateError('lock_release_failed');
 		}
-	});
+	}, managementFilesystem);
 }
 
 /** @param {{ paths: Record<string, string>, observedLock: unknown, inspection: unknown, isPidRunning?: (pid: number) => boolean }} options */
@@ -1053,40 +1055,178 @@ export async function readActiveRun(root, { filesystem = NODE_FILESYSTEM } = {})
 	}
 }
 
-/** @param {string} root @param {() => Promise<any>} operation @param {typeof NODE_FILESYSTEM} [filesystem] */
-async function withActivePointerLock(root, operation, filesystem = NODE_FILESYSTEM) {
-	const lockPath = join(root, '.active-run.lock');
-	let handle;
-	let acquired = false;
-	for (let attempt = 0; attempt < 100; attempt += 1) {
+/** @param {string} root */
+function activePointerGuardPath(root) {
+	return join(root, '.active-run.lock');
+}
+
+/** @param {unknown} value @returns {{ version: 1, guardId: string, pid: number }} */
+function validateActivePointerGuardOwner(value) {
+	if (!isPlainObject(value)) throw new Gate3HostedStateError('active_pointer_lock_failed');
+	const keys = Object.keys(value);
+	if (
+		keys.length !== 3 ||
+		!keys.includes('version') ||
+		!keys.includes('guardId') ||
+		!keys.includes('pid') ||
+		value.version !== 1 ||
+		typeof value.guardId !== 'string' ||
+		!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(value.guardId) ||
+		typeof value.pid !== 'number' ||
+		!Number.isSafeInteger(value.pid) ||
+		value.pid <= 0
+	) {
+		throw new Gate3HostedStateError('active_pointer_lock_failed');
+	}
+	return /** @type {{ version: 1, guardId: string, pid: number }} */ (value);
+}
+
+/** @param {string} guardPath @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function readActivePointerGuard(guardPath, filesystem = NODE_FILESYSTEM) {
+	let guardEntry;
+	try {
+		guardEntry = await filesystem.lstat(guardPath);
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return null;
+		throw new Gate3HostedStateError('active_pointer_lock_failed');
+	}
+	try {
+		if (!guardEntry.isDirectory() || guardEntry.isSymbolicLink()) throw new Error('unsafe guard');
+		if ((await filesystem.realpath(guardPath)).toLowerCase() !== resolve(guardPath).toLowerCase()) {
+			throw new Error('reparse guard');
+		}
+		const ownerPath = join(guardPath, 'owner.json');
+		const ownerEntry = await filesystem.lstat(ownerPath);
+		if (!ownerEntry.isFile() || ownerEntry.isSymbolicLink()) throw new Error('unsafe owner');
+		if (process.platform !== 'win32' && (ownerEntry.mode & 0o077) !== 0) throw new Error('unsafe owner permissions');
+		const ownerBytes = await filesystem.readFile(ownerPath, 'utf8');
+		if (typeof ownerBytes !== 'string' || ownerBytes.length > 256) throw new Error('unsafe owner bytes');
+		return Object.freeze(validateActivePointerGuardOwner(JSON.parse(ownerBytes)));
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
+		throw new Gate3HostedStateError('active_pointer_lock_failed');
+	}
+}
+
+/**
+ * @param {string} candidatePath
+ * @param {{ dev: number | bigint, ino: number | bigint, realpath: string }} expectedIdentity
+ * @param {typeof NODE_FILESYSTEM} filesystem
+ */
+async function cleanupActivePointerGuardCandidate(candidatePath, expectedIdentity, filesystem) {
+	try {
+		const currentIdentity = await captureDirectoryIdentity(candidatePath, filesystem);
+		if (!sameDirectoryIdentity(currentIdentity, expectedIdentity)) return false;
+		const entries = await filesystem.readdir(candidatePath);
+		if (entries.some((entry) => entry !== 'owner.json')) return false;
+		if (entries.includes('owner.json')) {
+			const ownerPath = join(candidatePath, 'owner.json');
+			const ownerEntry = await filesystem.lstat(ownerPath);
+			if (!ownerEntry.isFile() || ownerEntry.isSymbolicLink()) return false;
+			await filesystem.unlink(ownerPath);
+		}
+		await filesystem.rmdir(candidatePath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** @param {string} guardPath @param {typeof NODE_FILESYSTEM} filesystem */
+async function publishActivePointerGuardCandidate(guardPath, filesystem) {
+	const guardId = randomUUID();
+	const owner = Object.freeze(validateActivePointerGuardOwner({ version: 1, guardId, pid: process.pid }));
+	const ownerBytes = `${JSON.stringify(owner)}\n`;
+	const candidatePath = `${guardPath}.candidate-${guardId}`;
+	const ownerPath = join(candidatePath, 'owner.json');
+	/** @type {Awaited<ReturnType<typeof captureDirectoryIdentity>> | null} */
+	let candidateIdentity = null;
+	let candidateCreated = false;
+	let published = false;
+	/** @type {Awaited<ReturnType<typeof filesystem.open>> | undefined} */
+	let ownerHandle;
+	try {
+		await filesystem.mkdir(candidatePath, { recursive: false, mode: 0o700 });
+		candidateCreated = true;
+		candidateIdentity = await captureDirectoryIdentity(candidatePath, filesystem);
+		ownerHandle = await filesystem.open(ownerPath, 'wx', 0o600);
+		await ownerHandle.writeFile(ownerBytes, 'utf8');
+		await ownerHandle.sync();
+		await ownerHandle.close();
+		ownerHandle = undefined;
+		if ((await filesystem.readFile(ownerPath, 'utf8')) !== ownerBytes) {
+			throw new Error('owner verification failed');
+		}
+		await filesystem.rename(candidatePath, guardPath);
+		published = true;
+		return owner;
+	} catch (error) {
 		try {
-			handle = await filesystem.open(lockPath, 'wx', 0o600);
-			await handle.writeFile(`${process.pid}\n`, 'utf8');
-			await handle.sync();
-			await handle.close();
-			handle = undefined;
-			acquired = true;
-			break;
-		} catch (error) {
-			try {
-				await handle?.close();
-			} catch {
-				// The lock acquisition result remains fail-closed.
+			await ownerHandle?.close();
+			ownerHandle = undefined;
+		} catch {
+			// Cleanup below remains identity-bound and fail-closed.
+		}
+		if (candidateCreated && !published) {
+			if (candidateIdentity === null) {
+				try {
+					candidateIdentity = await captureDirectoryIdentity(candidatePath, filesystem);
+				} catch {
+					throw new Gate3HostedStateError('active_pointer_lock_failed');
+				}
 			}
-			handle = undefined;
-			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') {
+			if (!(await cleanupActivePointerGuardCandidate(candidatePath, candidateIdentity, filesystem))) {
 				throw new Gate3HostedStateError('active_pointer_lock_failed');
 			}
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+		}
+		throw error;
+	}
+}
+
+/** @param {string} guardPath @param {{ version: 1, guardId: string, pid: number }} expectedOwner @param {typeof NODE_FILESYSTEM} filesystem */
+async function retireActivePointerGuard(guardPath, expectedOwner, filesystem) {
+	const owner = await readActivePointerGuard(guardPath, filesystem);
+	if (owner === null || owner.guardId !== expectedOwner.guardId || owner.pid !== expectedOwner.pid) return false;
+	try {
+		await filesystem.rename(guardPath, `${guardPath}.retired-${owner.guardId}`);
+		return true;
+	} catch (error) {
+		if (['ENOENT', 'EEXIST', 'ENOTEMPTY', 'EPERM'].includes(/** @type {NodeJS.ErrnoException} */ (error).code ?? '')) {
+			return false;
+		}
+		throw new Gate3HostedStateError('active_pointer_lock_failed');
+	}
+}
+
+/** @param {string} root @param {() => Promise<any>} operation @param {typeof NODE_FILESYSTEM} [filesystem] */
+async function withActivePointerLock(root, operation, filesystem = NODE_FILESYSTEM) {
+	await assertRealDirectory(root, filesystem);
+	const guardPath = activePointerGuardPath(root);
+	/** @type {{ version: 1, guardId: string, pid: number } | undefined} */
+	let owner;
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		try {
+			owner = await publishActivePointerGuardCandidate(guardPath, filesystem);
+			break;
+		} catch (error) {
+			if (error instanceof Gate3HostedStateError) throw error;
+			if (!GUARD_PUBLICATION_CONFLICT_CODES.has(/** @type {NodeJS.ErrnoException} */ (error).code ?? '')) {
+				throw new Gate3HostedStateError('active_pointer_lock_failed');
+			}
+			const held = await readActivePointerGuard(guardPath, filesystem);
+			if (held === null) continue;
+			if (pidIsRunning(held.pid)) {
+				await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+				continue;
+			}
+			await retireActivePointerGuard(guardPath, held, filesystem);
 		}
 	}
-	if (!acquired) throw new Gate3HostedStateError('active_pointer_lock_failed');
+	if (!owner) throw new Gate3HostedStateError('active_pointer_lock_failed');
 	try {
 		return await operation();
 	} finally {
-		try {
-			await filesystem.unlink(lockPath);
-		} catch {
+		if (!(await retireActivePointerGuard(guardPath, owner, filesystem))) {
 			throw new Gate3HostedStateError('active_pointer_lock_failed');
 		}
 	}

@@ -211,6 +211,77 @@ describe('Gate 3 hosted preflight CLI', () => {
 		expect(fixture.inspectHostedAbsence).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		['an explicit run', ['preflight', '--run', runId]],
+		['the default active run', ['preflight']]
+	] as const)('fails before release for missing %s evidence without changing local state', async (_selection, argv) => {
+		const fixture = await cliFixture();
+		const paths = resolveGate3RunPaths({ root: fixture.root, runId });
+		if (argv.length === 1) {
+			await writeFile(paths.activePointerPath, `${JSON.stringify({ schemaVersion: 1, runId })}\n`, {
+				mode: 0o600
+			});
+		}
+		const pointerBefore = argv.length === 1 ? await readFile(paths.activePointerPath) : null;
+
+		await expect(runCli(fixture, [...argv])).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+		expect(fixture.dependencies.resolveDeployedRelease).not.toHaveBeenCalled();
+		expect(fixture.inspectHostedAbsence).not.toHaveBeenCalled();
+		expect(fixture.dpapi.protect).not.toHaveBeenCalled();
+		expect(fixture.dpapi.unprotect).not.toHaveBeenCalled();
+		await expect(stat(paths.runDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+		expect(await readActiveRun(fixture.root)).toBe(argv.length === 1 ? runId : null);
+		if (pointerBefore !== null) expect(await readFile(paths.activePointerPath)).toEqual(pointerBefore);
+	});
+
+	it('rejects a --new run-ID collision with active evidence instead of resuming it', async () => {
+		const fixture = await cliFixture();
+		await expect(runCli(fixture, ['preflight', '--new'])).resolves.toBe(GATE3_EXIT_CODES.success);
+		const paths = resolveGate3RunPaths({ root: fixture.root, runId });
+		const pointerBefore = await readFile(paths.activePointerPath);
+		const evidenceBefore = await Promise.all([
+			readFile(paths.statePath),
+			readFile(paths.manifestPath),
+			readFile(paths.secretPath)
+		]);
+		fixture.dependencies.resolveDeployedRelease.mockClear();
+		fixture.inspectHostedAbsence.mockClear();
+		fixture.dpapi.protect.mockClear();
+		fixture.dpapi.unprotect.mockClear();
+
+		await expect(runCli(fixture, ['preflight', '--new'])).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+		expect(fixture.dependencies.resolveDeployedRelease).not.toHaveBeenCalled();
+		expect(fixture.inspectHostedAbsence).not.toHaveBeenCalled();
+		expect(fixture.dpapi.protect).not.toHaveBeenCalled();
+		expect(fixture.dpapi.unprotect).not.toHaveBeenCalled();
+		expect(await readFile(paths.activePointerPath)).toEqual(pointerBefore);
+		await expect(Promise.all([
+			readFile(paths.statePath),
+			readFile(paths.manifestPath),
+			readFile(paths.secretPath)
+		])).resolves.toEqual(evidenceBefore);
+	});
+
+	it('rejects a --new run-ID collision with archived evidence before any side effect', async () => {
+		const fixture = await cliFixture();
+		const paths = resolveGate3RunPaths({ root: fixture.root, runId });
+		await mkdir(paths.archiveDirectory, { recursive: true });
+		const archivedMarker = join(paths.archiveDirectory, 'archived-marker.txt');
+		await writeFile(archivedMarker, 'preserve archived evidence');
+
+		await expect(runCli(fixture, ['preflight', '--new'])).resolves.toBe(GATE3_EXIT_CODES.precondition);
+
+		expect(fixture.dependencies.resolveDeployedRelease).not.toHaveBeenCalled();
+		expect(fixture.inspectHostedAbsence).not.toHaveBeenCalled();
+		expect(fixture.dpapi.protect).not.toHaveBeenCalled();
+		expect(fixture.dpapi.unprotect).not.toHaveBeenCalled();
+		await expect(stat(paths.runDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+		expect(await readFile(archivedMarker, 'utf8')).toBe('preserve archived evidence');
+		expect(await readActiveRun(fixture.root)).toBeNull();
+	});
+
 	it('selects a hard-crash-left exact run without falling through to a newer directory', async () => {
 		const fixture = await cliFixture();
 		const crashLeftRun = 'gate3-20260819-1111aaaa';
