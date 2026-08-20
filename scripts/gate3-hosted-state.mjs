@@ -41,7 +41,6 @@ const ARCHIVE_KEYS = new Set([
 	'manifestSha256'
 ]);
 const RUN_LOCK_COMMANDS = new Set(['preflight', 'provision', 'scenario', 'cleanup', 'recovery', 'archive']);
-const LOCK_GUARD_STALE_MS = 60_000;
 const TOP_LEVEL_STATE_KEYS = new Set([
 	'schemaVersion',
 	'revision',
@@ -356,60 +355,63 @@ function runLockGuardPath(paths) {
 	return `${paths.lockPath}.guard`;
 }
 
-/** @param {string} guardPath @param {(pid: number) => boolean} isPidRunning */
-async function quarantineStaleRunLockGuard(guardPath, isPidRunning) {
-	let entry;
+/** @param {string} guardPath */
+async function readRunLockGuard(guardPath) {
 	try {
-		entry = await lstat(guardPath);
+		const entry = await lstat(guardPath);
 		if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Gate3HostedStateError('lock_guard_invalid');
+		const owner = JSON.parse(await readFile(join(guardPath, 'owner.json'), 'utf8'));
+		if (!isPlainObject(owner) || owner.version !== 1 || typeof owner.guardId !== 'string' || !/^[a-f0-9-]{36}$/u.test(owner.guardId) || typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) throw new Gate3HostedStateError('lock_guard_invalid');
+		return owner;
 	} catch (error) {
 		if (error instanceof Gate3HostedStateError) throw error;
-		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
-		throw new Gate3HostedStateError('lock_guard_failed');
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return null;
+		throw new Gate3HostedStateError('lock_guard_invalid');
 	}
-	let stale = Date.now() - entry.mtimeMs > LOCK_GUARD_STALE_MS;
+}
+
+/** @param {string} guardPath @param {Record<string, any>} expectedOwner */
+async function retireRunLockGuard(guardPath, expectedOwner) {
+	const owner = await readRunLockGuard(guardPath);
+	if (owner === null || owner.guardId !== expectedOwner.guardId || owner.pid !== expectedOwner.pid) return false;
 	try {
-		const owner = JSON.parse(await readFile(join(guardPath, 'owner.json'), 'utf8'));
-		stale = typeof owner.pid === 'number' && Number.isSafeInteger(owner.pid) && owner.pid > 0 && !isPidRunning(owner.pid);
-	} catch {
-		// An owner crash between mkdir and write is recovered only after a bounded grace period.
-	}
-	if (!stale) return false;
-	const quarantinePath = `${guardPath}.quarantine-${randomUUID()}`;
-	try {
-		await rename(guardPath, quarantinePath);
-		await rm(quarantinePath, { recursive: true, force: true });
+		await rename(guardPath, `${guardPath}.retired-${owner.guardId}`);
 		return true;
 	} catch (error) {
-		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false;
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT' || /** @type {NodeJS.ErrnoException} */ (error).code === 'EEXIST') return false;
 		throw new Gate3HostedStateError('lock_guard_failed');
 	}
 }
 
-/** @param {Record<string, string>} paths @param {() => Promise<any>} operation @param {(pid: number) => boolean} [isPidRunning] */
-async function withRunLockGuard(paths, operation, isPidRunning = pidIsRunning) {
+/** @param {Record<string, string>} paths @param {() => Promise<any>} operation */
+async function withRunLockGuard(paths, operation) {
 	const guardPath = runLockGuardPath(paths);
-	let acquired = false;
+	let owner;
 	for (let attempt = 0; attempt < 100; attempt += 1) {
+		const candidatePath = `${guardPath}.candidate-${randomUUID()}`;
+		const candidateOwner = { version: 1, guardId: candidatePath.slice(candidatePath.lastIndexOf('-') + 1), pid: process.pid };
 		try {
-			await mkdir(guardPath, { mode: 0o700 });
-			await writeFile(join(guardPath, 'owner.json'), JSON.stringify({ pid: process.pid }), { mode: 0o600 });
-			acquired = true;
+			candidateOwner.guardId = candidatePath.slice(`${guardPath}.candidate-`.length);
+			await mkdir(candidatePath, { mode: 0o700 });
+			await writeFile(join(candidatePath, 'owner.json'), JSON.stringify(candidateOwner), { mode: 0o600 });
+			await rename(candidatePath, guardPath);
+			owner = candidateOwner;
 			break;
 		} catch (error) {
+			await rm(candidatePath, { recursive: true, force: true }).catch(() => {});
 			if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw new Gate3HostedStateError('lock_guard_failed');
-			if (!(await quarantineStaleRunLockGuard(guardPath, isPidRunning))) await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+			const held = await readRunLockGuard(guardPath);
+			if (held === null) continue;
+			if (typeof held.pid !== 'number') throw new Gate3HostedStateError('lock_guard_invalid');
+			if (pidIsRunning(held.pid)) await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+			else await retireRunLockGuard(guardPath, held);
 		}
 	}
-	if (!acquired) throw new Gate3HostedStateError('lock_guard_held');
+	if (!owner) throw new Gate3HostedStateError('lock_guard_held');
 	try {
 		return await operation();
 	} finally {
-		try {
-			await rm(guardPath, { recursive: true, force: true });
-		} catch {
-			throw new Gate3HostedStateError('lock_guard_failed');
-		}
+		if (!(await retireRunLockGuard(guardPath, owner))) throw new Gate3HostedStateError('lock_guard_failed');
 	}
 }
 
@@ -563,14 +565,18 @@ export async function acquireRunLock({ paths, command, pid = process.pid, starte
 	const acquiredBytes = `${JSON.stringify(lock)}\n`;
 	await withRunLockGuard(exactPaths, async () => {
 		let handle;
+		let created = false;
 		try {
 			handle = await open(exactPaths.lockPath, 'wx', 0o600);
+			created = true;
 			await handle.writeFile(acquiredBytes, 'utf8');
 			await handle.sync();
 		} catch (error) {
 			try { await handle?.close(); } catch {}
 			handle = undefined;
-			await unlink(exactPaths.lockPath).catch(() => {});
+			if (created) {
+				try { await unlink(exactPaths.lockPath); } catch { throw new Gate3HostedStateError('lock_cleanup_failed'); }
+			}
 			if (/** @type {NodeJS.ErrnoException} */ (error).code === 'EEXIST') throw new Gate3HostedStateError('lock_held');
 			throw new Gate3HostedStateError('lock_acquire_failed');
 		} finally {
@@ -636,7 +642,7 @@ export async function recoverStaleRunLock({ paths, observedLock, inspection, isP
 			if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') throw new Gate3HostedStateError('fresh_inspection_required');
 			throw new Gate3HostedStateError('lock_recovery_failed');
 		}
-	}, isPidRunning);
+	});
 }
 
 /** @param {Record<string, string>} paths */
