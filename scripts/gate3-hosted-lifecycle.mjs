@@ -53,6 +53,7 @@ const REASON_BY_CLASSIFICATION = Object.freeze({
 });
 
 const CLASSIFICATIONS = new Set(Object.keys(COMMANDS_BY_CLASSIFICATION));
+const CANONICAL_LIFECYCLES = new WeakSet();
 const CLEANUP_TARGET_KINDS = new Set([
 	'auth-user',
 	'pending-confirmation',
@@ -85,13 +86,13 @@ function hasUnexplainedAmbiguity(inspection) {
 		inspection.stateCorrupt === true ||
 		inspection.corruptState === true ||
 		inspection.stateValid === false ||
-		inspection.manifestMatches === false ||
+		inspection.manifestMatches !== true ||
 		inspection.manifestMismatch === true ||
-		inspection.ownershipConflict === true ||
+		inspection.ownershipConflict !== false ||
 		inspection.conflictingOwnership === true ||
-		inspection.deletionScopeTrusted === false ||
+		inspection.deletionScopeTrusted !== true ||
 		inspection.untrustedDeletionScope === true ||
-		inspection.authoritativeReleaseAvailable === false ||
+		inspection.authoritativeReleaseAvailable !== true ||
 		inspection.authoritativeReleaseUnavailable === true ||
 		inspection.credentialsLost === true && inspection.exactRecoveryProvenance !== true
 	);
@@ -109,7 +110,9 @@ function hasProvenRecoveryRequirement(inspection) {
 
 /** @param {Record<string, unknown>} inspection */
 function hasConflictingNormalEvidence(inspection) {
+	const provisionVerified = inspection.provisionVerified === true && inspection.actors === 4;
 	return (
+		((inspection.scenarioPartial === true || inspection.scenarioVerified === true) && !provisionVerified) ||
 		(inspection.scenarioPartial === true && inspection.scenarioVerified === true) ||
 		(inspection.cleanupPartial === true && inspection.cleanupVerified === true) ||
 		(inspection.cleanupRequired === true && inspection.cleanupVerified === true) ||
@@ -161,13 +164,15 @@ function boundary(command, target = null) {
 function lifecycleResult(classification, inspection) {
 	const nextCommand = NEXT_COMMAND_BY_CLASSIFICATION[classification];
 	const target = nextCommand === 'cleanup' ? exactCleanupTarget(inspection) : null;
-	return Object.freeze({
+	const result = Object.freeze({
 		classification,
 		allowedCommands: COMMANDS_BY_CLASSIFICATION[classification],
-		nextBoundary: boundary(nextCommand, target),
+		nextBoundary: nextCommand === 'cleanup' && target === null ? null : boundary(nextCommand, target),
 		reasonCode: REASON_BY_CLASSIFICATION[classification],
 		exitCodeKey: Object.hasOwn(GATE3_EXIT_CODES, classification) ? classification : 'success'
 	});
+	CANONICAL_LIFECYCLES.add(result);
+	return result;
 }
 
 /**
@@ -191,6 +196,7 @@ export function classifyGate3Lifecycle(candidate) {
 export function selectGate3NextBoundary(lifecycle, requestedCommand) {
 	if (
 		!isPlainObject(lifecycle) ||
+		!CANONICAL_LIFECYCLES.has(lifecycle) ||
 		typeof lifecycle.classification !== 'string' ||
 		!CLASSIFICATIONS.has(lifecycle.classification) ||
 		typeof requestedCommand !== 'string' ||
@@ -224,6 +230,8 @@ export function selectGate3NextBoundary(lifecycle, requestedCommand) {
 		) {
 			return boundary('cleanup', Object.freeze({ kind: target.kind, id: target.id }));
 		}
+		return null;
 	}
+	if (command !== 'inspect' && (!isPlainObject(lifecycle.nextBoundary) || lifecycle.nextBoundary.command !== command)) return null;
 	return boundary(command);
 }

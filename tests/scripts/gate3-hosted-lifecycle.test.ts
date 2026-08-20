@@ -38,7 +38,12 @@ describe('Gate 3 hosted lifecycle policy', () => {
 			'PROVISION_VERIFIED',
 			['inspect', 'scenario', 'cleanup']
 		],
-		['scenario partial', inspection({ scenarioPartial: true }), 'SCENARIO_PARTIAL', ['inspect', 'scenario', 'cleanup']],
+		[
+			'scenario partial',
+			inspection({ actors: 4, provisionVerified: true, scenarioPartial: true }),
+			'SCENARIO_PARTIAL',
+			['inspect', 'scenario', 'cleanup']
+		],
 		['cleanup partial', inspection({ cleanupPartial: true }), 'CLEANUP_PARTIAL', ['inspect', 'cleanup']],
 		['archived', inspection({ archived: true }), 'ARCHIVED', ['inspect']]
 	] as const;
@@ -48,7 +53,7 @@ describe('Gate 3 hosted lifecycle policy', () => {
 	});
 
 	it('classifies all remaining normal lifecycle stages', () => {
-		expect(classifyGate3Lifecycle(inspection({ scenarioVerified: true }))).toMatchObject({
+		expect(classifyGate3Lifecycle(inspection({ actors: 4, provisionVerified: true, scenarioVerified: true }))).toMatchObject({
 		classification: 'SCENARIO_VERIFIED',
 		allowedCommands: ['inspect', 'cleanup']
 	});
@@ -103,6 +108,22 @@ describe('Gate 3 hosted lifecycle policy', () => {
 	});
 	});
 
+	it('fails closed when required inspection proof is missing', () => {
+		const lifecycle = classifyGate3Lifecycle({ actors: 0 });
+		expect(lifecycle).toMatchObject({ classification: 'AMBIGUOUS', allowedCommands: ['inspect'] });
+		expect(selectGate3NextBoundary(lifecycle, 'provision')).toBeNull();
+	});
+
+	it.each([
+		['partial scenario without verified provision', { actors: 4, provisionVerified: false, scenarioPartial: true }],
+		['verified scenario without four actors', { actors: 0, provisionVerified: true, scenarioVerified: true }]
+	])('%s is ambiguous', (_name, stage) => {
+		expect(classifyGate3Lifecycle(inspection(stage))).toMatchObject({
+			classification: 'AMBIGUOUS',
+			allowedCommands: ['inspect']
+		});
+	});
+
 	it('selects one exact residual artifact for cleanup', () => {
 		const lifecycle = classifyGate3Lifecycle(
 			inspection({
@@ -115,6 +136,17 @@ describe('Gate 3 hosted lifecycle policy', () => {
 		phase: 'cleanup',
 		target: { kind: 'auth-user', id: 'user-123' }
 	});
+	});
+
+	it.each([
+		['missing target', undefined],
+		['empty identifier', [{ kind: 'auth-user', id: '' }]],
+		['unapproved kind', [{ kind: 'wildcard', id: 'user-123' }]],
+		['multiple targets', [{ kind: 'auth-user', id: 'user-123' }, { kind: 'report', id: 'report-123' }]]
+	])('blocks cleanup with %s', (_name, residualArtifacts) => {
+		const lifecycle = classifyGate3Lifecycle(inspection({ cleanupPartial: true, residualArtifacts }));
+		expect(lifecycle.nextBoundary).toBeNull();
+		expect(selectGate3NextBoundary(lifecycle, 'cleanup')).toBeNull();
 	});
 
 	it('returns only serializable data without force, retry, wildcard, or mutation functions', () => {
@@ -165,5 +197,15 @@ describe('Gate 3 hosted lifecycle policy', () => {
 				allowedCommands: ['inspect']
 			});
 		});
+	});
+
+	it('rejects a canonical-looking copied lifecycle output', () => {
+		const canonical = classifyGate3Lifecycle(inspection({ actors: 0 }));
+		const forged = {
+			...canonical,
+			allowedCommands: [...canonical.allowedCommands],
+			nextBoundary: { ...canonical.nextBoundary }
+		};
+		expect(selectGate3NextBoundary(forged, 'provision')).toBeNull();
 	});
 });
