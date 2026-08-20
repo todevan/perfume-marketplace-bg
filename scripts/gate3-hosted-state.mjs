@@ -253,6 +253,18 @@ async function assertRealDirectory(directory, filesystem = NODE_FILESYSTEM) {
 	}
 }
 
+/** @param {string} directory */
+async function captureDirectoryIdentity(directory) {
+	await assertRealDirectory(directory);
+	const entry = await lstat(directory);
+	return Object.freeze({ dev: entry.dev, ino: entry.ino, realpath: await realpath(directory) });
+}
+
+/** @param {{ dev: number, ino: number, realpath: string }} left @param {{ dev: number, ino: number, realpath: string }} right */
+function sameDirectoryIdentity(left, right) {
+	return left.dev === right.dev && left.ino === right.ino && left.realpath.toLowerCase() === right.realpath.toLowerCase();
+}
+
 /** @param {string} directory @param {typeof NODE_FILESYSTEM} [filesystem] */
 async function directoryIsMissing(directory, filesystem = NODE_FILESYSTEM) {
 	try {
@@ -730,6 +742,8 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 	}
 
 	const persisted = await readRunState(exactPaths);
+	const sourceIdentity = await captureDirectoryIdentity(exactPaths.runDirectory);
+	const archiveRootIdentity = await captureDirectoryIdentity(exactPaths.archiveRoot);
 	const expected = assertStateMatchesPaths(exactPaths, currentState);
 	if (JSON.stringify(persisted) !== JSON.stringify(expected)) throw new Gate3HostedStateError('state_changed');
 	if (
@@ -758,8 +772,15 @@ export async function finalizeRunArchive({ paths, currentState, completedAt, fil
 		throw new Gate3HostedStateError('archive_invalid');
 	}
 	try {
+		if (!sameDirectoryIdentity(sourceIdentity, await captureDirectoryIdentity(exactPaths.runDirectory)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot))) {
+			throw new Gate3HostedStateError('archive_ambiguous');
+		}
 		await (filesystem.rename ?? rename)(exactPaths.runDirectory, exactPaths.archiveDirectory);
-	} catch {
+		if (!(await directoryIsMissing(exactPaths.runDirectory)) || !sameDirectoryIdentity(archiveRootIdentity, await captureDirectoryIdentity(exactPaths.archiveRoot)) || !sameDirectoryIdentity(sourceIdentity, await captureDirectoryIdentity(exactPaths.archiveDirectory))) {
+			throw new Gate3HostedStateError('archive_ambiguous');
+		}
+	} catch (error) {
+		if (error instanceof Gate3HostedStateError) throw error;
 		throw new Gate3HostedStateError('archive_rename_failed');
 	}
 	return finalizeRunArchive({ paths: exactPaths, currentState: pending, completedAt });

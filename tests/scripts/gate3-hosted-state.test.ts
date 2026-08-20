@@ -529,6 +529,43 @@ describe('Gate 3 hosted state', () => {
 		await expect(readActiveRun(paths.root)).resolves.toBeNull();
 	});
 
+	it('never unlinks an existing lock when exclusive acquisition reports EEXIST', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 77, startedAt: '2026-08-20T10:00:00.000Z' }));
+
+		await expect(acquireRunLock({ paths, command: 'scenario', pid: 78, startedAt: '2026-08-20T10:01:00.000Z' })).rejects.toMatchObject({ reasonCode: 'lock_held' });
+		await expect(readFile(paths.lockPath, 'utf8')).resolves.toContain('"pid":77');
+	});
+
+	it('does not remove changed main lock bytes during stale recovery', async () => {
+		const { paths } = await createFixture();
+		await mkdir(paths.runDirectory, { recursive: true });
+		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 77, startedAt: '2026-08-20T10:00:00.000Z' }));
+		const observed = await inspectRunLock({ paths, isPidRunning: () => false });
+		await writeFile(paths.lockPath, JSON.stringify({ runId: paths.runId, command: 'scenario', pid: 78, startedAt: '2026-08-20T10:01:00.000Z' }));
+		const inspection = await inspectRunLock({ paths, isPidRunning: () => false });
+
+		await expect(recoverStaleRunLock({ paths, observedLock: observed, inspection, isPidRunning: () => false })).rejects.toMatchObject({ reasonCode: 'fresh_inspection_required' });
+		await expect(readFile(paths.lockPath, 'utf8')).resolves.toContain('"pid":78');
+	});
+
+	it('fails ambiguous archive completion after a cooperative source replacement during rename', async () => {
+		const { paths, state } = await createFixture();
+		await reserveRunState(paths, state);
+		const verified = { ...state, revision: 1, phases: { ...state.phases, cleanup: { status: 'complete', checkpoint: null } }, lastInspection: { cleanupVerified: true, independentZeroVerified: true } };
+		await writeNextRunState(paths, state, verified);
+		const filesystem = { rename: async (from: string, to: string) => {
+			const { rename, mkdir, writeFile } = await import('node:fs/promises');
+			await rename(from, to);
+			await mkdir(from);
+			await writeFile(join(from, 'replacement.txt'), 'replacement');
+		} };
+
+		await expect(finalizeRunArchive({ paths, currentState: verified, completedAt: '2026-08-20T11:00:00.000Z', filesystem: filesystem as never })).rejects.toMatchObject({ reasonCode: 'archive_ambiguous' });
+		await expect(readArchivedRunState(paths)).resolves.toMatchObject({ archive: { status: 'pending' } });
+	});
+
 	it('keeps generated CodeGraph and ATL directories out of version control', () => {
 		for (const localToolDirectory of ['.codegraph/', '.atl/']) {
 			const result = spawnSync('git', ['check-ignore', '-q', localToolDirectory], {
