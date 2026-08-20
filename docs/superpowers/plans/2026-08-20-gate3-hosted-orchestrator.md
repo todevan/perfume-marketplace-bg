@@ -287,12 +287,14 @@ Run: `git add scripts/gate3-hosted-state.mjs tests/scripts/gate3-hosted-state.te
 - [ ] **Step 1: Write failing deterministic identity and randomness tests**
 
 ```typescript
+const runId = 'gate3-20260820-abcdef12';
+
 it('derives stable versioned identities without embedding a password', () => {
   expect(deriveSyntheticIdentity({ runId, role: 'assigned-moderator', identitySchemeVersion: 1 }))
     .toEqual({
       role: 'assigned-moderator',
-      email: 'gate3-v1-mod-a-76e2cf3497fde526@example.invalid',
-      username: 'g3_v1_mod_a_76e2cf3497fde526'
+      email: 'gate3-v1-mod-a-a8f5c2720cc35a38@example.invalid',
+      username: 'g3_v1_mod_a_a8f5c2720cc35a38'
     });
 });
 
