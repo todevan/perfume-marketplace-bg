@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import {
 	atomicPrivateWrite,
@@ -658,6 +658,17 @@ function decodeHostedRunManifest(config, candidate) {
 		);
 	}
 	return manifest;
+}
+
+/**
+ * Validates an in-memory manifest through the same compatibility-preserving
+ * decoder used for persisted hosted manifests.
+ *
+ * @param {HostedOperatorConfig} config
+ * @param {unknown} candidate
+ */
+export function validateHostedRunManifest(config, candidate) {
+	return decodeHostedRunManifest(config, candidate);
 }
 
 /** @param {HostedOperatorConfig} config @param {HostedRunManifest} manifest @param {string} filePath */
@@ -1993,31 +2004,369 @@ export async function executeHostedA9Provisioning({
 	}
 }
 
+const INSPECTOR_ROLES = Object.freeze([
+	'reporter',
+	'cross-user',
+	'assigned-moderator',
+	'unassigned-moderator'
+]);
+
+/** @param {unknown} value */
+function inspectorMetadata(value) {
+	return value && typeof value === 'object'
+		? /** @type {Record<string, unknown>} */ (value)
+		: {};
+}
+
+/** @param {unknown} value */
+function inspectorTimestamp(value) {
+	const text = typeof value === 'string' ? value : '';
+	return Number.isFinite(Date.parse(text)) ? text : null;
+}
+
 /**
- * Concrete Frankfurt-only privileged adapters. Creating this object is local and inert;
- * state changes occur only when an explicitly gated operator method is invoked later.
+ * Creates the narrow Supabase read capability used by the universal Gate 3
+ * inspector. The returned object deliberately contains no mutation, upload,
+ * cleanup, RPC, or secret capability.
  *
- * @param {{
- *   config: HostedOperatorConfig,
- *   serviceClient: SupabaseClient,
- *   managementAccessToken: string,
- *   cleanupSecret: string,
- *   fetchImpl?: typeof fetch
- * }} options
+ * @param {{ projectRef: string, serviceClient: SupabaseClient }} options
  */
-export function createSupabaseHostedEvidenceAdapters({
-	config,
-	serviceClient,
-	managementAccessToken,
-	cleanupSecret,
-	fetchImpl = fetch
-}) {
-	if (
-		config.target.projectRef !== HOSTED_STAGING.projectRef ||
-		managementAccessToken.trim().length < 1 ||
-		new TextEncoder().encode(cleanupSecret).byteLength < 32
-	) {
-		throw new HostedEvidenceOperatorError('privileged hosted adapter configuration is invalid');
+export function createSupabaseHostedInspectionAdapter({ projectRef, serviceClient }) {
+	let clientOrigin;
+	try {
+		clientOrigin = normalizeOrigin(
+			/** @type {{ supabaseUrl?: string }} */ (/** @type {unknown} */ (serviceClient)).supabaseUrl ?? ''
+		);
+	} catch {
+		throw new HostedEvidenceOperatorError('hosted_inspection_target_invalid');
+	}
+	if (projectRef !== HOSTED_STAGING.projectRef || clientOrigin !== HOSTED_STAGING.supabaseUrl) {
+		throw new HostedEvidenceOperatorError('hosted_inspection_target_invalid');
+	}
+
+	/** @param {string} table @param {string} selection @param {string} column @param {readonly string[]} values */
+	async function rowsByValues(table, selection, column, values) {
+		if (values.length === 0) return [];
+		/** @type {Array<Record<string, unknown>>} */
+		const rows = [];
+		for (let offset = 0; offset < values.length; offset += 100) {
+			const result = await serviceClient
+				.from(table)
+				.select(selection)
+				.in(column, [...values.slice(offset, offset + 100)]);
+			if (result.error || !Array.isArray(result.data)) throw new Error('provider read failed');
+			rows.push(
+				.../** @type {Array<Record<string, unknown>>} */ (/** @type {unknown} */ (result.data))
+			);
+		}
+		return rows;
+	}
+
+	/** @param {Array<Record<string, unknown>>} rows */
+	function uniqueRows(rows) {
+		const seen = new Set();
+		return rows.filter((row) => {
+			const key = JSON.stringify(row);
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
+	}
+
+	/** @param {Record<string, any>} scope */
+	async function inspectRunInternal(scope) {
+		if (
+			typeof scope?.runId !== 'string' ||
+			!/^gate3-\d{8}-[a-f0-9]{8}$/u.test(scope.runId) ||
+			!inspectorTimestamp(scope.createdAfter) ||
+			!scope.manifest ||
+			scope.manifest.targetProjectRef !== HOSTED_STAGING.projectRef ||
+			scope.manifest.runId !== scope.runId ||
+			!UUID_PATTERN.test(scope.manifest.provisioningAttemptId) ||
+			!Array.isArray(scope.manifest.pendingActors) ||
+			!Array.isArray(scope.manifest.actors) ||
+			!Array.isArray(scope.manifest.reports) ||
+			!Array.isArray(scope.manifest.uploads) ||
+			!Array.isArray(scope.manifest.queueRows) ||
+			!Array.isArray(scope.expectedIdentities) ||
+			scope.expectedIdentities.length !== INSPECTOR_ROLES.length
+		) {
+			throw new HostedEvidenceOperatorError('hosted_inspection_scope_invalid');
+		}
+		let manifest;
+		try {
+			manifest = validateHostedRunManifest(
+				/** @type {HostedOperatorConfig} */ ({
+					target: HOSTED_STAGING,
+					runId: scope.runId
+				}),
+				scope.manifest
+			);
+		} catch {
+			throw new HostedEvidenceOperatorError('hosted_inspection_scope_invalid');
+		}
+		const identities = /** @type {Array<Record<string, unknown>>} */ (scope.expectedIdentities);
+		if (
+			INSPECTOR_ROLES.some(
+				(role) =>
+					identities.filter(
+						(identity) =>
+							identity.role === role &&
+							typeof identity.email === 'string' &&
+							typeof identity.username === 'string'
+					).length !== 1
+			)
+		) {
+			throw new HostedEvidenceOperatorError('hosted_inspection_scope_invalid');
+		}
+
+		/** @type {Array<Record<string, any>>} */
+		const users = [];
+		const perPage = 1000;
+		for (let page = 1; page <= 100; page += 1) {
+			const listed = await serviceClient.auth.admin.listUsers({ page, perPage });
+			if (listed.error || !Array.isArray(listed.data?.users)) throw new Error('provider read failed');
+			users.push(...listed.data.users);
+			if (
+				listed.data.users.length < perPage ||
+				(Number.isSafeInteger(listed.data.lastPage) && page >= listed.data.lastPage)
+			) {
+				break;
+			}
+			if (page === 100) throw new Error('provider read failed');
+		}
+
+		/** @type {Map<string, Array<Record<string, any>>>} */
+		const exactByRole = new Map(INSPECTOR_ROLES.map((role) => [role, []]));
+		/** @type {Map<string, Array<Record<string, any>>>} */
+		const relevantByRole = new Map(
+			identities.map((identity) => [String(identity.role), []])
+		);
+		let metadataMismatches = 0;
+		for (const identity of identities) {
+			const role = String(identity.role);
+			const expectedEmail = String(identity.email).toLowerCase();
+			const candidates = users.filter(
+				(user) => typeof user.email === 'string' && user.email.toLowerCase() === expectedEmail
+			);
+			relevantByRole.set(role, candidates);
+			const exact = candidates.filter((user) => {
+				const metadata = inspectorMetadata(user.user_metadata);
+				const createdAt = inspectorTimestamp(user.created_at);
+				if (
+					!createdAt ||
+					Date.parse(createdAt) < Date.parse(scope.createdAfter) ||
+					metadata.gate3_report_evidence_run_id !== scope.runId ||
+					metadata.gate3_report_evidence_provisioning_attempt_id !==
+							manifest.provisioningAttemptId
+				) {
+					return false;
+				}
+				return true;
+			});
+			exactByRole.set(role, exact);
+			metadataMismatches += candidates.length - exact.length;
+		}
+
+		const exactUsers = [...exactByRole.values()].flat();
+		const exactUserIds = new Set(exactUsers.map((user) => String(user.id)));
+		const exactOwnerIds = new Set([
+			...exactUserIds,
+			...manifest.actors.map((actor) => String(actor.userId))
+		]);
+		const relevantUsers = [...relevantByRole.values()].flat();
+		const foreignUsers = users.filter((user) => {
+			if (exactUserIds.has(String(user.id))) return false;
+			const email = typeof user.email === 'string' ? user.email.toLowerCase() : '';
+			return (
+				relevantUsers.some((candidate) => candidate === user) ||
+				/^gate3-v\d+-[a-z0-9-]+-[a-f0-9]{16}@example\.invalid$/u.test(email)
+			);
+		});
+		const foreignUserIds = new Set(foreignUsers.map((user) => String(user.id)));
+		const allOwnerIds = [...new Set([...exactOwnerIds, ...foreignUserIds])];
+
+		const profiles = await rowsByValues('profiles', 'id', 'id', allOwnerIds);
+		const reports = uniqueRows([
+			...(await rowsByValues('reports', 'id, reporter_id', 'reporter_id', allOwnerIds)),
+			...(await rowsByValues(
+				'reports',
+				'id, reporter_id',
+				'id',
+				manifest.reports.map((report) => String(report.id))
+			))
+		]);
+		const uploads = uniqueRows([
+			...(await rowsByValues(
+				'report_evidence_uploads',
+				'id, uploader_id, storage_path',
+				'uploader_id',
+				allOwnerIds
+			)),
+			...(await rowsByValues(
+				'report_evidence_uploads',
+				'id, uploader_id, storage_path',
+				'id',
+				manifest.uploads.map((upload) => String(upload.id))
+			))
+		]);
+
+		/** @type {Array<{ ownerId: string, path: string }>} */
+		const objects = [];
+		for (const ownerId of allOwnerIds) {
+			for (let page = 0; page < 100; page += 1) {
+				const listed = await serviceClient.storage
+					.from('report-evidence')
+					.list(ownerId, { limit: 1000, offset: page * 1000 });
+				if (listed.error || !Array.isArray(listed.data)) throw new Error('provider read failed');
+				for (const object of listed.data) {
+					if (typeof object?.name === 'string') {
+						objects.push({ ownerId, path: `${ownerId}/${object.name}` });
+					}
+				}
+				if (listed.data.length < 1000) break;
+				if (page === 99) throw new Error('provider read failed');
+			}
+		}
+		const queuePaths = [
+			...uploads.map((upload) => String(upload.storage_path ?? '')),
+			...manifest.uploads.map((upload) => String(upload.objectPath))
+		].filter(Boolean);
+		const queueRows = await rowsByValues(
+			'upload_cleanup_queue',
+			'id, storage_path',
+			'storage_path',
+			[...new Set(queuePaths)]
+		);
+
+		const exactProfiles = profiles.filter((row) => exactOwnerIds.has(String(row.id)));
+		const exactReports = reports.filter((row) => exactOwnerIds.has(String(row.reporter_id)));
+		const exactUploads = uploads.filter((row) => exactOwnerIds.has(String(row.uploader_id)));
+		const exactObjects = objects.filter((object) => exactOwnerIds.has(object.ownerId));
+		const exactPaths = new Set([
+			...exactUploads.map((upload) => String(upload.storage_path)),
+			...manifest.uploads
+				.filter((upload) => exactOwnerIds.has(String(upload.uploaderId)))
+				.map((upload) => String(upload.objectPath))
+		]);
+		const exactQueueRows = queueRows.filter((row) => exactPaths.has(String(row.storage_path)));
+
+		const foreignProfiles = profiles.filter((row) => foreignUserIds.has(String(row.id)));
+		const foreignReports = reports.filter((row) => !exactOwnerIds.has(String(row.reporter_id)));
+		const foreignUploads = uploads.filter((row) => !exactOwnerIds.has(String(row.uploader_id)));
+		const foreignObjects = objects.filter((object) => !exactOwnerIds.has(object.ownerId));
+		const foreignQueueRows = queueRows.filter(
+			(row) => !exactPaths.has(String(row.storage_path))
+		);
+
+		for (const report of manifest.reports) {
+			const actor = manifest.actors.find((entry) => entry.role === report.actorRole);
+			const row = reports.find((entry) => String(entry.id) === String(report.id));
+			if (row && actor && String(row.reporter_id) !== String(actor.userId)) metadataMismatches += 1;
+		}
+		for (const upload of manifest.uploads) {
+			const row = uploads.find((entry) => String(entry.id) === String(upload.id));
+			if (
+				row &&
+				(String(row.uploader_id) !== String(upload.uploaderId) ||
+					String(row.storage_path) !== String(upload.objectPath))
+			) {
+				metadataMismatches += 1;
+			}
+		}
+		let manifestActorsAbsent = 0;
+		for (const actor of manifest.actors) {
+			const matchingUser = (exactByRole.get(actor.role) ?? []).find(
+				(user) => user.id === actor.userId
+			);
+			if (!matchingUser) {
+				manifestActorsAbsent += 1;
+			} else if (inspectorTimestamp(matchingUser.created_at) !== actor.createdAt) {
+				manifestActorsAbsent += 1;
+				metadataMismatches += 1;
+			}
+		}
+
+		const foreignCoordinates = [
+			...foreignUsers.map((user) => `account:${String(user.id)}`),
+			...foreignProfiles.map((row) => `profile:${String(row.id)}`),
+			...foreignReports.map((row) => `report:${String(row.id)}`),
+			...foreignUploads.map((row) => `upload:${String(row.id)}`),
+			...foreignObjects.map((object) => `object:${object.path}`),
+			...foreignQueueRows.map(
+				(row) => `queue:${String(row.id)}:${String(row.storage_path)}`
+			)
+		].sort();
+		const roleCounts = Object.fromEntries(
+			INSPECTOR_ROLES.map((role) => [role, exactByRole.get(role)?.length ?? 0])
+		);
+		const pendingRoles = new Set(manifest.pendingActors.map((actor) => actor.role));
+		const actorRoles = new Set(manifest.actors.map((actor) => actor.role));
+		return Object.freeze({
+			counts: Object.freeze({
+				actors: exactUsers.length,
+				sessions: exactUsers.filter((user) => inspectorTimestamp(user.last_sign_in_at)).length,
+				mfaFactors: exactUsers.reduce(
+					(sum, user) => sum + (Array.isArray(user.factors) ? user.factors.length : 0),
+					0
+				),
+				profiles: exactProfiles.length,
+				reports: exactReports.length,
+				uploads: exactUploads.length,
+				objects: exactObjects.length,
+				queueRows: exactQueueRows.length
+			}),
+			foreignCounts: Object.freeze({
+				syntheticAccounts: foreignUsers.length,
+				profiles: foreignProfiles.length,
+				reports: foreignReports.length,
+				uploads: foreignUploads.length,
+				objects: foreignObjects.length,
+				queueRows: foreignQueueRows.length
+			}),
+			roleCounts: Object.freeze(roleCounts),
+			duplicateRoles: [...exactByRole.values()].filter((matches) => matches.length > 1).length,
+			metadataMismatches,
+			manifestActorsAbsent,
+			hostedActorsManifestStale: exactUsers.filter((user) => {
+				const role = INSPECTOR_ROLES.find((candidate) =>
+					(exactByRole.get(candidate) ?? []).includes(user)
+				);
+				return role !== undefined && !actorRoles.has(role) && !pendingRoles.has(role);
+			}).length,
+			foreignEvidenceSha256: createHash('sha256')
+				.update(foreignCoordinates.join('\n'), 'utf8')
+				.digest('hex')
+		});
+	}
+
+	return Object.freeze({
+		/** @param {Record<string, unknown>} scope */
+		async inspectRun(scope) {
+			try {
+				return await inspectRunInternal(/** @type {Record<string, any>} */ (scope));
+			} catch (error) {
+				if (
+					error instanceof HostedEvidenceOperatorError &&
+					error.message === 'hosted_inspection_scope_invalid'
+				) {
+					throw error;
+				}
+				throw new HostedEvidenceOperatorError('hosted_inspection_failed');
+			}
+		}
+	});
+}
+
+/**
+ * Exact-scope read helpers shared by the privileged legacy operator. The
+ * returned surface contains no hosted mutation capability.
+ *
+ * @param {{ config: HostedOperatorConfig, serviceClient: SupabaseClient }} options
+ */
+export function createSupabaseHostedEvidenceReadAdapters({ config, serviceClient }) {
+	if (config.target.projectRef !== HOSTED_STAGING.projectRef) {
+		throw new HostedEvidenceOperatorError('hosted read adapter configuration is invalid');
 	}
 
 	/** @param {HostedRunManifest} manifest @returns {Promise<Array<{ pending: PendingManifestActor, user: SupabaseUser }>>} */
@@ -2051,6 +2400,152 @@ export function createSupabaseHostedEvidenceAdapters({
 		}
 		return [...matches.values()].flat();
 	}
+
+	/** @param {{ manifest: HostedRunManifest }} scope */
+	async function inspectManifest({ manifest }) {
+		assertManifestTarget(config, manifest);
+		const pendingUsers = await listPendingManifestUsers(manifest);
+		const actorIds = [
+			...manifest.actors.map((actor) => actor.userId),
+			...pendingUsers.map(({ user }) => String(user.id))
+		];
+		const accountResults = await Promise.all(
+			actorIds.map((userId) => serviceClient.auth.admin.getUserById(userId))
+		);
+		if (accountResults.some((result) => result.error && !isMissingAuthUser(result))) {
+			throw new HostedEvidenceOperatorError('exact hosted account inspection failed');
+		}
+		const accounts = accountResults.filter((result) => Boolean(result.data.user)).length;
+		const invalidActorProvenance = accountResults
+			.slice(0, manifest.actors.length)
+			.filter((result, index) => {
+				if (!result.data.user) return false;
+				return !actorProvenanceMatches(config, manifest.actors[index], result.data.user);
+			}).length;
+
+		let reports = [];
+		let uploads = [];
+		if (actorIds.length > 0) {
+			reports = /** @type {any[]} */ (
+				resultData(
+					await serviceClient.from('reports').select('id, reporter_id').in('reporter_id', actorIds),
+					'exact hosted report inspection failed'
+				) ?? []
+			);
+			uploads = /** @type {any[]} */ (
+				resultData(
+					await serviceClient
+						.from('report_evidence_uploads')
+						.select('id, uploader_id, storage_path')
+						.in('uploader_id', actorIds),
+					'exact hosted upload inspection failed'
+				) ?? []
+			);
+		}
+
+		/** @type {string[]} */
+		const objectPaths = [];
+		for (const actor of manifest.actors) {
+			const listed = await serviceClient.storage
+				.from('report-evidence')
+				.list(actor.userId, { limit: 100, offset: 0 });
+			if (listed.error) throw new HostedEvidenceOperatorError('exact hosted object inspection failed');
+			for (const object of listed.data ?? []) objectPaths.push(`${actor.userId}/${object.name}`);
+		}
+		for (const { user } of pendingUsers) {
+			const userId = String(user.id);
+			const listed = await serviceClient.storage
+				.from('report-evidence')
+				.list(userId, { limit: 100, offset: 0 });
+			if (listed.error) throw new HostedEvidenceOperatorError('exact hosted object inspection failed');
+			for (const object of listed.data ?? []) objectPaths.push(`${userId}/${object.name}`);
+		}
+
+		let queueRows = [];
+		const manifestPaths = manifest.uploads.map((upload) => upload.objectPath);
+		if (manifestPaths.length > 0) {
+			queueRows = /** @type {any[]} */ (
+				resultData(
+					await serviceClient
+						.from('upload_cleanup_queue')
+						.select('id, storage_path, processed_at')
+						.in('storage_path', manifestPaths),
+					'exact hosted queue inspection failed'
+				) ?? []
+			);
+		}
+
+		const reportIds = new Set(manifest.reports.map((report) => report.id));
+		const uploadIds = new Set(manifest.uploads.map((upload) => upload.id));
+		const allowedPaths = new Set(manifestPaths);
+		const manifestReportMismatches = manifest.reports.filter((report) => {
+			const expectedOwner = manifestActor(manifest, report.actorRole).userId;
+			return !reports.some(
+				(row) => String(row.id) === report.id && String(row.reporter_id) === expectedOwner
+			);
+		}).length;
+		const manifestUploadMismatches = manifest.uploads.filter(
+			(upload) =>
+				!uploads.some(
+					(row) =>
+						String(row.id) === upload.id &&
+						String(row.uploader_id) === upload.uploaderId &&
+						String(row.storage_path) === upload.objectPath
+				)
+		).length;
+		const foreignArtifacts =
+			manifestReportMismatches +
+			manifestUploadMismatches +
+			reports.filter((report) => !reportIds.has(String(report.id))).length +
+			uploads.filter(
+				(upload) =>
+					!uploadIds.has(String(upload.id)) || !allowedPaths.has(String(upload.storage_path))
+			).length +
+			objectPaths.filter((path) => !allowedPaths.has(path)).length +
+			queueRows.filter((queue) => !allowedPaths.has(String(queue.storage_path))).length;
+
+		return {
+			accounts,
+			reports: reports.length,
+			uploads: uploads.length,
+			objects: objectPaths.length,
+			queueRows: queueRows.length,
+			foreignArtifacts,
+			preExistingAccounts: invalidActorProvenance
+		};
+	}
+
+	return Object.freeze({ listPendingManifestUsers, inspectManifest });
+}
+
+/**
+ * Concrete Frankfurt-only privileged adapters. Creating this object is local and inert;
+ * state changes occur only when an explicitly gated operator method is invoked later.
+ *
+ * @param {{
+ *   config: HostedOperatorConfig,
+ *   serviceClient: SupabaseClient,
+ *   managementAccessToken: string,
+ *   cleanupSecret: string,
+ *   fetchImpl?: typeof fetch
+ * }} options
+ */
+export function createSupabaseHostedEvidenceAdapters({
+	config,
+	serviceClient,
+	managementAccessToken,
+	cleanupSecret,
+	fetchImpl = fetch
+}) {
+	if (
+		config.target.projectRef !== HOSTED_STAGING.projectRef ||
+		managementAccessToken.trim().length < 1 ||
+		new TextEncoder().encode(cleanupSecret).byteLength < 32
+	) {
+		throw new HostedEvidenceOperatorError('privileged hosted adapter configuration is invalid');
+	}
+	const { listPendingManifestUsers, inspectManifest } =
+		createSupabaseHostedEvidenceReadAdapters({ config, serviceClient });
 
 	/** @param {{ role: string }} scope */
 	async function provisionActor(scope) {
@@ -2101,130 +2596,6 @@ export function createSupabaseHostedEvidenceAdapters({
 			throw new HostedEvidenceOperatorError('fresh hosted actor provenance is invalid');
 		}
 		return actor;
-	}
-
-	/** @param {{ manifest: HostedRunManifest }} scope */
-	async function inspectManifest({ manifest }) {
-		assertManifestTarget(config, manifest);
-		const pendingUsers = await listPendingManifestUsers(manifest);
-		const actorIds = [
-			...manifest.actors.map((actor) => actor.userId),
-			...pendingUsers.map(({ user }) => String(user.id))
-		];
-		const accountResults = await Promise.all(
-			actorIds.map((userId) => serviceClient.auth.admin.getUserById(userId))
-		);
-		if (accountResults.some((result) => result.error && !isMissingAuthUser(result))) {
-			throw new HostedEvidenceOperatorError('exact hosted account inspection failed');
-		}
-		const accounts = accountResults.filter((result) => Boolean(result.data.user)).length;
-		const invalidActorProvenance = accountResults
-			.slice(0, manifest.actors.length)
-			.filter((result, index) => {
-			if (!result.data.user) return false;
-			return !actorProvenanceMatches(
-				config,
-				manifest.actors[index],
-				result.data.user
-			);
-			}).length;
-
-		let reports = [];
-		let uploads = [];
-		if (actorIds.length > 0) {
-			reports = /** @type {any[]} */ (
-				resultData(
-					await serviceClient
-						.from('reports')
-						.select('id, reporter_id')
-						.in('reporter_id', actorIds),
-					'exact hosted report inspection failed'
-				) ?? []
-			);
-			uploads = /** @type {any[]} */ (
-				resultData(
-					await serviceClient
-						.from('report_evidence_uploads')
-						.select('id, uploader_id, storage_path')
-						.in('uploader_id', actorIds),
-					'exact hosted upload inspection failed'
-				) ?? []
-			);
-		}
-
-		/** @type {string[]} */
-		const objectPaths = [];
-		for (const actor of manifest.actors) {
-			const listed = await serviceClient.storage
-				.from('report-evidence')
-				.list(actor.userId, { limit: 100, offset: 0 });
-			if (listed.error) {
-				throw new HostedEvidenceOperatorError('exact hosted object inspection failed');
-			}
-			for (const object of listed.data ?? []) objectPaths.push(`${actor.userId}/${object.name}`);
-		}
-		for (const { user } of pendingUsers) {
-			const userId = String(user.id);
-			const listed = await serviceClient.storage
-				.from('report-evidence')
-				.list(userId, { limit: 100, offset: 0 });
-			if (listed.error) {
-				throw new HostedEvidenceOperatorError('exact hosted object inspection failed');
-			}
-			for (const object of listed.data ?? []) objectPaths.push(`${userId}/${object.name}`);
-		}
-
-		let queueRows = [];
-		const manifestPaths = manifest.uploads.map((upload) => upload.objectPath);
-		if (manifestPaths.length > 0) {
-			queueRows = /** @type {any[]} */ (
-				resultData(
-					await serviceClient
-						.from('upload_cleanup_queue')
-						.select('id, storage_path, processed_at')
-						.in('storage_path', manifestPaths),
-					'exact hosted queue inspection failed'
-				) ?? []
-			);
-		}
-
-		const reportIds = new Set(manifest.reports.map((report) => report.id));
-		const uploadIds = new Set(manifest.uploads.map((upload) => upload.id));
-		const allowedPaths = new Set(manifestPaths);
-		const manifestReportMismatches = manifest.reports.filter((report) => {
-			const expectedOwner = manifestActor(manifest, report.actorRole).userId;
-			return !reports.some(
-				(row) => String(row.id) === report.id && String(row.reporter_id) === expectedOwner
-			);
-		}).length;
-		const manifestUploadMismatches = manifest.uploads.filter((upload) =>
-			!uploads.some(
-				(row) =>
-					String(row.id) === upload.id &&
-					String(row.uploader_id) === upload.uploaderId &&
-					String(row.storage_path) === upload.objectPath
-			)
-		).length;
-		const foreignArtifacts =
-			manifestReportMismatches +
-			manifestUploadMismatches +
-			reports.filter((report) => !reportIds.has(String(report.id))).length +
-			uploads.filter(
-				(upload) =>
-					!uploadIds.has(String(upload.id)) || !allowedPaths.has(String(upload.storage_path))
-			).length +
-			objectPaths.filter((path) => !allowedPaths.has(path)).length +
-			queueRows.filter((queue) => !allowedPaths.has(String(queue.storage_path))).length;
-
-		return {
-			accounts,
-			reports: reports.length,
-			uploads: uploads.length,
-			objects: objectPaths.length,
-			queueRows: queueRows.length,
-			foreignArtifacts,
-			preExistingAccounts: invalidActorProvenance
-		};
 	}
 
 	/** @param {{ projectRef: string, uploadId: string, uploaderId: string, objectPath: string }} scope */

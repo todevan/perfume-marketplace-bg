@@ -16,6 +16,7 @@ import {
 	buildSupabaseCliEnvironment,
 	cleanupPinnedSupabaseWorkdir,
 	createPinnedSupabaseWorkdir,
+	resolveStagingApiKeys,
 	runStagingCommand,
 	stagingCommandArguments,
 	verifyStagingTarget
@@ -185,6 +186,120 @@ describe('Frankfurt staging target guard', () => {
 				dependencies: dependencies()
 			})
 		).not.toThrow();
+	});
+});
+
+describe('in-memory Frankfurt staging API keys', () => {
+	it('verifies the target before running only the sanitized reveal command', async () => {
+		const order: string[] = [];
+		const serviceKey = ['sb', 'secret_in_memory_only'].join('_');
+		const verifyTarget = vi.fn(() => {
+			order.push('verify');
+			return STAGING_PROJECT;
+		});
+		const runSupabaseCli = vi.fn(() => {
+			order.push('keys');
+			return JSON.stringify([
+				{ id: 'not-returned', name: 'default', type: 'publishable', api_key: publishableKey },
+				{ id: 'not-returned', name: 'default', type: 'secret', api_key: serviceKey },
+				{ id: 'not-returned', name: 'anon', type: 'legacy', api_key: 'legacy-anon' }
+			]);
+		});
+
+		await expect(
+			resolveStagingApiKeys({
+				environment: baseEnvironment,
+				dependencies: dependencies({ verifyStagingTarget: verifyTarget, runSupabaseCli })
+			})
+		).resolves.toEqual({
+			publishableKey,
+			serviceKey
+		});
+		expect(order).toEqual(['verify', 'keys']);
+		expect(runSupabaseCli).toHaveBeenCalledWith(
+			[
+				'projects',
+				'api-keys',
+				'--project-ref',
+				STAGING_PROJECT.ref,
+				'--reveal',
+				'--output',
+				'json'
+			],
+			{ environment: baseEnvironment, purpose: 'inventory' }
+		);
+	});
+
+	it('accepts the legacy service-role value when a modern secret is absent', async () => {
+		await expect(
+			resolveStagingApiKeys({
+				environment: baseEnvironment,
+				dependencies: dependencies({
+					verifyStagingTarget: () => STAGING_PROJECT,
+					runSupabaseCli: () =>
+						JSON.stringify([
+							{ name: 'default', type: 'publishable', api_key: publishableKey },
+							{ name: 'service_role', type: 'legacy', api_key: serviceRoleKey }
+						])
+				})
+			})
+		).resolves.toEqual({ publishableKey, serviceKey: serviceRoleKey });
+	});
+
+	it('never exposes provider bodies or key material when parsing fails', async () => {
+		const providerBody = 'sb_secret_never_echo_this_provider_body';
+		let caught: unknown;
+		try {
+			await resolveStagingApiKeys({
+				environment: baseEnvironment,
+				dependencies: dependencies({
+					verifyStagingTarget: () => STAGING_PROJECT,
+					runSupabaseCli: () => `{not-json-${providerBody}`
+				})
+			});
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(StagingTargetError);
+		expect(String(caught)).not.toContain(providerBody);
+		expect(JSON.stringify(caught)).not.toContain(providerBody);
+	});
+
+	it('sanitizes a provider failure even when it is already a staging error', async () => {
+		const providerBody = 'sb_secret_provider_failure_never_echo';
+		let caught: unknown;
+		try {
+			await resolveStagingApiKeys({
+				environment: baseEnvironment,
+				dependencies: dependencies({
+					verifyStagingTarget: () => STAGING_PROJECT,
+					runSupabaseCli: () => {
+						throw new StagingTargetError(providerBody);
+					}
+				})
+			});
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(StagingTargetError);
+		expect(String(caught)).not.toContain(providerBody);
+	});
+
+	it('does not reveal keys when target verification returns a different project', async () => {
+		const runSupabaseCli = vi.fn();
+
+		await expect(
+			resolveStagingApiKeys({
+				environment: baseEnvironment,
+				dependencies: dependencies({
+					verifyStagingTarget: () => ({ ...STAGING_PROJECT, ref: 'forbidden-project' }),
+					runSupabaseCli
+				})
+			})
+		).rejects.toThrow(StagingTargetError);
+		expect(runSupabaseCli).not.toHaveBeenCalled();
 	});
 });
 

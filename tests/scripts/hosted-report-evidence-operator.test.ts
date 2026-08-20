@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as hostedOperatorModule from '../../scripts/hosted-report-evidence-operator.mjs';
 import { createEncryptedModeratorCredentialStore } from '../../scripts/hosted-a9-credential-store.mjs';
+import { deriveSyntheticIdentity } from '../../scripts/gate3-hosted-secrets.mjs';
 import {
 	HOSTED_STAGING,
 	HostedEvidenceOperatorError,
@@ -17,6 +18,8 @@ import {
 	createSanitizedOperatorRecord,
 	createSupabaseHostedA9Adapters,
 	createSupabaseHostedEvidenceAdapters,
+	createSupabaseHostedEvidenceReadAdapters,
+	createSupabaseHostedInspectionAdapter,
 	generateTotpCode,
 	loadHostedRunManifest,
 	persistHostedRunManifest,
@@ -146,6 +149,260 @@ function completeActorManifest(config: ReturnType<typeof validateHostedA9Environ
 		createHostedRunManifest(config)
 	);
 }
+
+function createInspectorServiceClient(options: {
+	users?: Array<Record<string, unknown>>;
+	rows?: Record<string, Array<Record<string, unknown>>>;
+	objects?: Record<string, Array<Record<string, unknown>>>;
+	selectedColumns?: string[];
+} = {}) {
+	const rows = options.rows ?? {};
+	return {
+		supabaseUrl: HOSTED_STAGING.supabaseUrl,
+		auth: {
+			admin: {
+				listUsers: vi.fn().mockResolvedValue({
+					data: { users: options.users ?? [], lastPage: 1 },
+					error: null
+				})
+			}
+		},
+		from(table: string) {
+			const query = {
+				select: (columns: string) => {
+					options.selectedColumns?.push(`${table}:${columns}`);
+					return query;
+				},
+				in: (column: string, values: string[]) =>
+					Promise.resolve({
+						data: (rows[table] ?? []).filter((row) => values.includes(String(row[column]))),
+						error: null
+					})
+			};
+			return query;
+		},
+		storage: {
+			from: () => ({
+				list: (prefix: string) =>
+					Promise.resolve({ data: options.objects?.[prefix] ?? [], error: null })
+			})
+		}
+	};
+}
+
+describe('universal Supabase inspection adapter', () => {
+	const inspectorRunId = 'gate3-20260820-abcdef12';
+	const expectedIdentities = [
+		'reporter',
+		'cross-user',
+		'assigned-moderator',
+		'unassigned-moderator'
+	].map((role) => deriveSyntheticIdentity({ runId: inspectorRunId, role, identitySchemeVersion: 1 }));
+	const gate3Manifest = () =>
+		createHostedRunManifest(
+			{ target: HOSTED_STAGING, runId: inspectorRunId } as never,
+			{ provisioningAttemptId: baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE }
+		);
+	const exactReporter = {
+		id: actorIds.reporter,
+		email: expectedIdentities[0].email,
+		created_at: actorCreatedAt,
+		last_sign_in_at: actorCreatedAt,
+		factors: [{ id: 'factor-id', status: 'verified' }],
+		user_metadata: {
+			gate3_report_evidence_run_id: inspectorRunId,
+			gate3_report_evidence_provisioning_attempt_id:
+				baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+		}
+	};
+
+	it('extracts the legacy exact-scope reads without changing the privileged adapter contract', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const reads = createSupabaseHostedEvidenceReadAdapters({
+			config,
+			serviceClient: {} as never
+		});
+		expect(Object.keys(reads)).toEqual(['listPendingManifestUsers', 'inspectManifest']);
+		expect(Object.keys(reads)).not.toEqual(
+			expect.arrayContaining(['createUser', 'deleteUser', 'upload', 'removeManifest'])
+		);
+	});
+
+	it('exposes only one read method and separates exact ownership from foreign evidence', async () => {
+		const selectedColumns: string[] = [];
+		const foreignId = actorIds['cross-user'];
+		const exactUploadId = '66666666-6666-4666-8666-666666666666';
+		const foreignUploadId = '77777777-7777-4777-8777-777777777777';
+		const exactPath = `${actorIds.reporter}/${exactUploadId}.webp`;
+		const foreignPath = `${foreignId}/${foreignUploadId}.webp`;
+		const serviceClient = createInspectorServiceClient({
+			selectedColumns,
+			users: [
+				exactReporter,
+				{
+					id: foreignId,
+					email: expectedIdentities[1].email,
+					created_at: actorCreatedAt,
+					user_metadata: {
+						gate3_report_evidence_run_id: 'gate3-20260809-foreign00',
+						gate3_report_evidence_provisioning_attempt_id:
+							baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+					}
+				}
+			],
+			rows: {
+				profiles: [{ id: actorIds.reporter }, { id: foreignId }],
+				reports: [
+					{ id: actorIds.reporter, reporter_id: actorIds.reporter },
+					{ id: foreignId, reporter_id: foreignId }
+				],
+				report_evidence_uploads: [
+					{ id: exactUploadId, uploader_id: actorIds.reporter, storage_path: exactPath },
+					{ id: foreignUploadId, uploader_id: foreignId, storage_path: foreignPath }
+				],
+				upload_cleanup_queue: [
+					{ id: 1, storage_path: exactPath },
+					{ id: 2, storage_path: foreignPath }
+				]
+			},
+			objects: {
+				[actorIds.reporter]: [{ name: `${exactUploadId}.webp` }],
+				[foreignId]: [{ name: `${foreignUploadId}.webp` }]
+			}
+		});
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: serviceClient as never
+		});
+
+		expect(Object.keys(adapter)).toEqual(['inspectRun']);
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			})
+		).resolves.toMatchObject({
+			counts: {
+				actors: 1,
+				sessions: 1,
+				mfaFactors: 1,
+				profiles: 1,
+				reports: 1,
+				uploads: 1,
+				objects: 1,
+				queueRows: 1
+			},
+			foreignCounts: {
+				syntheticAccounts: 1,
+				profiles: 1,
+				reports: 1,
+				uploads: 1,
+				objects: 1,
+				queueRows: 1
+			},
+			metadataMismatches: 1,
+			hostedActorsManifestStale: 1
+		});
+		expect(selectedColumns.some((selection) => selection.endsWith(':*'))).toBe(false);
+	});
+
+	it.each([
+		[
+			'duplicate role matches',
+			gate3Manifest(),
+			[exactReporter, { ...exactReporter, id: actorIds['cross-user'] }],
+			{ duplicateRoles: 1, metadataMismatches: 0, manifestActorsAbsent: 0, hostedActorsManifestStale: 2 }
+		],
+		[
+			'duplicate role matches after manifest registration',
+			registerHostedActor(gate3Manifest(), 'reporter', actorIds.reporter, actorCreatedAt),
+			[exactReporter, { ...exactReporter, id: actorIds['cross-user'] }],
+			{ duplicateRoles: 1, metadataMismatches: 0, manifestActorsAbsent: 0, hostedActorsManifestStale: 0 }
+		],
+		[
+			'mismatched metadata',
+			gate3Manifest(),
+			[
+				{
+					...exactReporter,
+					user_metadata: {
+						...exactReporter.user_metadata,
+						gate3_report_evidence_run_id: 'gate3-20260809-foreign00'
+					}
+				}
+			],
+			{ duplicateRoles: 0, metadataMismatches: 1, manifestActorsAbsent: 0, hostedActorsManifestStale: 0 }
+		],
+		[
+			'manifest actor absent',
+			registerHostedActor(gate3Manifest(), 'reporter', actorIds.reporter, actorCreatedAt),
+			[],
+			{ duplicateRoles: 0, metadataMismatches: 0, manifestActorsAbsent: 1, hostedActorsManifestStale: 0 }
+		],
+		[
+			'manifest actor timestamp mismatch',
+			registerHostedActor(gate3Manifest(), 'reporter', actorIds.reporter, actorCreatedAt),
+			[{ ...exactReporter, created_at: '2026-08-09T12:01:00.000Z' }],
+			{ duplicateRoles: 0, metadataMismatches: 1, manifestActorsAbsent: 1, hostedActorsManifestStale: 0 }
+		],
+		[
+			'hosted actor after pending intent',
+			registerHostedActorIntent(gate3Manifest(), 'reporter'),
+			[exactReporter],
+			{ duplicateRoles: 0, metadataMismatches: 0, manifestActorsAbsent: 0, hostedActorsManifestStale: 0 }
+		],
+		[
+			'hosted actor before intent persistence',
+			gate3Manifest(),
+			[exactReporter],
+			{ duplicateRoles: 0, metadataMismatches: 0, manifestActorsAbsent: 0, hostedActorsManifestStale: 1 }
+		]
+	])('derives %s from authoritative Auth metadata', async (_label, manifest, users, expected) => {
+		const adapter = createSupabaseHostedInspectionAdapter({
+			projectRef: HOSTED_STAGING.projectRef,
+			serviceClient: createInspectorServiceClient({ users }) as never
+		});
+		await expect(
+			adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest,
+				expectedIdentities
+			})
+		).resolves.toMatchObject(expected);
+	});
+
+	it('rejects an unbound client and sanitizes provider failures', async () => {
+		expect(() =>
+			createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: { supabaseUrl: 'https://example.invalid' } as never
+			})
+		).toThrow('hosted_inspection_target_invalid');
+
+		const providerBody = 'provider-secret-body-never-echo';
+		const client = createInspectorServiceClient();
+		client.auth.admin.listUsers.mockRejectedValue(new Error(providerBody));
+		let caught: unknown;
+		try {
+			await createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: client as never
+			}).inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest: gate3Manifest(),
+				expectedIdentities
+			});
+		} catch (error) {
+			caught = error;
+		}
+		expect(String(caught)).toContain('hosted_inspection_failed');
+		expect(String(caught)).not.toContain(providerBody);
+	});
+});
 
 it('accepts Supabase microsecond actor timestamps without normalization', () => {
 	const config = validateHostedOperatorEnvironment(baseEnvironment);

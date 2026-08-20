@@ -47,7 +47,8 @@ import { seedCatalog } from './seed-catalog.mjs';
  *   readLinkedProjectRef?: () => string;
  *   listProjects?: () => unknown;
  *   listApiKeys?: () => unknown;
- *   runSupabaseCli?: (args: string[], options?: SupabaseCliOptions) => void | Promise<void>;
+ *   runSupabaseCli?: (args: string[], options?: SupabaseCliOptions) => string | Promise<string> | void | Promise<void>;
+ *   verifyStagingTarget?: (options?: VerifyStagingOptions) => unknown | Promise<unknown>;
  *   createPinnedWorkdir?: () => string;
  *   cleanupPinnedWorkdir?: (workdir: string) => void;
  *   seedCatalog?: (options: {
@@ -696,6 +697,95 @@ export function verifyStagingTarget({
 		postgresMajor: STAGING_PROJECT.postgresMajor,
 		status: STAGING_PROJECT.status,
 		url: STAGING_PROJECT.url
+	});
+}
+
+/**
+ * Resolves the two staging API keys needed by hosted orchestration without
+ * printing, persisting, or returning the provider response. Target identity is
+ * verified before the reveal command can run.
+ *
+ * @param {{ environment?: NodeJS.ProcessEnv, dependencies?: StagingDependencies }} [options]
+ * @returns {Promise<Readonly<{ publishableKey: string, serviceKey: string }>>}
+ */
+export async function resolveStagingApiKeys({
+	environment = process.env,
+	dependencies = {}
+} = {}) {
+	const verifyTarget = dependencies.verifyStagingTarget ?? verifyStagingTarget;
+	const verifiedTarget = /** @type {any} */ (
+		await verifyTarget({ environment, dependencies })
+	);
+	if (
+		verifiedTarget?.ref !== STAGING_PROJECT.ref ||
+		verifiedTarget?.organizationId !== STAGING_PROJECT.organizationId ||
+		verifiedTarget?.region !== STAGING_PROJECT.region ||
+		verifiedTarget?.postgresMajor !== STAGING_PROJECT.postgresMajor ||
+		verifiedTarget?.status !== STAGING_PROJECT.status ||
+		verifiedTarget?.url !== STAGING_PROJECT.url
+	) {
+		throw new StagingTargetError('The verified target is not the allowed Frankfurt staging project.');
+	}
+
+	const execute = dependencies.runSupabaseCli ?? runSupabaseCli;
+	let parsed;
+	try {
+		const output = await execute(
+			[
+				'projects',
+				'api-keys',
+				'--project-ref',
+				STAGING_PROJECT.ref,
+				'--reveal',
+				'--output',
+				'json'
+			],
+			{ environment, purpose: 'inventory' }
+		);
+		parsed = JSON.parse(typeof output === 'string' ? output : '');
+	} catch {
+		throw new StagingTargetError(
+			'The Supabase API-key response is invalid. No provider output was echoed.'
+		);
+	}
+
+	if (!Array.isArray(parsed)) {
+		throw new StagingTargetError(
+			'The Supabase API-key response is invalid. No provider output was echoed.'
+		);
+	}
+	const keys = /** @type {SupabaseApiKey[]} */ (parsed);
+	const publishable = keys.filter(
+		(key) =>
+			key?.type === 'publishable' &&
+			key?.name === 'default' &&
+			typeof key?.api_key === 'string' &&
+			key.api_key.length > 0
+	);
+	const modernSecret = keys.filter(
+		(key) =>
+			key?.type === 'secret' &&
+			key?.name === 'default' &&
+			typeof key?.api_key === 'string' &&
+			key.api_key.length > 0
+	);
+	const legacyServiceRole = keys.filter(
+		(key) =>
+			key?.type === 'legacy' &&
+			key?.name === 'service_role' &&
+			typeof key?.api_key === 'string' &&
+			key.api_key.length > 0
+	);
+	const selectedService = modernSecret.length > 0 ? modernSecret : legacyServiceRole;
+	if (publishable.length !== 1 || selectedService.length !== 1) {
+		throw new StagingTargetError(
+			'The Supabase API-key response is invalid. No provider output was echoed.'
+		);
+	}
+
+	return Object.freeze({
+		publishableKey: /** @type {string} */ (publishable[0].api_key),
+		serviceKey: /** @type {string} */ (selectedService[0].api_key)
 	});
 }
 
