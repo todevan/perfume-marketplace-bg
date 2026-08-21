@@ -4,6 +4,7 @@ import {
 	runProvisionBoundary,
 	runProvisionCommand
 } from '../../scripts/gate3-hosted-provision-runner.mjs';
+import { classifyGate3Lifecycle } from '../../scripts/gate3-hosted-lifecycle.mjs';
 import {
 	HOSTED_STAGING,
 	createHostedRunManifest,
@@ -76,11 +77,18 @@ function trustedManifestAheadInspection(revision: number, manifestSha256: string
 	};
 }
 
-function trustedVerifiedInspection(revision: number, manifestSha256: string) {
-	return {
-		classification: 'PROVISION_VERIFIED',
+function canonicalPostProvisionInspection(
+	revision: number,
+	manifestSha256: string,
+	releaseCommitSha = 'a'.repeat(40)
+) {
+	const facts = {
+		runId: 'gate3-20260821-abcdef12',
+		projectRef: HOSTED_STAGING.projectRef,
+		workerOrigin: HOSTED_STAGING.workerOrigin,
+		stateSchemaVersion: 1,
 		stateRevision: revision,
-		revision,
+		stateSha256: 'f'.repeat(64),
 		stateValid: true,
 		stateCorrupt: false,
 		corruptState: false,
@@ -93,24 +101,53 @@ function trustedVerifiedInspection(revision: number, manifestSha256: string) {
 		manifestSha256,
 		authoritativeReleaseAvailable: true,
 		authoritativeReleaseUnavailable: false,
-		boundReleaseCommitSha: 'a'.repeat(40),
-		currentReleaseCommitSha: 'a'.repeat(40),
+		boundReleaseCommitSha: releaseCommitSha,
+		currentReleaseCommitSha: releaseCommitSha,
 		releaseMismatch: false,
 		releaseChanged: false,
 		hostedEvidenceAvailable: true,
 		ownershipConflict: false,
+		deletionScopeTrusted: true,
 		cleanupCompleteContradiction: false,
 		credentialsLost: false,
+		counts: {
+			actors: 4,
+			sessions: 4,
+			mfaFactors: 2,
+			profiles: 4,
+			reports: 0,
+			uploads: 0,
+			objects: 0,
+			queueRows: 0
+		},
+		roleCounts: Object.fromEntries(roles.map((role) => [role, 1])),
 		duplicateRoles: 0,
 		metadataMismatches: 0,
 		actorIdentityConflicts: 0,
 		manifestActorsAbsent: 0,
 		hostedActorsManifestStale: 0,
+		confirmedActors: 4,
+		completeProfiles: 4,
+		verifiedModeratorTotpFactors: 2,
+		moderatorsWithVerifiedTotp: 2,
+		actorsWithActiveSessions: 4,
+		activeSessionsProven: true,
+		foreignEvidenceSha256: '9'.repeat(64),
+		actors: 4,
 		provisionVerified: true,
-		scenarioVerified: true,
+		scenarioVerified: false,
+		scenarioPartial: false,
+		cleanupVerified: false,
+		cleanupPartial: false,
+		cleanupRequired: false,
 		ambiguous: false,
+		archived: false,
 		foreignCounts: zeroForeignCounts,
 		exactRecoveryProvenance: false
+	};
+	return {
+		...facts,
+		classification: classifyGate3Lifecycle(facts).classification
 	};
 }
 
@@ -311,7 +348,7 @@ function commandFixture() {
 			exactRecoveryProvenance: snapshot.exactRecoveryProvenance,
 			foreignCounts: zeroForeignCounts,
 			...(classificationOverride === null && allVerified
-				? trustedVerifiedInspection(state.revision, state.manifest.sha256)
+				? canonicalPostProvisionInspection(state.revision, state.manifest.sha256)
 				: {})
 		});
 	});
@@ -965,13 +1002,25 @@ describe('Gate 3 provision command', () => {
 		);
 	});
 
-	it('treats four verified exact actors as a mutation-free success without rotating credentials', async () => {
+	it('accepts canonical post-provision truth while scenario is pending without provider mutation', async () => {
 		const fixture = commandFixture();
 		fixture.setSnapshot({
 			requiredConsents,
 			exactRecoveryProvenance: true,
 			actors: Object.fromEntries(roles.map((role) => [role, completedActor(role)]))
 		});
+		const inspection = canonicalPostProvisionInspection(
+			fixture.state().revision,
+			fixture.state().manifest.sha256
+		);
+		expect(inspection).toMatchObject({
+			classification: 'PROVISION_VERIFIED',
+			provisionVerified: true,
+			scenarioVerified: false,
+			scenarioPartial: false
+		});
+		expect(inspection).not.toHaveProperty('revision');
+		fixture.dependencies.inspectRun.mockResolvedValueOnce(inspection);
 
 		const result = await runProvisionCommand({
 			paths: fixture.paths,
@@ -984,6 +1033,7 @@ describe('Gate 3 provision command', () => {
 			expect.objectContaining({ status: 'confirmed', classification: 'PROVISION_VERIFIED' })
 		);
 		expect(fixture.mutations).toEqual([]);
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
 		expect(fixture.dependencies.protectRunSecrets).not.toHaveBeenCalled();
 	});
 
@@ -1894,7 +1944,7 @@ describe('Gate 3 provision command', () => {
 		expect(fixture.mutations).toEqual([]);
 	});
 
-	it('catches the final durable checkpoint up before accepting hosted PROVISION_VERIFIED truth', async () => {
+	it('catches the final durable checkpoint up from canonical post-provision truth while scenario is pending', async () => {
 		const fixture = commandFixture();
 		fixture.setSnapshot({
 			requiredConsents,
@@ -1919,6 +1969,9 @@ describe('Gate 3 provision command', () => {
 				}
 			}
 		});
+		fixture.dependencies.inspectRun.mockResolvedValueOnce(
+			canonicalPostProvisionInspection(fixture.state().revision, fixture.state().manifest.sha256)
+		);
 
 		const result = await runProvisionCommand({
 			paths: fixture.paths,
@@ -1930,6 +1983,7 @@ describe('Gate 3 provision command', () => {
 
 		expect(result).toMatchObject({ status: 'confirmed', classification: 'PROVISION_VERIFIED' });
 		expect(fixture.mutations).toEqual([]);
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
 		expect(fixture.state().phases.provision).toMatchObject({
 			status: 'complete',
 			checkpoint: { step: 'unassigned-moderator.actor-verified' }
@@ -1948,6 +2002,21 @@ describe('Gate 3 provision command', () => {
 		['duplicate roles', { duplicateRoles: 1 }],
 		['identity conflict', { actorIdentityConflicts: 1 }],
 		['cleanup contradiction', { cleanupCompleteContradiction: true }],
+		['cleanup verified under provision label', { cleanupVerified: true }],
+		['cleanup partial under provision label', { cleanupPartial: true }],
+		['cleanup required under provision label', { cleanupRequired: true }],
+		['archived under provision label', { archived: true }],
+		['conflicting ownership alias', { conflictingOwnership: true }],
+		['untrusted deletion-scope alias', { untrustedDeletionScope: true }],
+		['deletion scope untrusted', { deletionScopeTrusted: false }],
+		['actor count contradicts verified provision', { actors: 3 }],
+		['forged scenario verified label', { scenarioVerified: true }],
+		['forged scenario partial label', { scenarioPartial: true }],
+		['mismatched optional revision', { revision: 99 }],
+		['missing state revision', { stateRevision: undefined }],
+		['missing scenario partial fact', { scenarioPartial: undefined }],
+		['missing deletion-scope trust', { deletionScopeTrusted: undefined }],
+		['missing actor count', { actors: undefined }],
 		['missing release trust', { currentReleaseCommitSha: undefined }]
 	] as const)('rejects contradictory PROVISION_VERIFIED trust before catch-up or success: %s', async (_name, patch) => {
 		const fixture = commandFixture();
@@ -1975,10 +2044,12 @@ describe('Gate 3 provision command', () => {
 			}
 		});
 		const inspection = {
-			...trustedVerifiedInspection(fixture.state().revision, fixture.state().manifest.sha256),
+			...canonicalPostProvisionInspection(fixture.state().revision, fixture.state().manifest.sha256),
 			...patch
 		} as Record<string, unknown>;
-		if (inspection.currentReleaseCommitSha === undefined) delete inspection.currentReleaseCommitSha;
+		for (const [key, value] of Object.entries(inspection)) {
+			if (value === undefined) delete inspection[key];
+		}
 		fixture.dependencies.inspectRun.mockResolvedValueOnce(inspection);
 
 		const result = await runProvisionCommand({
@@ -1990,6 +2061,86 @@ describe('Gate 3 provision command', () => {
 		});
 
 		expect(result).toMatchObject({ status: 'uncertain', classification: 'AMBIGUOUS' });
+		expect(fixture.provisionCapabilities.inspectProvision).not.toHaveBeenCalled();
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+		expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+		expect(fixture.mutations).toEqual([]);
+	});
+
+	it('classifies scenario-verified facts beyond Task 7 and rejects them without mutation', async () => {
+		const fixture = commandFixture();
+		fixture.setSnapshot({
+			requiredConsents,
+			exactRecoveryProvenance: true,
+			actors: Object.fromEntries(roles.map((role) => [role, completedActor(role)]))
+		});
+		const pending = canonicalPostProvisionInspection(
+			fixture.state().revision,
+			fixture.state().manifest.sha256
+		);
+		const scenarioFacts = { ...pending, scenarioVerified: true };
+		delete (scenarioFacts as Record<string, unknown>).classification;
+		const inspection = {
+			...scenarioFacts,
+			classification: classifyGate3Lifecycle(scenarioFacts).classification
+		};
+		expect(inspection.classification).toBe('SCENARIO_VERIFIED');
+		fixture.dependencies.inspectRun.mockResolvedValueOnce(inspection);
+
+		const result = await runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		});
+
+		expect(result).toMatchObject({ status: 'uncertain', classification: 'AMBIGUOUS' });
+		expect(fixture.provisionCapabilities.inspectProvision).not.toHaveBeenCalled();
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+		expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+		expect(fixture.mutations).toEqual([]);
+	});
+
+	it('rejects a fresh state-to-inspection release binding mismatch before catch-up or success', async () => {
+		const fixture = commandFixture();
+		fixture.setSnapshot({
+			requiredConsents,
+			exactRecoveryProvenance: true,
+			actors: Object.fromEntries(roles.map((role) => [role, completedActor(role)]))
+		});
+		fixture.setState({
+			...fixture.state(),
+			target: { ...fixture.state().target, releaseCommitSha: 'f'.repeat(40) },
+			phases: {
+				...fixture.state().phases,
+				provision: {
+					status: 'complete',
+					checkpoint: {
+						observedAt: createdAt,
+						status: 'confirmed',
+						phase: 'provision',
+						step: 'unassigned-moderator.actor-verified',
+						reasonCode: 'provision_boundary_confirmed',
+						revision: fixture.state().revision,
+						operationId: 'unassigned-moderator.actor-verified'
+					}
+				}
+			}
+		});
+		fixture.dependencies.inspectRun.mockResolvedValueOnce(
+			canonicalPostProvisionInspection(fixture.state().revision, fixture.state().manifest.sha256)
+		);
+
+		await expect(
+			runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			})
+		).rejects.toMatchObject({ exitCode: 20, reasonCode: 'provision_checkpoint_ambiguous' });
 		expect(fixture.provisionCapabilities.inspectProvision).not.toHaveBeenCalled();
 		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
 		expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();

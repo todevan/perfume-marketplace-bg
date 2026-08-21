@@ -7,7 +7,7 @@ import {
 	registerHostedActor
 } from './hosted-report-evidence-operator.mjs';
 import { inspectGate3HostedRun } from './gate3-hosted-inspector.mjs';
-import { selectNextProvisionStep } from './gate3-hosted-lifecycle.mjs';
+import { classifyGate3Lifecycle, selectNextProvisionStep } from './gate3-hosted-lifecycle.mjs';
 import {
 	acquireRunLock,
 	inspectRunLock,
@@ -991,16 +991,90 @@ function exactActorManifestPredecessor(manifest, expectedSha256) {
 }
 
 /** @param {unknown} inspection */
+function recomputedLifecycleClassification(inspection) {
+	const facts = Object.freeze({
+		archived: exactOwnBooleanValue(inspection, 'archived'),
+		ambiguous: exactOwnBooleanValue(inspection, 'ambiguous'),
+		stateCorrupt: exactOwnBooleanValue(inspection, 'stateCorrupt'),
+		corruptState: exactOwnBooleanValue(inspection, 'corruptState'),
+		stateValid: exactOwnBooleanValue(inspection, 'stateValid'),
+		manifestMatches: exactOwnBooleanValue(inspection, 'manifestMatches'),
+		manifestMismatch: exactOwnBooleanValue(inspection, 'manifestMismatch'),
+		ownershipConflict: exactOwnBooleanValue(inspection, 'ownershipConflict'),
+		conflictingOwnership: exactOwnBooleanValue(inspection, 'conflictingOwnership'),
+		deletionScopeTrusted: exactOwnBooleanValue(inspection, 'deletionScopeTrusted'),
+		untrustedDeletionScope: exactOwnBooleanValue(inspection, 'untrustedDeletionScope'),
+		authoritativeReleaseAvailable: exactOwnBooleanValue(
+			inspection,
+			'authoritativeReleaseAvailable'
+		),
+		authoritativeReleaseUnavailable: exactOwnBooleanValue(
+			inspection,
+			'authoritativeReleaseUnavailable'
+		),
+		credentialsLost: exactOwnBooleanValue(inspection, 'credentialsLost'),
+		exactRecoveryProvenance: exactOwnBooleanValue(inspection, 'exactRecoveryProvenance'),
+		releaseMismatch: exactOwnBooleanValue(inspection, 'releaseMismatch'),
+		releaseChanged: exactOwnBooleanValue(inspection, 'releaseChanged'),
+		provisionVerified: exactOwnBooleanValue(inspection, 'provisionVerified'),
+		actors: exactOwnInteger(inspection, 'actors'),
+		scenarioVerified: exactOwnBooleanValue(inspection, 'scenarioVerified'),
+		scenarioPartial: exactOwnBooleanValue(inspection, 'scenarioPartial'),
+		cleanupVerified: exactOwnBooleanValue(inspection, 'cleanupVerified'),
+		cleanupPartial: exactOwnBooleanValue(inspection, 'cleanupPartial'),
+		cleanupRequired: exactOwnBooleanValue(inspection, 'cleanupRequired')
+	});
+	return classifyGate3Lifecycle(facts).classification;
+}
+
+/** @param {unknown} state */
+function exactStateReleaseCommitSha(state) {
+	if (!isPlainDataObject(state)) return null;
+	try {
+		const targetDescriptor = Object.getOwnPropertyDescriptor(state, 'target');
+		if (
+			!targetDescriptor ||
+			!Object.hasOwn(targetDescriptor, 'value') ||
+			targetDescriptor.enumerable !== true ||
+			!isPlainDataObject(targetDescriptor.value)
+		) {
+			return null;
+		}
+		return exactOwnString(targetDescriptor.value, 'releaseCommitSha');
+	} catch {
+		return null;
+	}
+}
+
+/** @param {unknown} inspection @param {number | null} stateRevision */
+function hasMatchingOptionalInspectionRevision(inspection, stateRevision) {
+	if (!isPlainDataObject(inspection) || stateRevision === null) return false;
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(inspection, 'revision');
+		if (descriptor === undefined) return true;
+		return Boolean(
+			Object.hasOwn(descriptor, 'value') &&
+			descriptor.enumerable === true &&
+			Number.isSafeInteger(descriptor.value) &&
+			descriptor.value >= 0 &&
+			descriptor.value === stateRevision
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** @param {unknown} inspection */
 function hasCanonicalVerifiedTrust(inspection) {
-	const revision = exactOwnInteger(inspection, 'revision');
 	const stateRevision = exactOwnInteger(inspection, 'stateRevision');
 	const boundRelease = exactOwnString(inspection, 'boundReleaseCommitSha');
 	const currentRelease = exactOwnString(inspection, 'currentReleaseCommitSha');
 	const manifestSha256 = exactOwnString(inspection, 'manifestSha256');
 	return (
 		exactClassification(inspection) === 'PROVISION_VERIFIED' &&
-		revision !== null &&
-		stateRevision === revision &&
+		recomputedLifecycleClassification(inspection) === 'PROVISION_VERIFIED' &&
+		stateRevision !== null &&
+		hasMatchingOptionalInspectionRevision(inspection, stateRevision) &&
 		exactOwnBooleanValue(inspection, 'stateValid') === true &&
 		exactOwnBooleanValue(inspection, 'stateCorrupt') === false &&
 		exactOwnBooleanValue(inspection, 'corruptState') === false &&
@@ -1021,15 +1095,22 @@ function hasCanonicalVerifiedTrust(inspection) {
 		exactOwnBooleanValue(inspection, 'releaseChanged') === false &&
 		exactOwnBooleanValue(inspection, 'hostedEvidenceAvailable') === true &&
 		exactOwnBooleanValue(inspection, 'ownershipConflict') === false &&
+		exactOwnBooleanValue(inspection, 'deletionScopeTrusted') === true &&
 		exactOwnBooleanValue(inspection, 'cleanupCompleteContradiction') === false &&
+		exactOwnBooleanValue(inspection, 'archived') === false &&
 		exactOwnBooleanValue(inspection, 'credentialsLost') === false &&
 		exactOwnInteger(inspection, 'duplicateRoles') === 0 &&
 		exactOwnInteger(inspection, 'metadataMismatches') === 0 &&
 		exactOwnInteger(inspection, 'actorIdentityConflicts') === 0 &&
 		exactOwnInteger(inspection, 'manifestActorsAbsent') === 0 &&
 		exactOwnInteger(inspection, 'hostedActorsManifestStale') === 0 &&
+		exactOwnInteger(inspection, 'actors') === ACTOR_ROLES.length &&
 		exactOwnBooleanValue(inspection, 'provisionVerified') === true &&
-		exactOwnBooleanValue(inspection, 'scenarioVerified') === true &&
+		exactOwnBooleanValue(inspection, 'scenarioVerified') === false &&
+		exactOwnBooleanValue(inspection, 'scenarioPartial') === false &&
+		exactOwnBooleanValue(inspection, 'cleanupVerified') === false &&
+		exactOwnBooleanValue(inspection, 'cleanupPartial') === false &&
+		exactOwnBooleanValue(inspection, 'cleanupRequired') === false &&
 		exactOwnBooleanValue(inspection, 'ambiguous') === false &&
 		exactOwnBooleanValue(inspection, 'exactRecoveryProvenance') === false &&
 		!hasUntrustedForeignActorEvidence(inspection)
@@ -1151,10 +1232,16 @@ async function catchUpVerifiedState({ paths, inspection, commandCaps, dependenci
 	await assertLockOwned();
 	const readState = dependency(dependencies, 'readRunState', readRunState);
 	const state = await readState(paths);
+	const boundRelease = exactOwnString(inspection, 'boundReleaseCommitSha');
+	const currentRelease = exactOwnString(inspection, 'currentReleaseCommitSha');
+	const stateRelease = exactStateReleaseCommitSha(state);
 	if (
 		!isPlainDataObject(state) ||
 		state.revision !== safeInspectionRevision(inspection) ||
-		state.manifest?.sha256 !== exactOwnString(inspection, 'manifestSha256')
+		state.manifest?.sha256 !== exactOwnString(inspection, 'manifestSha256') ||
+		stateRelease === null ||
+		stateRelease !== boundRelease ||
+		stateRelease !== currentRelease
 	) {
 		fail('provision_checkpoint_ambiguous', 20);
 	}
