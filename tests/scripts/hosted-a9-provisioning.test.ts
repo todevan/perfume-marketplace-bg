@@ -14,6 +14,7 @@ const actorIds = {
 	'unassigned-moderator': '44444444-4444-4444-8444-444444444444'
 } as const;
 const createdAt = '2026-08-09T12:00:00.000Z';
+const fixtureTotpSecret = ['JBSWY3DP', 'EHPK3PXP'].join('');
 const environment = {
 	APP_ENV: 'staging',
 	E2E_REAL_RUN: 'true',
@@ -64,6 +65,7 @@ function provisioningApi() {
 	return hostedOperator as unknown as {
 		verifyHostedA9Prerequisites: (options: unknown) => Promise<unknown>;
 		executeHostedA9Provisioning: (options: unknown) => Promise<unknown>;
+		createHostedA9ProvisionOperations: (options: unknown) => Record<string, Function>;
 	};
 }
 
@@ -131,6 +133,110 @@ function fakeAdapters(events: string[], failFinalInspection = false) {
 }
 
 describe('executable A9-only provisioning transaction', () => {
+	it('exposes narrow exact-role A9 operations without changing the compatibility transaction', async () => {
+		const config = hostedOperator.validateHostedA9Environment(environment);
+		const manifest = hostedOperator.createHostedRunManifest(config);
+		const events: string[] = [];
+		const session = {
+			claimOpenRegistration: vi.fn(async () => events.push('registration')),
+			acceptBetaConsent: vi.fn(async ({ documentCode }: { documentCode: string }) =>
+				events.push(`consent:${documentCode}`)
+			),
+			completeBetaOnboarding: vi.fn(async () => events.push('onboarding')),
+			mfa: {
+				enroll: vi.fn(async () => ({ factorId: 'factor-exact', factorType: 'totp' })),
+				challengeAndVerify: vi.fn(async ({ code }: { code: string }) => {
+					events.push(`verify:${code}`);
+					return { verified: true };
+				}),
+				rollbackEnrollment: vi.fn(async () => events.push('unenroll'))
+			}
+		};
+		const adapters = {
+			assertFreshActorAbsent: vi.fn(async ({ role }: { role: string }) => ({ role, absent: true })),
+			createConfirmedUser: vi.fn(async ({ manifest: exactManifest, role }: { manifest: { pendingActors: unknown[] }; role: string }) => {
+				expect(exactManifest.pendingActors).toHaveLength(1);
+				return { role, userId: actorIds.reporter, createdAt, emailConfirmed: true };
+			}),
+			lookupConfirmedUser: vi.fn(async ({ role }: { role: string }) => ({ role, userId: actorIds.reporter, createdAt, emailConfirmed: true })),
+			createActorSession: vi.fn(async () => session),
+			elevateFreshActorRole: vi.fn(async () => events.push('elevate')),
+			inspectProvisionBoundary: vi.fn(async () => ({ status: 'confirmed' }))
+		};
+		const operations = provisioningApi().createHostedA9ProvisionOperations({ config, adapters });
+
+		await operations.inspectActorAbsence({ manifest, role: 'reporter' });
+		const actor = await operations.createActor({ manifest, role: 'reporter' });
+		const actorManifest = hostedOperator.registerHostedActor(
+			manifest,
+			'reporter',
+			actor.userId,
+			actor.createdAt
+		);
+		await operations.inspectActorProvenance({ manifest: actorManifest, role: 'reporter' });
+		await operations.claimRegistration({ manifest: actorManifest, role: 'reporter' });
+		await operations.acceptConsent({
+			manifest: actorManifest,
+			role: 'reporter',
+			consent: requiredConsents[0]
+		});
+		await operations.completeOnboarding({ manifest: actorManifest, role: 'reporter', city: 'Sofia' });
+
+		const moderatorManifest = hostedOperator.registerHostedActor(
+			manifest,
+			'assigned-moderator',
+			actorIds['assigned-moderator'],
+			createdAt
+		);
+		await operations.elevateRole({ manifest: moderatorManifest, role: 'assigned-moderator' });
+		await operations.enrollMfa({ manifest: moderatorManifest, role: 'assigned-moderator' });
+		await operations.verifyMfa({
+			manifest: moderatorManifest,
+			role: 'assigned-moderator',
+			factorId: 'factor-exact',
+			secret: fixtureTotpSecret,
+			clock: () => 59_000
+		});
+		await operations.unenrollMfa({
+			manifest: moderatorManifest,
+			role: 'assigned-moderator',
+			factorId: 'factor-exact'
+		});
+		await operations.readBack({
+			manifest: moderatorManifest,
+			role: 'assigned-moderator',
+			step: 'mfa-unenrolled-recovery'
+		});
+
+		expect(Object.keys(operations).sort()).toEqual(
+			[
+				'acceptConsent',
+				'claimRegistration',
+				'completeOnboarding',
+				'createActor',
+				'elevateRole',
+				'enrollMfa',
+				'inspectActorAbsence',
+				'inspectActorProvenance',
+				'readBack',
+				'unenrollMfa',
+				'verifyMfa'
+			].sort()
+		);
+		expect(events).toEqual([
+			'registration',
+			'consent:age_18_confirmation',
+			'onboarding',
+			'elevate',
+			'verify:996554',
+			'unenroll'
+		]);
+		expect(manifest.pendingActors).toEqual([]);
+		expect(adapters.inspectProvisionBoundary).toHaveBeenCalledWith(
+			expect.objectContaining({ role: 'assigned-moderator', step: 'mfa-unenrolled-recovery' })
+		);
+	});
+
 	it('re-verifies the exact target and hosted Auth policy without exposing the publishable key', async () => {
 		const verifyTarget = vi.fn(() => ({
 			ref: hostedOperator.HOSTED_STAGING.projectRef,

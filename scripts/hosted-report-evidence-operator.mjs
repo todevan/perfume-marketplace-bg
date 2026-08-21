@@ -1778,6 +1778,196 @@ export async function verifyHostedA9Prerequisites({
 	return receipt;
 }
 
+/**
+ * Exposes the legacy A9 provider primitives as exact single-role operations for
+ * the resumable Gate 3 orchestrator. The compatibility transaction below keeps
+ * its existing behavior and continues to call the original adapter methods.
+ *
+ * The returned surface deliberately contains no loop, cleanup operation, broad
+ * account scope, manifest writer, state writer, or logging callback.
+ *
+ * @param {{ config: HostedOperatorConfig, adapters: Record<string, Function> }} options
+ */
+export function createHostedA9ProvisionOperations({ config, adapters }) {
+	const requiredMethods = [
+		'assertFreshActorAbsent',
+		'createConfirmedUser',
+		'lookupConfirmedUser',
+		'createActorSession',
+		'elevateFreshActorRole',
+		'inspectProvisionBoundary'
+	];
+	if (
+		!config ||
+		config.target?.projectRef !== HOSTED_STAGING.projectRef ||
+		!adapters ||
+		requiredMethods.some((name) => typeof adapters[name] !== 'function')
+	) {
+		throw new HostedEvidenceOperatorError('A9 provision operation configuration is invalid');
+	}
+
+	/** @param {HostedRunManifest} manifest @param {string} role @param {boolean} actorRequired */
+	function exactScope(manifest, role, actorRequired) {
+		assertManifestTarget(config, manifest);
+		exactActorCredentials(config, role);
+		const actor = manifest.actors.find((entry) => entry.role === role) ?? null;
+		if (actorRequired && actor === null) {
+			throw new HostedEvidenceOperatorError('actor is outside the exact run manifest');
+		}
+		return Object.freeze({ manifest, role, actor });
+	}
+
+	/** @param {HostedRunManifest} manifest @param {string} role */
+	async function actorSession(manifest, role) {
+		const scope = exactScope(manifest, role, true);
+		const actor = scope.actor;
+		if (actor === null) {
+			throw new HostedEvidenceOperatorError('actor is outside the exact run manifest');
+		}
+		const session = await adapters.createActorSession({
+			manifest,
+			role,
+			userId: actor.userId
+		});
+		if (!session || session.role && session.role !== role) {
+			throw new HostedEvidenceOperatorError('A9 actor session is invalid');
+		}
+		return Object.freeze({ scope, session });
+	}
+
+	return Object.freeze({
+		/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+		async inspectActorAbsence(scope) {
+			exactScope(scope.manifest, scope.role, false);
+			const intent = scope.manifest.pendingActors.some((entry) => entry.role === scope.role)
+				? scope.manifest
+				: registerHostedActorIntent(scope.manifest, scope.role);
+			return adapters.assertFreshActorAbsent({ manifest: intent, role: scope.role });
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+		async inspectActorProvenance(scope) {
+			const exact = exactScope(scope.manifest, scope.role, true);
+			const actor = exact.actor;
+			if (actor === null) {
+				throw new HostedEvidenceOperatorError('actor is outside the exact run manifest');
+			}
+			return adapters.lookupConfirmedUser({
+				role: scope.role,
+				userId: actor.userId,
+				createdAt: actor.createdAt,
+				provisioningAttemptId: actor.provisioningAttemptId
+			});
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+		async createActor(scope) {
+			exactScope(scope.manifest, scope.role, false);
+			if (scope.manifest.actors.some((entry) => entry.role === scope.role)) {
+				throw new HostedEvidenceOperatorError('actor is already present in the exact run manifest');
+			}
+			const intent = scope.manifest.pendingActors.some((entry) => entry.role === scope.role)
+				? scope.manifest
+				: registerHostedActorIntent(scope.manifest, scope.role);
+			const absence = await adapters.assertFreshActorAbsent({ manifest: intent, role: scope.role });
+			if (absence?.role !== scope.role || absence?.absent !== true) {
+				throw new HostedEvidenceOperatorError('A9 actor absence attestation failed');
+			}
+			return adapters.createConfirmedUser({ manifest: intent, role: scope.role });
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+		async claimRegistration(scope) {
+			const { session } = await actorSession(scope.manifest, scope.role);
+			if (typeof session.claimOpenRegistration !== 'function') {
+				throw new HostedEvidenceOperatorError('A9 actor session is invalid');
+			}
+			return session.claimOpenRegistration();
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string, consent: { documentCode: string, documentVersion: string } }} scope */
+		async acceptConsent(scope) {
+			const { session } = await actorSession(scope.manifest, scope.role);
+			if (
+				typeof session.acceptBetaConsent !== 'function' ||
+				!scope.consent?.documentCode?.trim() ||
+				!scope.consent?.documentVersion?.trim()
+			) {
+				throw new HostedEvidenceOperatorError('A9 consent input is invalid');
+			}
+			return session.acceptBetaConsent(scope.consent);
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string, city?: string | null }} scope */
+		async completeOnboarding(scope) {
+			const { session } = await actorSession(scope.manifest, scope.role);
+			if (typeof session.completeBetaOnboarding !== 'function') {
+				throw new HostedEvidenceOperatorError('A9 actor session is invalid');
+			}
+			return session.completeBetaOnboarding({
+				username: config.actorRoles[scope.role].username,
+				city: scope.city ?? null
+			});
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+		async elevateRole(scope) {
+			const exact = exactScope(scope.manifest, scope.role, true);
+			const actor = exact.actor;
+			if (actor === null) {
+				throw new HostedEvidenceOperatorError('actor is outside the exact run manifest');
+			}
+			if (!A9_MODERATOR_ROLES.has(scope.role)) {
+				throw new HostedEvidenceOperatorError('only user to moderator elevation is permitted');
+			}
+			return adapters.elevateFreshActorRole({
+				manifest: scope.manifest,
+				role: scope.role,
+				userId: actor.userId,
+				fromRole: 'user',
+				toRole: 'moderator'
+			});
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string }} scope */
+		async enrollMfa(scope) {
+			if (!A9_MODERATOR_ROLES.has(scope.role)) {
+				throw new HostedEvidenceOperatorError('A9 MFA enrollment is limited to moderator actors');
+			}
+			const { session } = await actorSession(scope.manifest, scope.role);
+			if (typeof session.mfa?.enroll !== 'function') {
+				throw new HostedEvidenceOperatorError('A9 moderator MFA session is invalid');
+			}
+			return session.mfa.enroll();
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string, factorId: string, secret: string, clock?: () => number }} scope */
+		async verifyMfa(scope) {
+			if (!A9_MODERATOR_ROLES.has(scope.role)) {
+				throw new HostedEvidenceOperatorError('A9 MFA verification is limited to moderator actors');
+			}
+			const { session } = await actorSession(scope.manifest, scope.role);
+			const clock = scope.clock ?? Date.now;
+			if (typeof session.mfa?.challengeAndVerify !== 'function' || typeof clock !== 'function') {
+				throw new HostedEvidenceOperatorError('A9 moderator MFA session is invalid');
+			}
+			const timestamp = clock();
+			return session.mfa.challengeAndVerify({
+				factorId: scope.factorId,
+				code: generateTotpCode(scope.secret, timestamp)
+			});
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string, factorId: string }} scope */
+		async unenrollMfa(scope) {
+			if (!A9_MODERATOR_ROLES.has(scope.role)) {
+				throw new HostedEvidenceOperatorError('A9 MFA recovery is limited to moderator actors');
+			}
+			const { session } = await actorSession(scope.manifest, scope.role);
+			if (typeof session.mfa?.rollbackEnrollment !== 'function') {
+				throw new HostedEvidenceOperatorError('A9 moderator MFA session is invalid');
+			}
+			return session.mfa.rollbackEnrollment({ factorId: scope.factorId });
+		},
+		/** @param {{ manifest: HostedRunManifest, role: string, step: string } & Record<string, unknown>} scope */
+		async readBack(scope) {
+			exactScope(scope.manifest, scope.role, scope.step !== 'auth-created');
+			return adapters.inspectProvisionBoundary(scope);
+		}
+	});
+}
+
 const A9_ACTOR_ROLES = Object.freeze([
 	'reporter',
 	'cross-user',
