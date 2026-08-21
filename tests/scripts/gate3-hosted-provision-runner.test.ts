@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
-	Gate3HostedProvisionError,
 	runProvisionBoundary,
 	runProvisionCommand
 } from '../../scripts/gate3-hosted-provision-runner.mjs';
@@ -33,6 +32,49 @@ const actorIds = {
 } as const;
 const createdAt = '2026-08-21T10:00:00.000Z';
 const fixtureTotpSecret = ['JBSWY3DP', 'EHPK3PXP'].join('');
+const zeroForeignCounts = Object.freeze({
+	syntheticAccounts: 0,
+	profiles: 0,
+	reports: 0,
+	uploads: 0,
+	objects: 0,
+	queueRows: 0
+});
+
+function trustedManifestAheadInspection(revision: number, manifestSha256: string) {
+	return {
+		classification: 'AMBIGUOUS',
+		stateRevision: revision,
+		revision,
+		stateValid: true,
+		stateCorrupt: false,
+		corruptState: false,
+		manifestValid: true,
+		manifestBindingStatus: 'manifest-ahead-state',
+		manifestExactMatch: false,
+		manifestAheadState: true,
+		manifestMatches: false,
+		manifestMismatch: false,
+		manifestSha256,
+		authoritativeReleaseAvailable: true,
+		authoritativeReleaseUnavailable: false,
+		boundReleaseCommitSha: 'a'.repeat(40),
+		currentReleaseCommitSha: 'a'.repeat(40),
+		releaseMismatch: false,
+		releaseChanged: false,
+		hostedEvidenceAvailable: true,
+		ownershipConflict: false,
+		cleanupCompleteContradiction: false,
+		credentialsLost: false,
+		duplicateRoles: 0,
+		metadataMismatches: 0,
+		actorIdentityConflicts: 0,
+		manifestActorsAbsent: 0,
+		ambiguous: true,
+		foreignCounts: zeroForeignCounts,
+		exactRecoveryProvenance: true
+	};
+}
 
 type BoundaryStep =
 	| 'auth-created'
@@ -54,7 +96,9 @@ function boundaryInput({
 	})),
 	readBack = vi.fn(async () => ({ status: 'confirmed' })),
 	persistManifest = step === 'auth-created' ? vi.fn(async () => undefined) : null,
-	persistCredential = step === 'mfa-enrolled' ? vi.fn(async () => undefined) : null,
+	persistCredential = step === 'mfa-enrolled'
+		? vi.fn(async () => ({ status: 'available', ciphertextSha256: 'e'.repeat(64) }))
+		: null,
 	persistState = vi.fn(async () => undefined)
 }: {
 	role?: (typeof roles)[number];
@@ -219,7 +263,8 @@ function commandFixture() {
 			revision: state.revision,
 			releaseChanged: classificationOverride === 'RELEASE_CHANGED',
 			ambiguous: classificationOverride === 'AMBIGUOUS',
-			exactRecoveryProvenance: snapshot.exactRecoveryProvenance
+			exactRecoveryProvenance: snapshot.exactRecoveryProvenance,
+			foreignCounts: zeroForeignCounts
 		});
 	});
 	const inspectProvision = vi.fn(async () => structuredClone(snapshot));
@@ -232,8 +277,12 @@ function commandFixture() {
 				events.push(`mutate:${role}.${step}`);
 				const actor = snapshot.actors[role];
 				if (step === 'auth-created') {
-					actor.auth = 'confirmed';
-					actor.manifest = 'confirmed';
+					Object.assign(actor, {
+						auth: 'confirmed',
+						manifest: 'confirmed',
+						userId: actorIds[role],
+						createdAt
+					});
 					return { actor: { role, userId: actorIds[role], createdAt, emailConfirmed: true } };
 				}
 				if (step === 'registration-claimed') actor.registrationClaimed = true;
@@ -245,7 +294,7 @@ function commandFixture() {
 				else if (step === 'role-elevated') actor.profileRole = 'moderator';
 				else if (step === 'mfa-enrolled') {
 					actor.mfa = { status: 'unverified', secretStatus: 'available' };
-					return { factorId: `factor-${role}`, secret: fixtureTotpSecret };
+					return { factorId: `factor-${role}`, factorType: 'totp', secret: fixtureTotpSecret };
 				}
 				else if (step === 'mfa-unenrolled-recovery') actor.mfa = { status: 'absent', secretStatus: 'missing' };
 				else if (step === 'mfa-verified') actor.mfa.status = 'verified';
@@ -386,9 +435,12 @@ describe('Gate 3 provision boundary', () => {
 			step: 'mfa-enrolled',
 			mutate: vi.fn(async () => {
 				events.push('mutate');
-				return { factorId: 'factor-exact', secret: fixtureTotpSecret };
+				return { factorId: 'factor-exact', factorType: 'totp', secret: fixtureTotpSecret };
 			}),
-			persistCredential: vi.fn(async () => events.push('dpapi')),
+			persistCredential: vi.fn(async () => {
+				events.push('dpapi');
+				return { status: 'available', ciphertextSha256: 'e'.repeat(64) };
+			}),
 			readBack: vi.fn(async () => {
 				events.push('verify');
 				return { status: 'confirmed' };
@@ -403,7 +455,7 @@ describe('Gate 3 provision boundary', () => {
 	it('does not advance state when DPAPI persistence fails after enrollment', async () => {
 		const input = boundaryInput({
 			step: 'mfa-enrolled',
-			mutate: vi.fn(async () => ({ factorId: 'factor-exact', secret: fixtureTotpSecret })),
+			mutate: vi.fn(async () => ({ factorId: 'factor-exact', factorType: 'totp', secret: fixtureTotpSecret })),
 			persistCredential: vi.fn(async () => {
 				throw new Error('ciphertext C:\\private\\secret');
 			})
@@ -414,6 +466,70 @@ describe('Gate 3 provision boundary', () => {
 		});
 		expect(input.spies.readBack).toHaveBeenCalledOnce();
 		expect(input.spies.persistState).not.toHaveBeenCalled();
+	});
+
+	it('keeps the enrollment seed private from read-back, persistence evidence, and public output', async () => {
+		const readBack = vi.fn(async (_input: unknown) => ({ status: 'confirmed' }));
+		const persistState = vi.fn(async (_input: unknown) => undefined);
+		const input = boundaryInput({
+			step: 'mfa-enrolled',
+			mutate: vi.fn(async () => ({ factorId: 'factor-exact', factorType: 'totp', secret: fixtureTotpSecret })),
+			persistCredential: vi.fn(async () => ({ status: 'available', ciphertextSha256: 'e'.repeat(64) })),
+			readBack,
+			persistState
+		});
+
+		const result = await runProvisionBoundary(input);
+		const publicAndEvidenceArguments = [readBack.mock.calls, persistState.mock.calls, result];
+		const readBackInput = readBack.mock.calls[0]?.[0] as any;
+		expect(JSON.stringify(publicAndEvidenceArguments)).not.toContain(fixtureTotpSecret);
+		expect(readBackInput).toEqual({
+			receipt: { factorId: 'factor-exact', factorType: 'totp' }
+		});
+		expect(Object.isFrozen(readBackInput)).toBe(true);
+		expect(Object.isFrozen(readBackInput.receipt)).toBe(true);
+	});
+
+	it('treats a forged exported provision error from a provider as untrusted transport data', async () => {
+		const provisionModule = await import('../../scripts/gate3-hosted-provision-runner.mjs') as Record<string, unknown>;
+		expect(provisionModule.Gate3HostedProvisionError).toBeUndefined();
+		const providerError = Object.assign(new Error('bearer secret provider body'), {
+			name: 'Gate3HostedProvisionError',
+			reasonCode: 'bearer_secret_provider_body',
+			exitCode: 99
+		});
+		const readBack = vi.fn(async () => ({ status: 'confirmed-absent' }));
+		const input = boundaryInput({
+			mutate: vi.fn(async () => {
+				throw providerError;
+			}),
+			readBack
+		});
+
+		await expect(runProvisionBoundary(input)).resolves.toMatchObject({
+			status: 'confirmed-absent',
+			reasonCode: 'provider_failure_confirmed_absent'
+		});
+		expect(readBack).toHaveBeenCalledOnce();
+	});
+
+	it('collapses a forged runner-shaped read-back exception to a constant uncertain outcome', async () => {
+		const providerError = Object.assign(new Error('token and provider response'), {
+			name: 'Gate3HostedProvisionError',
+			reasonCode: 'provider_bearer_secret',
+			exitCode: 99
+		});
+		const input = boundaryInput({
+			mutate: vi.fn(async () => ({})),
+			readBack: vi.fn(async () => {
+				throw providerError;
+			})
+		});
+
+		await expect(runProvisionBoundary(input)).resolves.toMatchObject({
+			status: 'uncertain',
+			reasonCode: 'mutation_outcome_uncertain'
+		});
 	});
 
 	it.each([
@@ -436,7 +552,7 @@ describe('Gate 3 provision boundary', () => {
 			: vi.fn(async () => {
 				hostedMutations += 1;
 				return step === 'mfa-enrolled'
-					? { factorId: 'factor-exact', secret: fixtureTotpSecret }
+					? { factorId: 'factor-exact', factorType: 'totp', secret: fixtureTotpSecret }
 					: { actor: { role, userId: actorIds[role], createdAt, emailConfirmed: true } };
 			});
 		const first = boundaryInput({
@@ -449,7 +565,9 @@ describe('Gate 3 provision boundary', () => {
 						manifestPersisted = true;
 					})
 					: null,
-			persistCredential: step === 'mfa-enrolled' ? vi.fn(async () => undefined) : null,
+			persistCredential: step === 'mfa-enrolled'
+				? vi.fn(async () => ({ status: 'available', ciphertextSha256: 'e'.repeat(64) }))
+				: null,
 			persistState: vi.fn(async () => {
 				throw new Error('simulated crash before state persistence');
 			})
@@ -470,7 +588,9 @@ describe('Gate 3 provision boundary', () => {
 						manifestPersisted = true;
 					})
 					: null,
-			persistCredential: step === 'mfa-enrolled' ? vi.fn(async () => undefined) : null,
+			persistCredential: step === 'mfa-enrolled'
+				? vi.fn(async () => ({ status: 'available', ciphertextSha256: 'e'.repeat(64) }))
+				: null,
 			persistState: vi.fn(async () => {
 				statePersisted = true;
 			})
@@ -644,16 +764,14 @@ describe('Gate 3 provision boundary', () => {
 			['after-manifest-before-state', 'before-state-persistence'].includes(window);
 		if (manifestPersisted) {
 			fixture.dependencies.inspectRun.mockResolvedValueOnce({
-				classification: 'AMBIGUOUS',
-				stateRevision: fixture.state().revision,
-				revision: fixture.state().revision,
-				manifestBindingStatus: 'manifest-ahead-state',
-				manifestAheadState: true,
-				manifestSha256: hashManifest(fixture.manifest()),
-				foreignCounts: { syntheticAccounts: 0 }
+				...trustedManifestAheadInspection(
+					fixture.state().revision,
+					hashManifest(fixture.manifest())
+				)
 			});
 		}
-		if (step === 'mfa-enrolled' && window !== 'before-mutation') {
+		const unboundDpapiResidue = step === 'mfa-enrolled' && window !== 'before-mutation';
+		if (unboundDpapiResidue) {
 			const ciphertext = Buffer.from('one-step-enrollment-ciphertext');
 			fixture.dependencies.inspectRun.mockResolvedValueOnce({
 				classification: 'RECOVERY_REQUIRED',
@@ -665,7 +783,7 @@ describe('Gate 3 provision boundary', () => {
 				manifestBindingStatus: 'exact',
 				verifiedModeratorTotpFactors: 0,
 				moderatorsWithVerifiedTotp: 0,
-				foreignCounts: { syntheticAccounts: 0 }
+				foreignCounts: zeroForeignCounts
 			});
 			fixture.dependencies.readStableSnapshot.mockResolvedValueOnce({
 				state: fixture.state(),
@@ -674,6 +792,15 @@ describe('Gate 3 provision boundary', () => {
 			fixture.dependencies.unprotectRunSecretBytes.mockImplementationOnce(async () =>
 				fixture.dependencies.unprotectRunSecrets()
 			);
+		}
+		if (unboundDpapiResidue) {
+			await expect(invoke()).resolves.toMatchObject({
+				status: 'uncertain',
+				classification: 'RECOVERY_REQUIRED'
+			});
+			expect(fixture.mutations.filter((entry) => entry === operationId)).toHaveLength(1);
+			expect(fixture.state().phases.provision.checkpoint?.step).not.toBe(operationId);
+			return;
 		}
 
 		await expect(invoke()).resolves.toMatchObject({
@@ -835,7 +962,8 @@ describe('Gate 3 provision command', () => {
 				revision: 1,
 				releaseChanged: false,
 				ambiguous: false,
-				exactRecoveryProvenance: true
+				exactRecoveryProvenance: true,
+				foreignCounts: zeroForeignCounts
 			}))
 			.mockImplementationOnce(async () => ({
 				classification: 'RELEASE_CHANGED',
@@ -843,7 +971,8 @@ describe('Gate 3 provision command', () => {
 				revision: 2,
 				releaseChanged: true,
 				ambiguous: false,
-				exactRecoveryProvenance: true
+				exactRecoveryProvenance: true,
+				foreignCounts: zeroForeignCounts
 			}));
 		const result = await runProvisionCommand({
 			paths: fixture.paths,
@@ -859,7 +988,9 @@ describe('Gate 3 provision command', () => {
 
 	it('uses a distinct verified unenrollment boundary before re-enrolling a lost unverified factor', async () => {
 		const fixture = commandFixture();
-		const actors = Object.fromEntries(roles.map((role) => [role, completedActor(role)]));
+		const actors: Record<string, any> = Object.fromEntries(
+			roles.map((role) => [role, completedActor(role)])
+		);
 		actors['assigned-moderator'] = {
 			...completedActor('assigned-moderator'),
 			mfa: { status: 'unverified', secretStatus: 'missing' },
@@ -900,6 +1031,162 @@ describe('Gate 3 provision command', () => {
 		]);
 	});
 
+	it('leaves enrollment uncheckpointed when the committed seed response is lost, then recovers exactly once', async () => {
+		const fixture = commandFixture();
+		const actors: Record<string, any> = Object.fromEntries(
+			roles.map((role) => [role, completedActor(role)])
+		);
+		actors['assigned-moderator'] = {
+			...completedActor('assigned-moderator'),
+			mfa: { status: 'absent', secretStatus: 'missing' },
+			actorVerified: false
+		};
+		actors['unassigned-moderator'] = emptyActor('unassigned-moderator');
+		fixture.setSnapshot({ requiredConsents, exactRecoveryProvenance: true, actors });
+		fixture.setState({
+			...fixture.state(),
+			phases: {
+				...fixture.state().phases,
+				provision: {
+					status: 'in-progress',
+					checkpoint: {
+						observedAt: createdAt,
+						status: 'confirmed',
+						phase: 'provision',
+						step: 'assigned-moderator.role-elevated',
+						reasonCode: 'provision_boundary_confirmed',
+						revision: fixture.state().revision,
+						operationId: 'assigned-moderator.role-elevated'
+					}
+				}
+			}
+		});
+		let factorCount = 0;
+		let maximumFactorCount = 0;
+		let enrollmentCalls = 0;
+		const originalMutationFor = fixture.provisionCapabilities.mutationFor.getMockImplementation();
+		if (!originalMutationFor) throw new Error('fixture mutation factory unavailable');
+		fixture.provisionCapabilities.mutationFor.mockImplementation((scope: any) => {
+			const original = originalMutationFor(scope);
+			if (scope.authorization.operationId === 'assigned-moderator.mfa-enrolled') {
+				const originalMutate = original.mutate;
+				return Object.freeze({
+					...original,
+					mutate: vi.fn(async () => {
+						enrollmentCalls += 1;
+						factorCount += 1;
+						maximumFactorCount = Math.max(maximumFactorCount, factorCount);
+						if (enrollmentCalls === 1) {
+							fixture.snapshot().actors['assigned-moderator'].mfa = {
+								status: 'unverified',
+								secretStatus: 'missing'
+							};
+							throw new Error('enrollment response lost after commit');
+						}
+						return originalMutate();
+					})
+				});
+			}
+			if (scope.authorization.operationId === 'assigned-moderator.mfa-unenrolled-recovery') {
+				const originalMutate = original.mutate;
+				return Object.freeze({
+					...original,
+					mutate: vi.fn(async () => {
+						factorCount -= 1;
+						return originalMutate();
+					})
+				});
+			}
+			return original;
+		});
+		const invoke = () => runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		});
+
+		await expect(invoke()).rejects.toMatchObject({
+			exitCode: 41,
+			reasonCode: 'credential_persistence_failed'
+		});
+		expect(fixture.state().phases.provision.checkpoint.step).toBe('assigned-moderator.role-elevated');
+		await expect(invoke()).resolves.toMatchObject({ status: 'confirmed', classification: 'PROVISION_VERIFIED' });
+		expect(enrollmentCalls).toBe(2);
+		expect(maximumFactorCount).toBe(1);
+		expect(fixture.mutations.filter((entry) => entry.startsWith('assigned-moderator.'))).toEqual([
+			'assigned-moderator.mfa-unenrolled-recovery',
+			'assigned-moderator.mfa-enrolled',
+			'assigned-moderator.mfa-verified'
+		]);
+	});
+
+	it('performs targeted read-back after a composed DPAPI failure and leaves deterministic recovery residue', async () => {
+		const fixture = commandFixture();
+		const actors: Record<string, any> = Object.fromEntries(
+			roles.map((role) => [role, completedActor(role)])
+		);
+		actors['assigned-moderator'] = {
+			...completedActor('assigned-moderator'),
+			mfa: { status: 'absent', secretStatus: 'missing' },
+			actorVerified: false
+		};
+		actors['unassigned-moderator'] = emptyActor('unassigned-moderator');
+		fixture.setSnapshot({ requiredConsents, exactRecoveryProvenance: true, actors });
+		fixture.setState({
+			...fixture.state(),
+			phases: {
+				...fixture.state().phases,
+				provision: {
+					status: 'in-progress',
+					checkpoint: {
+						observedAt: createdAt,
+						status: 'confirmed',
+						phase: 'provision',
+						step: 'assigned-moderator.role-elevated',
+						reasonCode: 'provision_boundary_confirmed',
+						revision: fixture.state().revision,
+						operationId: 'assigned-moderator.role-elevated'
+					}
+				}
+			}
+		});
+		const enrollmentReadBack = vi.fn(async () => ({ status: 'confirmed' }));
+		const originalMutationFor = fixture.provisionCapabilities.mutationFor.getMockImplementation();
+		if (!originalMutationFor) throw new Error('fixture mutation factory unavailable');
+		fixture.provisionCapabilities.mutationFor.mockImplementationOnce((scope: any) => {
+			const original = originalMutationFor(scope);
+			return Object.freeze({ ...original, readBack: enrollmentReadBack });
+		});
+		fixture.dependencies.protectRunSecrets.mockRejectedValueOnce(new Error('DPAPI private path'));
+
+		await expect(runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		})).rejects.toMatchObject({ exitCode: 41, reasonCode: 'credential_persistence_failed' });
+		expect(enrollmentReadBack).toHaveBeenCalledOnce();
+		expect(fixture.state().phases.provision.checkpoint.step).toBe('assigned-moderator.role-elevated');
+
+		fixture.snapshot().actors['assigned-moderator'].mfa = { status: 'unverified', secretStatus: 'missing' };
+		await expect(runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		})).resolves.toMatchObject({ status: 'confirmed', classification: 'PROVISION_VERIFIED' });
+		expect(fixture.mutations.filter((entry) => entry.startsWith('assigned-moderator.'))).toEqual([
+			'assigned-moderator.mfa-enrolled',
+			'assigned-moderator.mfa-unenrolled-recovery',
+			'assigned-moderator.mfa-enrolled',
+			'assigned-moderator.mfa-verified'
+		]);
+	});
+
 	it('resumes verification of an exact unverified factor when its stored secret is available', async () => {
 		const fixture = commandFixture();
 		const actors = Object.fromEntries(roles.map((role) => [role, completedActor(role)]));
@@ -922,7 +1209,7 @@ describe('Gate 3 provision command', () => {
 		]);
 	});
 
-	it('reconciles a DPAPI-ahead/state-behind enrollment crash before resuming verification', async () => {
+	it('fails closed on an unbound same-role DPAPI-ahead ciphertext instead of accepting it as current', async () => {
 		const fixture = commandFixture();
 		const actors = Object.fromEntries(roles.map((role) => [role, completedActor(role)]));
 		actors['assigned-moderator'] = {
@@ -960,7 +1247,8 @@ describe('Gate 3 provision command', () => {
 			secretStoreStatus: 'corrupt',
 			manifestBindingStatus: 'exact',
 			verifiedModeratorTotpFactors: 0,
-			moderatorsWithVerifiedTotp: 0
+			moderatorsWithVerifiedTotp: 0,
+			foreignCounts: zeroForeignCounts
 		}));
 		fixture.dependencies.readStableSnapshot = vi.fn(async () => ({
 			state: fixture.state(),
@@ -977,22 +1265,16 @@ describe('Gate 3 provision command', () => {
 			}
 		}));
 
-		await runProvisionCommand({
+		const result = await runProvisionCommand({
 			paths: fixture.paths,
 			inspectionAdapter: fixture.inspectionAdapter,
 			provisionCapabilities: fixture.provisionCapabilities,
 			dpapi: fixture.dpapi,
 			dependencies: fixture.dependencies
 		});
-		const repairedState = fixture.dependencies.writeNextRunState.mock.calls[0][2] as Record<string, any>;
-		expect(repairedState.secretStore).toEqual({
-			...fixture.state().secretStore,
-			status: 'available',
-			ciphertextSha256: '02ed6e3705f840c3947334c8681acb32ac754ddcce3bae541b36cf31fbdce2a7'
-		});
-		expect(fixture.mutations.filter((entry) => entry.startsWith('assigned-moderator.'))).toEqual([
-			'assigned-moderator.mfa-verified'
-		]);
+		expect(result).toMatchObject({ classification: 'RECOVERY_REQUIRED', status: 'uncertain' });
+		expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+		expect(fixture.mutations).toEqual([]);
 	});
 
 	it.each([
@@ -1039,7 +1321,8 @@ describe('Gate 3 provision command', () => {
 				secretStoreStatus: 'corrupt',
 				manifestBindingStatus: 'exact',
 				verifiedModeratorTotpFactors: checkpointStep.startsWith('unassigned-') ? 1 : 0,
-				moderatorsWithVerifiedTotp: checkpointStep.startsWith('unassigned-') ? 1 : 0
+				moderatorsWithVerifiedTotp: checkpointStep.startsWith('unassigned-') ? 1 : 0,
+				foreignCounts: zeroForeignCounts
 			});
 			fixture.dependencies.readStableSnapshot.mockResolvedValueOnce({
 				state: fixture.state(),
@@ -1213,6 +1496,60 @@ describe('Gate 3 provision command', () => {
 		expect(fixture.mutations).not.toContain('reporter.auth-created');
 	});
 
+	it.each(['create-success', 'transport-read-back'] as const)(
+		'preserves a Supabase microsecond actor timestamp through %s',
+		async (mode) => {
+			const fixture = commandFixture();
+			const microsecondCreatedAt = '2026-08-09T12:00:00.123456Z';
+			let creates = 0;
+			fixture.provisionCapabilities.mutationFor.mockImplementationOnce(() =>
+				Object.freeze({
+					mutate: vi.fn(async () => {
+						creates += 1;
+						Object.assign(fixture.snapshot().actors.reporter, {
+							auth: 'confirmed',
+							manifest: mode === 'create-success' ? 'confirmed' : 'absent',
+							userId: actorIds.reporter,
+							createdAt: microsecondCreatedAt
+						});
+						if (mode === 'transport-read-back') throw new Error('lost create response');
+						return {
+							actor: {
+								role: 'reporter',
+								userId: actorIds.reporter,
+								createdAt: microsecondCreatedAt,
+								emailConfirmed: true
+							}
+						};
+					}),
+					readBack: vi.fn(async () => {
+						fixture.snapshot().actors.reporter.manifest = 'confirmed';
+						return {
+							status: 'confirmed',
+							actor: {
+								role: 'reporter',
+								userId: actorIds.reporter,
+								createdAt: microsecondCreatedAt
+							}
+						};
+					})
+				})
+			);
+
+			await runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			});
+
+			expect(creates).toBe(1);
+			expect(fixture.manifest().actors[0]?.createdAt).toBe(microsecondCreatedAt);
+			expect(fixture.mutations).not.toContain('reporter.auth-created');
+		}
+	);
+
 	it('rejects mismatched mutation and read-back actor coordinates before manifest persistence', async () => {
 		const fixture = commandFixture();
 		fixture.provisionCapabilities.mutationFor.mockImplementationOnce(() =>
@@ -1267,16 +1604,9 @@ describe('Gate 3 provision command', () => {
 		fixture.dependencies.hashManifest.mockImplementation((value: unknown) =>
 			createHash('sha256').update(`${JSON.stringify(value)}\n`).digest('hex')
 		);
-		fixture.dependencies.inspectRun.mockImplementationOnce(async () => ({
-			classification: 'AMBIGUOUS',
-			stateRevision: fixture.state().revision,
-			revision: fixture.state().revision,
-			manifestBindingStatus: 'manifest-ahead-state',
-			manifestAheadState: true,
-			manifestSha256: currentSha,
-			foreignCounts: { syntheticAccounts: 0 },
-			exactRecoveryProvenance: true
-		}));
+		fixture.dependencies.inspectRun.mockImplementationOnce(async () =>
+			trustedManifestAheadInspection(fixture.state().revision, currentSha)
+		);
 
 		await runProvisionCommand({
 			paths: fixture.paths,
@@ -1290,6 +1620,57 @@ describe('Gate 3 provision command', () => {
 		expect(repaired.manifest.sha256).toBe(currentSha);
 		expect(repaired.phases.provision.checkpoint.step).toBe('reporter.auth-created');
 		expect(fixture.mutations).not.toContain('reporter.auth-created');
+	});
+
+	it.each([
+		['release unavailable', { authoritativeReleaseAvailable: false, authoritativeReleaseUnavailable: true }],
+		['release mismatch', { releaseMismatch: true, releaseChanged: true }],
+		['ownership conflict', { ownershipConflict: true }],
+		['hosted evidence unavailable', { hostedEvidenceAvailable: false }],
+		['state invalid', { stateValid: false }],
+		['state trust missing', { stateValid: undefined }],
+		['additional manifest ambiguity', { manifestMismatch: true }],
+		['cleanup contradiction', { cleanupCompleteContradiction: true }],
+		['credential ambiguity', { credentialsLost: true }],
+		['duplicate role evidence', { duplicateRoles: 1 }]
+	] as const)('does not repair manifest-ahead state with %s', async (_name, patch) => {
+		const fixture = commandFixture();
+		const predecessor = fixture.manifest();
+		const predecessorSha = createHash('sha256').update(`${JSON.stringify(predecessor)}\n`).digest('hex');
+		const reporter = completedActor('reporter');
+		reporter.actorVerified = false;
+		fixture.setSnapshot({
+			requiredConsents,
+			exactRecoveryProvenance: true,
+			actors: {
+				reporter,
+				'cross-user': emptyActor('cross-user'),
+				'assigned-moderator': emptyActor('assigned-moderator'),
+				'unassigned-moderator': emptyActor('unassigned-moderator')
+			}
+		});
+		fixture.setState({
+			...fixture.state(),
+			manifest: { ...fixture.state().manifest, sha256: predecessorSha }
+		});
+		const currentSha = createHash('sha256').update(`${JSON.stringify(fixture.manifest())}\n`).digest('hex');
+		const inspection = { ...trustedManifestAheadInspection(fixture.state().revision, currentSha), ...patch } as Record<string, unknown>;
+		if (inspection.stateValid === undefined) delete inspection.stateValid;
+		fixture.dependencies.inspectRun.mockResolvedValueOnce(inspection);
+
+		const result = await runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		});
+
+		expect(result).toMatchObject({ classification: 'AMBIGUOUS', status: 'uncertain' });
+		expect(fixture.provisionCapabilities.inspectProvision).not.toHaveBeenCalled();
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+		expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+		expect(fixture.mutations).toEqual([]);
 	});
 
 	it('catches the final durable checkpoint up before accepting hosted PROVISION_VERIFIED truth', async () => {
@@ -1340,7 +1721,7 @@ describe('Gate 3 provision command', () => {
 			classification: 'PREFLIGHT_READY',
 			stateRevision: fixture.state().revision,
 			revision: fixture.state().revision,
-			foreignCounts: { syntheticAccounts: 1 },
+			foreignCounts: { ...zeroForeignCounts, syntheticAccounts: 1 },
 			exactRecoveryProvenance: true
 		});
 
@@ -1357,6 +1738,48 @@ describe('Gate 3 provision command', () => {
 		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
 		expect(fixture.mutations).toEqual([]);
 	});
+
+	it.each(['missing', 'missing-field', 'extra-field', 'accessor', 'proxy'] as const)(
+		'stops on non-canonical foreign-account evidence: %s',
+		async (kind) => {
+			const fixture = commandFixture();
+			const inspection: Record<string, any> = {
+				classification: 'PREFLIGHT_READY',
+				stateRevision: fixture.state().revision,
+				revision: fixture.state().revision,
+				exactRecoveryProvenance: true
+			};
+			if (kind === 'missing-field') {
+				inspection.foreignCounts = { ...zeroForeignCounts };
+				delete inspection.foreignCounts.queueRows;
+			} else if (kind === 'extra-field') {
+				inspection.foreignCounts = { ...zeroForeignCounts, actors: 0 };
+			} else if (kind === 'accessor') {
+				inspection.foreignCounts = { ...zeroForeignCounts };
+				Object.defineProperty(inspection.foreignCounts, 'syntheticAccounts', {
+					enumerable: true,
+					get: () => 0
+				});
+			} else if (kind === 'proxy') {
+				inspection.foreignCounts = new Proxy({ ...zeroForeignCounts }, {});
+			}
+			fixture.dependencies.inspectRun.mockResolvedValueOnce(inspection);
+
+			const result = await runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			});
+
+			expect(result).toMatchObject({ status: 'uncertain', classification: 'AMBIGUOUS' });
+			expect(fixture.provisionCapabilities.inspectProvision).not.toHaveBeenCalled();
+			expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+			expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+			expect(fixture.mutations).toEqual([]);
+		}
+	);
 
 	it.each(['accessor', 'proxy-array', 'extra-key'] as const)(
 		'rejects unstable snapshot evidence (%s) before capability exposure',
@@ -1393,6 +1816,55 @@ describe('Gate 3 provision command', () => {
 			expect(fixture.mutations).toEqual([]);
 		}
 	);
+
+	it.each([
+		'coordinates-omitted',
+		'cross-role-swap',
+		'user-id-collision',
+		'timestamp-mismatch',
+		'user-id-accessor',
+		'actor-proxy'
+	] as const)('rejects non-exact auth-confirmed actor binding: %s', async (kind) => {
+		const fixture = commandFixture();
+		const validActors = Object.fromEntries(roles.map((role) => [role, completedActor(role)]));
+		fixture.setSnapshot({ requiredConsents, exactRecoveryProvenance: true, actors: validActors });
+		const hostile = structuredClone(fixture.snapshot());
+		if (kind === 'coordinates-omitted') {
+			delete hostile.actors.reporter.userId;
+			delete hostile.actors.reporter.createdAt;
+		} else if (kind === 'cross-role-swap') {
+			[hostile.actors.reporter.userId, hostile.actors['cross-user'].userId] = [
+				hostile.actors['cross-user'].userId,
+				hostile.actors.reporter.userId
+			];
+		} else if (kind === 'user-id-collision') {
+			hostile.actors['cross-user'].userId = hostile.actors.reporter.userId;
+		} else if (kind === 'timestamp-mismatch') {
+			hostile.actors.reporter.createdAt = '2026-08-21T10:00:01.000Z';
+		} else if (kind === 'user-id-accessor') {
+			Object.defineProperty(hostile.actors.reporter, 'userId', {
+				enumerable: true,
+				get: () => actorIds.reporter
+			});
+		} else {
+			hostile.actors.reporter = new Proxy(hostile.actors.reporter, {});
+		}
+		fixture.provisionCapabilities.inspectProvision.mockResolvedValueOnce(hostile);
+
+		await expect(
+			runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			})
+		).rejects.toMatchObject({ reasonCode: 'provision_evidence_invalid' });
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+		expect(fixture.dependencies.persistManifest).not.toHaveBeenCalled();
+		expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+		expect(fixture.mutations).toEqual([]);
+	});
 
 	it('stops before mutation when exact lock ownership is replaced', async () => {
 		const fixture = commandFixture();
@@ -1469,6 +1941,5 @@ describe('Gate 3 provision command', () => {
 			['classification', 'reasonCode', 'revision', 'status'].sort()
 		);
 		expect(JSON.stringify(result)).not.toMatch(/@|password|totp|secret|factor|token|cipher|userId/i);
-		expect(Gate3HostedProvisionError).toBeTypeOf('function');
 	});
 });

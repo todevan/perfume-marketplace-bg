@@ -11,7 +11,6 @@ import { selectNextProvisionStep } from './gate3-hosted-lifecycle.mjs';
 import {
 	acquireRunLock,
 	inspectRunLock,
-	readStableGate3PreflightSnapshot,
 	readRunState,
 	releaseRunLock,
 	writeNextRunState
@@ -19,7 +18,6 @@ import {
 import {
 	protectRunSecrets,
 	recordProviderTotpSecret,
-	unprotectRunSecretBytes,
 	unprotectRunSecrets
 } from './gate3-hosted-secrets.mjs';
 
@@ -30,6 +28,14 @@ const ACTOR_ROLES = Object.freeze([
 	'unassigned-moderator'
 ]);
 const ACTOR_ROLE_SET = new Set(ACTOR_ROLES);
+const FOREIGN_COUNT_FIELDS = Object.freeze([
+	'syntheticAccounts',
+	'profiles',
+	'reports',
+	'uploads',
+	'objects',
+	'queueRows'
+]);
 const MODERATOR_ROLES = new Set(['assigned-moderator', 'unassigned-moderator']);
 const ALLOWED_CLASSIFICATIONS = new Set(['PREFLIGHT_READY', 'PROVISION_PARTIAL']);
 const BLOCKED_CLASSIFICATIONS = new Set(['RELEASE_CHANGED', 'AMBIGUOUS', 'RECOVERY_REQUIRED']);
@@ -45,8 +51,9 @@ const PROVIDER_CAPABILITY_KEYS = Object.freeze(['mutate', 'readBack']);
 const COMMAND_CAPABILITY_KEYS = Object.freeze(['inspectProvision', 'mutationFor']);
 const CONSENT_STEP_PATTERN = /^consent-([a-z][a-z0-9_]{1,63})-(.{1,80})$/u;
 const RUN_ID_PATTERN = /^gate3-\d{8}-[a-f0-9]{8}$/u;
+const ISO_TIMESTAMP_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/u;
 
-export class Gate3HostedProvisionError extends Error {
+class Gate3HostedProvisionError extends Error {
 	/** @param {string} reasonCode @param {number} exitCode */
 	constructor(reasonCode, exitCode) {
 		super(reasonCode);
@@ -56,9 +63,18 @@ export class Gate3HostedProvisionError extends Error {
 	}
 }
 
+const RUNNER_ERRORS = new WeakSet();
+
+/** @param {unknown} error */
+function isRunnerError(error) {
+	return Boolean(error && typeof error === 'object' && RUNNER_ERRORS.has(error));
+}
+
 /** @param {string} reasonCode @param {number} exitCode @returns {never} */
 function fail(reasonCode, exitCode) {
-	throw new Gate3HostedProvisionError(reasonCode, exitCode);
+	const error = new Gate3HostedProvisionError(reasonCode, exitCode);
+	RUNNER_ERRORS.add(error);
+	throw error;
 }
 
 /** @param {unknown} value @returns {value is Record<string, any>} */
@@ -105,7 +121,7 @@ function exactFrozenRecord(candidate, expectedKeys, reasonCode) {
 		}
 		return Object.freeze(Object.fromEntries(entries));
 	} catch (error) {
-		if (error instanceof Gate3HostedProvisionError) throw error;
+		if (isRunnerError(error)) throw error;
 		return fail(reasonCode, 10);
 	}
 }
@@ -191,6 +207,16 @@ function readBackStatus(value) {
 	}
 }
 
+/** Accepts Supabase's one-to-six fractional digits without rewriting provenance. @param {unknown} value */
+function isExactIsoTimestamp(value) {
+	if (typeof value !== 'string') return false;
+	const match = ISO_TIMESTAMP_PATTERN.exec(value);
+	if (!match) return false;
+	const parsed = Date.parse(value);
+	const milliseconds = (match[2] ?? '').padEnd(3, '0').slice(0, 3);
+	return Number.isFinite(parsed) && new Date(parsed).toISOString() === `${match[1]}.${milliseconds}Z`;
+}
+
 /** @param {unknown} result @param {string} role */
 function exactActorCoordinatesFromResult(result, role) {
 	if (!isPlainDataObject(result)) return null;
@@ -201,7 +227,7 @@ function exactActorCoordinatesFromResult(result, role) {
 		if (!Object.hasOwn(actorDescriptor, 'value')) fail('provision_evidence_invalid', 20);
 		candidate = actorDescriptor.value;
 	} catch (error) {
-		if (error instanceof Gate3HostedProvisionError) throw error;
+		if (isRunnerError(error)) throw error;
 		return fail('provision_evidence_invalid', 20);
 	}
 	const actor = copyExactDataRecord(
@@ -209,14 +235,11 @@ function exactActorCoordinatesFromResult(result, role) {
 		['role', 'userId', 'createdAt'],
 		['emailConfirmed']
 	);
-	const parsedCreatedAt = typeof actor.createdAt === 'string' ? new Date(actor.createdAt) : null;
 	if (
 		actor.role !== role ||
 		typeof actor.userId !== 'string' ||
 		!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(actor.userId) ||
-		parsedCreatedAt === null ||
-		Number.isNaN(parsedCreatedAt.valueOf()) ||
-		parsedCreatedAt.toISOString() !== actor.createdAt ||
+		!isExactIsoTimestamp(actor.createdAt) ||
 		(Object.hasOwn(actor, 'emailConfirmed') && actor.emailConfirmed !== true)
 	) {
 		fail('provision_evidence_invalid', 20);
@@ -249,6 +272,92 @@ function selectConfirmedActorCoordinates(mutationResult, readBackResult, role, f
 	}
 	if (!selected) fail('provision_evidence_invalid', 20);
 	return selected;
+}
+
+/** @param {unknown} value */
+function exactEnrollmentPrivateResult(value) {
+	if (!isPlainDataObject(value)) return null;
+	try {
+		const keys = Reflect.ownKeys(value);
+		if (
+			keys.some((key) => typeof key !== 'string') ||
+			keys.length !== 3 ||
+			!['factorId', 'factorType', 'secret'].every((key) => keys.includes(key))
+		) {
+			return null;
+		}
+		const entries = Object.fromEntries(
+			keys.map((key) => {
+				const descriptor = Object.getOwnPropertyDescriptor(value, key);
+				if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+					throw new TypeError('non-data enrollment result');
+				}
+				return [key, descriptor.value];
+			})
+		);
+		if (
+			typeof entries.factorId !== 'string' ||
+			entries.factorId.length === 0 ||
+			entries.factorType !== 'totp' ||
+			typeof entries.secret !== 'string' ||
+			entries.secret.length === 0
+		) {
+			return null;
+		}
+		return Object.freeze({
+			privateCredential: Object.freeze({
+				factorId: entries.factorId,
+				factorType: 'totp',
+				secret: entries.secret
+			}),
+			receipt: Object.freeze({ factorId: entries.factorId, factorType: 'totp' })
+		});
+	} catch {
+		return null;
+	}
+}
+
+/** @param {unknown} value */
+function exactCredentialMetadata(value) {
+	if (!isPlainDataObject(value)) return null;
+	try {
+		const keys = Reflect.ownKeys(value);
+		if (
+			keys.some((key) => typeof key !== 'string') ||
+			keys.length !== 2 ||
+			!['status', 'ciphertextSha256'].every((key) => keys.includes(key))
+		) {
+			return null;
+		}
+		const status = Object.getOwnPropertyDescriptor(value, 'status');
+		const sha256 = Object.getOwnPropertyDescriptor(value, 'ciphertextSha256');
+		if (
+			!status ||
+			!Object.hasOwn(status, 'value') ||
+			status.enumerable !== true ||
+			!sha256 ||
+			!Object.hasOwn(sha256, 'value') ||
+			sha256.enumerable !== true ||
+			!['available', 'persisted'].includes(status.value) ||
+			typeof sha256.value !== 'string' ||
+			!/^[a-f0-9]{64}$/u.test(sha256.value)
+		) {
+			return null;
+		}
+		return Object.freeze({ status: status.value, ciphertextSha256: sha256.value });
+	} catch {
+		return null;
+	}
+}
+
+/** @param {unknown} result @param {string} role */
+function safeActorReceipt(result, role) {
+	try {
+		const actor = exactActorCoordinatesFromResult(result, role);
+		return actor === null ? null : Object.freeze({ actor });
+	} catch {
+		return null;
+	}
 }
 
 /** @param {{ role: string, step: string, status: string, classification: string, revision: number, reasonCode: string }} value */
@@ -287,48 +396,74 @@ export async function runProvisionBoundary({ inspection, authorization, capabili
 
 	let mutationResult = null;
 	let readBackResult = null;
+	let mutationReceipt = null;
+	let readBackReceipt = null;
 	let credentialMetadata = null;
 	let credentialPersistenceFailed = false;
+	let mutationAttemptFailed = false;
 	if (scope.outcome === 'confirmed-absent') {
 		if (scope.step !== 'actor-verified') {
 			try {
 				mutationResult = await caps.mutate();
 			} catch (error) {
-				if (error instanceof Gate3HostedProvisionError) throw error;
+				if (isRunnerError(error)) throw error;
+				mutationAttemptFailed = true;
 				// A transport failure is not mutation truth. Always perform targeted read-back.
 			}
 		}
-		if (scope.step === 'mfa-enrolled' && mutationResult !== null) {
+		const enrollment = scope.step === 'mfa-enrolled'
+			? exactEnrollmentPrivateResult(mutationResult)
+			: null;
+		if (scope.step === 'mfa-enrolled') {
+			mutationReceipt = enrollment?.receipt ?? null;
+		} else if (scope.step === 'auth-created') {
+			mutationReceipt = safeActorReceipt(mutationResult, scope.role);
+		} else {
+			mutationReceipt = Object.freeze({});
+		}
+		if (scope.step === 'mfa-enrolled' && enrollment !== null) {
 			try {
-				credentialMetadata = await caps.persistCredential(mutationResult);
-			} catch (error) {
-				if (error instanceof Gate3HostedProvisionError) throw error;
+				credentialMetadata = exactCredentialMetadata(
+					await caps.persistCredential(enrollment.privateCredential)
+				);
+				if (credentialMetadata === null) credentialPersistenceFailed = true;
+			} catch {
 				credentialPersistenceFailed = true;
 			}
 		}
 		try {
-			readBackResult = await caps.readBack({ mutationResult });
+			readBackResult = await caps.readBack(Object.freeze({ receipt: mutationReceipt }));
 		} catch (error) {
-			if (error instanceof Gate3HostedProvisionError) throw error;
+			if (isRunnerError(error)) throw error;
 			readBackResult = null;
 		}
 		const status = readBackStatus(readBackResult);
-		if (credentialPersistenceFailed) {
-			return resultFor('uncertain', 'credential_persistence_failed');
-		}
 		if (status === 'confirmed-absent') {
 			return resultFor('confirmed-absent', 'provider_failure_confirmed_absent');
 		}
 		if (status !== 'confirmed') return resultFor('uncertain', 'mutation_outcome_uncertain');
+		if (scope.step === 'auth-created') {
+			readBackReceipt = safeActorReceipt(readBackResult, scope.role);
+		}
+		if (
+			scope.step === 'mfa-enrolled' &&
+			(enrollment === null || credentialPersistenceFailed || credentialMetadata === null)
+		) {
+			return resultFor('uncertain', 'credential_persistence_failed');
+		}
 	}
 
 	try {
 		if (scope.step === 'auth-created') {
-			await caps.persistManifest({ mutationResult, readBackResult });
+			await caps.persistManifest(Object.freeze({
+				mutationReceipt,
+				readBackReceipt,
+				mutationAttemptFailed
+			}));
 		}
-		await caps.persistState({ mutationResult, readBackResult, credentialMetadata });
+		await caps.persistState(Object.freeze({ receipt: mutationReceipt, credentialMetadata }));
 	} catch (error) {
-		if (error instanceof Gate3HostedProvisionError) throw error;
+		if (isRunnerError(error)) throw error;
 		fail('provision_persistence_uncertain', 41);
 	}
 	return resultFor('confirmed', 'provision_boundary_confirmed', scope.revision + 1);
@@ -405,6 +540,19 @@ function exactOwnBoolean(value, name) {
 }
 
 /** @param {unknown} value @param {string} name */
+function exactOwnBooleanValue(value, name) {
+	if (!isPlainDataObject(value)) return null;
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(value, name);
+		return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'boolean'
+			? descriptor.value
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** @param {unknown} value @param {string} name */
 function exactOwnString(value, name) {
 	if (!isPlainDataObject(value)) return null;
 	try {
@@ -434,18 +582,43 @@ function exactOwnInteger(value, name) {
 }
 
 /** @param {unknown} inspection */
-function hasForeignSyntheticActors(inspection) {
+function hasUntrustedForeignActorEvidence(inspection) {
 	if (!isPlainDataObject(inspection)) return true;
 	try {
 		const descriptor = Object.getOwnPropertyDescriptor(inspection, 'foreignCounts');
-		if (!descriptor) return false;
-		if (!Object.hasOwn(descriptor, 'value') || !isPlainDataObject(descriptor.value)) return true;
-		const countDescriptor = Object.getOwnPropertyDescriptor(descriptor.value, 'syntheticAccounts');
-		return !countDescriptor ||
-			!Object.hasOwn(countDescriptor, 'value') ||
-			!Number.isSafeInteger(countDescriptor.value) ||
-			countDescriptor.value < 0 ||
-			countDescriptor.value > 0;
+		if (
+			!descriptor ||
+			!Object.hasOwn(descriptor, 'value') ||
+			descriptor.enumerable !== true ||
+			!isPlainDataObject(descriptor.value)
+		) {
+			return true;
+		}
+		const keys = Reflect.ownKeys(descriptor.value);
+		if (
+			keys.some((key) => typeof key !== 'string') ||
+			keys.length !== FOREIGN_COUNT_FIELDS.length ||
+			!FOREIGN_COUNT_FIELDS.every((field) => keys.includes(field))
+		) {
+			return true;
+		}
+		for (const field of FOREIGN_COUNT_FIELDS) {
+			const countDescriptor = Object.getOwnPropertyDescriptor(descriptor.value, field);
+			if (
+				!countDescriptor ||
+				!Object.hasOwn(countDescriptor, 'value') ||
+				countDescriptor.enumerable !== true ||
+				!Number.isSafeInteger(countDescriptor.value) ||
+				countDescriptor.value < 0
+			) {
+				return true;
+			}
+		}
+		const syntheticAccounts = Object.getOwnPropertyDescriptor(
+			descriptor.value,
+			'syntheticAccounts'
+		);
+		return !syntheticAccounts || syntheticAccounts.value !== 0;
 	} catch {
 		return true;
 	}
@@ -486,7 +659,7 @@ function copyExactDataRecord(candidate, requiredKeys, optionalKeys = []) {
 		}
 		return Object.freeze(copy);
 	} catch (error) {
-		if (error instanceof Gate3HostedProvisionError) throw error;
+		if (isRunnerError(error)) throw error;
 		return fail('provision_evidence_invalid', 10);
 	}
 }
@@ -516,97 +689,8 @@ function copyExactDataArray(candidate) {
 		}
 		return Object.freeze(copy);
 	} catch (error) {
-		if (error instanceof Gate3HostedProvisionError) throw error;
+		if (isRunnerError(error)) throw error;
 		return fail('provision_evidence_invalid', 10);
-	}
-}
-
-/**
- * Repairs only the local ciphertext hash after a proven DPAPI-write/state-write
- * crash. It performs no hosted mutation and requires the captured ciphertext to
- * decrypt as the exact run payload with a stored moderator TOTP credential.
- * @param {{ paths: Record<string, string>, inspection: unknown, dpapi: unknown, dependencies: Record<string, any>, assertLockOwned: () => Promise<void> }} options
- */
-async function reconcileCredentialStateIfSafe({ paths, inspection, dpapi, dependencies, assertLockOwned }) {
-	if (
-		exactClassification(inspection) !== 'RECOVERY_REQUIRED' ||
-		!exactOwnBoolean(inspection, 'credentialsLost') ||
-		!exactOwnBoolean(inspection, 'exactRecoveryProvenance') ||
-		exactOwnString(inspection, 'secretStoreStatus') !== 'corrupt' ||
-		exactOwnString(inspection, 'manifestBindingStatus') !== 'exact' ||
-		exactOwnBoolean(inspection, 'releaseChanged')
-	) {
-		return false;
-	}
-	let captured;
-	try {
-		const readStableSnapshot = dependency(
-			dependencies,
-			'readStableSnapshot',
-			readStableGate3PreflightSnapshot
-		);
-		captured = await readStableSnapshot(paths);
-		const state = captured?.state;
-		const secretBytes = captured?.secretBytes;
-		const checkpoint = state?.phases?.provision?.checkpoint;
-		const checkpointMatch = typeof checkpoint?.step === 'string'
-			? /^(assigned-moderator|unassigned-moderator)\.(role-elevated|mfa-unenrolled-recovery)$/u.exec(checkpoint.step)
-			: null;
-		if (
-			!state ||
-			state.revision !== safeInspectionRevision(inspection) ||
-			state.phases?.provision?.status !== 'in-progress' ||
-			!checkpointMatch ||
-			checkpoint?.status !== 'confirmed' ||
-			checkpoint?.revision !== state.revision ||
-			checkpoint?.operationId !== checkpoint.step ||
-			!['available', 'persisted'].includes(state.secretStore?.status) ||
-			!(secretBytes instanceof Uint8Array) ||
-			secretBytes.byteLength === 0
-		) {
-			return false;
-		}
-		const ciphertextSha256 = createHash('sha256').update(secretBytes).digest('hex');
-		if (ciphertextSha256 === state.secretStore.ciphertextSha256) return false;
-		const unprotectBytes = dependency(
-			dependencies,
-			'unprotectRunSecretBytes',
-			unprotectRunSecretBytes
-		);
-		const payload = await unprotectBytes({ runId: paths.runId, ciphertext: secretBytes, dpapi });
-		const pendingRole = checkpointMatch[1];
-		const expectedVerifiedFactors = pendingRole === 'assigned-moderator' ? 0 : 1;
-		const expectedSecretPattern = pendingRole === 'assigned-moderator'
-			? typeof payload.actors?.['assigned-moderator']?.totpSecret === 'string' &&
-				payload.actors?.['unassigned-moderator']?.totpSecret === null
-			: typeof payload.actors?.['assigned-moderator']?.totpSecret === 'string' &&
-				typeof payload.actors?.['unassigned-moderator']?.totpSecret === 'string';
-		if (
-			payload?.runId !== paths.runId ||
-			!expectedSecretPattern ||
-			exactOwnInteger(inspection, 'verifiedModeratorTotpFactors') !== expectedVerifiedFactors ||
-			exactOwnInteger(inspection, 'moderatorsWithVerifiedTotp') !== expectedVerifiedFactors
-		) {
-			return false;
-		}
-		const nextState = {
-			...state,
-			revision: state.revision + 1,
-			secretStore: {
-				...state.secretStore,
-				status: 'available',
-				ciphertextSha256
-			}
-		};
-		await assertLockOwned();
-		const writeState = dependency(dependencies, 'writeNextRunState', writeNextRunState);
-		await writeState(paths, state, nextState);
-		return true;
-	} catch (error) {
-		if (error instanceof Gate3HostedProvisionError) throw error;
-		return false;
-	} finally {
-		captured?.secretBytes?.fill?.(0);
 	}
 }
 
@@ -696,13 +780,14 @@ function exactProvisionSnapshot(value) {
 		) {
 			fail('provision_evidence_invalid', 10);
 		}
-		if (
-			(actor.auth === 'confirmed' &&
-				(typeof actor.userId !== 'string' || typeof actor.createdAt !== 'string')) &&
-			actor.manifest !== 'confirmed'
-		) {
-			// A hosted-only actor after a crash must still provide exact coordinates for manifest repair.
-			fail('provision_evidence_invalid', 10);
+		if (actor.auth === 'confirmed') {
+			if (typeof actor.userId !== 'string' || typeof actor.createdAt !== 'string') {
+				fail('provision_evidence_invalid', 10);
+			}
+			exactActorCoordinatesFromResult(
+				{ actor: { role, userId: actor.userId, createdAt: actor.createdAt } },
+				role
+			);
 		}
 		actors[role] = Object.freeze({
 			...actor,
@@ -722,6 +807,7 @@ function assertSnapshotMatchesManifest(manifest, snapshot) {
 	if (!isPlainDataObject(manifest) || !Array.isArray(manifest.actors) || !Array.isArray(manifest.pendingActors)) {
 		fail('provision_evidence_invalid', 10);
 	}
+	const confirmedUserIds = new Set();
 	for (const role of ACTOR_ROLES) {
 		const actorEntries = manifest.actors.filter((/** @type {any} */ entry) => entry?.role === role);
 		const pendingEntries = manifest.pendingActors.filter((/** @type {any} */ entry) => entry?.role === role);
@@ -729,12 +815,16 @@ function assertSnapshotMatchesManifest(manifest, snapshot) {
 			fail('provision_evidence_invalid', 20);
 		}
 		const evidence = snapshot.actors[role];
+		if (evidence.auth === 'confirmed') {
+			if (confirmedUserIds.has(evidence.userId)) fail('provision_evidence_invalid', 20);
+			confirmedUserIds.add(evidence.userId);
+		}
 		if (evidence.manifest === 'confirmed') {
 			if (
 				actorEntries.length !== 1 ||
 				evidence.auth !== 'confirmed' ||
-				(typeof evidence.userId === 'string' && actorEntries[0].userId !== evidence.userId) ||
-				(typeof evidence.createdAt === 'string' && actorEntries[0].createdAt !== evidence.createdAt)
+				actorEntries[0].userId !== evidence.userId ||
+				actorEntries[0].createdAt !== evidence.createdAt
 			) {
 				fail('provision_evidence_invalid', 20);
 			}
@@ -901,11 +991,35 @@ async function reconcileManifestAheadIfSafe({
 	dependencies,
 	assertLockOwned
 }) {
+	const boundRelease = exactOwnString(inspection, 'boundReleaseCommitSha');
+	const currentRelease = exactOwnString(inspection, 'currentReleaseCommitSha');
 	if (
 		exactClassification(inspection) !== 'AMBIGUOUS' ||
 		exactOwnString(inspection, 'manifestBindingStatus') !== 'manifest-ahead-state' ||
-		!exactOwnBoolean(inspection, 'manifestAheadState') ||
-		exactOwnBoolean(inspection, 'releaseChanged')
+		exactOwnBooleanValue(inspection, 'stateValid') !== true ||
+		exactOwnBooleanValue(inspection, 'stateCorrupt') !== false ||
+		exactOwnBooleanValue(inspection, 'corruptState') !== false ||
+		exactOwnBooleanValue(inspection, 'manifestValid') !== true ||
+		exactOwnBooleanValue(inspection, 'manifestExactMatch') !== false ||
+		exactOwnBooleanValue(inspection, 'manifestAheadState') !== true ||
+		exactOwnBooleanValue(inspection, 'manifestMatches') !== false ||
+		exactOwnBooleanValue(inspection, 'manifestMismatch') !== false ||
+		exactOwnBooleanValue(inspection, 'authoritativeReleaseAvailable') !== true ||
+		exactOwnBooleanValue(inspection, 'authoritativeReleaseUnavailable') !== false ||
+		typeof boundRelease !== 'string' ||
+		!/^[a-f0-9]{40}$/u.test(boundRelease) ||
+		currentRelease !== boundRelease ||
+		exactOwnBooleanValue(inspection, 'releaseMismatch') !== false ||
+		exactOwnBooleanValue(inspection, 'releaseChanged') !== false ||
+		exactOwnBooleanValue(inspection, 'hostedEvidenceAvailable') !== true ||
+		exactOwnBooleanValue(inspection, 'ownershipConflict') !== false ||
+		exactOwnBooleanValue(inspection, 'cleanupCompleteContradiction') !== false ||
+		exactOwnBooleanValue(inspection, 'credentialsLost') !== false ||
+		exactOwnInteger(inspection, 'duplicateRoles') !== 0 ||
+		exactOwnInteger(inspection, 'metadataMismatches') !== 0 ||
+		exactOwnInteger(inspection, 'actorIdentityConflicts') !== 0 ||
+		exactOwnInteger(inspection, 'manifestActorsAbsent') !== 0 ||
+		exactOwnBooleanValue(inspection, 'ambiguous') !== true
 	) {
 		return false;
 	}
@@ -913,7 +1027,11 @@ async function reconcileManifestAheadIfSafe({
 		await assertLockOwned();
 		const readState = dependency(dependencies, 'readRunState', readRunState);
 		const state = await readState(paths);
-		if (state.revision !== safeInspectionRevision(inspection) || typeof state.manifest?.sha256 !== 'string') {
+		if (
+			!isPlainDataObject(state) ||
+			state.revision !== safeInspectionRevision(inspection) ||
+			typeof state.manifest?.sha256 !== 'string'
+		) {
 			return false;
 		}
 		const loadManifest = dependency(dependencies, 'loadManifest', loadHostedRunManifest);
@@ -961,7 +1079,7 @@ async function reconcileManifestAheadIfSafe({
 		await writeState(paths, state, nextState);
 		return true;
 	} catch (error) {
-		if (error instanceof Gate3HostedProvisionError) throw error;
+		if (isRunnerError(error)) throw error;
 		return false;
 	}
 }
@@ -1050,7 +1168,7 @@ export async function runProvisionCommand({
 				fail('run_lock_lost', 41);
 			}
 		} catch (error) {
-			if (error instanceof Gate3HostedProvisionError) throw error;
+			if (isRunnerError(error)) throw error;
 			fail('run_lock_lost', 41);
 		}
 	};
@@ -1070,7 +1188,7 @@ export async function runProvisionCommand({
 			}
 			const classification = exactClassification(inspection);
 			const inspectionRevision = safeInspectionRevision(inspection);
-			if (hasForeignSyntheticActors(inspection)) {
+			if (hasUntrustedForeignActorEvidence(inspection)) {
 				return blockedResult('AMBIGUOUS', inspectionRevision);
 			}
 			if (
@@ -1081,18 +1199,6 @@ export async function runProvisionCommand({
 					dependencies,
 					assertLockOwned
 				})
-			) {
-				continue;
-			}
-			if (
-				classification === 'RECOVERY_REQUIRED' &&
-				(await reconcileCredentialStateIfSafe({
-					paths,
-					inspection,
-					dpapi,
-					dependencies,
-					assertLockOwned
-				}))
 			) {
 				continue;
 			}
@@ -1143,7 +1249,7 @@ export async function runProvisionCommand({
 				safeInteger(state.revision, 'provision_precondition_failed');
 				if (state.revision !== inspectionRevision) return blockedResult('AMBIGUOUS', inspectionRevision);
 			} catch (error) {
-				if (error instanceof Gate3HostedProvisionError) throw error;
+				if (isRunnerError(error)) throw error;
 				return blockedResult('AMBIGUOUS', inspectionRevision);
 			}
 			let manifest;
@@ -1152,7 +1258,7 @@ export async function runProvisionCommand({
 				const loadManifest = dependency(dependencies, 'loadManifest', loadHostedRunManifest);
 				manifest = await loadManifest(manifestConfig, paths.manifestPath);
 			} catch (error) {
-				if (error instanceof Gate3HostedProvisionError) throw error;
+				if (isRunnerError(error)) throw error;
 				return blockedResult('AMBIGUOUS', inspectionRevision);
 			}
 			let payload;
@@ -1160,7 +1266,7 @@ export async function runProvisionCommand({
 				const unprotect = dependency(dependencies, 'unprotectRunSecrets', unprotectRunSecrets);
 				payload = await unprotect({ runId: paths.runId, path: paths.secretPath, dpapi });
 			} catch (error) {
-				if (error instanceof Gate3HostedProvisionError) throw error;
+				if (isRunnerError(error)) throw error;
 				return blockedResult(
 					exactOwnBoolean(inspection, 'exactRecoveryProvenance')
 						? 'RECOVERY_REQUIRED'
@@ -1177,7 +1283,7 @@ export async function runProvisionCommand({
 				);
 				assertSnapshotMatchesManifest(manifest, snapshot);
 			} catch (error) {
-				if (error instanceof Gate3HostedProvisionError) throw error;
+				if (isRunnerError(error)) throw error;
 				fail('provision_evidence_invalid', 10);
 			}
 			const next = deriveNextBoundary(state, snapshot);
@@ -1209,7 +1315,7 @@ export async function runProvisionCommand({
 					})
 				);
 			} catch (error) {
-				if (error instanceof Gate3HostedProvisionError) throw error;
+				if (isRunnerError(error)) throw error;
 				fail('provision_capability_invalid', 10);
 			}
 			if ((next.step === 'actor-verified') !== (providerCaps.mutate === null)) {
@@ -1262,11 +1368,14 @@ export async function runProvisionCommand({
 						: null,
 				persistManifest:
 					next.step === 'auth-created'
-						? async (/** @type {{ mutationResult: any, readBackResult: any }} */ { mutationResult, readBackResult }) => {
+						? async (/** @type {{ mutationReceipt: any, readBackReceipt: any, mutationAttemptFailed: boolean }} */ { mutationReceipt, readBackReceipt, mutationAttemptFailed }) => {
 							await assertLockOwned();
+							if (mutationAttemptFailed && readBackReceipt === null) {
+								fail('provision_evidence_invalid', 20);
+							}
 							const evidenceActor = selectConfirmedActorCoordinates(
-								mutationResult,
-								readBackResult,
+								mutationReceipt,
+								readBackReceipt,
 								next.role,
 								snapshot.actors[next.role]
 							);
@@ -1353,7 +1462,7 @@ export async function runProvisionCommand({
 		fail('provision_boundary_limit_exceeded', 41);
 	} catch (error) {
 		primaryError = error;
-		if (error instanceof Gate3HostedProvisionError) throw error;
+		if (isRunnerError(error)) throw error;
 		fail('provision_precondition_failed', 10);
 	} finally {
 		try {
