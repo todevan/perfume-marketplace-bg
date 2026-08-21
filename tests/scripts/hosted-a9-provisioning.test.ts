@@ -133,7 +133,463 @@ function fakeAdapters(events: string[], failFinalInspection = false) {
 	};
 }
 
+const readBackSteps = [
+	'auth-created',
+	'registration-claimed',
+	...requiredConsents.map(
+		({ documentCode, documentVersion }) => `consent-${documentCode}-${documentVersion}`
+	),
+	'onboarding-complete',
+	'role-elevated',
+	'mfa-enrolled',
+	'mfa-unenrolled-recovery',
+	'mfa-verified',
+	'actor-verified'
+] as const;
+
+function createRealReadBackFixture(
+	step: (typeof readBackSteps)[number],
+	outcome: 'confirmed' | 'confirmed-absent' | 'uncertain'
+) {
+	const config = hostedOperator.validateHostedA9Environment(environment);
+	const role: keyof typeof actorIds = new Set([
+		'role-elevated',
+		'mfa-enrolled',
+		'mfa-unenrolled-recovery',
+		'mfa-verified',
+		'actor-verified'
+	]).has(step)
+		? 'assigned-moderator'
+		: 'reporter';
+	const userId = actorIds[role];
+	const credentials = config.actorRoles[role];
+	const user = {
+		id: userId,
+		email: credentials.email,
+		created_at: createdAt,
+		email_confirmed_at: createdAt,
+		user_metadata: {
+			username: credentials.username,
+			gate3_report_evidence_run_id: config.runId,
+			gate3_report_evidence_provisioning_nonce: config.provisioningNonce,
+			gate3_report_evidence_provisioning_attempt_id: config.provisioningNonce
+		}
+	};
+	const profile = {
+		id: userId,
+		username: credentials.username,
+		role: role.endsWith('moderator') ? 'moderator' : 'user',
+		is_suspended: false
+	};
+	const membership = {
+		profile_id: userId,
+		invite_id: null,
+		status: 'active',
+		onboarding_completed_at: createdAt
+	};
+	const consent = step.startsWith('consent-')
+		? requiredConsents.find(
+				({ documentCode, documentVersion }) =>
+					step === `consent-${documentCode}-${documentVersion}`
+			)
+		: null;
+	const consentRow = consent
+		? {
+				profile_id: userId,
+				document_code: consent.documentCode,
+				document_version: consent.documentVersion,
+				accepted_at: createdAt,
+				source: 'web'
+			}
+		: null;
+	const access = {
+		profile_id: userId,
+		membership_status: 'active',
+		onboarding_completed_at: createdAt,
+		membership_expires_at: null,
+		email_verified_at: createdAt,
+		phone_verified_at: null,
+		merchant_verified_at: null,
+		role: profile.role,
+		username: credentials.username,
+		is_suspended: false,
+		account_kind: 'private',
+		has_current_consents: true,
+		is_active: true
+	};
+	const evidence: Record<string, any> = {
+		authUsers: [user],
+		listUsersResult: null,
+		getUserResult: { data: { user }, error: null },
+		profileRows: [profile],
+		membershipRows: [membership],
+		consentRows: consentRow ? [consentRow] : [],
+		accessRows: [access],
+		accessResult: null,
+		factors: [{ id: 'private-factor-id', status: 'verified' }],
+		factorsResult: null,
+		aal: { currentLevel: 'aal1', nextLevel: 'aal2' },
+		aalResult: null,
+		tableResults: {},
+		signInResult: {
+			data: { user: { id: userId, email: credentials.email } },
+			error: null
+		}
+	};
+	if (step === 'mfa-unenrolled-recovery' && outcome === 'confirmed') {
+		evidence.factors = [];
+		evidence.aal = { currentLevel: 'aal1', nextLevel: 'aal1' };
+	}
+
+	if (outcome === 'confirmed-absent') {
+		if (step === 'auth-created') evidence.authUsers = [];
+		else if (step === 'registration-claimed') evidence.membershipRows = [];
+		else if (step.startsWith('consent-')) evidence.consentRows = [];
+		else if (step === 'onboarding-complete') {
+			evidence.membershipRows = [
+				{ ...membership, status: 'pending', onboarding_completed_at: null }
+			];
+		} else if (step === 'role-elevated') {
+			evidence.profileRows = [{ ...profile, role: 'user' }];
+		} else if (step === 'mfa-enrolled') {
+			evidence.factors = [];
+			evidence.aal = { currentLevel: 'aal1', nextLevel: 'aal1' };
+		} else if (step === 'mfa-unenrolled-recovery' || step === 'mfa-verified') {
+			evidence.factors = [{ id: 'private-factor-id', status: 'unverified' }];
+			evidence.aal = { currentLevel: 'aal1', nextLevel: 'aal1' };
+		} else if (step === 'actor-verified') {
+			evidence.accessRows = [
+				{
+					...access,
+					membership_status: 'pending',
+					onboarding_completed_at: null,
+					has_current_consents: false,
+					is_active: false
+				}
+			];
+		}
+	}
+	if (outcome === 'uncertain') {
+		if (step === 'auth-created') {
+			evidence.authUsers = [user, { ...user, id: actorIds['cross-user'] }];
+		} else if (step === 'registration-claimed') {
+			evidence.membershipRows = [membership, { ...membership }];
+		} else if (step.startsWith('consent-')) {
+			evidence.consentRows = [consentRow, { ...consentRow }];
+		} else if (step === 'onboarding-complete') {
+			evidence.membershipRows = [{ ...membership, onboarding_completed_at: null }];
+		} else if (step === 'role-elevated') {
+			evidence.profileRows = [{ ...profile, role: 'admin' }];
+		} else if (step === 'actor-verified') {
+			evidence.accessRows = [access, { ...access }];
+		} else {
+			evidence.factors = [
+				{ id: 'private-factor-id', status: 'unverified' },
+				{ id: 'second-private-factor-id', status: 'verified' }
+			];
+		}
+	}
+
+	const createUser = vi.fn();
+	const deleteUser = vi.fn();
+	const update = vi.fn();
+	const insert = vi.fn();
+	const upsert = vi.fn();
+	const remove = vi.fn();
+	const rpc = vi.fn(async (functionName: string) => {
+		if (functionName !== 'get_my_beta_access') {
+			return { data: null, error: { message: 'mutation RPC was not expected' } };
+		}
+		return evidence.accessResult ?? { data: evidence.accessRows, error: null };
+	});
+	const enroll = vi.fn();
+	const unenroll = vi.fn();
+	const challengeAndVerify = vi.fn();
+	const actorClient = {
+		auth: {
+			signInWithPassword: vi.fn(async () => evidence.signInResult),
+			mfa: {
+				enroll,
+				unenroll,
+				challengeAndVerify,
+				listFactors: vi.fn(async () =>
+					evidence.factorsResult ?? {
+						data: { totp: evidence.factors, phone: [] },
+						error: null
+					}
+				),
+				getAuthenticatorAssuranceLevel: vi.fn(async () =>
+					evidence.aalResult ?? { data: evidence.aal, error: null }
+				)
+			}
+		},
+		rpc
+	};
+	const from = vi.fn((table: string) => {
+		const filters: Record<string, unknown> = {};
+		const query: Record<string, any> = {
+			select: vi.fn(() => query),
+			eq: vi.fn((name: string, value: unknown) => {
+				filters[name] = value;
+				return query;
+			}),
+			limit: vi.fn(async () => {
+				const rows =
+					table === 'profiles'
+						? evidence.profileRows
+						: table === 'beta_memberships'
+							? evidence.membershipRows
+							: table === 'beta_consent_events'
+								? evidence.consentRows
+								: null;
+				return rows === null
+					? { data: null, error: { message: 'unexpected table' } }
+					: { data: rows, error: null };
+			}),
+			update,
+			insert,
+			upsert,
+			delete: remove
+		};
+		if (Object.hasOwn(evidence.tableResults, table)) {
+			query.limit = vi.fn(async () => evidence.tableResults[table]);
+		}
+		return query;
+	});
+	const serviceClient = {
+		supabaseUrl: hostedOperator.HOSTED_STAGING.supabaseUrl,
+		auth: {
+			admin: {
+				listUsers: vi.fn(async () =>
+					evidence.listUsersResult ?? {
+						data: { users: evidence.authUsers, lastPage: 1 },
+						error: null
+					}
+				),
+				getUserById: vi.fn(async () => evidence.getUserResult),
+				createUser,
+				deleteUser
+			}
+		},
+		from
+	};
+	const adapters = hostedOperator.createSupabaseHostedA9Adapters({
+		config,
+		serviceClient: serviceClient as never,
+		createActorClient: vi.fn(() => actorClient) as never,
+		credentialSink: {
+			storeModeratorTotpSecret: vi.fn(),
+			deleteModeratorTotpSecret: vi.fn()
+		}
+	});
+	const operations = provisioningApi().createHostedA9ProvisionOperations({ config, adapters });
+	const manifest =
+		step === 'auth-created'
+			? hostedOperator.createHostedRunManifest(config)
+			: hostedOperator.registerHostedActor(
+					hostedOperator.createHostedRunManifest(config),
+					role,
+					userId,
+					createdAt
+				);
+	return {
+		adapters,
+		evidence,
+		manifest,
+		operations,
+		role,
+		spies: { challengeAndVerify, createUser, deleteUser, enroll, insert, remove, rpc, unenroll, update, upsert }
+	};
+}
+
 describe('executable A9-only provisioning transaction', () => {
+	it.each(
+		readBackSteps.flatMap((step) =>
+			(['confirmed', 'confirmed-absent', 'uncertain'] as const).map((outcome) => ({ step, outcome }))
+		)
+	)(
+		'reads $step as sanitized $outcome through the unmodified real Supabase A9 adapter',
+		async ({ step, outcome }) => {
+			const fixture = createRealReadBackFixture(step, outcome);
+			const result = await fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step
+			});
+
+			expect(result).toEqual(
+				step === 'auth-created' && outcome === 'confirmed'
+					? {
+							status: 'confirmed',
+							actor: { role: fixture.role, userId: actorIds[fixture.role], createdAt }
+						}
+					: { status: outcome }
+			);
+			expect(Object.isFrozen(result)).toBe(true);
+			expect(JSON.stringify(result)).not.toMatch(
+				/@|password|secret|token|cipher|factor|private-factor|provider/iu
+			);
+			expect(fixture.spies.createUser).not.toHaveBeenCalled();
+			expect(fixture.spies.deleteUser).not.toHaveBeenCalled();
+			expect(fixture.spies.update).not.toHaveBeenCalled();
+			expect(fixture.spies.insert).not.toHaveBeenCalled();
+			expect(fixture.spies.upsert).not.toHaveBeenCalled();
+			expect(fixture.spies.remove).not.toHaveBeenCalled();
+			expect(fixture.spies.enroll).not.toHaveBeenCalled();
+			expect(fixture.spies.unenroll).not.toHaveBeenCalled();
+			expect(fixture.spies.challengeAndVerify).not.toHaveBeenCalled();
+			expect(fixture.spies.rpc.mock.calls.every(([name]) => name === 'get_my_beta_access')).toBe(
+				true
+			);
+		}
+	);
+
+	it.each([
+		'provider-error',
+		'missing-provenance',
+		'foreign-actor',
+		'malformed',
+		'accessor',
+		'proxy'
+	] as const)('fails closed on %s Auth read-back evidence', async (kind) => {
+		const fixture = createRealReadBackFixture('auth-created', 'confirmed');
+		const exactUser = fixture.evidence.authUsers[0];
+		if (kind === 'provider-error') {
+			fixture.evidence.listUsersResult = { data: { users: [] }, error: { message: 'private' } };
+		} else if (kind === 'missing-provenance') {
+			fixture.evidence.authUsers = [
+				{ ...exactUser, user_metadata: { ...exactUser.user_metadata, gate3_report_evidence_provisioning_nonce: undefined } }
+			];
+		} else if (kind === 'foreign-actor') {
+			fixture.evidence.authUsers = [
+				{ ...exactUser, email: environment.E2E_REAL_CROSS_USER_EMAIL }
+			];
+		} else if (kind === 'malformed') {
+			fixture.evidence.listUsersResult = { data: { users: 'not-an-array' }, error: null };
+		} else if (kind === 'accessor') {
+			const accessor = { ...exactUser };
+			Object.defineProperty(accessor, 'email', { enumerable: true, get: () => exactUser.email });
+			fixture.evidence.authUsers = [accessor];
+		} else {
+			fixture.evidence.authUsers = [new Proxy(exactUser, {})];
+		}
+
+		await expect(
+			fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step: 'auth-created'
+			})
+		).resolves.toEqual({ status: 'uncertain' });
+	});
+
+	it.each([
+		'database-provider-error',
+		'database-missing-field',
+		'session-mismatch',
+		'session-accessor',
+		'rpc-provider-error',
+		'rpc-malformed',
+		'mfa-provider-error',
+		'mfa-accessor',
+		'mfa-array-prototype'
+	] as const)('fails closed on %s targeted read-back evidence', async (kind) => {
+		const step = kind.startsWith('rpc') || kind === 'session-accessor'
+			? 'actor-verified'
+			: kind.startsWith('database-')
+				? 'registration-claimed'
+				: 'mfa-verified';
+		const fixture = createRealReadBackFixture(step, 'confirmed');
+		if (kind === 'database-provider-error') {
+			fixture.evidence.tableResults.beta_memberships = {
+				data: [],
+				error: { message: 'private database response' }
+			};
+		} else if (kind === 'database-missing-field') {
+			fixture.evidence.membershipRows = [
+				{
+					profile_id: actorIds.reporter,
+					invite_id: null,
+					status: 'active'
+				}
+			];
+		} else if (kind === 'session-mismatch') {
+			fixture.evidence.signInResult = {
+				data: {
+					user: {
+						id: actorIds.reporter,
+						email: environment.E2E_REAL_ASSIGNED_MODERATOR_EMAIL
+					}
+				},
+				error: null
+			};
+		} else if (kind === 'session-accessor') {
+			const sessionUser = {
+				id: actorIds['assigned-moderator'],
+				email: environment.E2E_REAL_ASSIGNED_MODERATOR_EMAIL
+			};
+			Object.defineProperty(sessionUser, 'id', {
+				enumerable: true,
+				get: () => actorIds['assigned-moderator']
+			});
+			fixture.evidence.signInResult = { data: { user: sessionUser }, error: null };
+		} else if (kind === 'rpc-provider-error') {
+			fixture.evidence.accessResult = {
+				data: null,
+				error: { message: 'private RPC response' }
+			};
+		} else if (kind === 'rpc-malformed') {
+			fixture.evidence.accessResult = { data: { profile_id: actorIds.reporter }, error: null };
+		} else if (kind === 'mfa-provider-error') {
+			fixture.evidence.factorsResult = {
+				data: { totp: [], phone: [] },
+				error: { message: 'private MFA response' }
+			};
+		} else if (kind === 'mfa-accessor') {
+			const factor = { id: 'private-factor-id', status: 'verified' };
+			Object.defineProperty(factor, 'status', {
+				enumerable: true,
+				get: () => 'verified'
+			});
+			fixture.evidence.factors = [factor];
+		} else {
+			const factors = [{ id: 'private-factor-id', status: 'verified' }];
+			Object.setPrototypeOf(factors, {});
+			fixture.evidence.factors = factors;
+		}
+
+		await expect(
+			fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step
+			})
+		).resolves.toEqual({ status: 'uncertain' });
+	});
+
+	it('accepts one exact actor on a full final Auth page without widening the role scope', async () => {
+		const fixture = createRealReadBackFixture('auth-created', 'confirmed');
+		fixture.evidence.authUsers = [
+			fixture.evidence.authUsers[0],
+			...Array.from({ length: 999 }, (_, index) => ({
+				id: actorIds['cross-user'],
+				email: `unrelated-${index}@example.invalid`,
+				user_metadata: {}
+			}))
+		];
+
+		await expect(
+			fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step: 'auth-created'
+			})
+		).resolves.toEqual({
+			status: 'confirmed',
+			actor: { role: 'reporter', userId: actorIds.reporter, createdAt }
+		});
+	});
+
 	it('exposes narrow exact-role A9 operations without changing the compatibility transaction', async () => {
 		const config = hostedOperator.validateHostedA9Environment(environment);
 		const manifest = hostedOperator.createHostedRunManifest(config);
@@ -362,7 +818,7 @@ describe('executable A9-only provisioning transaction', () => {
 		});
 		const operations = provisioningApi().createHostedA9ProvisionOperations({
 			config,
-			adapters: { ...realAdapters, inspectProvisionBoundary: vi.fn(async () => ({ status: 'confirmed' })) }
+			adapters: realAdapters
 		});
 		const manifest = hostedOperator.registerHostedActor(
 			hostedOperator.createHostedRunManifest(config),

@@ -1778,7 +1778,8 @@ describe('A9-only Supabase adapter foundations', () => {
 			'inspectFreshActor',
 			'inspectRequiredAccessDocuments',
 			'inspectZeroA9Artifacts',
-			'elevateFreshActorRole'
+			'elevateFreshActorRole',
+			'inspectProvisionBoundary'
 		]);
 		expect(Object.keys(adapters)).not.toEqual(
 			expect.arrayContaining(['setRole', 'invokeCleanupWorker', 'reportSubmit'])

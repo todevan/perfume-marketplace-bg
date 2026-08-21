@@ -1691,6 +1691,522 @@ export function createSupabaseHostedA9Adapters({
 		});
 	}
 
+	const PROVISION_READ_BACK_OUTCOMES = Object.freeze({
+		confirmed: Object.freeze({ status: 'confirmed' }),
+		absent: Object.freeze({ status: 'confirmed-absent' }),
+		uncertain: Object.freeze({ status: 'uncertain' })
+	});
+	const MISSING_PROVISION_EVIDENCE = Symbol('missing-provision-evidence');
+
+	/** @param {unknown} value */
+	function isProvisionDataObject(value) {
+		if (!value || typeof value !== 'object' || Array.isArray(value) || isProxy(value)) return false;
+		const prototype = Object.getPrototypeOf(value);
+		return prototype === Object.prototype || prototype === null;
+	}
+
+	/** @param {unknown} value @param {string} name */
+	function provisionOwnValue(value, name) {
+		if (!isProvisionDataObject(value)) return MISSING_PROVISION_EVIDENCE;
+		try {
+			const descriptor = Object.getOwnPropertyDescriptor(value, name);
+			return descriptor && Object.hasOwn(descriptor, 'value') && descriptor.enumerable === true
+				? descriptor.value
+				: MISSING_PROVISION_EVIDENCE;
+		} catch {
+			return MISSING_PROVISION_EVIDENCE;
+		}
+	}
+
+	/** @param {unknown} value */
+	function provisionArray(value) {
+		if (!Array.isArray(value) || isProxy(value)) return null;
+		try {
+			if (Object.getPrototypeOf(value) !== Array.prototype) return null;
+			const values = [];
+			for (let index = 0; index < value.length; index += 1) {
+				const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+				if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+					return null;
+				}
+				values.push(descriptor.value);
+			}
+			return values;
+		} catch {
+			return null;
+		}
+	}
+
+	/** @param {unknown} result */
+	function provisionResultData(result) {
+		const data = provisionOwnValue(result, 'data');
+		const error = provisionOwnValue(result, 'error');
+		if (
+			data === MISSING_PROVISION_EVIDENCE ||
+			error === MISSING_PROVISION_EVIDENCE ||
+			error !== null
+		) {
+			return MISSING_PROVISION_EVIDENCE;
+		}
+		return data;
+	}
+
+	/** @param {unknown} value */
+	function isProvisionTimestamp(value) {
+		if (typeof value !== 'string') return false;
+		try {
+			requireIsoTimestamp(value);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** @param {unknown} user @param {string} role @param {string} attemptId */
+	function exactProvisionAuthUser(user, role, attemptId) {
+		const credentials = exactActorCredentials(config, role);
+		const id = provisionOwnValue(user, 'id');
+		const email = provisionOwnValue(user, 'email');
+		const createdAt = provisionOwnValue(user, 'created_at');
+		const confirmedAt = provisionOwnValue(user, 'email_confirmed_at');
+		const metadata = provisionOwnValue(user, 'user_metadata');
+		if (
+			typeof id !== 'string' ||
+			!UUID_PATTERN.test(id) ||
+			typeof email !== 'string' ||
+			email.toLowerCase() !== credentials.email ||
+			!isProvisionTimestamp(createdAt) ||
+			Date.parse(createdAt) < Date.parse(config.provisionedAfter) ||
+			typeof confirmedAt !== 'string' ||
+			!Number.isFinite(Date.parse(confirmedAt)) ||
+			!isProvisionDataObject(metadata) ||
+			provisionOwnValue(metadata, 'username') !== credentials.username ||
+			provisionOwnValue(metadata, 'gate3_report_evidence_run_id') !== config.runId ||
+			provisionOwnValue(metadata, 'gate3_report_evidence_provisioning_nonce') !==
+				config.provisioningNonce ||
+			provisionOwnValue(metadata, 'gate3_report_evidence_provisioning_attempt_id') !== attemptId
+		) {
+			return null;
+		}
+		return Object.freeze({ role, userId: id, createdAt });
+	}
+
+	/** @param {HostedRunManifest} manifest @param {string} role */
+	async function inspectProvisionAuth(manifest, role) {
+		assertManifestTarget(config, manifest);
+		const credentials = exactActorCredentials(config, role);
+		const actors = manifest.actors.filter((actor) => actor.role === role);
+		const pendingActors = manifest.pendingActors.filter((actor) => actor.role === role);
+		if (actors.length > 1 || pendingActors.length > 1 || (actors.length === 1 && pendingActors.length > 0)) {
+			return Object.freeze({ outcome: 'uncertain', actor: null });
+		}
+		const manifestActor = actors[0] ?? null;
+		const attemptId =
+			manifestActor?.provisioningAttemptId ??
+			pendingActors[0]?.provisioningAttemptId ??
+			manifest.provisioningAttemptId;
+		if (typeof attemptId !== 'string' || !UUID_PATTERN.test(attemptId)) {
+			return Object.freeze({ outcome: 'uncertain', actor: null });
+		}
+
+		const candidates = [];
+		let roleMismatch = false;
+		const perPage = 1000;
+		for (let page = 1; page <= 100; page += 1) {
+			let listed;
+			try {
+				listed = await serviceClient.auth.admin.listUsers({ page, perPage });
+			} catch {
+				return Object.freeze({ outcome: 'uncertain', actor: null });
+			}
+			const data = provisionResultData(listed);
+			const users = provisionArray(provisionOwnValue(data, 'users'));
+			const lastPage = provisionOwnValue(data, 'lastPage');
+			if (users === null) return Object.freeze({ outcome: 'uncertain', actor: null });
+			for (const user of users) {
+				const email = provisionOwnValue(user, 'email');
+				if (typeof email !== 'string') {
+					return Object.freeze({ outcome: 'uncertain', actor: null });
+				}
+				if (email.toLowerCase() === credentials.email) {
+					candidates.push(user);
+					continue;
+				}
+				const metadata = provisionOwnValue(user, 'user_metadata');
+				if (
+					isProvisionDataObject(metadata) &&
+					provisionOwnValue(metadata, 'username') === credentials.username &&
+					provisionOwnValue(metadata, 'gate3_report_evidence_run_id') === config.runId &&
+					provisionOwnValue(metadata, 'gate3_report_evidence_provisioning_nonce') ===
+						config.provisioningNonce &&
+					provisionOwnValue(metadata, 'gate3_report_evidence_provisioning_attempt_id') === attemptId
+				) {
+					roleMismatch = true;
+				}
+			}
+			if (users.length < perPage) break;
+			if (!Number.isSafeInteger(lastPage) || lastPage < page) {
+				return Object.freeze({ outcome: 'uncertain', actor: null });
+			}
+			if (page >= lastPage) break;
+			if (page === 100) return Object.freeze({ outcome: 'uncertain', actor: null });
+		}
+		if (roleMismatch || candidates.length > 1) {
+			return Object.freeze({ outcome: 'uncertain', actor: null });
+		}
+		if (candidates.length === 0) {
+			return Object.freeze({
+				outcome: manifestActor === null ? 'confirmed-absent' : 'uncertain',
+				actor: null
+			});
+		}
+		const actor = exactProvisionAuthUser(candidates[0], role, attemptId);
+		if (
+			actor === null ||
+			(manifestActor !== null &&
+				(actor.userId !== manifestActor.userId || actor.createdAt !== manifestActor.createdAt))
+		) {
+			return Object.freeze({ outcome: 'uncertain', actor: null });
+		}
+		return Object.freeze({ outcome: 'confirmed', actor });
+	}
+
+	/** @param {string} table @param {string} columns @param {Record<string, unknown>} filters */
+	async function readProvisionRows(table, columns, filters) {
+		let query = serviceClient.from(table).select(columns);
+		for (const [name, value] of Object.entries(filters)) query = query.eq(name, value);
+		const data = provisionResultData(await query.limit(2));
+		const rows = provisionArray(data);
+		return rows === null || rows.length > 1 ? null : rows;
+	}
+
+	/** @param {unknown} row @param {string} userId @param {string} username */
+	function exactProvisionProfile(row, userId, username) {
+		if (!isProvisionDataObject(row)) return null;
+		const profile = Object.freeze({
+			id: provisionOwnValue(row, 'id'),
+			username: provisionOwnValue(row, 'username'),
+			role: provisionOwnValue(row, 'role'),
+			isSuspended: provisionOwnValue(row, 'is_suspended')
+		});
+		return profile.id === userId && profile.username === username && profile.isSuspended === false
+			? profile
+			: null;
+	}
+
+	/** @param {unknown} row @param {string} userId */
+	function exactProvisionMembership(row, userId) {
+		if (!isProvisionDataObject(row)) return null;
+		const membership = Object.freeze({
+			profileId: provisionOwnValue(row, 'profile_id'),
+			inviteId: provisionOwnValue(row, 'invite_id'),
+			status: provisionOwnValue(row, 'status'),
+			onboardingCompletedAt: provisionOwnValue(row, 'onboarding_completed_at')
+		});
+		if (
+			membership.profileId !== userId ||
+			membership.inviteId !== null ||
+			!['pending', 'active'].includes(membership.status) ||
+			(membership.status === 'pending' && membership.onboardingCompletedAt !== null) ||
+			(membership.status === 'active' &&
+				!isProvisionTimestamp(membership.onboardingCompletedAt))
+		) {
+			return null;
+		}
+		return membership;
+	}
+
+	/** @param {ManifestActor} actor */
+	async function createProvisionReadSession(actor) {
+		const credentials = exactActorCredentials(config, actor.role);
+		const actorClient = createActorClient();
+		if (!actorClient || typeof actorClient !== 'object' || isProxy(actorClient)) return null;
+		let signIn;
+		try {
+			signIn = await actorClient.auth.signInWithPassword({
+				email: credentials.email,
+				password: credentials.password
+			});
+		} catch {
+			return null;
+		}
+		const data = provisionResultData(signIn);
+		const user = provisionOwnValue(data, 'user');
+		if (
+			!isProvisionDataObject(user) ||
+			provisionOwnValue(user, 'id') !== actor.userId ||
+			typeof provisionOwnValue(user, 'email') !== 'string' ||
+			provisionOwnValue(user, 'email').toLowerCase() !== credentials.email
+		) {
+			return null;
+		}
+		return actorClient;
+	}
+
+	/** @param {ManifestActor} actor */
+	async function inspectProvisionMfa(actor) {
+		const actorClient = await createProvisionReadSession(actor);
+		if (actorClient === null) return null;
+		let factorsResult;
+		let aalResult;
+		try {
+			[factorsResult, aalResult] = await Promise.all([
+				actorClient.auth.mfa.listFactors(),
+				actorClient.auth.mfa.getAuthenticatorAssuranceLevel()
+			]);
+		} catch {
+			return null;
+		}
+		const factorsData = provisionResultData(factorsResult);
+		const totp = provisionArray(provisionOwnValue(factorsData, 'totp'));
+		const phone = provisionArray(provisionOwnValue(factorsData, 'phone'));
+		const aalData = provisionResultData(aalResult);
+		const currentLevel = provisionOwnValue(aalData, 'currentLevel');
+		const nextLevel = provisionOwnValue(aalData, 'nextLevel');
+		if (
+			totp === null ||
+			phone === null ||
+			phone.length !== 0 ||
+			totp.length > 1 ||
+			!['aal1', 'aal2'].includes(currentLevel) ||
+			!['aal1', 'aal2'].includes(nextLevel)
+		) {
+			return null;
+		}
+		if (totp.length === 0) {
+			return currentLevel === 'aal1' && nextLevel === 'aal1' ? 'absent' : null;
+		}
+		const factorId = provisionOwnValue(totp[0], 'id');
+		const factorStatus = provisionOwnValue(totp[0], 'status');
+		if (typeof factorId !== 'string' || factorId.length === 0) return null;
+		if (factorStatus === 'unverified') {
+			return currentLevel === 'aal1' && nextLevel === 'aal1' ? 'unverified' : null;
+		}
+		if (factorStatus === 'verified') {
+			return (currentLevel === 'aal1' && nextLevel === 'aal2') ||
+				(currentLevel === 'aal2' && nextLevel === 'aal2')
+				? 'verified'
+				: null;
+		}
+		return null;
+	}
+
+	/** @param {ManifestActor} actor */
+	async function inspectProvisionAccess(actor) {
+		const credentials = exactActorCredentials(config, actor.role);
+		const actorClient = await createProvisionReadSession(actor);
+		if (actorClient === null) return null;
+		let result;
+		try {
+			result = await actorClient.rpc('get_my_beta_access');
+		} catch {
+			return null;
+		}
+		const rows = provisionArray(provisionResultData(result));
+		if (rows === null || rows.length !== 1 || !isProvisionDataObject(rows[0])) return null;
+		const row = rows[0];
+		const expectedRole = A9_MODERATOR_ROLES.has(actor.role) ? 'moderator' : 'user';
+		const access = Object.freeze({
+			profileId: provisionOwnValue(row, 'profile_id'),
+			membershipStatus: provisionOwnValue(row, 'membership_status'),
+			onboardingCompletedAt: provisionOwnValue(row, 'onboarding_completed_at'),
+			emailVerifiedAt: provisionOwnValue(row, 'email_verified_at'),
+			role: provisionOwnValue(row, 'role'),
+			username: provisionOwnValue(row, 'username'),
+			isSuspended: provisionOwnValue(row, 'is_suspended'),
+			accountKind: provisionOwnValue(row, 'account_kind'),
+			hasCurrentConsents: provisionOwnValue(row, 'has_current_consents'),
+			isActive: provisionOwnValue(row, 'is_active')
+		});
+		if (
+			access.profileId !== actor.userId ||
+			access.role !== expectedRole ||
+			access.username !== credentials.username ||
+			access.isSuspended !== false ||
+			access.accountKind !== 'private' ||
+			typeof access.hasCurrentConsents !== 'boolean' ||
+			typeof access.isActive !== 'boolean' ||
+			!isProvisionTimestamp(access.emailVerifiedAt) ||
+			![null, 'pending', 'active'].includes(access.membershipStatus) ||
+			!(access.onboardingCompletedAt === null || isProvisionTimestamp(access.onboardingCompletedAt))
+		) {
+			return null;
+		}
+		const complete =
+			access.membershipStatus === 'active' &&
+			isProvisionTimestamp(access.onboardingCompletedAt) &&
+			access.hasCurrentConsents === true &&
+			access.isActive === true;
+		const incomplete =
+			access.isActive === false &&
+			(access.membershipStatus !== 'active' ||
+				access.onboardingCompletedAt === null ||
+				access.hasCurrentConsents === false);
+		return complete ? 'complete' : incomplete ? 'incomplete' : null;
+	}
+
+	/** @param {{ manifest: HostedRunManifest, role: string, step: string }} scope */
+	async function inspectProvisionBoundary(scope) {
+		try {
+			const auth = await inspectProvisionAuth(scope.manifest, scope.role);
+			if (scope.step === 'auth-created') {
+				if (auth.outcome === 'confirmed-absent') return PROVISION_READ_BACK_OUTCOMES.absent;
+				if (auth.outcome !== 'confirmed' || auth.actor === null) {
+					return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				}
+				return Object.freeze({
+					status: 'confirmed',
+					actor: Object.freeze({
+						role: auth.actor.role,
+						userId: auth.actor.userId,
+						createdAt: auth.actor.createdAt
+					})
+				});
+			}
+			if (auth.outcome !== 'confirmed' || auth.actor === null) {
+				return PROVISION_READ_BACK_OUTCOMES.uncertain;
+			}
+			const manifestActors = scope.manifest.actors.filter((actor) => actor.role === scope.role);
+			if (manifestActors.length !== 1) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+			const actor = manifestActors[0];
+			const credentials = exactActorCredentials(config, scope.role);
+
+			if (scope.step === 'registration-claimed') {
+				const rows = await readProvisionRows(
+					'beta_memberships',
+					'profile_id, invite_id, status, onboarding_completed_at',
+					{ profile_id: actor.userId }
+				);
+				if (rows === null) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				if (rows.length === 0) return PROVISION_READ_BACK_OUTCOMES.absent;
+				return exactProvisionMembership(rows[0], actor.userId) === null
+					? PROVISION_READ_BACK_OUTCOMES.uncertain
+					: PROVISION_READ_BACK_OUTCOMES.confirmed;
+			}
+
+			const consentMatch =
+				/^consent-([a-z][a-z0-9_]{1,63})-(.{1,80})$/u.exec(scope.step);
+			if (consentMatch) {
+				const [, documentCode, documentVersion] = consentMatch;
+				if (documentVersion.trim() !== documentVersion) {
+					return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				}
+				const rows = await readProvisionRows(
+					'beta_consent_events',
+					'profile_id, document_code, document_version, accepted_at, source',
+					{
+						profile_id: actor.userId,
+						document_code: documentCode,
+						document_version: documentVersion
+					}
+				);
+				if (rows === null) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				if (rows.length === 0) return PROVISION_READ_BACK_OUTCOMES.absent;
+				const row = rows[0];
+				return isProvisionDataObject(row) &&
+					provisionOwnValue(row, 'profile_id') === actor.userId &&
+					provisionOwnValue(row, 'document_code') === documentCode &&
+					provisionOwnValue(row, 'document_version') === documentVersion &&
+					isProvisionTimestamp(provisionOwnValue(row, 'accepted_at')) &&
+					provisionOwnValue(row, 'source') === 'web'
+					? PROVISION_READ_BACK_OUTCOMES.confirmed
+					: PROVISION_READ_BACK_OUTCOMES.uncertain;
+			}
+
+			if (scope.step === 'onboarding-complete') {
+				const [profileRows, membershipRows] = await Promise.all([
+					readProvisionRows('profiles', 'id, username, role, is_suspended', {
+						id: actor.userId
+					}),
+					readProvisionRows(
+						'beta_memberships',
+						'profile_id, invite_id, status, onboarding_completed_at',
+						{ profile_id: actor.userId }
+					)
+				]);
+				if (
+					profileRows === null ||
+					membershipRows === null ||
+					profileRows.length !== 1 ||
+					membershipRows.length !== 1
+				) {
+					return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				}
+				const profile = exactProvisionProfile(profileRows[0], actor.userId, credentials.username);
+				const membership = exactProvisionMembership(membershipRows[0], actor.userId);
+				if (profile === null || membership === null || profile.role !== 'user') {
+					return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				}
+				if (
+					membership.status === 'active' &&
+					isProvisionTimestamp(membership.onboardingCompletedAt)
+				) {
+					return PROVISION_READ_BACK_OUTCOMES.confirmed;
+				}
+				return membership.status === 'pending' && membership.onboardingCompletedAt === null
+					? PROVISION_READ_BACK_OUTCOMES.absent
+					: PROVISION_READ_BACK_OUTCOMES.uncertain;
+			}
+
+			if (scope.step === 'role-elevated') {
+				if (!A9_MODERATOR_ROLES.has(scope.role)) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				const rows = await readProvisionRows('profiles', 'id, username, role, is_suspended', {
+					id: actor.userId
+				});
+				if (rows === null || rows.length !== 1) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				const profile = exactProvisionProfile(rows[0], actor.userId, credentials.username);
+				if (profile === null) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				return profile.role === 'moderator'
+					? PROVISION_READ_BACK_OUTCOMES.confirmed
+					: profile.role === 'user'
+						? PROVISION_READ_BACK_OUTCOMES.absent
+						: PROVISION_READ_BACK_OUTCOMES.uncertain;
+			}
+
+			if (
+				scope.step === 'mfa-enrolled' ||
+				scope.step === 'mfa-unenrolled-recovery' ||
+				scope.step === 'mfa-verified'
+			) {
+				if (!A9_MODERATOR_ROLES.has(scope.role)) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				const mfa = await inspectProvisionMfa(actor);
+				if (mfa === null) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				if (scope.step === 'mfa-enrolled') {
+					return mfa === 'absent'
+						? PROVISION_READ_BACK_OUTCOMES.absent
+						: PROVISION_READ_BACK_OUTCOMES.confirmed;
+				}
+				if (scope.step === 'mfa-unenrolled-recovery') {
+					return mfa === 'absent'
+						? PROVISION_READ_BACK_OUTCOMES.confirmed
+						: mfa === 'unverified'
+							? PROVISION_READ_BACK_OUTCOMES.absent
+							: PROVISION_READ_BACK_OUTCOMES.uncertain;
+				}
+				return mfa === 'verified'
+					? PROVISION_READ_BACK_OUTCOMES.confirmed
+					: mfa === 'unverified'
+						? PROVISION_READ_BACK_OUTCOMES.absent
+						: PROVISION_READ_BACK_OUTCOMES.uncertain;
+			}
+
+			if (scope.step === 'actor-verified') {
+				const access = await inspectProvisionAccess(actor);
+				if (access === null) return PROVISION_READ_BACK_OUTCOMES.uncertain;
+				if (access === 'incomplete') return PROVISION_READ_BACK_OUTCOMES.absent;
+				if (A9_MODERATOR_ROLES.has(scope.role)) {
+					return (await inspectProvisionMfa(actor)) === 'verified'
+						? PROVISION_READ_BACK_OUTCOMES.confirmed
+						: PROVISION_READ_BACK_OUTCOMES.uncertain;
+				}
+				return PROVISION_READ_BACK_OUTCOMES.confirmed;
+			}
+			return PROVISION_READ_BACK_OUTCOMES.uncertain;
+		} catch {
+			return PROVISION_READ_BACK_OUTCOMES.uncertain;
+		}
+	}
+
 	return Object.freeze({
 		assertFreshActorAbsent,
 		createConfirmedUser,
@@ -1700,7 +2216,8 @@ export function createSupabaseHostedA9Adapters({
 		inspectFreshActor,
 		inspectRequiredAccessDocuments,
 		inspectZeroA9Artifacts,
-		elevateFreshActorRole
+		elevateFreshActorRole,
+		inspectProvisionBoundary
 	});
 }
 
