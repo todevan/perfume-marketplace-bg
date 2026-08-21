@@ -220,6 +220,7 @@ function createRealReadBackFixture(
 	const evidence: Record<string, any> = {
 		authUsers: [user],
 		listUsersResult: null,
+		listUsersPages: null,
 		getUserResult: { data: { user }, error: null },
 		profileRows: [profile],
 		membershipRows: [membership],
@@ -356,16 +357,18 @@ function createRealReadBackFixture(
 		}
 		return query;
 	});
+	const listUsers = vi.fn(async ({ page }: { page: number }) =>
+		evidence.listUsersPages?.[page - 1] ??
+		evidence.listUsersResult ?? {
+			data: { users: evidence.authUsers, lastPage: 1 },
+			error: null
+		}
+	);
 	const serviceClient = {
 		supabaseUrl: hostedOperator.HOSTED_STAGING.supabaseUrl,
 		auth: {
 			admin: {
-				listUsers: vi.fn(async () =>
-					evidence.listUsersResult ?? {
-						data: { users: evidence.authUsers, lastPage: 1 },
-						error: null
-					}
-				),
+				listUsers,
 				getUserById: vi.fn(async () => evidence.getUserResult),
 				createUser,
 				deleteUser
@@ -398,7 +401,7 @@ function createRealReadBackFixture(
 		manifest,
 		operations,
 		role,
-		spies: { challengeAndVerify, createUser, deleteUser, enroll, insert, remove, rpc, unenroll, update, upsert }
+		spies: { challengeAndVerify, createUser, deleteUser, enroll, insert, listUsers, remove, rpc, unenroll, update, upsert }
 	};
 }
 
@@ -569,13 +572,42 @@ describe('executable A9-only provisioning transaction', () => {
 
 	it('accepts one exact actor on a full final Auth page without widening the role scope', async () => {
 		const fixture = createRealReadBackFixture('auth-created', 'confirmed');
-		fixture.evidence.authUsers = [
+		const users = [
 			fixture.evidence.authUsers[0],
 			...Array.from({ length: 999 }, (_, index) => ({
-				id: actorIds['cross-user'],
+				id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`,
 				email: `unrelated-${index}@example.invalid`,
 				user_metadata: {}
 			}))
+		];
+		fixture.evidence.listUsersResult = {
+			data: { users, total: users.length, lastPage: 1 },
+			error: null
+		};
+
+		await expect(
+			fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step: 'auth-created'
+			})
+		).resolves.toEqual({
+			status: 'confirmed',
+			actor: { role: 'reporter', userId: actorIds.reporter, createdAt }
+		});
+	});
+
+	it('scans past a misleading Auth lastPage when total proves a later exact actor exists', async () => {
+		const fixture = createRealReadBackFixture('auth-created', 'confirmed');
+		const exactActor = fixture.evidence.authUsers[0];
+		const firstPage = Array.from({ length: 1000 }, (_, index) => ({
+			id: `bbbbbbbb-bbbb-4bbb-8bbb-${String(index).padStart(12, '0')}`,
+			email: `unrelated-${index}@example.invalid`,
+			user_metadata: {}
+		}));
+		fixture.evidence.listUsersPages = [
+			{ data: { users: firstPage, total: 1001, lastPage: 1 }, error: null },
+			{ data: { users: [exactActor], total: 1001, lastPage: 2 }, error: null }
 		];
 
 		await expect(
@@ -588,6 +620,94 @@ describe('executable A9-only provisioning transaction', () => {
 			status: 'confirmed',
 			actor: { role: 'reporter', userId: actorIds.reporter, createdAt }
 		});
+		expect(fixture.spies.listUsers).toHaveBeenCalledTimes(2);
+	});
+
+	it('returns uncertain when a later Auth page contains a duplicate exact actor', async () => {
+		const fixture = createRealReadBackFixture('auth-created', 'confirmed');
+		const exactActor = fixture.evidence.authUsers[0];
+		const firstPage = [
+			exactActor,
+			...Array.from({ length: 999 }, (_, index) => ({
+				id: `cccccccc-cccc-4ccc-8ccc-${String(index).padStart(12, '0')}`,
+				email: `unrelated-${index}@example.invalid`,
+				user_metadata: {}
+			}))
+		];
+		fixture.evidence.listUsersPages = [
+			{ data: { users: firstPage, total: 1001, lastPage: 1 }, error: null },
+			{
+				data: {
+					users: [{ ...exactActor, id: actorIds['cross-user'] }],
+					total: 1001,
+					lastPage: 2
+				},
+				error: null
+			}
+		];
+
+		await expect(
+			fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step: 'auth-created'
+			})
+		).resolves.toEqual({ status: 'uncertain' });
+		expect(fixture.spies.listUsers).toHaveBeenCalledTimes(2);
+	});
+
+	it('returns uncertain when a short Auth page claims more total users', async () => {
+		const fixture = createRealReadBackFixture('auth-created', 'confirmed');
+		fixture.evidence.listUsersPages = [
+			{
+				data: {
+					users: [
+						{
+							id: actorIds['cross-user'],
+							email: 'unrelated@example.invalid',
+							user_metadata: {}
+						}
+					],
+					total: 2,
+					lastPage: 2
+				},
+				error: null
+			}
+		];
+
+		await expect(
+			fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step: 'auth-created'
+			})
+		).resolves.toEqual({ status: 'uncertain' });
+		expect(fixture.spies.listUsers).toHaveBeenCalledTimes(1);
+	});
+
+	it('returns uncertain when Auth totals change between pages', async () => {
+		const fixture = createRealReadBackFixture('auth-created', 'confirmed');
+		const firstPage = Array.from({ length: 1000 }, (_, index) => ({
+			id: `dddddddd-dddd-4ddd-8ddd-${String(index).padStart(12, '0')}`,
+			email: `unrelated-${index}@example.invalid`,
+			user_metadata: {}
+		}));
+		fixture.evidence.listUsersPages = [
+			{ data: { users: firstPage, total: 1001, lastPage: 1 }, error: null },
+			{
+				data: { users: [fixture.evidence.authUsers[0]], total: 1002, lastPage: 2 },
+				error: null
+			}
+		];
+
+		await expect(
+			fixture.operations.readBack({
+				manifest: fixture.manifest,
+				role: fixture.role,
+				step: 'auth-created'
+			})
+		).resolves.toEqual({ status: 'uncertain' });
+		expect(fixture.spies.listUsers).toHaveBeenCalledTimes(2);
 	});
 
 	it('exposes narrow exact-role A9 operations without changing the compatibility transaction', async () => {

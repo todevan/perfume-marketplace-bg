@@ -1812,6 +1812,11 @@ export function createSupabaseHostedA9Adapters({
 		const candidates = [];
 		let roleMismatch = false;
 		const perPage = 1000;
+		/** @type {number | null} */
+		let expectedTotal = null;
+		/** @type {boolean | null} */
+		let totalPresent = null;
+		const seenUserIds = new Set();
 		for (let page = 1; page <= 100; page += 1) {
 			let listed;
 			try {
@@ -1821,13 +1826,35 @@ export function createSupabaseHostedA9Adapters({
 			}
 			const data = provisionResultData(listed);
 			const users = provisionArray(provisionOwnValue(data, 'users'));
-			const lastPage = provisionOwnValue(data, 'lastPage');
-			if (users === null) return Object.freeze({ outcome: 'uncertain', actor: null });
-			for (const user of users) {
-				const email = provisionOwnValue(user, 'email');
-				if (typeof email !== 'string') {
+			const total = provisionOwnValue(data, 'total');
+			const pageHasTotal = total !== MISSING_PROVISION_EVIDENCE;
+			if (
+				users === null ||
+				users.length > perPage ||
+				(totalPresent !== null && totalPresent !== pageHasTotal) ||
+				(pageHasTotal && (!Number.isSafeInteger(total) || total < 0))
+			) {
+				return Object.freeze({ outcome: 'uncertain', actor: null });
+			}
+			totalPresent ??= pageHasTotal;
+			if (pageHasTotal) {
+				if (expectedTotal === null) expectedTotal = total;
+				else if (expectedTotal !== total) {
 					return Object.freeze({ outcome: 'uncertain', actor: null });
 				}
+			}
+			for (const user of users) {
+				const userId = provisionOwnValue(user, 'id');
+				const email = provisionOwnValue(user, 'email');
+				if (
+					typeof userId !== 'string' ||
+					!UUID_PATTERN.test(userId) ||
+					seenUserIds.has(userId) ||
+					typeof email !== 'string'
+				) {
+					return Object.freeze({ outcome: 'uncertain', actor: null });
+				}
+				seenUserIds.add(userId);
 				if (email.toLowerCase() === credentials.email) {
 					candidates.push(user);
 					continue;
@@ -1844,11 +1871,17 @@ export function createSupabaseHostedA9Adapters({
 					roleMismatch = true;
 				}
 			}
-			if (users.length < perPage) break;
-			if (!Number.isSafeInteger(lastPage) || lastPage < page) {
-				return Object.freeze({ outcome: 'uncertain', actor: null });
+			if (expectedTotal !== null) {
+				if (seenUserIds.size > expectedTotal) {
+					return Object.freeze({ outcome: 'uncertain', actor: null });
+				}
+				if (seenUserIds.size === expectedTotal) break;
+				if (users.length < perPage) {
+					return Object.freeze({ outcome: 'uncertain', actor: null });
+				}
+			} else if (users.length < perPage) {
+				break;
 			}
-			if (page >= lastPage) break;
 			if (page === 100) return Object.freeze({ outcome: 'uncertain', actor: null });
 		}
 		if (roleMismatch || candidates.length > 1) {
