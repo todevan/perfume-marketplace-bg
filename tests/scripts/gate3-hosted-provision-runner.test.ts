@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
 	Gate3HostedProvisionError,
 	runProvisionBoundary,
@@ -205,6 +206,7 @@ function commandFixture() {
 		events.push('lock:release');
 		return true;
 	});
+	const inspectRunLock = vi.fn(async () => ({ status: 'held', acquiredBytes: 'exact-lock' }));
 	const inspectRun = vi.fn(async () => {
 		events.push('inspect');
 		const allVerified = roles.every((role) => snapshot.actors[role].actorVerified === true);
@@ -258,9 +260,10 @@ function commandFixture() {
 			})
 		});
 	});
-	const dependencies = {
+	const dependencies: Record<string, any> = {
 		acquireRunLock,
 		releaseRunLock,
+		inspectRunLock,
 		inspectRun,
 		selectNextProvisionStep: vi.fn(() => Object.freeze({ command: 'provision', phase: 'provision' })),
 		readRunState: vi.fn(async () => state),
@@ -291,7 +294,7 @@ function commandFixture() {
 		hashManifest: vi.fn(() => 'f'.repeat(64)),
 		now: vi.fn(() => createdAt)
 	};
-	const provisionCapabilities = Object.freeze({ inspectProvision, mutationFor });
+	const provisionCapabilities: any = Object.freeze({ inspectProvision, mutationFor });
 	return {
 		paths,
 		state: () => state,
@@ -317,6 +320,9 @@ function commandFixture() {
 		},
 		setClassification(value: string | null) {
 			classificationOverride = value;
+		},
+		setState(value: Record<string, any>) {
+			state = value;
 		},
 		dependencies,
 		provisionCapabilities,
@@ -495,28 +501,191 @@ describe('Gate 3 provision boundary', () => {
 				'before-state-persistence'
 			].map((window) => [step, window] as const)
 		)
-	)('reconciles %s from the %s crash window', async (step, window) => {
-		const role = step === 'role-elevated' || step.startsWith('mfa-') ? 'assigned-moderator' : 'reporter';
-		let hostedMutations = window === 'before-mutation' ? 0 : step === 'actor-verified' ? 0 : 1;
-		const mutate = vi.fn(async () => {
-			hostedMutations += 1;
-			return step === 'mfa-enrolled'
-				? { factorId: 'factor-exact', secret: fixtureTotpSecret }
-				: { actor: { role, userId: actorIds[role], createdAt, emailConfirmed: true } };
-		});
-		const input = boundaryInput({
-			role,
-			step,
-			outcome: window === 'before-mutation' ? 'confirmed-absent' : 'confirmed',
-			mutate,
-			persistCredential: step === 'mfa-enrolled' ? vi.fn(async () => undefined) : null
+	)('restarts %s from an actual %s interruption without replay', async (step, window) => {
+		const fixture = commandFixture();
+		const role = step === 'role-elevated' || step.startsWith('mfa-')
+			? 'assigned-moderator'
+			: 'reporter';
+		const operationId = `${role}.${step}`;
+		const hashManifest = (value: unknown) =>
+			createHash('sha256').update(`${JSON.stringify(value)}\n`).digest('hex');
+		fixture.dependencies.hashManifest.mockImplementation(hashManifest);
+		fixture.setState({
+			...fixture.state(),
+			manifest: { ...fixture.state().manifest, sha256: hashManifest(fixture.manifest()) }
 		});
 
-		await expect(runProvisionBoundary(input)).resolves.toMatchObject({ status: 'confirmed' });
-		expect(hostedMutations).toBe(step === 'actor-verified' ? 0 : 1);
-		if (step === 'auth-created') expect(input.spies.persistManifest).toHaveBeenCalledOnce();
-		else expect(input.spies.persistManifest).toBeNull();
-		expect(input.spies.persistState).toHaveBeenCalledOnce();
+		if (step === 'mfa-unenrolled-recovery') {
+			const assigned = completedActor('assigned-moderator');
+			assigned.mfa = { status: 'unverified', secretStatus: 'missing' };
+			assigned.actorVerified = false;
+			fixture.setSnapshot({
+				requiredConsents,
+				exactRecoveryProvenance: true,
+				actors: {
+					reporter: completedActor('reporter'),
+					'cross-user': completedActor('cross-user'),
+					'assigned-moderator': assigned,
+					'unassigned-moderator': emptyActor('unassigned-moderator')
+				}
+			});
+			fixture.setState({
+				...fixture.state(),
+				manifest: { ...fixture.state().manifest, sha256: hashManifest(fixture.manifest()) },
+				phases: {
+					...fixture.state().phases,
+					provision: {
+						status: 'in-progress',
+						checkpoint: {
+							observedAt: createdAt,
+							status: 'confirmed',
+							phase: 'provision',
+							step: 'assigned-moderator.role-elevated',
+							reasonCode: 'provision_boundary_confirmed',
+							revision: fixture.state().revision,
+							operationId: 'assigned-moderator.role-elevated'
+						}
+					}
+				}
+			});
+		}
+
+		let armed = true;
+		let pendingBeforeMutationAbsence = false;
+		const originalMutationFor = fixture.provisionCapabilities.mutationFor.getMockImplementation();
+		if (!originalMutationFor) throw new Error('fixture mutation factory unavailable');
+		fixture.provisionCapabilities.mutationFor.mockImplementation((scope: any) => {
+			const original = originalMutationFor(scope);
+			if (scope.authorization.operationId !== operationId) return original;
+			const originalMutate = original.mutate;
+			const originalReadBack = original.readBack;
+			return Object.freeze({
+				mutate:
+					originalMutate === null
+						? null
+						: vi.fn(async () => {
+							if (armed && window === 'before-mutation') {
+								armed = false;
+								pendingBeforeMutationAbsence = true;
+								throw new Error('interrupted before mutation');
+							}
+							const result = await originalMutate();
+							if (step === 'auth-created') {
+								Object.assign(fixture.snapshot().actors[role], {
+									manifest: 'absent',
+									userId: actorIds[role],
+									createdAt
+								});
+							}
+							return result;
+						}),
+				readBack: vi.fn(async (...args: any[]) => {
+					if (armed && step === 'actor-verified' && window === 'before-mutation') {
+						armed = false;
+						throw new Error('interrupted before read-back-only attestation');
+					}
+					if (!armed && window === 'before-mutation' && pendingBeforeMutationAbsence) {
+						pendingBeforeMutationAbsence = false;
+						return { status: 'confirmed-absent' };
+					}
+					if (armed && window === 'after-mutation-before-read-back') {
+						armed = false;
+						throw new Error('interrupted after mutation');
+					}
+					return originalReadBack(...args);
+				})
+			});
+		});
+
+		const originalPersistManifest = fixture.dependencies.persistManifest.getMockImplementation();
+		if (!originalPersistManifest) throw new Error('fixture manifest writer unavailable');
+		fixture.dependencies.persistManifest.mockImplementation(async (...args: any[]) => {
+			const nextManifest = args[1] as Record<string, any>;
+			const targetWrite = step === 'auth-created' && nextManifest.actors.at(-1)?.role === role;
+			if (armed && targetWrite && window === 'after-read-back-before-manifest') {
+				armed = false;
+				throw new Error('interrupted before manifest persistence');
+			}
+			const result = await originalPersistManifest(...args);
+			if (targetWrite) fixture.snapshot().actors[role].manifest = 'confirmed';
+			return result;
+		});
+		const originalWriteState = fixture.dependencies.writeNextRunState.getMockImplementation();
+		if (!originalWriteState) throw new Error('fixture state writer unavailable');
+		fixture.dependencies.writeNextRunState.mockImplementation(async (...args: any[]) => {
+			const nextState = args[2] as Record<string, any>;
+			const targetWrite = nextState.phases?.provision?.checkpoint?.step === operationId;
+			const stateWindow =
+				window === 'before-state-persistence' ||
+				window === 'after-manifest-before-state' ||
+				(window === 'after-read-back-before-manifest' && step !== 'auth-created');
+			if (armed && targetWrite && stateWindow) {
+				armed = false;
+				throw new Error(`interrupted at ${window}`);
+			}
+			return originalWriteState(...args);
+		});
+
+		const invoke = () =>
+			runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			});
+		await expect(invoke()).rejects.toMatchObject({
+			exitCode: window === 'before-mutation' && step !== 'actor-verified' ? 40 : 41
+		});
+		expect(fixture.state().phases.provision.checkpoint?.step).not.toBe(operationId);
+
+		const manifestPersisted =
+			step === 'auth-created' &&
+			['after-manifest-before-state', 'before-state-persistence'].includes(window);
+		if (manifestPersisted) {
+			fixture.dependencies.inspectRun.mockResolvedValueOnce({
+				classification: 'AMBIGUOUS',
+				stateRevision: fixture.state().revision,
+				revision: fixture.state().revision,
+				manifestBindingStatus: 'manifest-ahead-state',
+				manifestAheadState: true,
+				manifestSha256: hashManifest(fixture.manifest()),
+				foreignCounts: { syntheticAccounts: 0 }
+			});
+		}
+		if (step === 'mfa-enrolled' && window !== 'before-mutation') {
+			const ciphertext = Buffer.from('one-step-enrollment-ciphertext');
+			fixture.dependencies.inspectRun.mockResolvedValueOnce({
+				classification: 'RECOVERY_REQUIRED',
+				stateRevision: fixture.state().revision,
+				revision: fixture.state().revision,
+				credentialsLost: true,
+				exactRecoveryProvenance: true,
+				secretStoreStatus: 'corrupt',
+				manifestBindingStatus: 'exact',
+				verifiedModeratorTotpFactors: 0,
+				moderatorsWithVerifiedTotp: 0,
+				foreignCounts: { syntheticAccounts: 0 }
+			});
+			fixture.dependencies.readStableSnapshot.mockResolvedValueOnce({
+				state: fixture.state(),
+				secretBytes: ciphertext
+			});
+			fixture.dependencies.unprotectRunSecretBytes.mockImplementationOnce(async () =>
+				fixture.dependencies.unprotectRunSecrets()
+			);
+		}
+
+		await expect(invoke()).resolves.toMatchObject({
+			status: 'confirmed',
+			classification: 'PROVISION_VERIFIED'
+		});
+		const targetMutations = fixture.mutations.filter((entry) => entry === operationId);
+		expect(targetMutations).toHaveLength(step === 'actor-verified' ? 0 : 1);
+		expect(fixture.state().phases.provision).toMatchObject({
+			status: 'complete',
+			checkpoint: { step: 'unassigned-moderator.actor-verified' }
+		});
 	});
 
 	it('fails closed on malformed or over-broad injected capabilities before invoking them', async () => {
@@ -697,6 +866,24 @@ describe('Gate 3 provision command', () => {
 			actorVerified: false
 		};
 		fixture.setSnapshot({ requiredConsents, exactRecoveryProvenance: true, actors });
+		fixture.setState({
+			...fixture.state(),
+			phases: {
+				...fixture.state().phases,
+				provision: {
+					status: 'in-progress',
+					checkpoint: {
+						observedAt: createdAt,
+						status: 'confirmed',
+						phase: 'provision',
+						step: 'assigned-moderator.role-elevated',
+						reasonCode: 'provision_boundary_confirmed',
+						revision: fixture.state().revision,
+						operationId: 'assigned-moderator.role-elevated'
+					}
+				}
+			}
+		});
 
 		await runProvisionCommand({
 			paths: fixture.paths,
@@ -744,6 +931,24 @@ describe('Gate 3 provision command', () => {
 			actorVerified: false
 		};
 		fixture.setSnapshot({ requiredConsents, exactRecoveryProvenance: true, actors });
+		fixture.setState({
+			...fixture.state(),
+			phases: {
+				...fixture.state().phases,
+				provision: {
+					status: 'in-progress',
+					checkpoint: {
+						observedAt: createdAt,
+						status: 'confirmed',
+						phase: 'provision',
+						step: 'assigned-moderator.role-elevated',
+						reasonCode: 'provision_boundary_confirmed',
+						revision: fixture.state().revision,
+						operationId: 'assigned-moderator.role-elevated'
+					}
+				}
+			}
+		});
 		fixture.dependencies.inspectRun.mockImplementationOnce(async () => ({
 			classification: 'RECOVERY_REQUIRED',
 			stateRevision: fixture.state().revision,
@@ -752,7 +957,10 @@ describe('Gate 3 provision command', () => {
 			ambiguous: false,
 			credentialsLost: true,
 			exactRecoveryProvenance: true,
-			secretStoreStatus: 'corrupt'
+			secretStoreStatus: 'corrupt',
+			manifestBindingStatus: 'exact',
+			verifiedModeratorTotpFactors: 0,
+			moderatorsWithVerifiedTotp: 0
 		}));
 		fixture.dependencies.readStableSnapshot = vi.fn(async () => ({
 			state: fixture.state(),
@@ -764,7 +972,8 @@ describe('Gate 3 provision command', () => {
 			identitySchemeVersion: 1,
 			actors: {
 				...Object.fromEntries(roles.map((role) => [role, { role }])),
-				'assigned-moderator': { role: 'assigned-moderator', totpSecret: fixtureTotpSecret }
+				'assigned-moderator': { role: 'assigned-moderator', totpSecret: fixtureTotpSecret },
+				'unassigned-moderator': { role: 'unassigned-moderator', totpSecret: null }
 			}
 		}));
 
@@ -785,6 +994,78 @@ describe('Gate 3 provision command', () => {
 			'assigned-moderator.mfa-verified'
 		]);
 	});
+
+	it.each([
+		['stale checkpoint', 'assigned-moderator.mfa-verified', fixtureTotpSecret, null, false],
+		['wrong role', 'assigned-moderator.role-elevated', null, fixtureTotpSecret, false],
+		['both seeds for assigned', 'assigned-moderator.role-elevated', fixtureTotpSecret, fixtureTotpSecret, false],
+		['older assigned-only payload', 'unassigned-moderator.role-elevated', fixtureTotpSecret, null, false],
+		['equal ciphertext hash', 'assigned-moderator.role-elevated', fixtureTotpSecret, null, true]
+	] as const)(
+		'rejects non-provable DPAPI repair residue: %s',
+		async (_name, checkpointStep, assignedSecret, unassignedSecret, equalHash) => {
+			const fixture = commandFixture();
+			const ciphertext = Buffer.from('candidate-ciphertext');
+			fixture.setState({
+				...fixture.state(),
+				secretStore: {
+					...fixture.state().secretStore,
+					ciphertextSha256: equalHash
+						? createHash('sha256').update(ciphertext).digest('hex')
+						: fixture.state().secretStore.ciphertextSha256
+				},
+				phases: {
+					...fixture.state().phases,
+					provision: {
+						status: 'in-progress',
+						checkpoint: {
+							observedAt: createdAt,
+							status: 'confirmed',
+							phase: 'provision',
+							step: checkpointStep,
+							reasonCode: 'provision_boundary_confirmed',
+							revision: fixture.state().revision,
+							operationId: checkpointStep
+						}
+					}
+				}
+			});
+			fixture.dependencies.inspectRun.mockResolvedValueOnce({
+				classification: 'RECOVERY_REQUIRED',
+				stateRevision: fixture.state().revision,
+				revision: fixture.state().revision,
+				credentialsLost: true,
+				exactRecoveryProvenance: true,
+				secretStoreStatus: 'corrupt',
+				manifestBindingStatus: 'exact',
+				verifiedModeratorTotpFactors: checkpointStep.startsWith('unassigned-') ? 1 : 0,
+				moderatorsWithVerifiedTotp: checkpointStep.startsWith('unassigned-') ? 1 : 0
+			});
+			fixture.dependencies.readStableSnapshot.mockResolvedValueOnce({
+				state: fixture.state(),
+				secretBytes: ciphertext
+			});
+			fixture.dependencies.unprotectRunSecretBytes.mockResolvedValueOnce({
+				runId: fixture.paths.runId,
+				actors: {
+					'assigned-moderator': { totpSecret: assignedSecret },
+					'unassigned-moderator': { totpSecret: unassignedSecret }
+				}
+			});
+
+			const result = await runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			});
+
+			expect(result).toMatchObject({ classification: 'RECOVERY_REQUIRED', status: 'uncertain' });
+			expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+			expect(fixture.mutations).toEqual([]);
+		}
+	);
 
 	it('classifies verified-factor secret loss without blind unenrollment', async () => {
 		for (const exactRecoveryProvenance of [true, false]) {
@@ -889,6 +1170,289 @@ describe('Gate 3 provision command', () => {
 		});
 		expect(result).toMatchObject({ status: 'uncertain', classification });
 		expect(fixture.mutations).toEqual([]);
+	});
+
+	it('persists exact read-back actor coordinates after create transport failure', async () => {
+		const fixture = commandFixture();
+		let creates = 0;
+		fixture.provisionCapabilities.mutationFor.mockImplementationOnce(() =>
+			Object.freeze({
+				mutate: vi.fn(async () => {
+					creates += 1;
+					fixture.snapshot().actors.reporter.auth = 'confirmed';
+					throw new Error('transport failed after commit');
+				}),
+				readBack: vi.fn(async () => {
+					fixture.snapshot().actors.reporter.manifest = 'confirmed';
+					Object.assign(fixture.snapshot().actors.reporter, {
+						userId: actorIds.reporter,
+						createdAt
+					});
+					return {
+						status: 'confirmed',
+						actor: { role: 'reporter', userId: actorIds.reporter, createdAt }
+					};
+				})
+			})
+		);
+
+		await runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		});
+
+		expect(creates).toBe(1);
+		expect(fixture.manifest().actors[0]).toMatchObject({
+			role: 'reporter',
+			userId: actorIds.reporter,
+			createdAt
+		});
+		expect(fixture.mutations).not.toContain('reporter.auth-created');
+	});
+
+	it('rejects mismatched mutation and read-back actor coordinates before manifest persistence', async () => {
+		const fixture = commandFixture();
+		fixture.provisionCapabilities.mutationFor.mockImplementationOnce(() =>
+			Object.freeze({
+				mutate: vi.fn(async () => ({
+					actor: { role: 'reporter', userId: actorIds.reporter, createdAt, emailConfirmed: true }
+				})),
+				readBack: vi.fn(async () => ({
+					status: 'confirmed',
+					actor: { role: 'reporter', userId: actorIds['cross-user'], createdAt }
+				}))
+			})
+		);
+
+		await expect(
+			runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			})
+		).rejects.toMatchObject({ reasonCode: 'provision_evidence_invalid' });
+		expect(fixture.dependencies.persistManifest).not.toHaveBeenCalled();
+	});
+
+	it('reconciles an exact actor manifest-ahead crash under the lock without recreating it', async () => {
+		const fixture = commandFixture();
+		const predecessor = fixture.manifest();
+		const predecessorSha = createHash('sha256')
+			.update(`${JSON.stringify(predecessor)}\n`)
+			.digest('hex');
+		const reporter = completedActor('reporter');
+		reporter.actorVerified = false;
+		fixture.setSnapshot({
+			requiredConsents,
+			exactRecoveryProvenance: true,
+			actors: {
+				reporter,
+				'cross-user': emptyActor('cross-user'),
+				'assigned-moderator': emptyActor('assigned-moderator'),
+				'unassigned-moderator': emptyActor('unassigned-moderator')
+			}
+		});
+		fixture.setState({
+			...fixture.state(),
+			manifest: { ...fixture.state().manifest, sha256: predecessorSha }
+		});
+		const currentSha = createHash('sha256')
+			.update(`${JSON.stringify(fixture.manifest())}\n`)
+			.digest('hex');
+		fixture.dependencies.hashManifest.mockImplementation((value: unknown) =>
+			createHash('sha256').update(`${JSON.stringify(value)}\n`).digest('hex')
+		);
+		fixture.dependencies.inspectRun.mockImplementationOnce(async () => ({
+			classification: 'AMBIGUOUS',
+			stateRevision: fixture.state().revision,
+			revision: fixture.state().revision,
+			manifestBindingStatus: 'manifest-ahead-state',
+			manifestAheadState: true,
+			manifestSha256: currentSha,
+			foreignCounts: { syntheticAccounts: 0 },
+			exactRecoveryProvenance: true
+		}));
+
+		await runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		});
+
+		const repaired = fixture.dependencies.writeNextRunState.mock.calls[0][2] as Record<string, any>;
+		expect(repaired.manifest.sha256).toBe(currentSha);
+		expect(repaired.phases.provision.checkpoint.step).toBe('reporter.auth-created');
+		expect(fixture.mutations).not.toContain('reporter.auth-created');
+	});
+
+	it('catches the final durable checkpoint up before accepting hosted PROVISION_VERIFIED truth', async () => {
+		const fixture = commandFixture();
+		fixture.setSnapshot({
+			requiredConsents,
+			exactRecoveryProvenance: true,
+			actors: Object.fromEntries(roles.map((role) => [role, completedActor(role)]))
+		});
+		fixture.setState({
+			...fixture.state(),
+			phases: {
+				...fixture.state().phases,
+				provision: {
+					status: 'in-progress',
+					checkpoint: {
+						observedAt: createdAt,
+						status: 'confirmed',
+						phase: 'provision',
+						step: 'unassigned-moderator.mfa-verified',
+						reasonCode: 'provision_boundary_confirmed',
+						revision: fixture.state().revision,
+						operationId: 'unassigned-moderator.mfa-verified'
+					}
+				}
+			}
+		});
+
+		const result = await runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		});
+
+		expect(result).toMatchObject({ status: 'confirmed', classification: 'PROVISION_VERIFIED' });
+		expect(fixture.mutations).toEqual([]);
+		expect(fixture.state().phases.provision).toMatchObject({
+			status: 'complete',
+			checkpoint: { step: 'unassigned-moderator.actor-verified' }
+		});
+	});
+
+	it('stops on canonical foreign synthetic-account evidence before capability exposure', async () => {
+		const fixture = commandFixture();
+		fixture.dependencies.inspectRun.mockResolvedValueOnce({
+			classification: 'PREFLIGHT_READY',
+			stateRevision: fixture.state().revision,
+			revision: fixture.state().revision,
+			foreignCounts: { syntheticAccounts: 1 },
+			exactRecoveryProvenance: true
+		});
+
+		const result = await runProvisionCommand({
+			paths: fixture.paths,
+			inspectionAdapter: fixture.inspectionAdapter,
+			provisionCapabilities: fixture.provisionCapabilities,
+			dpapi: fixture.dpapi,
+			dependencies: fixture.dependencies
+		});
+
+		expect(result).toMatchObject({ status: 'uncertain', classification: 'AMBIGUOUS' });
+		expect(fixture.provisionCapabilities.inspectProvision).not.toHaveBeenCalled();
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+		expect(fixture.mutations).toEqual([]);
+	});
+
+	it.each(['accessor', 'proxy-array', 'extra-key'] as const)(
+		'rejects unstable snapshot evidence (%s) before capability exposure',
+		async (kind) => {
+			const fixture = commandFixture();
+			const snapshot = structuredClone(fixture.snapshot());
+			let getterReads = 0;
+			if (kind === 'accessor') {
+				Object.defineProperty(snapshot.actors.reporter, 'auth', {
+					enumerable: true,
+					get() {
+						getterReads += 1;
+						return 'absent';
+					}
+				});
+			} else if (kind === 'proxy-array') {
+				snapshot.actors.reporter.acceptedConsents = new Proxy([], {});
+			} else {
+				snapshot.actors.reporter.untrusted = true;
+			}
+			fixture.provisionCapabilities.inspectProvision.mockResolvedValueOnce(snapshot);
+
+			await expect(
+				runProvisionCommand({
+					paths: fixture.paths,
+					inspectionAdapter: fixture.inspectionAdapter,
+					provisionCapabilities: fixture.provisionCapabilities,
+					dpapi: fixture.dpapi,
+					dependencies: fixture.dependencies
+				})
+			).rejects.toMatchObject({ reasonCode: 'provision_evidence_invalid' });
+			expect(getterReads).toBe(0);
+			expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+			expect(fixture.mutations).toEqual([]);
+		}
+	);
+
+	it('stops before mutation when exact lock ownership is replaced', async () => {
+		const fixture = commandFixture();
+		fixture.dependencies.inspectRunLock.mockResolvedValueOnce({
+			status: 'held',
+			acquiredBytes: 'replacement-lock'
+		});
+
+		await expect(
+			runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			})
+		).rejects.toMatchObject({ reasonCode: 'run_lock_lost' });
+		expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+		expect(fixture.mutations).toEqual([]);
+	});
+
+	it('stops after mutation and before read-back or persistence when lock ownership is lost', async () => {
+		const fixture = commandFixture();
+		fixture.dependencies.inspectRunLock.mockImplementation(async () =>
+			fixture.mutations.includes('reporter.auth-created')
+				? { status: 'held', acquiredBytes: 'replacement-lock' }
+				: { status: 'held', acquiredBytes: 'exact-lock' }
+		);
+
+		await expect(
+			runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			})
+		).rejects.toMatchObject({ reasonCode: 'run_lock_lost' });
+		expect(fixture.mutations).toEqual(['reporter.auth-created']);
+		expect(fixture.dependencies.persistManifest).not.toHaveBeenCalled();
+		expect(fixture.dependencies.writeNextRunState).not.toHaveBeenCalled();
+	});
+
+	it('fails a successful command when exact lock release returns false', async () => {
+		const fixture = commandFixture();
+		fixture.setSnapshot({
+			requiredConsents,
+			exactRecoveryProvenance: true,
+			actors: Object.fromEntries(roles.map((role) => [role, completedActor(role)]))
+		});
+		fixture.dependencies.releaseRunLock.mockResolvedValueOnce(false);
+		await expect(
+			runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			})
+		).rejects.toMatchObject({ reasonCode: 'run_lock_release_failed' });
 	});
 
 	it('keeps every public success and failure result allow-listed and secret-free', async () => {

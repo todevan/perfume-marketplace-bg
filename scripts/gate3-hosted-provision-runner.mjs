@@ -10,6 +10,7 @@ import { inspectGate3HostedRun } from './gate3-hosted-inspector.mjs';
 import { selectNextProvisionStep } from './gate3-hosted-lifecycle.mjs';
 import {
 	acquireRunLock,
+	inspectRunLock,
 	readStableGate3PreflightSnapshot,
 	readRunState,
 	releaseRunLock,
@@ -190,6 +191,66 @@ function readBackStatus(value) {
 	}
 }
 
+/** @param {unknown} result @param {string} role */
+function exactActorCoordinatesFromResult(result, role) {
+	if (!isPlainDataObject(result)) return null;
+	let candidate;
+	try {
+		const actorDescriptor = Object.getOwnPropertyDescriptor(result, 'actor');
+		if (!actorDescriptor) return null;
+		if (!Object.hasOwn(actorDescriptor, 'value')) fail('provision_evidence_invalid', 20);
+		candidate = actorDescriptor.value;
+	} catch (error) {
+		if (error instanceof Gate3HostedProvisionError) throw error;
+		return fail('provision_evidence_invalid', 20);
+	}
+	const actor = copyExactDataRecord(
+		candidate,
+		['role', 'userId', 'createdAt'],
+		['emailConfirmed']
+	);
+	const parsedCreatedAt = typeof actor.createdAt === 'string' ? new Date(actor.createdAt) : null;
+	if (
+		actor.role !== role ||
+		typeof actor.userId !== 'string' ||
+		!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(actor.userId) ||
+		parsedCreatedAt === null ||
+		Number.isNaN(parsedCreatedAt.valueOf()) ||
+		parsedCreatedAt.toISOString() !== actor.createdAt ||
+		(Object.hasOwn(actor, 'emailConfirmed') && actor.emailConfirmed !== true)
+	) {
+		fail('provision_evidence_invalid', 20);
+	}
+	return Object.freeze({ role, userId: actor.userId, createdAt: actor.createdAt });
+}
+
+/** @param {unknown} mutationResult @param {unknown} readBackResult @param {string} role @param {Record<string, any> | null} fallback */
+function selectConfirmedActorCoordinates(mutationResult, readBackResult, role, fallback = null) {
+	const mutated = exactActorCoordinatesFromResult(mutationResult, role);
+	const observed = exactActorCoordinatesFromResult(readBackResult, role);
+	if (
+		mutated &&
+		observed &&
+		(mutated.userId !== observed.userId || mutated.createdAt !== observed.createdAt)
+	) {
+		fail('provision_evidence_invalid', 20);
+	}
+	let selected = mutated ?? observed;
+	if (
+		!selected &&
+		fallback &&
+		typeof fallback.userId === 'string' &&
+		typeof fallback.createdAt === 'string'
+	) {
+		selected = exactActorCoordinatesFromResult(
+			{ actor: { role, userId: fallback.userId, createdAt: fallback.createdAt } },
+			role
+		);
+	}
+	if (!selected) fail('provision_evidence_invalid', 20);
+	return selected;
+}
+
 /** @param {{ role: string, step: string, status: string, classification: string, revision: number, reasonCode: string }} value */
 function boundaryResult(value) {
 	return Object.freeze({
@@ -232,20 +293,23 @@ export async function runProvisionBoundary({ inspection, authorization, capabili
 		if (scope.step !== 'actor-verified') {
 			try {
 				mutationResult = await caps.mutate();
-			} catch {
+			} catch (error) {
+				if (error instanceof Gate3HostedProvisionError) throw error;
 				// A transport failure is not mutation truth. Always perform targeted read-back.
 			}
 		}
 		if (scope.step === 'mfa-enrolled' && mutationResult !== null) {
 			try {
 				credentialMetadata = await caps.persistCredential(mutationResult);
-			} catch {
+			} catch (error) {
+				if (error instanceof Gate3HostedProvisionError) throw error;
 				credentialPersistenceFailed = true;
 			}
 		}
 		try {
 			readBackResult = await caps.readBack({ mutationResult });
-		} catch {
+		} catch (error) {
+			if (error instanceof Gate3HostedProvisionError) throw error;
 			readBackResult = null;
 		}
 		const status = readBackStatus(readBackResult);
@@ -263,7 +327,8 @@ export async function runProvisionBoundary({ inspection, authorization, capabili
 			await caps.persistManifest({ mutationResult, readBackResult });
 		}
 		await caps.persistState({ mutationResult, readBackResult, credentialMetadata });
-	} catch {
+	} catch (error) {
+		if (error instanceof Gate3HostedProvisionError) throw error;
 		fail('provision_persistence_uncertain', 41);
 	}
 	return resultFor('confirmed', 'provision_boundary_confirmed', scope.revision + 1);
@@ -352,18 +417,124 @@ function exactOwnString(value, name) {
 	}
 }
 
+/** @param {unknown} value @param {string} name */
+function exactOwnInteger(value, name) {
+	if (!isPlainDataObject(value)) return null;
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(value, name);
+		return descriptor &&
+			Object.hasOwn(descriptor, 'value') &&
+			Number.isSafeInteger(descriptor.value) &&
+			descriptor.value >= 0
+			? descriptor.value
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** @param {unknown} inspection */
+function hasForeignSyntheticActors(inspection) {
+	if (!isPlainDataObject(inspection)) return true;
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(inspection, 'foreignCounts');
+		if (!descriptor) return false;
+		if (!Object.hasOwn(descriptor, 'value') || !isPlainDataObject(descriptor.value)) return true;
+		const countDescriptor = Object.getOwnPropertyDescriptor(descriptor.value, 'syntheticAccounts');
+		return !countDescriptor ||
+			!Object.hasOwn(countDescriptor, 'value') ||
+			!Number.isSafeInteger(countDescriptor.value) ||
+			countDescriptor.value < 0 ||
+			countDescriptor.value > 0;
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * Copies an exact plain record through own data descriptors without invoking
+ * accessors. The copy is frozen before any semantic validation reads it.
+ * @param {unknown} candidate
+ * @param {readonly string[]} requiredKeys
+ * @param {readonly string[]} [optionalKeys]
+ * @returns {Readonly<Record<string, any>>}
+ */
+function copyExactDataRecord(candidate, requiredKeys, optionalKeys = []) {
+	if (!isPlainDataObject(candidate)) fail('provision_evidence_invalid', 10);
+	try {
+		const keys = Reflect.ownKeys(candidate);
+		const allowed = new Set([...requiredKeys, ...optionalKeys]);
+		if (
+			keys.some((key) => typeof key !== 'string') ||
+			!requiredKeys.every((key) => keys.includes(key)) ||
+			keys.some((key) => !allowed.has(/** @type {string} */ (key)))
+		) {
+			fail('provision_evidence_invalid', 10);
+		}
+		const copy = {};
+		for (const key of keys) {
+			const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
+			if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+				fail('provision_evidence_invalid', 10);
+			}
+			Object.defineProperty(copy, key, {
+				value: descriptor.value,
+				enumerable: true,
+				writable: false,
+				configurable: false
+			});
+		}
+		return Object.freeze(copy);
+	} catch (error) {
+		if (error instanceof Gate3HostedProvisionError) throw error;
+		return fail('provision_evidence_invalid', 10);
+	}
+}
+
+/** @param {unknown} candidate @returns {readonly any[]} */
+function copyExactDataArray(candidate) {
+	if (!Array.isArray(candidate) || isProxy(candidate)) fail('provision_evidence_invalid', 10);
+	try {
+		const keys = Reflect.ownKeys(candidate);
+		if (
+			keys.some((key) => typeof key !== 'string') ||
+			keys.some((key) => key !== 'length' && !/^(0|[1-9]\d*)$/u.test(/** @type {string} */ (key)))
+		) {
+			fail('provision_evidence_invalid', 10);
+		}
+		const lengthDescriptor = Object.getOwnPropertyDescriptor(candidate, 'length');
+		if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value') || !Number.isSafeInteger(lengthDescriptor.value)) {
+			fail('provision_evidence_invalid', 10);
+		}
+		const copy = [];
+		for (let index = 0; index < lengthDescriptor.value; index += 1) {
+			const descriptor = Object.getOwnPropertyDescriptor(candidate, `${index}`);
+			if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+				fail('provision_evidence_invalid', 10);
+			}
+			copy.push(descriptor.value);
+		}
+		return Object.freeze(copy);
+	} catch (error) {
+		if (error instanceof Gate3HostedProvisionError) throw error;
+		return fail('provision_evidence_invalid', 10);
+	}
+}
+
 /**
  * Repairs only the local ciphertext hash after a proven DPAPI-write/state-write
  * crash. It performs no hosted mutation and requires the captured ciphertext to
  * decrypt as the exact run payload with a stored moderator TOTP credential.
- * @param {{ paths: Record<string, string>, inspection: unknown, dpapi: unknown, dependencies: Record<string, any> }} options
+ * @param {{ paths: Record<string, string>, inspection: unknown, dpapi: unknown, dependencies: Record<string, any>, assertLockOwned: () => Promise<void> }} options
  */
-async function reconcileCredentialStateIfSafe({ paths, inspection, dpapi, dependencies }) {
+async function reconcileCredentialStateIfSafe({ paths, inspection, dpapi, dependencies, assertLockOwned }) {
 	if (
 		exactClassification(inspection) !== 'RECOVERY_REQUIRED' ||
 		!exactOwnBoolean(inspection, 'credentialsLost') ||
 		!exactOwnBoolean(inspection, 'exactRecoveryProvenance') ||
-		exactOwnString(inspection, 'secretStoreStatus') !== 'corrupt'
+		exactOwnString(inspection, 'secretStoreStatus') !== 'corrupt' ||
+		exactOwnString(inspection, 'manifestBindingStatus') !== 'exact' ||
+		exactOwnBoolean(inspection, 'releaseChanged')
 	) {
 		return false;
 	}
@@ -377,9 +548,18 @@ async function reconcileCredentialStateIfSafe({ paths, inspection, dpapi, depend
 		captured = await readStableSnapshot(paths);
 		const state = captured?.state;
 		const secretBytes = captured?.secretBytes;
+		const checkpoint = state?.phases?.provision?.checkpoint;
+		const checkpointMatch = typeof checkpoint?.step === 'string'
+			? /^(assigned-moderator|unassigned-moderator)\.(role-elevated|mfa-unenrolled-recovery)$/u.exec(checkpoint.step)
+			: null;
 		if (
 			!state ||
 			state.revision !== safeInspectionRevision(inspection) ||
+			state.phases?.provision?.status !== 'in-progress' ||
+			!checkpointMatch ||
+			checkpoint?.status !== 'confirmed' ||
+			checkpoint?.revision !== state.revision ||
+			checkpoint?.operationId !== checkpoint.step ||
 			!['available', 'persisted'].includes(state.secretStore?.status) ||
 			!(secretBytes instanceof Uint8Array) ||
 			secretBytes.byteLength === 0
@@ -394,11 +574,18 @@ async function reconcileCredentialStateIfSafe({ paths, inspection, dpapi, depend
 			unprotectRunSecretBytes
 		);
 		const payload = await unprotectBytes({ runId: paths.runId, ciphertext: secretBytes, dpapi });
+		const pendingRole = checkpointMatch[1];
+		const expectedVerifiedFactors = pendingRole === 'assigned-moderator' ? 0 : 1;
+		const expectedSecretPattern = pendingRole === 'assigned-moderator'
+			? typeof payload.actors?.['assigned-moderator']?.totpSecret === 'string' &&
+				payload.actors?.['unassigned-moderator']?.totpSecret === null
+			: typeof payload.actors?.['assigned-moderator']?.totpSecret === 'string' &&
+				typeof payload.actors?.['unassigned-moderator']?.totpSecret === 'string';
 		if (
 			payload?.runId !== paths.runId ||
-			!['assigned-moderator', 'unassigned-moderator'].some(
-				(role) => typeof payload.actors?.[role]?.totpSecret === 'string'
-			)
+			!expectedSecretPattern ||
+			exactOwnInteger(inspection, 'verifiedModeratorTotpFactors') !== expectedVerifiedFactors ||
+			exactOwnInteger(inspection, 'moderatorsWithVerifiedTotp') !== expectedVerifiedFactors
 		) {
 			return false;
 		}
@@ -411,10 +598,12 @@ async function reconcileCredentialStateIfSafe({ paths, inspection, dpapi, depend
 				ciphertextSha256
 			}
 		};
+		await assertLockOwned();
 		const writeState = dependency(dependencies, 'writeNextRunState', writeNextRunState);
 		await writeState(paths, state, nextState);
 		return true;
-	} catch {
+	} catch (error) {
+		if (error instanceof Gate3HostedProvisionError) throw error;
 		return false;
 	} finally {
 		captured?.secretBytes?.fill?.(0);
@@ -423,13 +612,14 @@ async function reconcileCredentialStateIfSafe({ paths, inspection, dpapi, depend
 
 /** @param {unknown} value */
 function exactRequiredConsents(value) {
-	if (!Array.isArray(value) || isProxy(value) || value.length === 0 || value.length > 32) {
+	const input = copyExactDataArray(value);
+	if (input.length === 0 || input.length > 32) {
 		fail('provision_evidence_invalid', 10);
 	}
-	const documents = value.map((document) => {
-		if (!isPlainDataObject(document)) fail('provision_evidence_invalid', 10);
-		const code = document.documentCode;
-		const version = document.documentVersion;
+	const documents = input.map((document) => {
+		const exact = copyExactDataRecord(document, ['documentCode', 'documentVersion']);
+		const code = exact.documentCode;
+		const version = exact.documentVersion;
 		if (
 			typeof code !== 'string' ||
 			!/^[a-z][a-z0-9_]{1,63}$/u.test(code) ||
@@ -453,43 +643,56 @@ function exactRequiredConsents(value) {
 
 /** @param {unknown} value */
 function exactProvisionSnapshot(value) {
-	if (!isPlainDataObject(value)) fail('provision_evidence_invalid', 10);
-	const requiredConsents = exactRequiredConsents(value.requiredConsents);
+	const exact = copyExactDataRecord(value, ['requiredConsents', 'exactRecoveryProvenance', 'actors']);
+	const requiredConsents = exactRequiredConsents(exact.requiredConsents);
 	const consentTokens = new Set(
 		requiredConsents.map(({ documentCode, documentVersion }) => `${documentCode}-${documentVersion}`)
 	);
-	if (typeof value.exactRecoveryProvenance !== 'boolean' || !isPlainDataObject(value.actors)) {
+	if (typeof exact.exactRecoveryProvenance !== 'boolean') {
 		fail('provision_evidence_invalid', 10);
 	}
-	const actorKeys = Object.keys(value.actors);
-	if (actorKeys.length !== ACTOR_ROLES.length || actorKeys.some((role) => !ACTOR_ROLE_SET.has(role))) {
-		fail('provision_evidence_invalid', 10);
-	}
+	const actorMap = copyExactDataRecord(exact.actors, ACTOR_ROLES);
+	/** @type {Record<string, any>} */
+	const actors = {};
 	for (const role of ACTOR_ROLES) {
-		const actor = value.actors[role];
-		if (!isPlainDataObject(actor) || !isPlainDataObject(actor.mfa)) {
+		const actor = copyExactDataRecord(
+			actorMap[role],
+			[
+				'auth',
+				'manifest',
+				'registrationClaimed',
+				'acceptedConsents',
+				'onboardingComplete',
+				'profileRole',
+				'mfa',
+				'actorVerified'
+			],
+			['userId', 'createdAt']
+		);
+		const mfa = copyExactDataRecord(actor.mfa, ['status', 'secretStatus']);
+		const acceptedConsents = copyExactDataArray(actor.acceptedConsents);
+		if ((Object.hasOwn(actor, 'userId') !== Object.hasOwn(actor, 'createdAt'))) {
 			fail('provision_evidence_invalid', 10);
 		}
 		if (
 			!['absent', 'confirmed', 'uncertain', 'conflict'].includes(actor.auth) ||
 			!['absent', 'pending', 'confirmed', 'conflict'].includes(actor.manifest) ||
 			![true, false, 'uncertain'].includes(actor.registrationClaimed) ||
-			!Array.isArray(actor.acceptedConsents) ||
-			actor.acceptedConsents.some((entry) => typeof entry !== 'string') ||
+			acceptedConsents.some((entry) => typeof entry !== 'string') ||
 			![true, false, 'uncertain'].includes(actor.onboardingComplete) ||
 			!['absent', 'user', 'moderator', 'uncertain'].includes(actor.profileRole) ||
-			!['not-required', 'absent', 'unverified', 'verified', 'uncertain', 'duplicate'].includes(actor.mfa.status) ||
-			!['not-required', 'available', 'missing', 'corrupt'].includes(actor.mfa.secretStatus) ||
+			!['not-required', 'absent', 'unverified', 'verified', 'uncertain', 'duplicate'].includes(mfa.status) ||
+			!['not-required', 'available', 'missing', 'corrupt'].includes(mfa.secretStatus) ||
 			![true, false, 'uncertain'].includes(actor.actorVerified)
 		) {
 			fail('provision_evidence_invalid', 10);
 		}
 		if (
-			new Set(actor.acceptedConsents).size !== actor.acceptedConsents.length ||
-			actor.acceptedConsents.some((entry) => !consentTokens.has(entry)) ||
+			new Set(acceptedConsents).size !== acceptedConsents.length ||
+			acceptedConsents.some((entry) => !consentTokens.has(entry)) ||
 			(MODERATOR_ROLES.has(role)
-				? actor.mfa.status === 'not-required' || actor.mfa.secretStatus === 'not-required'
-				: actor.mfa.status !== 'not-required' || actor.mfa.secretStatus !== 'not-required')
+				? mfa.status === 'not-required' || mfa.secretStatus === 'not-required'
+				: mfa.status !== 'not-required' || mfa.secretStatus !== 'not-required')
 		) {
 			fail('provision_evidence_invalid', 10);
 		}
@@ -501,8 +704,17 @@ function exactProvisionSnapshot(value) {
 			// A hosted-only actor after a crash must still provide exact coordinates for manifest repair.
 			fail('provision_evidence_invalid', 10);
 		}
+		actors[role] = Object.freeze({
+			...actor,
+			acceptedConsents,
+			mfa
+		});
 	}
-	return Object.freeze({ requiredConsents, exactRecoveryProvenance: value.exactRecoveryProvenance, actors: value.actors });
+	return Object.freeze({
+		requiredConsents,
+		exactRecoveryProvenance: exact.exactRecoveryProvenance,
+		actors: Object.freeze(actors)
+	});
 }
 
 /** @param {Record<string, any>} manifest @param {ReturnType<typeof exactProvisionSnapshot>} snapshot */
@@ -651,6 +863,155 @@ function dependency(dependencies, name, fallback) {
 	return value;
 }
 
+/** @param {unknown} value */
+function defaultManifestHash(value) {
+	return createHash('sha256').update(`${JSON.stringify(value)}\n`).digest('hex');
+}
+
+/** @param {Record<string, any>} manifest @param {string} expectedSha256 */
+function exactActorManifestPredecessor(manifest, expectedSha256) {
+	if (!Array.isArray(manifest.actors) || manifest.actors.length === 0) return null;
+	const actor = manifest.actors.at(-1);
+	if (!actor || !ACTOR_ROLE_SET.has(actor.role)) return null;
+	const candidates = [
+		{ ...manifest, actors: manifest.actors.slice(0, -1) },
+		{
+			...manifest,
+			pendingActors: [
+				...manifest.pendingActors,
+				{ role: actor.role, provisioningAttemptId: manifest.provisioningAttemptId }
+			],
+			actors: manifest.actors.slice(0, -1)
+		}
+	];
+	return candidates.some((candidate) => defaultManifestHash(candidate) === expectedSha256)
+		? Object.freeze({ role: actor.role, userId: actor.userId, createdAt: actor.createdAt })
+		: null;
+}
+
+/**
+ * Repairs only the exact actor-manifest write that is one durable step ahead of
+ * state. Hosted evidence must confirm that same actor and next checkpoint.
+ * @param {{ paths: Record<string, string>, inspection: unknown, commandCaps: Record<string, Function>, dependencies: Record<string, any>, assertLockOwned: () => Promise<void> }} options
+ */
+async function reconcileManifestAheadIfSafe({
+	paths,
+	inspection,
+	commandCaps,
+	dependencies,
+	assertLockOwned
+}) {
+	if (
+		exactClassification(inspection) !== 'AMBIGUOUS' ||
+		exactOwnString(inspection, 'manifestBindingStatus') !== 'manifest-ahead-state' ||
+		!exactOwnBoolean(inspection, 'manifestAheadState') ||
+		exactOwnBoolean(inspection, 'releaseChanged')
+	) {
+		return false;
+	}
+	try {
+		await assertLockOwned();
+		const readState = dependency(dependencies, 'readRunState', readRunState);
+		const state = await readState(paths);
+		if (state.revision !== safeInspectionRevision(inspection) || typeof state.manifest?.sha256 !== 'string') {
+			return false;
+		}
+		const loadManifest = dependency(dependencies, 'loadManifest', loadHostedRunManifest);
+		const manifest = await loadManifest(
+			Object.freeze({ target: HOSTED_STAGING, runId: paths.runId }),
+			paths.manifestPath
+		);
+		const hashManifest = dependency(dependencies, 'hashManifest', defaultManifestHash);
+		const currentSha256 = hashManifest(manifest);
+		if (
+			typeof currentSha256 !== 'string' ||
+			!/^[a-f0-9]{64}$/u.test(currentSha256) ||
+			currentSha256 !== exactOwnString(inspection, 'manifestSha256')
+		) {
+			return false;
+		}
+		const actor = exactActorManifestPredecessor(manifest, state.manifest.sha256);
+		if (!actor) return false;
+		const snapshot = exactProvisionSnapshot(
+			await commandCaps.inspectProvision({ inspection, state, manifest })
+		);
+		assertSnapshotMatchesManifest(manifest, snapshot);
+		const next = deriveNextBoundary(state, snapshot);
+		if (
+			!next ||
+			next.step !== 'auth-created' ||
+			next.role !== actor.role ||
+			next.outcome !== 'confirmed' ||
+			snapshot.actors[next.role].userId !== actor.userId ||
+			snapshot.actors[next.role].createdAt !== actor.createdAt
+		) {
+			return false;
+		}
+		const observedAt = dependency(dependencies, 'now', () => new Date().toISOString())();
+		if (typeof observedAt !== 'string' || Number.isNaN(Date.parse(observedAt))) return false;
+		const nextState = nextProvisionState(state, {
+			role: next.role,
+			step: next.step,
+			complete: false,
+			observedAt,
+			manifest: { ...state.manifest, sha256: currentSha256 }
+		});
+		await assertLockOwned();
+		const writeState = dependency(dependencies, 'writeNextRunState', writeNextRunState);
+		await writeState(paths, state, nextState);
+		return true;
+	} catch (error) {
+		if (error instanceof Gate3HostedProvisionError) throw error;
+		return false;
+	}
+}
+
+/**
+ * Advances one already-confirmed durable checkpoint without exposing a hosted
+ * mutation capability. Returns true when state advanced.
+ * @param {{ paths: Record<string, string>, inspection: unknown, commandCaps: Record<string, Function>, dependencies: Record<string, any>, assertLockOwned: () => Promise<void> }} options
+ */
+async function catchUpVerifiedState({ paths, inspection, commandCaps, dependencies, assertLockOwned }) {
+	await assertLockOwned();
+	const readState = dependency(dependencies, 'readRunState', readRunState);
+	const state = await readState(paths);
+	if (state.revision !== safeInspectionRevision(inspection)) fail('provision_checkpoint_ambiguous', 20);
+	const loadManifest = dependency(dependencies, 'loadManifest', loadHostedRunManifest);
+	const manifest = await loadManifest(
+		Object.freeze({ target: HOSTED_STAGING, runId: paths.runId }),
+		paths.manifestPath
+	);
+	const snapshot = exactProvisionSnapshot(
+		await commandCaps.inspectProvision({ inspection, state, manifest })
+	);
+	assertSnapshotMatchesManifest(manifest, snapshot);
+	const next = deriveNextBoundary(state, snapshot);
+	if (next === null) {
+		if (
+			state.phases?.provision?.status !== 'complete' ||
+			state.phases?.provision?.checkpoint?.step !== 'unassigned-moderator.actor-verified'
+		) {
+			fail('provision_checkpoint_ambiguous', 20);
+		}
+		return false;
+	}
+	if (next.outcome !== 'confirmed') fail('provision_checkpoint_ambiguous', 20);
+	const observedAt = dependency(dependencies, 'now', () => new Date().toISOString())();
+	if (typeof observedAt !== 'string' || Number.isNaN(Date.parse(observedAt))) {
+		fail('provision_persistence_uncertain', 41);
+	}
+	const nextState = nextProvisionState(state, {
+		role: next.role,
+		step: next.step,
+		complete: next.final,
+		observedAt
+	});
+	await assertLockOwned();
+	const writeState = dependency(dependencies, 'writeNextRunState', writeNextRunState);
+	await writeState(paths, state, nextState);
+	return true;
+}
+
 /**
  * Holds the per-run lock while repeatedly returning through fresh inspection and
  * command-level lifecycle authorization between single A9 boundaries.
@@ -676,8 +1037,26 @@ export async function runProvisionCommand({
 		fail('active_run_locked', 10);
 	}
 	let primaryError = null;
+	const assertLockOwned = async () => {
+		try {
+			const inspectLock = dependency(dependencies, 'inspectRunLock', inspectRunLock);
+			const current = await inspectLock({ paths });
+			if (
+				!isPlainDataObject(current) ||
+				current.status !== 'held' ||
+				typeof current.acquiredBytes !== 'string' ||
+				current.acquiredBytes !== acquiredLock?.acquiredBytes
+			) {
+				fail('run_lock_lost', 41);
+			}
+		} catch (error) {
+			if (error instanceof Gate3HostedProvisionError) throw error;
+			fail('run_lock_lost', 41);
+		}
+	};
 	try {
 		for (let boundaryCount = 0; boundaryCount < 256; boundaryCount += 1) {
+			await assertLockOwned();
 			const inspect = dependency(
 				dependencies,
 				'inspectRun',
@@ -691,18 +1070,44 @@ export async function runProvisionCommand({
 			}
 			const classification = exactClassification(inspection);
 			const inspectionRevision = safeInspectionRevision(inspection);
+			if (hasForeignSyntheticActors(inspection)) {
+				return blockedResult('AMBIGUOUS', inspectionRevision);
+			}
+			if (
+				await reconcileManifestAheadIfSafe({
+					paths,
+					inspection,
+					commandCaps,
+					dependencies,
+					assertLockOwned
+				})
+			) {
+				continue;
+			}
 			if (
 				classification === 'RECOVERY_REQUIRED' &&
 				(await reconcileCredentialStateIfSafe({
 					paths,
 					inspection,
 					dpapi,
-					dependencies
+					dependencies,
+					assertLockOwned
 				}))
 			) {
 				continue;
 			}
 			if (classification === 'PROVISION_VERIFIED') {
+				if (
+					await catchUpVerifiedState({
+						paths,
+						inspection,
+						commandCaps,
+						dependencies,
+						assertLockOwned
+					})
+				) {
+					continue;
+				}
 				return Object.freeze({
 					status: 'confirmed',
 					classification,
@@ -786,6 +1191,7 @@ export async function runProvisionCommand({
 				operationId: `${next.role}.${next.step}`,
 				revision: state.revision
 			});
+			await assertLockOwned();
 			let providerCaps;
 			try {
 				providerCaps = exactProviderCapabilities(
@@ -816,12 +1222,22 @@ export async function runProvisionCommand({
 			/** @type {{ status: string, ciphertextSha256: string } | null} */
 			let secretMetadata = null;
 			const composed = Object.freeze({
-				mutate: providerCaps.mutate,
-				readBack: providerCaps.readBack,
+				mutate:
+					providerCaps.mutate === null
+						? null
+						: async () => {
+							await assertLockOwned();
+							return providerCaps.mutate();
+						},
+				readBack: async (/** @type {any} */ input) => {
+					await assertLockOwned();
+					return providerCaps.readBack(input);
+				},
 				persistCredential:
 					next.step === 'mfa-enrolled'
 						? async (/** @type {any} */ mutationResult) => {
 							try {
+								await assertLockOwned();
 								const recordSecret = dependency(
 									dependencies,
 									'recordProviderTotpSecret',
@@ -846,8 +1262,14 @@ export async function runProvisionCommand({
 						: null,
 				persistManifest:
 					next.step === 'auth-created'
-						? async (/** @type {{ mutationResult: any }} */ { mutationResult }) => {
-							const evidenceActor = mutationResult?.actor ?? snapshot.actors[next.role];
+						? async (/** @type {{ mutationResult: any, readBackResult: any }} */ { mutationResult, readBackResult }) => {
+							await assertLockOwned();
+							const evidenceActor = selectConfirmedActorCoordinates(
+								mutationResult,
+								readBackResult,
+								next.role,
+								snapshot.actors[next.role]
+							);
 							const existing = manifest.actors?.find((/** @type {any} */ actor) => actor.role === next.role);
 							if (existing) {
 								if (
@@ -887,6 +1309,7 @@ export async function runProvisionCommand({
 						}
 						: null,
 				persistState: async () => {
+					await assertLockOwned();
 					const observedAt = dependency(dependencies, 'now', () => new Date().toISOString())();
 					if (typeof observedAt !== 'string' || Number.isNaN(Date.parse(observedAt))) {
 						fail('provision_persistence_uncertain', 41);
@@ -934,7 +1357,8 @@ export async function runProvisionCommand({
 		fail('provision_precondition_failed', 10);
 	} finally {
 		try {
-			await release({ paths, acquiredLock });
+			const released = await release({ paths, acquiredLock });
+			if (released !== true && primaryError === null) fail('run_lock_release_failed', 10);
 		} catch {
 			if (primaryError === null) fail('run_lock_release_failed', 10);
 		}

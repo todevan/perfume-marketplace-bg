@@ -1362,7 +1362,8 @@ export function createSupabaseHostedA9Adapters({
 			});
 		}
 
-		async function enrollModeratorFactor() {
+		/** @param {{ deliverToLegacySink?: boolean }} [options] */
+		async function enrollModeratorFactor({ deliverToLegacySink = true } = {}) {
 			if (!new Set(['assigned-moderator', 'unassigned-moderator']).has(scope.role)) {
 				throw new HostedEvidenceOperatorError('A9 MFA enrollment is limited to moderator actors');
 			}
@@ -1382,7 +1383,9 @@ export function createSupabaseHostedA9Adapters({
 			}
 			try {
 				decodeBase32Secret(secret);
-				await credentialSink.storeModeratorTotpSecret({ role: scope.role, secret });
+				if (deliverToLegacySink) {
+					await credentialSink.storeModeratorTotpSecret({ role: scope.role, secret });
+				}
 			} catch {
 				await rollbackModeratorFactor(factorId);
 				throw new HostedEvidenceOperatorError('ephemeral moderator credential delivery failed');
@@ -1426,6 +1429,10 @@ export function createSupabaseHostedA9Adapters({
 			async enroll() {
 				const { factorId } = await enrollModeratorFactor();
 				return Object.freeze({ factorId, factorType: 'totp' });
+			},
+			async enrollForProvisioning() {
+				const { factorId, secret } = await enrollModeratorFactor({ deliverToLegacySink: false });
+				return Object.freeze({ factorId, factorType: 'totp', secret });
 			},
 			challengeAndVerify,
 			listFactors,
@@ -1829,7 +1836,26 @@ export function createHostedA9ProvisionOperations({ config, adapters }) {
 			role,
 			userId: actor.userId
 		});
-		if (!session || session.role && session.role !== role) {
+		let sessionIdentityValid = false;
+		try {
+			const roleDescriptor = Object.getOwnPropertyDescriptor(session, 'role');
+			const userIdDescriptor = Object.getOwnPropertyDescriptor(session, 'userId');
+			sessionIdentityValid = Boolean(
+				session &&
+				typeof session === 'object' &&
+				!isProxy(session) &&
+				Object.isFrozen(session) &&
+				roleDescriptor &&
+				Object.hasOwn(roleDescriptor, 'value') &&
+				roleDescriptor.value === role &&
+				userIdDescriptor &&
+				Object.hasOwn(userIdDescriptor, 'value') &&
+				userIdDescriptor.value === actor.userId
+			);
+		} catch {
+			sessionIdentityValid = false;
+		}
+		if (!sessionIdentityValid) {
 			throw new HostedEvidenceOperatorError('A9 actor session is invalid');
 		}
 		return Object.freeze({ scope, session });
@@ -1928,37 +1954,69 @@ export function createHostedA9ProvisionOperations({ config, adapters }) {
 				throw new HostedEvidenceOperatorError('A9 MFA enrollment is limited to moderator actors');
 			}
 			const { session } = await actorSession(scope.manifest, scope.role);
-			if (typeof session.mfa?.enroll !== 'function') {
+			if (typeof session.mfa?.enrollForProvisioning !== 'function') {
 				throw new HostedEvidenceOperatorError('A9 moderator MFA session is invalid');
 			}
-			return session.mfa.enroll();
+			return session.mfa.enrollForProvisioning();
 		},
-		/** @param {{ manifest: HostedRunManifest, role: string, factorId: string, secret: string, clock?: () => number }} scope */
+		/** @param {{ manifest: HostedRunManifest, role: string, factorId?: string, secret: string, clock?: () => number }} scope */
 		async verifyMfa(scope) {
 			if (!A9_MODERATOR_ROLES.has(scope.role)) {
 				throw new HostedEvidenceOperatorError('A9 MFA verification is limited to moderator actors');
 			}
 			const { session } = await actorSession(scope.manifest, scope.role);
 			const clock = scope.clock ?? Date.now;
-			if (typeof session.mfa?.challengeAndVerify !== 'function' || typeof clock !== 'function') {
+			if (
+				typeof session.mfa?.challengeAndVerify !== 'function' ||
+				typeof session.mfa?.listFactors !== 'function' ||
+				typeof clock !== 'function'
+			) {
 				throw new HostedEvidenceOperatorError('A9 moderator MFA session is invalid');
 			}
+			const factors = await session.mfa.listFactors();
+			const unverified = Array.isArray(factors)
+				? factors.filter((factor) => factor?.status === 'unverified' && typeof factor?.id === 'string')
+				: [];
+			if (
+				!Array.isArray(factors) ||
+				factors.length !== 1 ||
+				unverified.length !== 1 ||
+				(scope.factorId !== undefined && scope.factorId !== unverified[0].id)
+			) {
+				throw new HostedEvidenceOperatorError('A9 moderator MFA factor is ambiguous');
+			}
+			const factorId = unverified[0].id;
 			const timestamp = clock();
 			return session.mfa.challengeAndVerify({
-				factorId: scope.factorId,
+				factorId,
 				code: generateTotpCode(scope.secret, timestamp)
 			});
 		},
-		/** @param {{ manifest: HostedRunManifest, role: string, factorId: string }} scope */
+		/** @param {{ manifest: HostedRunManifest, role: string, factorId?: string }} scope */
 		async unenrollMfa(scope) {
 			if (!A9_MODERATOR_ROLES.has(scope.role)) {
 				throw new HostedEvidenceOperatorError('A9 MFA recovery is limited to moderator actors');
 			}
 			const { session } = await actorSession(scope.manifest, scope.role);
-			if (typeof session.mfa?.rollbackEnrollment !== 'function') {
+			if (
+				typeof session.mfa?.rollbackEnrollment !== 'function' ||
+				typeof session.mfa?.listFactors !== 'function'
+			) {
 				throw new HostedEvidenceOperatorError('A9 moderator MFA session is invalid');
 			}
-			return session.mfa.rollbackEnrollment({ factorId: scope.factorId });
+			const factors = await session.mfa.listFactors();
+			const unverified = Array.isArray(factors)
+				? factors.filter((factor) => factor?.status === 'unverified' && typeof factor?.id === 'string')
+				: [];
+			if (
+				!Array.isArray(factors) ||
+				factors.length !== 1 ||
+				unverified.length !== 1 ||
+				(scope.factorId !== undefined && scope.factorId !== unverified[0].id)
+			) {
+				throw new HostedEvidenceOperatorError('A9 moderator MFA factor is ambiguous');
+			}
+			return session.mfa.rollbackEnrollment({ factorId: unverified[0].id });
 		},
 		/** @param {{ manifest: HostedRunManifest, role: string, step: string } & Record<string, unknown>} scope */
 		async readBack(scope) {

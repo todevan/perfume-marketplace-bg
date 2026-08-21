@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as hostedOperator from '../../scripts/hosted-report-evidence-operator.mjs';
+import { runProvisionBoundary } from '../../scripts/gate3-hosted-provision-runner.mjs';
 
 const roles = [
 	'reporter',
@@ -137,21 +138,30 @@ describe('executable A9-only provisioning transaction', () => {
 		const config = hostedOperator.validateHostedA9Environment(environment);
 		const manifest = hostedOperator.createHostedRunManifest(config);
 		const events: string[] = [];
-		const session = {
+		const legacyEnroll = vi.fn(async () => ({ factorId: 'legacy-factor', factorType: 'totp' }));
+		const session = Object.freeze({
+			role: 'assigned-moderator',
+			userId: actorIds['assigned-moderator'],
 			claimOpenRegistration: vi.fn(async () => events.push('registration')),
 			acceptBetaConsent: vi.fn(async ({ documentCode }: { documentCode: string }) =>
 				events.push(`consent:${documentCode}`)
 			),
 			completeBetaOnboarding: vi.fn(async () => events.push('onboarding')),
-			mfa: {
-				enroll: vi.fn(async () => ({ factorId: 'factor-exact', factorType: 'totp' })),
+			mfa: Object.freeze({
+				enroll: legacyEnroll,
+				enrollForProvisioning: vi.fn(async () => ({
+					factorId: 'factor-exact',
+					factorType: 'totp',
+					secret: fixtureTotpSecret
+				})),
+				listFactors: vi.fn(async () => [{ id: 'factor-exact', status: 'unverified' }]),
 				challengeAndVerify: vi.fn(async ({ code }: { code: string }) => {
 					events.push(`verify:${code}`);
 					return { verified: true };
 				}),
 				rollbackEnrollment: vi.fn(async () => events.push('unenroll'))
-			}
-		};
+			})
+		});
 		const adapters = {
 			assertFreshActorAbsent: vi.fn(async ({ role }: { role: string }) => ({ role, absent: true })),
 			createConfirmedUser: vi.fn(async ({ manifest: exactManifest, role }: { manifest: { pendingActors: unknown[] }; role: string }) => {
@@ -159,7 +169,9 @@ describe('executable A9-only provisioning transaction', () => {
 				return { role, userId: actorIds.reporter, createdAt, emailConfirmed: true };
 			}),
 			lookupConfirmedUser: vi.fn(async ({ role }: { role: string }) => ({ role, userId: actorIds.reporter, createdAt, emailConfirmed: true })),
-			createActorSession: vi.fn(async () => session),
+			createActorSession: vi.fn(async ({ role }: { role: (typeof roles)[number] }) =>
+				Object.freeze({ ...session, role, userId: actorIds[role] })
+			),
 			elevateFreshActorRole: vi.fn(async () => events.push('elevate')),
 			inspectProvisionBoundary: vi.fn(async () => ({ status: 'confirmed' }))
 		};
@@ -189,11 +201,19 @@ describe('executable A9-only provisioning transaction', () => {
 			createdAt
 		);
 		await operations.elevateRole({ manifest: moderatorManifest, role: 'assigned-moderator' });
-		await operations.enrollMfa({ manifest: moderatorManifest, role: 'assigned-moderator' });
+		const enrollment = await operations.enrollMfa({
+			manifest: moderatorManifest,
+			role: 'assigned-moderator'
+		});
+		expect(enrollment).toEqual({
+			factorId: 'factor-exact',
+			factorType: 'totp',
+			secret: fixtureTotpSecret
+		});
+		expect(legacyEnroll).not.toHaveBeenCalled();
 		await operations.verifyMfa({
 			manifest: moderatorManifest,
 			role: 'assigned-moderator',
-			factorId: 'factor-exact',
 			secret: fixtureTotpSecret,
 			clock: () => 59_000
 		});
@@ -235,6 +255,162 @@ describe('executable A9-only provisioning transaction', () => {
 		expect(adapters.inspectProvisionBoundary).toHaveBeenCalledWith(
 			expect.objectContaining({ role: 'assigned-moderator', step: 'mfa-unenrolled-recovery' })
 		);
+	});
+
+	it.each(['missing-identity', 'wrong-role', 'wrong-user', 'accessor', 'proxy'] as const)(
+		'rejects %s actor sessions before exposing actor-owned methods',
+		async (kind) => {
+			const config = hostedOperator.validateHostedA9Environment(environment);
+			const manifest = hostedOperator.registerHostedActor(
+				hostedOperator.createHostedRunManifest(config),
+				'assigned-moderator',
+				actorIds['assigned-moderator'],
+				createdAt
+			);
+			const claim = vi.fn();
+			const base = {
+				role: 'assigned-moderator',
+				userId: actorIds['assigned-moderator'],
+				claimOpenRegistration: claim,
+				mfa: Object.freeze({})
+			};
+			let session: object;
+			if (kind === 'missing-identity') {
+				session = Object.freeze({ claimOpenRegistration: claim, mfa: Object.freeze({}) });
+			} else if (kind === 'wrong-role') {
+				session = Object.freeze({ ...base, role: 'reporter' });
+			} else if (kind === 'wrong-user') {
+				session = Object.freeze({ ...base, userId: actorIds.reporter });
+			} else if (kind === 'accessor') {
+				session = { ...base };
+				Object.defineProperty(session, 'userId', {
+					enumerable: true,
+					get: () => actorIds['assigned-moderator']
+				});
+				Object.freeze(session);
+			} else {
+				session = new Proxy(Object.freeze(base), {});
+			}
+			const adapters = {
+				assertFreshActorAbsent: vi.fn(),
+				createConfirmedUser: vi.fn(),
+				lookupConfirmedUser: vi.fn(),
+				createActorSession: vi.fn(async () => session),
+				elevateFreshActorRole: vi.fn(),
+				inspectProvisionBoundary: vi.fn()
+			};
+			const operations = provisioningApi().createHostedA9ProvisionOperations({ config, adapters });
+
+			await expect(
+				operations.claimRegistration({ manifest, role: 'assigned-moderator' })
+			).rejects.toThrow('A9 actor session is invalid');
+			expect(claim).not.toHaveBeenCalled();
+		}
+	);
+
+	it('hands the real actor-owned enrollment seed directly to DPAPI persistence and re-derives its factor', async () => {
+		const config = hostedOperator.validateHostedA9Environment(environment);
+		const role = 'assigned-moderator';
+		const userId = actorIds[role];
+		const storeModeratorTotpSecret = vi.fn();
+		const enroll = vi.fn(async () => ({
+			data: { id: 'factor-real-seam', type: 'totp', totp: { secret: fixtureTotpSecret } },
+			error: null
+		}));
+		const listFactors = vi.fn(async () => ({
+			data: { totp: [{ id: 'factor-real-seam', status: 'unverified' }], phone: [] },
+			error: null
+		}));
+		const challengeAndVerify = vi.fn(async () => ({ data: {}, error: null }));
+		const actorClient = {
+			auth: {
+				signInWithPassword: vi.fn(async () => ({
+					data: { user: { id: userId, email: environment.E2E_REAL_ASSIGNED_MODERATOR_EMAIL } },
+					error: null
+				})),
+				mfa: {
+					enroll,
+					listFactors,
+					challengeAndVerify,
+					getAuthenticatorAssuranceLevel: vi.fn()
+				}
+			},
+			rpc: vi.fn()
+		};
+		const user = {
+			id: userId,
+			email: environment.E2E_REAL_ASSIGNED_MODERATOR_EMAIL,
+			created_at: createdAt,
+			email_confirmed_at: createdAt,
+			user_metadata: {
+				gate3_report_evidence_run_id: config.runId,
+				gate3_report_evidence_provisioning_nonce: config.provisioningNonce,
+				gate3_report_evidence_provisioning_attempt_id: config.provisioningNonce
+			}
+		};
+		const realAdapters = hostedOperator.createSupabaseHostedA9Adapters({
+			config,
+			serviceClient: {
+				supabaseUrl: hostedOperator.HOSTED_STAGING.supabaseUrl,
+				auth: { admin: { getUserById: vi.fn(async () => ({ data: { user }, error: null })) } }
+			} as never,
+			createActorClient: vi.fn(() => actorClient) as never,
+			credentialSink: {
+				storeModeratorTotpSecret,
+				deleteModeratorTotpSecret: vi.fn()
+			}
+		});
+		const operations = provisioningApi().createHostedA9ProvisionOperations({
+			config,
+			adapters: { ...realAdapters, inspectProvisionBoundary: vi.fn(async () => ({ status: 'confirmed' })) }
+		});
+		const manifest = hostedOperator.registerHostedActor(
+			hostedOperator.createHostedRunManifest(config),
+			role,
+			userId,
+			createdAt
+		);
+		const events: string[] = [];
+		const result = await runProvisionBoundary({
+			inspection: Object.freeze({
+				classification: 'PROVISION_PARTIAL',
+				revision: 9,
+				role,
+				step: 'mfa-enrolled',
+				outcome: 'confirmed-absent'
+			}),
+			authorization: Object.freeze({
+				command: 'provision',
+				phase: 'provision',
+				role,
+				step: 'mfa-enrolled',
+				operationId: `${role}.mfa-enrolled`,
+				revision: 9
+			}),
+			capabilities: Object.freeze({
+				mutate: async () => {
+					events.push('enroll');
+					return operations.enrollMfa({ manifest, role });
+				},
+				readBack: async () => {
+					events.push('read-back');
+					return { status: 'confirmed' };
+				},
+				persistCredential: async (enrollment: { secret: string }) => {
+					events.push('dpapi');
+					expect(enrollment.secret).toBe(fixtureTotpSecret);
+					return { status: 'available', ciphertextSha256: 'a'.repeat(64) };
+				},
+				persistManifest: null,
+				persistState: async () => events.push('state')
+			})
+		});
+
+		expect(events).toEqual(['enroll', 'dpapi', 'read-back', 'state']);
+		expect(storeModeratorTotpSecret).not.toHaveBeenCalled();
+		expect(JSON.stringify(result)).not.toMatch(/JBSW|secret|factor-real/u);
+		await operations.verifyMfa({ manifest, role, secret: fixtureTotpSecret, clock: () => 59_000 });
+		expect(challengeAndVerify).toHaveBeenCalledWith({ factorId: 'factor-real-seam', code: '996554' });
 	});
 
 	it('re-verifies the exact target and hosted Auth policy without exposing the publishable key', async () => {
