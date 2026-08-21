@@ -52,6 +52,7 @@ const COMMAND_CAPABILITY_KEYS = Object.freeze(['inspectProvision', 'mutationFor'
 const CONSENT_STEP_PATTERN = /^consent-([a-z][a-z0-9_]{1,63})-(.{1,80})$/u;
 const RUN_ID_PATTERN = /^gate3-\d{8}-[a-f0-9]{8}$/u;
 const ISO_TIMESTAMP_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/u;
+const EMPTY_RECEIPT = Object.freeze({});
 
 class Gate3HostedProvisionError extends Error {
 	/** @param {string} reasonCode @param {number} exitCode */
@@ -306,11 +307,9 @@ function exactEnrollmentPrivateResult(value) {
 		}
 		return Object.freeze({
 			privateCredential: Object.freeze({
-				factorId: entries.factorId,
-				factorType: 'totp',
 				secret: entries.secret
 			}),
-			receipt: Object.freeze({ factorId: entries.factorId, factorType: 'totp' })
+			receipt: EMPTY_RECEIPT
 		});
 	} catch {
 		return null;
@@ -439,6 +438,14 @@ export async function runProvisionBoundary({ inspection, authorization, capabili
 		}
 		const status = readBackStatus(readBackResult);
 		if (status === 'confirmed-absent') {
+			if (scope.step === 'mfa-enrolled' && enrollment !== null) {
+				try {
+					await caps.persistState(Object.freeze({ mode: 'restore-prior-secret-store' }));
+				} catch (error) {
+					if (isRunnerError(error)) throw error;
+					fail('provision_persistence_uncertain', 41);
+				}
+			}
 			return resultFor('confirmed-absent', 'provider_failure_confirmed_absent');
 		}
 		if (status !== 'confirmed') return resultFor('uncertain', 'mutation_outcome_uncertain');
@@ -461,7 +468,11 @@ export async function runProvisionBoundary({ inspection, authorization, capabili
 				mutationAttemptFailed
 			}));
 		}
-		await caps.persistState(Object.freeze({ receipt: mutationReceipt, credentialMetadata }));
+		await caps.persistState(Object.freeze({
+			mode: 'advance',
+			receipt: mutationReceipt,
+			credentialMetadata
+		}));
 	} catch (error) {
 		if (isRunnerError(error)) throw error;
 		fail('provision_persistence_uncertain', 41);
@@ -979,6 +990,52 @@ function exactActorManifestPredecessor(manifest, expectedSha256) {
 		: null;
 }
 
+/** @param {unknown} inspection */
+function hasCanonicalVerifiedTrust(inspection) {
+	const revision = exactOwnInteger(inspection, 'revision');
+	const stateRevision = exactOwnInteger(inspection, 'stateRevision');
+	const boundRelease = exactOwnString(inspection, 'boundReleaseCommitSha');
+	const currentRelease = exactOwnString(inspection, 'currentReleaseCommitSha');
+	const manifestSha256 = exactOwnString(inspection, 'manifestSha256');
+	return (
+		exactClassification(inspection) === 'PROVISION_VERIFIED' &&
+		revision !== null &&
+		stateRevision === revision &&
+		exactOwnBooleanValue(inspection, 'stateValid') === true &&
+		exactOwnBooleanValue(inspection, 'stateCorrupt') === false &&
+		exactOwnBooleanValue(inspection, 'corruptState') === false &&
+		exactOwnBooleanValue(inspection, 'manifestValid') === true &&
+		exactOwnString(inspection, 'manifestBindingStatus') === 'exact' &&
+		exactOwnBooleanValue(inspection, 'manifestExactMatch') === true &&
+		exactOwnBooleanValue(inspection, 'manifestAheadState') === false &&
+		exactOwnBooleanValue(inspection, 'manifestMatches') === true &&
+		exactOwnBooleanValue(inspection, 'manifestMismatch') === false &&
+		typeof manifestSha256 === 'string' &&
+		/^[a-f0-9]{64}$/u.test(manifestSha256) &&
+		exactOwnBooleanValue(inspection, 'authoritativeReleaseAvailable') === true &&
+		exactOwnBooleanValue(inspection, 'authoritativeReleaseUnavailable') === false &&
+		typeof boundRelease === 'string' &&
+		/^[a-f0-9]{40}$/u.test(boundRelease) &&
+		currentRelease === boundRelease &&
+		exactOwnBooleanValue(inspection, 'releaseMismatch') === false &&
+		exactOwnBooleanValue(inspection, 'releaseChanged') === false &&
+		exactOwnBooleanValue(inspection, 'hostedEvidenceAvailable') === true &&
+		exactOwnBooleanValue(inspection, 'ownershipConflict') === false &&
+		exactOwnBooleanValue(inspection, 'cleanupCompleteContradiction') === false &&
+		exactOwnBooleanValue(inspection, 'credentialsLost') === false &&
+		exactOwnInteger(inspection, 'duplicateRoles') === 0 &&
+		exactOwnInteger(inspection, 'metadataMismatches') === 0 &&
+		exactOwnInteger(inspection, 'actorIdentityConflicts') === 0 &&
+		exactOwnInteger(inspection, 'manifestActorsAbsent') === 0 &&
+		exactOwnInteger(inspection, 'hostedActorsManifestStale') === 0 &&
+		exactOwnBooleanValue(inspection, 'provisionVerified') === true &&
+		exactOwnBooleanValue(inspection, 'scenarioVerified') === true &&
+		exactOwnBooleanValue(inspection, 'ambiguous') === false &&
+		exactOwnBooleanValue(inspection, 'exactRecoveryProvenance') === false &&
+		!hasUntrustedForeignActorEvidence(inspection)
+	);
+}
+
 /**
  * Repairs only the exact actor-manifest write that is one durable step ahead of
  * state. Hosted evidence must confirm that same actor and next checkpoint.
@@ -1090,15 +1147,26 @@ async function reconcileManifestAheadIfSafe({
  * @param {{ paths: Record<string, string>, inspection: unknown, commandCaps: Record<string, Function>, dependencies: Record<string, any>, assertLockOwned: () => Promise<void> }} options
  */
 async function catchUpVerifiedState({ paths, inspection, commandCaps, dependencies, assertLockOwned }) {
+	if (!hasCanonicalVerifiedTrust(inspection)) fail('provision_checkpoint_ambiguous', 20);
 	await assertLockOwned();
 	const readState = dependency(dependencies, 'readRunState', readRunState);
 	const state = await readState(paths);
-	if (state.revision !== safeInspectionRevision(inspection)) fail('provision_checkpoint_ambiguous', 20);
+	if (
+		!isPlainDataObject(state) ||
+		state.revision !== safeInspectionRevision(inspection) ||
+		state.manifest?.sha256 !== exactOwnString(inspection, 'manifestSha256')
+	) {
+		fail('provision_checkpoint_ambiguous', 20);
+	}
 	const loadManifest = dependency(dependencies, 'loadManifest', loadHostedRunManifest);
 	const manifest = await loadManifest(
 		Object.freeze({ target: HOSTED_STAGING, runId: paths.runId }),
 		paths.manifestPath
 	);
+	const hashManifest = dependency(dependencies, 'hashManifest', defaultManifestHash);
+	if (hashManifest(manifest) !== exactOwnString(inspection, 'manifestSha256')) {
+		fail('provision_checkpoint_ambiguous', 20);
+	}
 	const snapshot = exactProvisionSnapshot(
 		await commandCaps.inspectProvision({ inspection, state, manifest })
 	);
@@ -1203,6 +1271,9 @@ export async function runProvisionCommand({
 				continue;
 			}
 			if (classification === 'PROVISION_VERIFIED') {
+				if (!hasCanonicalVerifiedTrust(inspection)) {
+					return blockedResult('AMBIGUOUS', inspectionRevision);
+				}
 				if (
 					await catchUpVerifiedState({
 						paths,
@@ -1417,8 +1488,34 @@ export async function runProvisionCommand({
 							}
 						}
 						: null,
-				persistState: async () => {
+				persistState: async (/** @type {{ mode?: string }} */ request) => {
 					await assertLockOwned();
+					const writeState = dependency(dependencies, 'writeNextRunState', writeNextRunState);
+					if (request?.mode === 'restore-prior-secret-store') {
+						if (next.step !== 'mfa-enrolled') fail('provision_persistence_uncertain', 41);
+						const protect = dependency(dependencies, 'protectRunSecrets', protectRunSecrets);
+						const restoredMetadata = exactCredentialMetadata(
+							await protect({
+								payload,
+								path: state.secretStore.path,
+								dpapi
+							})
+						);
+						if (restoredMetadata === null) fail('provision_persistence_uncertain', 41);
+						const restoredState = {
+							...state,
+							revision: state.revision + 1,
+							secretStore: {
+								...state.secretStore,
+								status: restoredMetadata.status,
+								ciphertextSha256: restoredMetadata.ciphertextSha256
+							}
+						};
+						await assertLockOwned();
+						await writeState(paths, state, restoredState);
+						return;
+					}
+					if (request?.mode !== 'advance') fail('provision_persistence_uncertain', 41);
 					const observedAt = dependency(dependencies, 'now', () => new Date().toISOString())();
 					if (typeof observedAt !== 'string' || Number.isNaN(Date.parse(observedAt))) {
 						fail('provision_persistence_uncertain', 41);
@@ -1441,7 +1538,6 @@ export async function runProvisionCommand({
 									ciphertextSha256: secretMetadata.ciphertextSha256
 								}
 					});
-					const writeState = dependency(dependencies, 'writeNextRunState', writeNextRunState);
 					await writeState(paths, state, nextState);
 				}
 			});
