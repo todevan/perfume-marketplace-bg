@@ -3125,7 +3125,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		expect(invokeCleanupWorker).not.toHaveBeenCalled();
 	});
 
-	it('rejects forged exact cleanup coordinates even when their queue linkage is self-consistent', async () => {
+	it('rejects structurally inconsistent exact cleanup coordinates even when queue linkage is self-consistent', async () => {
 		const config = validateHostedOperatorEnvironment(baseEnvironment);
 		const uploadId = '33333333-3333-4333-8333-333333333333';
 		const registeredPath = `${actorIds.reporter}/${uploadId}.webp`;

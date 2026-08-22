@@ -24,13 +24,19 @@ begin
   set worker_request_id = btrim($4),
       claimed_at = lease_time,
       attempts = q.attempts + 1
-  where q.id = target_queue_id
+  where target_queue_id > 0
+    and target_bucket_id = 'report-evidence'
+    and target_storage_path ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[.]webp$'
+    and q.id = target_queue_id
     and q.bucket_id = target_bucket_id
     and q.storage_path = target_storage_path
     and q.processed_at is null
     and q.dead_lettered_at is null
     and q.next_attempt_at <= lease_time
-    and q.claimed_at is null
+    and (
+      q.claimed_at is null
+      or q.claimed_at <= lease_time - interval '5 minutes'
+    )
     and q.attempts < 8
     and char_length(btrim(coalesce($4, ''))) between 8 and 200
     and $4 = btrim($4)

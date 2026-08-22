@@ -1,6 +1,6 @@
 begin;
 
-select plan(36);
+select plan(40);
 
 select ok(
   to_regclass('public.report_evidence_uploads') is not null,
@@ -583,6 +583,40 @@ with inserted as (
   returning id, storage_path
 )
 insert into exact_cleanup_coordinates select 'processed', id, storage_path from inserted;
+with inserted as (
+  insert into public.upload_cleanup_queue (
+    bucket_id, storage_path, reason, worker_request_id, claimed_at, attempts
+  ) values (
+    'report-evidence',
+    '12111111-1111-4111-8111-111111111111/36666666-6666-4666-8666-666666666666.webp',
+    'task8_stale_claim',
+    'task8-stale-worker',
+    statement_timestamp() - interval '6 minutes',
+    1
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'stale', id, storage_path from inserted;
+with inserted as (
+  insert into public.upload_cleanup_queue (bucket_id, storage_path, reason)
+  values (
+    'listing-images',
+    '12111111-1111-4111-8111-111111111111/37777777-7777-4777-8777-777777777777.webp',
+    'task8_foreign_bucket'
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'foreign_bucket', id, storage_path from inserted;
+with inserted as (
+  insert into public.upload_cleanup_queue (bucket_id, storage_path, reason)
+  values (
+    'report-evidence',
+    'task8/noncanonical.webp',
+    'task8_noncanonical_path'
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'noncanonical_path', id, storage_path from inserted;
 grant select on exact_cleanup_coordinates to service_role;
 
 set local role service_role;
@@ -664,6 +698,57 @@ select is(
   ),
   0,
   'an exact claim cannot take an already-claimed row'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'stale'),
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'stale'),
+      'task8-stale-replacement'
+    )
+  ),
+  1,
+  'an exact claim reclaims one lease older than five minutes'
+);
+select ok(
+  exists (
+    select 1
+    from public.upload_cleanup_queue q
+    join exact_cleanup_coordinates c on c.queue_id = q.id
+    where c.row_kind = 'stale'
+      and q.worker_request_id = 'task8-stale-replacement'
+      and q.attempts = 2
+      and q.claimed_at > statement_timestamp() - interval '1 minute'
+  ),
+  'a reclaimed stale lease replaces the worker token, increments once, and refreshes claimed_at'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'foreign_bucket'),
+      'listing-images',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'foreign_bucket'),
+      'task8-foreign-bucket-request'
+    )
+  ),
+  0,
+  'the service role cannot use exact cleanup to claim an eligible foreign-bucket row'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'noncanonical_path'),
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'noncanonical_path'),
+      'task8-noncanonical-request'
+    )
+  ),
+  0,
+  'the service role cannot use exact cleanup to claim an eligible noncanonical report-evidence path'
 );
 select is(
   (

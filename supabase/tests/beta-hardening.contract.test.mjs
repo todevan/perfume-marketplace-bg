@@ -325,12 +325,15 @@ test('exact upload cleanup claims only one service-authorized coordinate tuple',
 		'worker_request_id text',
 		"set search_path = ''",
 		'update public.upload_cleanup_queue as q',
+		'target_queue_id > 0',
+		"target_bucket_id = 'report-evidence'",
+		"target_storage_path ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[.]webp$'",
 		'q.id = target_queue_id',
 		'q.bucket_id = target_bucket_id',
 		'q.storage_path = target_storage_path',
 		'q.processed_at is null',
 		'q.next_attempt_at <= lease_time',
-		'q.claimed_at is null',
+		"q.claimed_at is null or q.claimed_at <= lease_time - interval '5 minutes'",
 		'grant execute on function public.claim_exact_upload_cleanup(bigint, text, text, text) to service_role'
 	]);
 	assert.match(
