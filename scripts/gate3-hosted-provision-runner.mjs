@@ -4,13 +4,15 @@ import {
 	HOSTED_STAGING,
 	loadHostedRunManifest,
 	persistHostedRunManifest,
-	registerHostedActor
+	registerHostedActor,
+	validateHostedRunManifest
 } from './hosted-report-evidence-operator.mjs';
 import { inspectGate3HostedRun } from './gate3-hosted-inspector.mjs';
 import { classifyGate3Lifecycle, selectNextProvisionStep } from './gate3-hosted-lifecycle.mjs';
 import {
 	acquireRunLock,
 	inspectRunLock,
+	readStableGate3PreflightSnapshot,
 	readRunState,
 	releaseRunLock,
 	writeNextRunState
@@ -18,7 +20,7 @@ import {
 import {
 	protectRunSecrets,
 	recordProviderTotpSecret,
-	unprotectRunSecrets
+	unprotectRunSecretBytes
 } from './gate3-hosted-secrets.mjs';
 
 const ACTOR_ROLES = Object.freeze([
@@ -969,6 +971,27 @@ function defaultManifestHash(value) {
 	return createHash('sha256').update(`${JSON.stringify(value)}\n`).digest('hex');
 }
 
+/** @param {Buffer | Uint8Array} bytes */
+function exactBytesHash(bytes) {
+	return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** @param {unknown} snapshot @param {string} name */
+function capturedSnapshotBytes(snapshot, name) {
+	if (!isPlainDataObject(snapshot)) return null;
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(snapshot, name);
+		return descriptor &&
+			Object.hasOwn(descriptor, 'value') &&
+			descriptor.enumerable === true &&
+			Buffer.isBuffer(descriptor.value)
+			? descriptor.value
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 /** @param {Record<string, any>} manifest @param {string} expectedSha256 */
 function exactActorManifestPredecessor(manifest, expectedSha256) {
 	if (!Array.isArray(manifest.actors) || manifest.actors.length === 0) return null;
@@ -1400,29 +1423,107 @@ export async function runProvisionCommand({
 				return blockedResult('AMBIGUOUS', inspectionRevision);
 			}
 
-			const readState = dependency(dependencies, 'readRunState', readRunState);
 			let state;
-			try {
-				state = await readState(paths);
-				safeInteger(state.revision, 'provision_precondition_failed');
-				if (state.revision !== inspectionRevision) return blockedResult('AMBIGUOUS', inspectionRevision);
-			} catch (error) {
-				if (isRunnerError(error)) throw error;
-				return blockedResult('AMBIGUOUS', inspectionRevision);
-			}
 			let manifest;
+			/** @type {Buffer | null} */
+			let capturedCiphertext = null;
 			try {
-				const manifestConfig = Object.freeze({ target: HOSTED_STAGING, runId: paths.runId });
-				const loadManifest = dependency(dependencies, 'loadManifest', loadHostedRunManifest);
-				manifest = await loadManifest(manifestConfig, paths.manifestPath);
+				await assertLockOwned();
+				const capture = dependency(
+					dependencies,
+					'readStableSnapshot',
+					readStableGate3PreflightSnapshot
+				);
+				const captured = await capture(paths);
+				const stateBytes = capturedSnapshotBytes(captured, 'stateBytes');
+				const manifestBytes = capturedSnapshotBytes(captured, 'manifestBytes');
+				capturedCiphertext = capturedSnapshotBytes(captured, 'secretBytes');
+				const capturedStateDescriptor = isPlainDataObject(captured)
+					? Object.getOwnPropertyDescriptor(captured, 'state')
+					: null;
+				if (
+					stateBytes === null ||
+					manifestBytes === null ||
+					capturedCiphertext === null ||
+					!capturedStateDescriptor ||
+					!Object.hasOwn(capturedStateDescriptor, 'value') ||
+					capturedStateDescriptor.enumerable !== true
+				) {
+					throw new Error('durable snapshot invalid');
+				}
+				state = JSON.parse(stateBytes.toString('utf8'));
+				if (
+					!isPlainDataObject(state) ||
+					JSON.stringify(state) !== JSON.stringify(capturedStateDescriptor.value)
+				) {
+					throw new Error('durable state changed');
+				}
+				const stateSha256 = exactBytesHash(stateBytes);
+				const manifestSha256 = exactBytesHash(manifestBytes);
+				const ciphertextSha256 = exactBytesHash(capturedCiphertext);
+				const boundRelease = exactOwnString(inspection, 'boundReleaseCommitSha');
+				const currentRelease = exactOwnString(inspection, 'currentReleaseCommitSha');
+				if (
+					stateSha256 !== exactOwnString(inspection, 'stateSha256') ||
+					manifestSha256 !== exactOwnString(inspection, 'manifestSha256') ||
+					ciphertextSha256 !== exactOwnString(inspection, 'secretStoreCiphertextSha256') ||
+					state.revision !== inspectionRevision ||
+					state.runId !== paths.runId ||
+					state.target?.projectRef !== HOSTED_STAGING.projectRef ||
+					state.target?.projectRef !== exactOwnString(inspection, 'projectRef') ||
+					state.target?.workerOrigin !== HOSTED_STAGING.workerOrigin ||
+					state.target?.workerOrigin !== exactOwnString(inspection, 'workerOrigin') ||
+					typeof boundRelease !== 'string' ||
+					!/^[a-f0-9]{40}$/u.test(boundRelease) ||
+					state.target?.releaseCommitSha !== boundRelease ||
+					currentRelease !== boundRelease ||
+					state.manifest?.path !== paths.manifestPath ||
+					state.manifest?.sha256 !== manifestSha256 ||
+					state.secretStore?.path !== paths.secretPath ||
+					!['available', 'persisted'].includes(state.secretStore?.status) ||
+					state.secretStore?.status !== exactOwnString(inspection, 'secretStoreStatus') ||
+					state.secretStore?.ciphertextSha256 !== ciphertextSha256 ||
+					exactOwnBooleanValue(inspection, 'stateValid') !== true ||
+					exactOwnBooleanValue(inspection, 'stateCorrupt') !== false ||
+					exactOwnBooleanValue(inspection, 'corruptState') !== false ||
+					exactOwnBooleanValue(inspection, 'manifestValid') !== true ||
+					exactOwnString(inspection, 'manifestBindingStatus') !== 'exact' ||
+					exactOwnBooleanValue(inspection, 'manifestExactMatch') !== true ||
+					exactOwnBooleanValue(inspection, 'manifestMatches') !== true ||
+					exactOwnBooleanValue(inspection, 'manifestMismatch') !== false ||
+					exactOwnBooleanValue(inspection, 'authoritativeReleaseAvailable') !== true ||
+					exactOwnBooleanValue(inspection, 'authoritativeReleaseUnavailable') !== false ||
+					exactOwnBooleanValue(inspection, 'releaseMismatch') !== false ||
+					exactOwnBooleanValue(inspection, 'releaseChanged') !== false ||
+					exactOwnBooleanValue(inspection, 'credentialsLost') !== false
+				) {
+					throw new Error('durable snapshot does not match fresh inspection');
+				}
+				const parsedManifest = JSON.parse(manifestBytes.toString('utf8'));
+				manifest = validateHostedRunManifest(
+					Object.freeze({
+						target: HOSTED_STAGING,
+						runId: paths.runId,
+						actorRoles: {},
+						serviceKey: '',
+						provisioningNonce: parsedManifest.provisioningAttemptId,
+						provisionedAfter: state.createdAt
+					}),
+					parsedManifest
+				);
 			} catch (error) {
+				capturedCiphertext?.fill(0);
 				if (isRunnerError(error)) throw error;
 				return blockedResult('AMBIGUOUS', inspectionRevision);
 			}
 			let payload;
 			try {
-				const unprotect = dependency(dependencies, 'unprotectRunSecrets', unprotectRunSecrets);
-				payload = await unprotect({ runId: paths.runId, path: paths.secretPath, dpapi });
+				const unprotect = dependency(
+					dependencies,
+					'unprotectRunSecretBytes',
+					unprotectRunSecretBytes
+				);
+				payload = await unprotect({ runId: paths.runId, ciphertext: capturedCiphertext, dpapi });
 			} catch (error) {
 				if (isRunnerError(error)) throw error;
 				return blockedResult(
@@ -1431,6 +1532,8 @@ export async function runProvisionCommand({
 						: 'AMBIGUOUS',
 					inspectionRevision
 				);
+			} finally {
+				capturedCiphertext?.fill(0);
 			}
 
 			/** @type {ReturnType<typeof exactProvisionSnapshot>} */

@@ -1772,6 +1772,7 @@ describe('A9-only Supabase adapter foundations', () => {
 		expect(Object.keys(adapters)).toEqual([
 			'assertFreshActorAbsent',
 			'createConfirmedUser',
+			'createResumableUser',
 			'lookupConfirmedUser',
 			'deleteFreshUser',
 			'createActorSession',

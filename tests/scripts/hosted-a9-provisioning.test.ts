@@ -405,6 +405,119 @@ function createRealReadBackFixture(
 	};
 }
 
+function createRealActorCreationBoundaryFixture(
+	afterCreate: 'confirmed' | 'confirmed-absent' | 'uncertain'
+) {
+	const config = hostedOperator.validateHostedA9Environment(environment);
+	const role = 'reporter' as const;
+	const credentials = config.actorRoles[role];
+	const exactUser: Record<string, any> = {
+		id: actorIds[role],
+		email: credentials.email,
+		created_at: createdAt,
+		email_confirmed_at: createdAt,
+		user_metadata: {
+			username: credentials.username,
+			gate3_report_evidence_run_id: config.runId,
+			gate3_report_evidence_provisioning_nonce: config.provisioningNonce,
+			gate3_report_evidence_provisioning_attempt_id: config.provisioningNonce
+		}
+	};
+	let authUsers: Array<Record<string, any>> = [];
+	const createUser = vi.fn(async () => {
+		authUsers =
+			afterCreate === 'confirmed'
+				? [exactUser]
+				: afterCreate === 'uncertain'
+					? [exactUser, { ...exactUser, id: actorIds['cross-user'] }]
+					: [];
+		throw new Error('transport failed after Auth outcome');
+	});
+	const deleteUser = vi.fn(async () => {
+		authUsers = [];
+		return { data: {}, error: null };
+	});
+	const listUsers = vi.fn(async () => ({
+		data: { users: authUsers, total: authUsers.length, lastPage: 1 },
+		error: null
+	}));
+	const getUserById = vi.fn(async (userId: string) => {
+		const user = authUsers.find((candidate) => candidate.id === userId) ?? null;
+		return user
+			? { data: { user }, error: null }
+			: { data: { user: null }, error: { status: 404 } };
+	});
+	const adapters = hostedOperator.createSupabaseHostedA9Adapters({
+		config,
+		serviceClient: {
+			supabaseUrl: hostedOperator.HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { createUser, deleteUser, getUserById, listUsers } }
+		} as never,
+		createActorClient: vi.fn() as never,
+		credentialSink: {
+			storeModeratorTotpSecret: vi.fn(),
+			deleteModeratorTotpSecret: vi.fn()
+		}
+	});
+	const operations = provisioningApi().createHostedA9ProvisionOperations({ config, adapters });
+	const manifest = hostedOperator.createHostedRunManifest(config);
+	const intent = hostedOperator.registerHostedActorIntent(manifest, role);
+	const events: string[] = [];
+	let persistedManifest: ReturnType<typeof hostedOperator.createHostedRunManifest> | null = null;
+	let targetedReadBack: Record<string, unknown> | null = null;
+	const readBack = vi.fn(async () => {
+		events.push('read-back');
+		targetedReadBack = await operations.readBack({ manifest: intent, role, step: 'auth-created' });
+		return targetedReadBack;
+	});
+	const execute = () =>
+		runProvisionBoundary({
+			inspection: Object.freeze({
+				classification: 'PREFLIGHT_READY',
+				revision: 1,
+				role,
+				step: 'auth-created',
+				outcome: 'confirmed-absent'
+			}),
+			authorization: Object.freeze({
+				command: 'provision',
+				phase: 'provision',
+				role,
+				step: 'auth-created',
+				operationId: `${role}.auth-created`,
+				revision: 1
+			}),
+			capabilities: Object.freeze({
+				mutate: async () => {
+					events.push('create');
+					return operations.createActor({ manifest, role });
+				},
+				readBack,
+				persistCredential: null,
+				persistManifest: async ({ readBackReceipt }: { readBackReceipt: { actor: { userId: string; createdAt: string } } }) => {
+					events.push('manifest');
+					persistedManifest = hostedOperator.registerHostedActor(
+						intent,
+						role,
+						readBackReceipt.actor.userId,
+						readBackReceipt.actor.createdAt
+					);
+				},
+				persistState: async () => events.push('state')
+			})
+		});
+	return {
+		authUsers: () => authUsers,
+		createUser,
+		deleteUser,
+		events,
+		execute,
+		persistedManifest: () => persistedManifest,
+		readBack,
+		targetedReadBack: () => targetedReadBack
+	};
+}
+
 describe('executable A9-only provisioning transaction', () => {
 	it.each(
 		readBackSteps.flatMap((step) =>
@@ -710,6 +823,46 @@ describe('executable A9-only provisioning transaction', () => {
 		expect(fixture.spies.listUsers).toHaveBeenCalledTimes(2);
 	});
 
+	it('reconciles an uncertain resumable Auth create without compensating the committed actor', async () => {
+		const fixture = createRealActorCreationBoundaryFixture('confirmed');
+
+		await expect(fixture.execute()).resolves.toMatchObject({
+			status: 'confirmed',
+			reasonCode: 'provision_boundary_confirmed'
+		});
+
+		expect(fixture.createUser).toHaveBeenCalledOnce();
+		expect(fixture.deleteUser).not.toHaveBeenCalled();
+		expect(fixture.authUsers()).toHaveLength(1);
+		expect(fixture.authUsers()[0]?.id).toBe(actorIds.reporter);
+		expect(fixture.targetedReadBack()).toEqual(
+			expect.objectContaining({
+				status: 'confirmed',
+				actor: expect.objectContaining({ userId: actorIds.reporter })
+			})
+		);
+		expect(fixture.persistedManifest()?.actors).toEqual([
+			expect.objectContaining({ role: 'reporter', userId: actorIds.reporter, createdAt })
+		]);
+		expect(fixture.events).toEqual(['create', 'read-back', 'manifest', 'state']);
+	});
+
+	it.each([
+		['confirmed-absent', 'confirmed-absent', 'provider_failure_confirmed_absent'],
+		['uncertain', 'uncertain', 'mutation_outcome_uncertain']
+	] as const)(
+		'returns resumable Auth create %s as boundary %s without compensation',
+		async (outcome, status, reasonCode) => {
+			const fixture = createRealActorCreationBoundaryFixture(outcome);
+
+			await expect(fixture.execute()).resolves.toMatchObject({ status, reasonCode });
+			expect(fixture.createUser).toHaveBeenCalledOnce();
+			expect(fixture.deleteUser).not.toHaveBeenCalled();
+			expect(fixture.persistedManifest()).toBeNull();
+			expect(fixture.events).toEqual(['create', 'read-back']);
+		}
+	);
+
 	it('exposes narrow exact-role A9 operations without changing the compatibility transaction', async () => {
 		const config = hostedOperator.validateHostedA9Environment(environment);
 		const manifest = hostedOperator.createHostedRunManifest(config);
@@ -740,7 +893,8 @@ describe('executable A9-only provisioning transaction', () => {
 		});
 		const adapters = {
 			assertFreshActorAbsent: vi.fn(async ({ role }: { role: string }) => ({ role, absent: true })),
-			createConfirmedUser: vi.fn(async ({ manifest: exactManifest, role }: { manifest: { pendingActors: unknown[] }; role: string }) => {
+			createConfirmedUser: vi.fn(),
+			createResumableUser: vi.fn(async ({ manifest: exactManifest, role }: { manifest: { pendingActors: unknown[] }; role: string }) => {
 				expect(exactManifest.pendingActors).toHaveLength(1);
 				return { role, userId: actorIds.reporter, createdAt, emailConfirmed: true };
 			}),
@@ -870,6 +1024,7 @@ describe('executable A9-only provisioning transaction', () => {
 			const adapters = {
 				assertFreshActorAbsent: vi.fn(),
 				createConfirmedUser: vi.fn(),
+				createResumableUser: vi.fn(),
 				lookupConfirmedUser: vi.fn(),
 				createActorSession: vi.fn(async () => session),
 				elevateFreshActorRole: vi.fn(),

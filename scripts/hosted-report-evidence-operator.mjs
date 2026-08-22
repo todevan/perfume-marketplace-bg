@@ -1691,6 +1691,61 @@ export function createSupabaseHostedA9Adapters({
 		});
 	}
 
+	/**
+	 * Performs the single resumable Auth create boundary without compensation.
+	 * Transport and response failures are deliberately left for Task 7 targeted
+	 * read-back to classify; this primitive never deletes a possibly committed actor.
+	 * @param {{ manifest: HostedRunManifest, role: string }} scope
+	 */
+	async function createResumableUser(scope) {
+		const credentials = exactActorCredentials(config, scope.role);
+		assertManifestTarget(config, scope.manifest);
+		const pending = scope.manifest.pendingActors.find((actor) => actor.role === scope.role);
+		if (!pending || pending.provisioningAttemptId !== scope.manifest.provisioningAttemptId) {
+			throw new HostedEvidenceOperatorError('A9 actor intent was not checkpointed');
+		}
+		if (!absenceAttestedRoles.has(scope.role)) {
+			throw new HostedEvidenceOperatorError('A9 actor absence was not attested');
+		}
+		try {
+			const result = await serviceClient.auth.admin.createUser({
+				email: credentials.email,
+				password: credentials.password,
+				email_confirm: true,
+				user_metadata: {
+					username: credentials.username,
+					gate3_report_evidence_run_id: config.runId,
+					gate3_report_evidence_provisioning_nonce: config.provisioningNonce,
+					gate3_report_evidence_provisioning_attempt_id:
+						scope.manifest.provisioningAttemptId
+				}
+			});
+			const user = result.data?.user;
+			if (!user || typeof user.created_at !== 'string') {
+				throw new HostedEvidenceOperatorError('resumable A9 actor creation outcome is uncertain');
+			}
+			requireUuid(user.id, 'actor ID');
+			requireIsoTimestamp(user.created_at);
+			const actor = {
+				role: scope.role,
+				userId: user.id,
+				createdAt: user.created_at,
+				provisioningAttemptId: scope.manifest.provisioningAttemptId
+			};
+			if (result.error || !authUserIsConfirmed(user) || !actorProvenanceMatches(config, actor, user)) {
+				throw new HostedEvidenceOperatorError('resumable A9 actor creation outcome is uncertain');
+			}
+			return Object.freeze({
+				role: actor.role,
+				userId: actor.userId,
+				createdAt: actor.createdAt,
+				emailConfirmed: true
+			});
+		} finally {
+			absenceAttestedRoles.delete(scope.role);
+		}
+	}
+
 	const PROVISION_READ_BACK_OUTCOMES = Object.freeze({
 		confirmed: Object.freeze({ status: 'confirmed' }),
 		absent: Object.freeze({ status: 'confirmed-absent' }),
@@ -2243,6 +2298,7 @@ export function createSupabaseHostedA9Adapters({
 	return Object.freeze({
 		assertFreshActorAbsent,
 		createConfirmedUser,
+		createResumableUser,
 		lookupConfirmedUser,
 		deleteFreshUser,
 		createActorSession,
@@ -2348,7 +2404,7 @@ export async function verifyHostedA9Prerequisites({
 export function createHostedA9ProvisionOperations({ config, adapters }) {
 	const requiredMethods = [
 		'assertFreshActorAbsent',
-		'createConfirmedUser',
+		'createResumableUser',
 		'lookupConfirmedUser',
 		'createActorSession',
 		'elevateFreshActorRole',
@@ -2447,7 +2503,7 @@ export function createHostedA9ProvisionOperations({ config, adapters }) {
 			if (absence?.role !== scope.role || absence?.absent !== true) {
 				throw new HostedEvidenceOperatorError('A9 actor absence attestation failed');
 			}
-			return adapters.createConfirmedUser({ manifest: intent, role: scope.role });
+			return adapters.createResumableUser({ manifest: intent, role: scope.role });
 		},
 		/** @param {{ manifest: HostedRunManifest, role: string }} scope */
 		async claimRegistration(scope) {

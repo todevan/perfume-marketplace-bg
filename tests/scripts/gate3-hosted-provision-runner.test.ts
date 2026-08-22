@@ -8,7 +8,8 @@ import { classifyGate3Lifecycle } from '../../scripts/gate3-hosted-lifecycle.mjs
 import {
 	HOSTED_STAGING,
 	createHostedRunManifest,
-	registerHostedActor as hostedRegisterActor
+	registerHostedActor as hostedRegisterActor,
+	registerHostedActorIntent
 } from '../../scripts/hosted-report-evidence-operator.mjs';
 import {
 	createInitialRunState
@@ -269,11 +270,16 @@ function commandFixture() {
 		manifestPath: paths.manifestPath,
 		secretPath: paths.secretPath
 	}) as Record<string, any>;
+	let secretBytes = Buffer.from('exact-current-run-ciphertext');
 	state = {
 		...state,
 		revision: 1,
 		manifest: { ...state.manifest, sha256: 'b'.repeat(64) },
-		secretStore: { ...state.secretStore, status: 'available', ciphertextSha256: 'c'.repeat(64) },
+		secretStore: {
+			...state.secretStore,
+			status: 'available',
+			ciphertextSha256: createHash('sha256').update(secretBytes).digest('hex')
+		},
 		phases: {
 			...state.phases,
 			preflight: { status: 'complete', checkpoint: { step: 'preflight-verified' } }
@@ -337,19 +343,42 @@ function commandFixture() {
 		events.push('inspect');
 		const allVerified = roles.every((role) => snapshot.actors[role].actorVerified === true);
 		const anyCreated = roles.some((role) => snapshot.actors[role].auth === 'confirmed');
+		const stateBytes = Buffer.from(`${JSON.stringify(state)}\n`);
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
 		return Object.freeze({
+			...(classificationOverride === null && allVerified
+				? canonicalPostProvisionInspection(state.revision, state.manifest.sha256)
+				: {}),
 			classification:
 				classificationOverride ??
 				(allVerified ? 'PROVISION_VERIFIED' : anyCreated ? 'PROVISION_PARTIAL' : 'PREFLIGHT_READY'),
 			stateRevision: state.revision,
 			revision: state.revision,
+			stateSha256: createHash('sha256').update(stateBytes).digest('hex'),
+			stateValid: true,
+			stateCorrupt: false,
+			corruptState: false,
+			projectRef: HOSTED_STAGING.projectRef,
+			workerOrigin: HOSTED_STAGING.workerOrigin,
+			manifestValid: true,
+			manifestBindingStatus: 'exact',
+			manifestExactMatch: true,
+			manifestAheadState: false,
+			manifestMatches: true,
+			manifestMismatch: false,
+			manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+			authoritativeReleaseAvailable: true,
+			authoritativeReleaseUnavailable: false,
+			boundReleaseCommitSha: state.target.releaseCommitSha,
+			currentReleaseCommitSha: state.target.releaseCommitSha,
+			releaseMismatch: classificationOverride === 'RELEASE_CHANGED',
 			releaseChanged: classificationOverride === 'RELEASE_CHANGED',
+			secretStoreStatus: state.secretStore.status,
+			secretStoreCiphertextSha256: createHash('sha256').update(secretBytes).digest('hex'),
+			credentialsLost: false,
 			ambiguous: classificationOverride === 'AMBIGUOUS',
-			exactRecoveryProvenance: snapshot.exactRecoveryProvenance,
-			foreignCounts: zeroForeignCounts,
-			...(classificationOverride === null && allVerified
-				? canonicalPostProvisionInspection(state.revision, state.manifest.sha256)
-				: {})
+			exactRecoveryProvenance: allVerified ? false : snapshot.exactRecoveryProvenance,
+			foreignCounts: zeroForeignCounts
 		});
 	});
 	const inspectProvision = vi.fn(async () => structuredClone(snapshot));
@@ -403,7 +432,9 @@ function commandFixture() {
 		readRunState: vi.fn(async () => state),
 		readStableSnapshot: vi.fn(async () => ({
 			state,
-			secretBytes: Buffer.alloc(0)
+			stateBytes: Buffer.from(`${JSON.stringify(state)}\n`),
+			manifestBytes: Buffer.from(`${JSON.stringify(manifest)}\n`),
+			secretBytes: Buffer.from(secretBytes)
 		})),
 		writeNextRunState: vi.fn(async (_paths: unknown, _current: unknown, next: Record<string, any>) => {
 			events.push('state');
@@ -419,7 +450,11 @@ function commandFixture() {
 		protectRunSecrets: vi.fn(async ({ payload }: { payload: Record<string, any> }) => {
 			events.push('dpapi');
 			protectedPayload = payload;
-			return { status: 'available', ciphertextSha256: 'e'.repeat(64) };
+			secretBytes = Buffer.from(`protected-${JSON.stringify(payload)}`);
+			return {
+				status: 'available',
+				ciphertextSha256: createHash('sha256').update(secretBytes).digest('hex')
+			};
 		}),
 		recordProviderTotpSecret: vi.fn(({ payload, role, secret }: Record<string, any>) => ({
 			...payload,
@@ -1116,16 +1151,10 @@ describe('Gate 3 provision command', () => {
 
 	it('stops when the release changes between boundaries and does not expose a second capability', async () => {
 		const fixture = commandFixture();
+		const originalInspect = fixture.dependencies.inspectRun.getMockImplementation();
+		if (!originalInspect) throw new Error('fixture inspector unavailable');
 		fixture.dependencies.inspectRun
-			.mockImplementationOnce(async () => ({
-				classification: 'PREFLIGHT_READY',
-				stateRevision: 1,
-				revision: 1,
-				releaseChanged: false,
-				ambiguous: false,
-				exactRecoveryProvenance: true,
-				foreignCounts: zeroForeignCounts
-			}))
+			.mockImplementationOnce(originalInspect)
 			.mockImplementationOnce(async () => ({
 				classification: 'RELEASE_CHANGED',
 				stateRevision: 2,
@@ -1381,13 +1410,21 @@ describe('Gate 3 provision command', () => {
 		const seedOne = 'JBSWY3DPEHPK3PXP';
 		const seedTwo = 'KRSXG5DSNFXGOIDB';
 		let durablePayload = structuredClone(await fixture.dependencies.unprotectRunSecrets());
-		let durableSha256 = fixture.state().secretStore.ciphertextSha256;
+		let durableCiphertext = Buffer.from('exact-current-run-ciphertext');
+		let durableSha256 = createHash('sha256').update(durableCiphertext).digest('hex');
 		const protectedPayloads: Record<string, any>[] = [];
-		fixture.dependencies.unprotectRunSecrets.mockImplementation(async () => structuredClone(durablePayload));
+		fixture.dependencies.unprotectRunSecretBytes.mockImplementation(async () => structuredClone(durablePayload));
+		const readStableSnapshot = fixture.dependencies.readStableSnapshot.getMockImplementation();
+		if (!readStableSnapshot) throw new Error('fixture stable snapshot unavailable');
+		fixture.dependencies.readStableSnapshot.mockImplementation(async (...args: any[]) => ({
+			...(await readStableSnapshot(...args)),
+			secretBytes: Buffer.from(durableCiphertext)
+		}));
 		fixture.dependencies.protectRunSecrets.mockImplementation(async ({ payload }: { payload: Record<string, any> }) => {
 			protectedPayloads.push(structuredClone(payload));
 			durablePayload = structuredClone(payload);
-			durableSha256 = `${protectedPayloads.length}`.repeat(64);
+			durableCiphertext = Buffer.from(`durable-${protectedPayloads.length}-${JSON.stringify(payload)}`);
+			durableSha256 = createHash('sha256').update(durableCiphertext).digest('hex');
 			return { status: 'available', ciphertextSha256: durableSha256 };
 		});
 		const originalInspect = fixture.dependencies.inspectRun.getMockImplementation();
@@ -1403,7 +1440,10 @@ describe('Gate 3 provision command', () => {
 					foreignCounts: zeroForeignCounts
 				};
 			}
-			return originalInspect(...args);
+			return {
+				...(await originalInspect(...args)),
+				secretStoreCiphertextSha256: durableSha256
+			};
 		});
 		let enrollmentCalls = 0;
 		let factorCount = 0;
@@ -1692,7 +1732,7 @@ describe('Gate 3 provision command', () => {
 
 	it('classifies a post-inspection manifest/state read failure as ambiguous, not credential recovery', async () => {
 		const fixture = commandFixture();
-		fixture.dependencies.loadManifest.mockRejectedValueOnce(new Error('local path detail'));
+		fixture.dependencies.readStableSnapshot.mockRejectedValueOnce(new Error('local path detail'));
 		const result = await runProvisionCommand({
 			paths: fixture.paths,
 			inspectionAdapter: fixture.inspectionAdapter,
@@ -1704,6 +1744,97 @@ describe('Gate 3 provision command', () => {
 		expect(fixture.mutations).toEqual([]);
 	});
 
+	it.each(['state-release', 'manifest', 'ciphertext'] as const)(
+		'binds the captured %s snapshot to fresh inspection before capability exposure',
+		async (replacement) => {
+			const fixture = commandFixture();
+			const originalCiphertext = Buffer.from('exact-inspected-ciphertext');
+			const originalState: Record<string, any> = {
+				...fixture.state(),
+				secretStore: {
+					...fixture.state().secretStore,
+					ciphertextSha256: createHash('sha256').update(originalCiphertext).digest('hex')
+				}
+			};
+			fixture.setState(originalState);
+			const originalManifest = fixture.manifest();
+			const originalStateBytes = Buffer.from(`${JSON.stringify(originalState)}\n`);
+			const originalManifestBytes = Buffer.from(`${JSON.stringify(originalManifest)}\n`);
+			fixture.dependencies.inspectRun.mockResolvedValueOnce(
+				Object.freeze({
+					classification: 'PREFLIGHT_READY',
+					stateRevision: originalState.revision,
+					revision: originalState.revision,
+					stateSha256: createHash('sha256').update(originalStateBytes).digest('hex'),
+					stateValid: true,
+					stateCorrupt: false,
+					corruptState: false,
+					projectRef: HOSTED_STAGING.projectRef,
+					workerOrigin: HOSTED_STAGING.workerOrigin,
+					manifestValid: true,
+					manifestBindingStatus: 'exact',
+					manifestExactMatch: true,
+					manifestAheadState: false,
+					manifestMatches: true,
+					manifestMismatch: false,
+					manifestSha256: createHash('sha256').update(originalManifestBytes).digest('hex'),
+					authoritativeReleaseAvailable: true,
+					authoritativeReleaseUnavailable: false,
+					boundReleaseCommitSha: originalState.target.releaseCommitSha,
+					currentReleaseCommitSha: originalState.target.releaseCommitSha,
+					releaseMismatch: false,
+					releaseChanged: false,
+					secretStoreStatus: 'available',
+					secretStoreCiphertextSha256: createHash('sha256')
+						.update(originalCiphertext)
+						.digest('hex'),
+					credentialsLost: false,
+					exactRecoveryProvenance: true,
+					foreignCounts: zeroForeignCounts,
+					ambiguous: false
+				})
+			);
+
+			let capturedState = originalState;
+			let capturedStateBytes = originalStateBytes;
+			let capturedManifestBytes = originalManifestBytes;
+			let capturedSecretBytes = originalCiphertext;
+			if (replacement === 'state-release') {
+				capturedState = {
+					...originalState,
+					target: { ...originalState.target, releaseCommitSha: 'e'.repeat(40) }
+				};
+				capturedStateBytes = Buffer.from(`${JSON.stringify(capturedState)}\n`);
+			} else if (replacement === 'manifest') {
+				const alternateManifest = registerHostedActorIntent(originalManifest as never, 'reporter');
+				capturedManifestBytes = Buffer.from(`${JSON.stringify(alternateManifest)}\n`);
+			} else {
+				capturedSecretBytes = Buffer.from('alternate-valid-same-run-ciphertext');
+			}
+			fixture.dependencies.readStableSnapshot.mockResolvedValueOnce({
+				state: capturedState,
+				stateBytes: capturedStateBytes,
+				manifestBytes: capturedManifestBytes,
+				secretBytes: capturedSecretBytes
+			});
+
+			const result = await runProvisionCommand({
+				paths: fixture.paths,
+				inspectionAdapter: fixture.inspectionAdapter,
+				provisionCapabilities: fixture.provisionCapabilities,
+				dpapi: fixture.dpapi,
+				dependencies: fixture.dependencies
+			});
+
+			expect(result).toMatchObject({ status: 'uncertain', classification: 'AMBIGUOUS' });
+			expect(fixture.provisionCapabilities.inspectProvision).not.toHaveBeenCalled();
+			expect(fixture.provisionCapabilities.mutationFor).not.toHaveBeenCalled();
+			expect(fixture.dependencies.unprotectRunSecretBytes).not.toHaveBeenCalled();
+			expect(fixture.mutations).toEqual([]);
+			expect(fixture.events.some((event) => /^(?:mutate|verify):/u.test(event))).toBe(false);
+		}
+	);
+
 	it.each([
 		[true, 'RECOVERY_REQUIRED'],
 		[false, 'AMBIGUOUS']
@@ -1714,7 +1845,7 @@ describe('Gate 3 provision command', () => {
 			exactRecoveryProvenance,
 			actors: Object.fromEntries(roles.map((role) => [role, emptyActor(role)]))
 		});
-		fixture.dependencies.unprotectRunSecrets.mockRejectedValueOnce(new Error('DPAPI private detail'));
+		fixture.dependencies.unprotectRunSecretBytes.mockRejectedValueOnce(new Error('DPAPI private detail'));
 		const result = await runProvisionCommand({
 			paths: fixture.paths,
 			inspectionAdapter: fixture.inspectionAdapter,
