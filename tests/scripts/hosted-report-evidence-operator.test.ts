@@ -3063,6 +3063,146 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		expect(body.query).not.toContain('delete from auth.users');
 	});
 
+	it('routes a manifest-owned upload and queue row to exact cleanup coordinates', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const uploadId = '33333333-3333-4333-8333-333333333333';
+		const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+		let manifest = reporterManifest(config);
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+		manifest = registerHostedQueueRow(manifest, 17, uploadId);
+		const invokeCleanupWorker = vi.fn();
+		const invokeExactCleanupWorker = vi.fn().mockResolvedValue({
+			status: 202,
+			requestId: '44444444-4444-4444-8444-444444444444'
+		});
+		const operator = createHostedEvidenceOperator({
+			config,
+			adapters: { invokeCleanupWorker, invokeExactCleanupWorker } as never
+		});
+
+		await expect(operator.processCleanupQueue(manifest, uploadId, 17)).resolves.toEqual({
+			status: 202,
+			requestId: '44444444-4444-4444-8444-444444444444'
+		});
+		expect(invokeExactCleanupWorker).toHaveBeenCalledOnce();
+		expect(invokeExactCleanupWorker).toHaveBeenCalledWith({
+			queueId: 17,
+			bucketId: 'report-evidence',
+			storagePath: objectPath
+		});
+		expect(invokeCleanupWorker).not.toHaveBeenCalled();
+	});
+
+	it('rejects a mismatched manifest queue linkage before privileged cleanup', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const firstUploadId = '33333333-3333-4333-8333-333333333333';
+		const secondUploadId = '44444444-4444-4444-8444-444444444444';
+		let manifest = reporterManifest(config);
+		manifest = registerHostedUpload(
+			manifest,
+			firstUploadId,
+			'reporter',
+			`${actorIds.reporter}/${firstUploadId}.webp`
+		);
+		manifest = registerHostedUpload(
+			manifest,
+			secondUploadId,
+			'reporter',
+			`${actorIds.reporter}/${secondUploadId}.webp`
+		);
+		manifest = registerHostedQueueRow(manifest, 17, secondUploadId);
+		const invokeCleanupWorker = vi.fn();
+		const invokeExactCleanupWorker = vi.fn();
+		const operator = createHostedEvidenceOperator({
+			config,
+			adapters: { invokeCleanupWorker, invokeExactCleanupWorker } as never
+		});
+
+		await expect(
+			operator.processCleanupQueue(manifest, firstUploadId, 17)
+		).rejects.toThrow('queue row is outside the exact manifest upload scope');
+		expect(invokeExactCleanupWorker).not.toHaveBeenCalled();
+		expect(invokeCleanupWorker).not.toHaveBeenCalled();
+	});
+
+	it('rejects forged exact cleanup coordinates even when their queue linkage is self-consistent', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const uploadId = '33333333-3333-4333-8333-333333333333';
+		const registeredPath = `${actorIds.reporter}/${uploadId}.webp`;
+		let manifest = reporterManifest(config);
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', registeredPath);
+		manifest = registerHostedQueueRow(manifest, 17, uploadId);
+		const forgedManifest = {
+			...manifest,
+			uploads: [
+				{
+					...manifest.uploads[0],
+					objectPath: `22222222-2222-4222-8222-222222222222/${uploadId}.webp`
+				}
+			]
+		};
+		const invokeExactCleanupWorker = vi.fn();
+		const operator = createHostedEvidenceOperator({
+			config,
+			adapters: {
+				invokeCleanupWorker: vi.fn(),
+				invokeExactCleanupWorker
+			} as never
+		});
+
+		await expect(
+			operator.processCleanupQueue(forgedManifest as never, uploadId, 17)
+		).rejects.toThrow('object path is outside the exact run manifest');
+		expect(invokeExactCleanupWorker).not.toHaveBeenCalled();
+	});
+
+	it('posts one exact cleanup request and validates its scoped receipt', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const uploadId = '33333333-3333-4333-8333-333333333333';
+		const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+		const requestId = '44444444-4444-4444-8444-444444444444';
+		const fetchImpl = vi.fn().mockResolvedValue({
+			status: 202,
+			json: async () => ({
+				claimed: 1,
+				completed: 1,
+				failed: 0,
+				requestId,
+				scope: 'exact'
+			})
+		});
+		const adapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: {} as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: fetchImpl as never
+		});
+
+		await expect(
+			adapters.invokeExactCleanupWorker({
+				queueId: 17,
+				bucketId: 'report-evidence',
+				storagePath: objectPath
+			})
+		).resolves.toEqual({ status: 202, requestId });
+		expect(fetchImpl).toHaveBeenCalledOnce();
+		const [url, init] = fetchImpl.mock.calls[0];
+		expect(String(url)).toBe(`${HOSTED_STAGING.supabaseUrl}/functions/v1/upload-cleanup`);
+		expect(init).toMatchObject({
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				'x-upload-cleanup-secret': 'x'.repeat(32)
+			}
+		});
+		expect(JSON.parse(String(init?.body))).toEqual({
+			queueId: 17,
+			bucketId: 'report-evidence',
+			storagePath: objectPath
+		});
+	});
+
 	it('rejects a 202 cleanup receipt that reports any failed deletion', async () => {
 		const config = validateHostedOperatorEnvironment(baseEnvironment);
 		const requestId = '44444444-4444-4444-8444-444444444444';

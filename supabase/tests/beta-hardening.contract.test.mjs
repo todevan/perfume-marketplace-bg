@@ -26,6 +26,9 @@ const lintHardening = compact(
 const hostedRuntimeCorrection = compact(
 	readMigration('202607280010_hosted_runtime_correction.sql')
 );
+const exactUploadCleanup = compact(
+	readMigration('202608200001_gate3_exact_upload_cleanup.sql')
+);
 
 const includesAll = (source, fragments) => {
 	for (const fragment of fragments) {
@@ -311,4 +314,33 @@ test('storage cleanup work is leased, bounded, and service-only', () => {
 		sql.search,
 		/revoke execute on function public\.claim_upload_cleanup\(integer, text\) from public, anon, authenticated/
 	);
+});
+
+test('exact upload cleanup claims only one service-authorized coordinate tuple', () => {
+	includesAll(exactUploadCleanup, [
+		'create or replace function public.claim_exact_upload_cleanup(',
+		'target_queue_id bigint',
+		'target_bucket_id text',
+		'target_storage_path text',
+		'worker_request_id text',
+		"set search_path = ''",
+		'update public.upload_cleanup_queue as q',
+		'q.id = target_queue_id',
+		'q.bucket_id = target_bucket_id',
+		'q.storage_path = target_storage_path',
+		'q.processed_at is null',
+		'q.next_attempt_at <= lease_time',
+		'q.claimed_at is null',
+		'grant execute on function public.claim_exact_upload_cleanup(bigint, text, text, text) to service_role'
+	]);
+	assert.match(
+		exactUploadCleanup,
+		/revoke execute on function public\.claim_exact_upload_cleanup\(bigint, text, text, text\) from public, anon, authenticated/
+	);
+	assert.equal(
+		(exactUploadCleanup.match(/update public\.upload_cleanup_queue as q/g) ?? []).length,
+		1,
+		'the exact capability must claim through one coordinate-bound UPDATE'
+	);
+	assert.doesNotMatch(exactUploadCleanup, /\b(?:like|similar to|any|unnest)\b/);
 });

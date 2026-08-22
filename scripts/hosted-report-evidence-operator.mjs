@@ -73,6 +73,7 @@ const MUTABLE_INVENTORY_FIELDS = Object.freeze([
 	'queueRows'
 ]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const REPORT_EVIDENCE_STORAGE_PATH_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/u;
 const SAFE_EVENTS = /^(?:hosted_scenario_(?:10|[1-9])|cleanup_(?:verified|required))$/u;
 const SAFE_ACTOR_ROLES = new Set([
 	'reporter',
@@ -743,6 +744,7 @@ export function assertServiceRoleOperation(operation) {
  *     inspectAssignmentAudit?: (scope: { manifest: HostedRunManifest, reportId: string, actorId: string }) => Promise<number>,
  *     reconcileExactUploads?: (scope: { manifest: HostedRunManifest, uploadIds: readonly string[], rejectionCode: string }) => Promise<readonly string[]>,
  *     invokeCleanupWorker?: () => Promise<{ status: number, requestId: string }>,
+ *     invokeExactCleanupWorker?: (scope: { queueId: number, bucketId: 'report-evidence', storagePath: string }) => Promise<{ status: number, requestId: string }>,
  *     removeManifest: (scope: { target: typeof HOSTED_STAGING, runId: string, manifest: HostedRunManifest }) => Promise<void>
  *   }
  * }} options
@@ -875,10 +877,30 @@ export function createHostedEvidenceOperator({ config, adapters }) {
 			if (!adapters.reconcileExactUploads) throw new HostedEvidenceOperatorError('reconciliation adapter is unavailable');
 			return adapters.reconcileExactUploads({ manifest, uploadIds, rejectionCode });
 		},
-		async processCleanupQueue() {
+		/** @param {HostedRunManifest} [manifest] @param {string} [uploadId] @param {number} [queueId] */
+		async processCleanupQueue(manifest, uploadId, queueId) {
 			assertServiceRoleOperation('cleanup');
-			if (!adapters.invokeCleanupWorker) throw new HostedEvidenceOperatorError('cleanup worker adapter is unavailable');
-			return adapters.invokeCleanupWorker();
+			if (manifest === undefined && uploadId === undefined && queueId === undefined) {
+				if (!adapters.invokeCleanupWorker) throw new HostedEvidenceOperatorError('cleanup worker adapter is unavailable');
+				return adapters.invokeCleanupWorker();
+			}
+			if (!manifest || typeof uploadId !== 'string' || !Number.isSafeInteger(queueId) || Number(queueId) < 1) {
+				throw new HostedEvidenceOperatorError('exact cleanup scope is invalid');
+			}
+			const exactManifest = validateHostedRunManifest(config, manifest);
+			const upload = exactManifestUpload(exactManifest, uploadId);
+			const queue = exactManifest.queueRows.find((entry) => entry.id === queueId);
+			if (!queue || queue.uploadId !== upload.id) {
+				throw new HostedEvidenceOperatorError('queue row is outside the exact manifest upload scope');
+			}
+			if (!adapters.invokeExactCleanupWorker) {
+				throw new HostedEvidenceOperatorError('exact cleanup worker adapter is unavailable');
+			}
+			return adapters.invokeExactCleanupWorker({
+				queueId: queue.id,
+				bucketId: 'report-evidence',
+				storagePath: upload.objectPath
+			});
 		},
 		/** @param {HostedRunManifest} manifest */
 		async remove(manifest) {
@@ -4048,6 +4070,50 @@ export function createSupabaseHostedEvidenceAdapters({
 		return { status: response.status, requestId: String(body.requestId) };
 	}
 
+	/** @param {{ queueId: number, bucketId: 'report-evidence', storagePath: string }} scope */
+	async function invokeExactCleanupWorker(scope) {
+		if (
+			!Number.isSafeInteger(scope.queueId) ||
+			scope.queueId < 1 ||
+			scope.bucketId !== 'report-evidence' ||
+			!REPORT_EVIDENCE_STORAGE_PATH_PATTERN.test(scope.storagePath)
+		) {
+			throw new HostedEvidenceOperatorError('exact cleanup worker scope is invalid');
+		}
+		const response = await fetchImpl(`${config.target.supabaseUrl}/functions/v1/upload-cleanup`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				'x-upload-cleanup-secret': cleanupSecret
+			},
+			body: JSON.stringify({
+				queueId: scope.queueId,
+				bucketId: scope.bucketId,
+				storagePath: scope.storagePath
+			})
+		});
+		if (response.status !== 202) {
+			throw new HostedEvidenceOperatorError('exact hosted cleanup invocation failed');
+		}
+		const body = await response.json();
+		if (
+			!body ||
+			typeof body !== 'object' ||
+			body.scope !== 'exact' ||
+			!UUID_PATTERN.test(String(body.requestId ?? '')) ||
+			!Number.isSafeInteger(body.claimed) ||
+			!Number.isSafeInteger(body.completed) ||
+			!Number.isSafeInteger(body.failed) ||
+			body.claimed < 0 ||
+			body.claimed > 1 ||
+			body.completed !== body.claimed ||
+			body.failed !== 0
+		) {
+			throw new HostedEvidenceOperatorError('exact hosted cleanup receipt is invalid');
+		}
+		return { status: response.status, requestId: String(body.requestId) };
+	}
+
 	/** @param {{ manifest: HostedRunManifest, uploadIds: readonly string[], rejectionCode: string }} scope */
 	async function reconcileExactUploads(scope) {
 		assertManifestTarget(config, scope.manifest);
@@ -4186,6 +4252,7 @@ export function createSupabaseHostedEvidenceAdapters({
 		inspectAssignmentAudit,
 		reconcileExactUploads,
 		invokeCleanupWorker,
+		invokeExactCleanupWorker,
 		removeManifest
 	});
 }

@@ -9,6 +9,12 @@ type CleanupClaim = {
 	claimed_at: string;
 };
 
+type ExactCleanupScope = {
+	queueId: number;
+	bucketId: 'report-evidence';
+	storagePath: string;
+};
+
 const ALLOWED_PRIVATE_BUCKETS = new Set([
 	'listing-image-quarantine',
 	'listing-images',
@@ -16,6 +22,8 @@ const ALLOWED_PRIVATE_BUCKETS = new Set([
 ]);
 const DEFAULT_BATCH_SIZE = 25;
 const MAX_BATCH_SIZE = 100;
+const MAX_REQUEST_BYTES = 1024;
+const REPORT_EVIDENCE_PATH = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/u;
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), {
@@ -106,7 +114,7 @@ function databaseCode(error: { code?: string } | null): string {
 Deno.serve(async (request) => {
 	const requestId = crypto.randomUUID();
 	if (request.method !== 'POST') return json({ error: 'method_not_allowed', requestId }, 405);
-	if (Number(request.headers.get('content-length') ?? '0') > 1024) {
+	if (Number(request.headers.get('content-length') ?? '0') > MAX_REQUEST_BYTES) {
 		return json({ error: 'payload_too_large', requestId }, 413);
 	}
 
@@ -117,29 +125,85 @@ Deno.serve(async (request) => {
 			return json({ error: 'unauthorized', requestId }, 401);
 		}
 
+		const encodedBody = new Uint8Array(await request.arrayBuffer());
+		if (encodedBody.byteLength > MAX_REQUEST_BYTES) {
+			return json({ error: 'payload_too_large', requestId }, 413);
+		}
+
+		let exactScope: ExactCleanupScope | null = null;
+		if (encodedBody.byteLength > 0) {
+			let decodedBody: unknown;
+			try {
+				decodedBody = JSON.parse(new TextDecoder().decode(encodedBody));
+			} catch {
+				return json({ error: 'invalid_request', requestId }, 400);
+			}
+			if (!decodedBody || typeof decodedBody !== 'object' || Array.isArray(decodedBody)) {
+				return json({ error: 'invalid_request', requestId }, 400);
+			}
+			const scope = decodedBody as Record<string, unknown>;
+			const bodyKeys = Object.keys(scope).sort();
+			if (
+				bodyKeys.length !== 3 ||
+				bodyKeys[0] !== 'bucketId' ||
+				bodyKeys[1] !== 'queueId' ||
+				bodyKeys[2] !== 'storagePath' ||
+				!Number.isSafeInteger(scope.queueId) ||
+				Number(scope.queueId) < 1 ||
+				scope.bucketId !== 'report-evidence' ||
+				typeof scope.storagePath !== 'string' ||
+				!REPORT_EVIDENCE_PATH.test(scope.storagePath)
+			) {
+				return json({ error: 'invalid_request', requestId }, 400);
+			}
+			exactScope = {
+				queueId: Number(scope.queueId),
+				bucketId: 'report-evidence',
+				storagePath: scope.storagePath
+			};
+		}
+
 		const supabaseUrl = requiredEnvironment('SUPABASE_URL');
 		const serviceKey = requiredEnvironment('SUPABASE_SERVICE_ROLE_KEY');
-		const limit = batchSize();
+		const limit = exactScope ? 1 : batchSize();
 		const supabase = createClient(supabaseUrl, serviceKey, {
 			auth: { autoRefreshToken: false, persistSession: false }
 		});
-		const { error: expiryError } = await supabase.rpc(
-			'expire_report_evidence_uploads',
-			{ target_limit: limit }
-		);
-		if (expiryError) {
-			console.error(JSON.stringify({
-				event: 'report_evidence_expiry_failed',
-				code: databaseCode(expiryError),
-				requestId
-			}));
-			return json({ error: 'expiry_failed', requestId }, 503);
-		}
+		let claimedData: unknown;
+		let claimError: { code?: string } | null;
+		if (!exactScope) {
+			const { error: expiryError } = await supabase.rpc(
+				'expire_report_evidence_uploads',
+				{ target_limit: limit }
+			);
+			if (expiryError) {
+				console.error(JSON.stringify({
+					event: 'report_evidence_expiry_failed',
+					code: databaseCode(expiryError),
+					requestId
+				}));
+				return json({ error: 'expiry_failed', requestId }, 503);
+			}
 
-		const { data: claimedData, error: claimError } = await supabase.rpc(
-			'claim_upload_cleanup',
-			{ target_limit: limit, worker_request_id: requestId }
-		);
+			const claimResult = await supabase.rpc(
+				'claim_upload_cleanup',
+				{ target_limit: limit, worker_request_id: requestId }
+			);
+			claimedData = claimResult.data;
+			claimError = claimResult.error;
+		} else {
+			const claimResult = await supabase.rpc(
+				'claim_exact_upload_cleanup',
+				{
+					target_queue_id: exactScope.queueId,
+					target_bucket_id: exactScope.bucketId,
+					target_storage_path: exactScope.storagePath,
+					worker_request_id: requestId
+				}
+			);
+			claimedData = claimResult.data;
+			claimError = claimResult.error;
+		}
 		if (claimError) {
 			console.error(JSON.stringify({
 				event: 'upload_cleanup_claim_failed',
@@ -152,6 +216,17 @@ Deno.serve(async (request) => {
 		const claims = parseClaims(claimedData, limit);
 		if (!claims) {
 			console.error(JSON.stringify({ event: 'upload_cleanup_claim_invalid', requestId }));
+			return json({ error: 'invalid_claim_response', requestId }, 503);
+		}
+		if (
+			exactScope &&
+			claims.some((claim) =>
+				claim.queue_id !== exactScope.queueId ||
+				claim.bucket_id !== exactScope.bucketId ||
+				claim.storage_path !== exactScope.storagePath
+			)
+		) {
+			console.error(JSON.stringify({ event: 'upload_cleanup_claim_mismatch', requestId }));
 			return json({ error: 'invalid_claim_response', requestId }, 503);
 		}
 
@@ -221,7 +296,8 @@ Deno.serve(async (request) => {
 			transitionFailures,
 			requestId
 		}));
-		return json({ claimed: claims.length, completed, failed, requestId }, status);
+		const receipt = { claimed: claims.length, completed, failed, requestId };
+		return json(exactScope ? { ...receipt, scope: 'exact' } : receipt, status);
 	} catch (cause) {
 		console.error(JSON.stringify({
 			event: 'upload_cleanup_internal_error',

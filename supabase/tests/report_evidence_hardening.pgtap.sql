@@ -1,6 +1,6 @@
 begin;
 
-select plan(27);
+select plan(36);
 
 select ok(
   to_regclass('public.report_evidence_uploads') is not null,
@@ -496,6 +496,208 @@ select lives_ok(
     (select upload_id from expired_allocation)
   ),
   'terminal ledger deletion is idempotent when cleanup is already pending'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.claim_exact_upload_cleanup(bigint,text,text,text)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'authenticated',
+    'public.claim_exact_upload_cleanup(bigint,text,text,text)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'anon',
+    'public.claim_exact_upload_cleanup(bigint,text,text,text)',
+    'execute'
+  ),
+  'only the service role can execute an exact upload-cleanup claim'
+);
+
+reset role;
+set local role postgres;
+create temp table exact_cleanup_coordinates (
+  row_kind text primary key,
+  queue_id bigint not null,
+  storage_path text not null
+) on commit drop;
+
+with inserted as (
+  insert into public.upload_cleanup_queue (bucket_id, storage_path, reason)
+  values (
+    'report-evidence',
+    '12111111-1111-4111-8111-111111111111/31111111-1111-4111-8111-111111111111.webp',
+    'task8_exact_eligible'
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'eligible', id, storage_path from inserted;
+with inserted as (
+  insert into public.upload_cleanup_queue (bucket_id, storage_path, reason)
+  values (
+    'report-evidence',
+    '12111111-1111-4111-8111-111111111111/32222222-2222-4222-8222-222222222222.webp',
+    'task8_foreign_eligible'
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'foreign', id, storage_path from inserted;
+with inserted as (
+  insert into public.upload_cleanup_queue (
+    bucket_id, storage_path, reason, next_attempt_at
+  ) values (
+    'report-evidence',
+    '12111111-1111-4111-8111-111111111111/33333333-3333-4333-8333-333333333333.webp',
+    'task8_future_retry',
+    statement_timestamp() + interval '1 hour'
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'future', id, storage_path from inserted;
+with inserted as (
+  insert into public.upload_cleanup_queue (
+    bucket_id, storage_path, reason, worker_request_id, claimed_at, attempts
+  ) values (
+    'report-evidence',
+    '12111111-1111-4111-8111-111111111111/34444444-4444-4444-8444-444444444444.webp',
+    'task8_claimed',
+    'task8-existing-claim',
+    statement_timestamp(),
+    1
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'claimed', id, storage_path from inserted;
+with inserted as (
+  insert into public.upload_cleanup_queue (
+    bucket_id, storage_path, reason, processed_at
+  ) values (
+    'report-evidence',
+    '12111111-1111-4111-8111-111111111111/35555555-5555-4555-8555-555555555555.webp',
+    'task8_processed',
+    statement_timestamp()
+  )
+  returning id, storage_path
+)
+insert into exact_cleanup_coordinates select 'processed', id, storage_path from inserted;
+grant select on exact_cleanup_coordinates to service_role;
+
+set local role service_role;
+select set_config('request.jwt.claims', '{"role":"service_role"}', true);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      -1,
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'eligible'),
+      'task8-wrong-queue-request'
+    )
+  ),
+  0,
+  'an exact claim with the wrong queue ID returns no work'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'eligible'),
+      'listing-images',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'eligible'),
+      'task8-wrong-bucket-request'
+    )
+  ),
+  0,
+  'an exact claim with the wrong bucket returns no work'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'eligible'),
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'foreign'),
+      'task8-wrong-path-request'
+    )
+  ),
+  0,
+  'an exact claim with the wrong storage path returns no work'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'processed'),
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'processed'),
+      'task8-processed-request'
+    )
+  ),
+  0,
+  'an exact claim cannot reclaim a processed row'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'future'),
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'future'),
+      'task8-future-request'
+    )
+  ),
+  0,
+  'an exact claim cannot bypass a future retry time'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'claimed'),
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'claimed'),
+      'task8-claimed-request'
+    )
+  ),
+  0,
+  'an exact claim cannot take an already-claimed row'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.claim_exact_upload_cleanup(
+      (select queue_id from exact_cleanup_coordinates where row_kind = 'eligible'),
+      'report-evidence',
+      (select storage_path from exact_cleanup_coordinates where row_kind = 'eligible'),
+      'task8-exact-request'
+    )
+  ),
+  1,
+  'exact eligible coordinates return one cleanup lease'
+);
+select ok(
+  exists (
+    select 1
+    from public.upload_cleanup_queue q
+    join exact_cleanup_coordinates c on c.queue_id = q.id
+    where c.row_kind = 'eligible'
+      and q.worker_request_id = 'task8-exact-request'
+      and q.claimed_at is not null
+      and q.attempts = 1
+  )
+  and exists (
+    select 1
+    from public.upload_cleanup_queue q
+    join exact_cleanup_coordinates c on c.queue_id = q.id
+    where c.row_kind = 'foreign'
+      and q.worker_request_id is null
+      and q.claimed_at is null
+      and q.attempts = 0
+  ),
+  'the exact lease claims only the requested row and never foreign work'
 );
 
 select * from finish();
