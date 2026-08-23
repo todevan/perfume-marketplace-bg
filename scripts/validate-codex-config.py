@@ -17,6 +17,7 @@ PACKAGE_PATH = ROOT / "package.json"
 EXPECTED_RAW = """[mcp_servers.aromatika-svelte]
 command = "node"
 args = ["scripts/run-svelte-mcp.mjs"]
+cwd = ".."
 enabled_tools = ["list-sections", "get-documentation", "svelte-autofixer"]
 default_tools_approval_mode = "auto"
 
@@ -31,6 +32,7 @@ EXPECTED = {
         "aromatika-svelte": {
             "command": "node",
             "args": ["scripts/run-svelte-mcp.mjs"],
+            "cwd": "..",
             "enabled_tools": [
                 "list-sections",
                 "get-documentation",

@@ -1,6 +1,7 @@
 [mcp_servers.aromatika-svelte]
 command = "node"
 args = ["scripts/run-svelte-mcp.mjs"]
+cwd = ".."
 enabled_tools = ["list-sections", "get-documentation", "svelte-autofixer"]
 default_tools_approval_mode = "auto"
 

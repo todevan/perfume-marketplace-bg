@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { isAbsolute, resolve } from 'node:path'
 import test from 'node:test'
 
 import {
@@ -28,7 +29,7 @@ test('Svelte MCP environment contains only approved non-secret runtime variables
 })
 
 test('Svelte MCP entrypoint and environment allowlist are immutable', () => {
-	assert.equal(SVELTE_MCP_ENTRYPOINT, 'node_modules/@sveltejs/mcp/dist/index.mjs')
+	assert.equal(isAbsolute(SVELTE_MCP_ENTRYPOINT), true)
 	assert.deepEqual(SVELTE_MCP_ENV_ALLOWLIST, [
 		'PATH',
 		'PATHEXT',
@@ -44,6 +45,26 @@ test('Svelte MCP entrypoint and environment allowlist are immutable', () => {
 		'LOCALAPPDATA'
 	])
 	assert.equal(Object.isFrozen(SVELTE_MCP_ENV_ALLOWLIST), true)
+})
+
+test('Svelte MCP entrypoint stays repository-rooted from a nested session directory', () => {
+	const originalDirectory = process.cwd()
+	const expectedEntrypoint = resolve(
+		originalDirectory,
+		'node_modules/@sveltejs/mcp/dist/index.mjs'
+	)
+
+	process.chdir(resolve(originalDirectory, 'src'))
+
+	try {
+		assert.equal(SVELTE_MCP_ENTRYPOINT, expectedEntrypoint)
+		assert.deepEqual(getSvelteMcpLaunchSpec('linux', '/usr/bin/node'), {
+			command: '/usr/bin/node',
+			args: [expectedEntrypoint]
+		})
+	} finally {
+		process.chdir(originalDirectory)
+	}
 })
 
 test('Svelte MCP child is spawned without a shell or inherited secret variables', () => {
@@ -65,15 +86,22 @@ test('Svelte MCP child is spawned without a shell or inherited secret variables'
 })
 
 test('Windows launch uses the current Node executable without a command shell', () => {
-	assert.deepEqual(getSvelteMcpLaunchSpec('win32', 'C:\\Program Files\\nodejs\\node.exe'), {
-		command: 'C:\\Program Files\\nodejs\\node.exe',
-		args: ['node_modules/@sveltejs/mcp/dist/index.mjs']
-	})
+	const entrypoint = 'C:\\repo\\node_modules\\@sveltejs\\mcp\\dist\\index.mjs'
+
+	assert.deepEqual(
+		getSvelteMcpLaunchSpec('win32', 'C:\\Program Files\\nodejs\\node.exe', entrypoint),
+		{
+			command: 'C:\\Program Files\\nodejs\\node.exe',
+			args: [entrypoint]
+		}
+	)
 })
 
 test('POSIX launch uses the current Node executable without a command shell', () => {
-	assert.deepEqual(getSvelteMcpLaunchSpec('linux', '/usr/bin/node'), {
+	const entrypoint = '/repo/node_modules/@sveltejs/mcp/dist/index.mjs'
+
+	assert.deepEqual(getSvelteMcpLaunchSpec('linux', '/usr/bin/node', entrypoint), {
 		command: '/usr/bin/node',
-		args: ['node_modules/@sveltejs/mcp/dist/index.mjs']
+		args: [entrypoint]
 	})
 })

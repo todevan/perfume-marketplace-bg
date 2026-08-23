@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-export const SVELTE_MCP_ENTRYPOINT = 'node_modules/@sveltejs/mcp/dist/index.mjs'
+export const SVELTE_MCP_ENTRYPOINT = fileURLToPath(
+	new URL('../node_modules/@sveltejs/mcp/dist/index.mjs', import.meta.url)
+)
 export const SVELTE_MCP_ENV_ALLOWLIST = Object.freeze([
 	'PATH',
 	'PATHEXT',
@@ -30,10 +32,14 @@ export function buildSvelteMcpEnvironment(source = process.env) {
 	return environment
 }
 
-export function getSvelteMcpLaunchSpec(_platform = process.platform, execPath = process.execPath) {
+export function getSvelteMcpLaunchSpec(
+	_platform = process.platform,
+	execPath = process.execPath,
+	entrypoint = SVELTE_MCP_ENTRYPOINT
+) {
 	return {
 		command: execPath,
-		args: [SVELTE_MCP_ENTRYPOINT]
+		args: [entrypoint]
 	}
 }
 
