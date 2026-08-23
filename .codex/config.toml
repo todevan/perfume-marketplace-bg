@@ -1,6 +1,14 @@
-[mcp_servers.svelte]
-command = "npx"
-args = ["-y", "@sveltejs/mcp"]
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
 
-[mcp_servers.cloudflare-observability]
+[mcp_servers.aromatika-svelte]
+command = "npx"
+args = ["-y", "@sveltejs/mcp@0.1.26"]
+enabled_tools = ["list-sections", "get-documentation", "svelte-autofixer"]
+default_tools_approval_mode = "auto"
+
+[mcp_servers.aromatika-cloudflare-observability]
 url = "https://observability.mcp.cloudflare.com/mcp"
+enabled_tools = ["query_worker_observability", "observability_keys", "observability_values"]
+default_tools_approval_mode = "prompt"
