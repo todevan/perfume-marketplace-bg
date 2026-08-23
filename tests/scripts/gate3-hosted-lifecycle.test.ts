@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
 	GATE3_EXIT_CODES,
 	classifyGate3Lifecycle,
+	consumeGate3ScenarioCapabilityGrant,
+	mintGate3ScenarioCapabilityGrant,
 	selectGate3NextBoundary,
 	selectNextCleanupStep,
 	selectNextProvisionStep,
+	selectNextScenarioProbe,
 	selectNextScenarioStep
 } from '../../scripts/gate3-hosted-lifecycle.mjs';
 
@@ -27,6 +30,82 @@ function inspection(overrides: Record<string, unknown> = {}) {
 		deletionScopeTrusted: true,
 		authoritativeReleaseAvailable: true,
 		state: {},
+		...overrides
+	};
+}
+
+function scenarioRegistry() {
+	const first = Object.freeze({
+		id: 'first-step',
+		scenario: 1,
+		kind: 'mutation',
+		prerequisiteIds: Object.freeze([]),
+		roleCapability: 'reporter',
+		mutationMethod: 'mutateFirst',
+		readBackMethod: 'readFirst',
+		manifestReducer: 'registerPrimaryReport'
+	});
+	const second = Object.freeze({
+		id: 'second-step',
+		scenario: 1,
+		kind: 'verification',
+		prerequisiteIds: Object.freeze(['first-step']),
+		roleCapability: 'reporter',
+		mutationMethod: null,
+		readBackMethod: 'readSecond',
+		manifestReducer: null
+	});
+	return Object.freeze([first, second]);
+}
+
+const scenarioCoordinates = Object.freeze({
+	runId: 'gate3-20260822-abcdef12',
+	projectRef: 'nuhkpqjjyuygiemrxbdp',
+	supabaseUrl: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
+	workerOrigin: 'https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev',
+	releaseCommitSha: 'b'.repeat(40),
+	stateRevision: 7,
+	stateSha256: 'c'.repeat(64),
+	manifestPath: 'C:/private/gate3-run-manifest.json',
+	manifestSha256: 'd'.repeat(64),
+	inspectionNonce: 'e'.repeat(64),
+	checkpointObservedAfter: '2026-08-22T19:00:00.000Z'
+});
+
+function scenarioInspection(overrides: Record<string, unknown> = {}) {
+	return inspection({
+		actors: 4,
+		provisionVerified: true,
+		...scenarioCoordinates,
+		boundReleaseCommitSha: scenarioCoordinates.releaseCommitSha,
+		currentReleaseCommitSha: scenarioCoordinates.releaseCommitSha,
+		stateValid: true,
+		stateCorrupt: false,
+		corruptState: false,
+		manifestValid: true,
+		manifestBindingStatus: 'exact',
+		manifestExactMatch: true,
+		manifestAheadState: false,
+		manifestMismatch: false,
+		authoritativeReleaseUnavailable: false,
+		releaseChanged: false,
+		hostedEvidenceAvailable: true,
+		cleanupCompleteContradiction: false,
+		duplicateRoles: 0,
+		metadataMismatches: 0,
+		actorIdentityConflicts: 0,
+		manifestActorsAbsent: 0,
+		hostedActorsManifestStale: 0,
+		...overrides
+	});
+}
+
+function scenarioEvidence(overrides: Record<string, unknown> = {}) {
+	return {
+		completedCheckpointIds: [],
+		hostedCheckpointId: null,
+		manifestCheckpointId: null,
+		...scenarioCoordinates,
 		...overrides
 	};
 }
@@ -237,6 +316,7 @@ describe('Gate 3 hosted lifecycle policy', () => {
 			inspection({
 				actors: 4,
 				provisionVerified: true,
+				stateRevision: 7,
 				scenarioPartial: true,
 				residualArtifacts: [{ kind: 'report', id: 'report-1' }]
 			})
@@ -256,10 +336,245 @@ describe('Gate 3 hosted lifecycle policy', () => {
 
 	it('enforces provision and scenario preconditions through inspection selectors', () => {
 		expect(selectNextProvisionStep({ actors: 0 })).toBeNull();
-		expect(selectNextScenarioStep(inspection({ actors: 4, provisionVerified: true }))).toEqual({
-			command: 'scenario',
-			phase: 'scenario'
-		});
+		expect(selectNextScenarioStep(inspection({ actors: 4, provisionVerified: true }))).toBeNull();
 		expect(selectNextScenarioStep(inspection({ actors: 2, provisionVerified: true }))).toBeNull();
+	});
+
+	it('does not treat a generic scenario lifecycle result as exact step authorization', () => {
+		const registry = scenarioRegistry();
+		const generic = classifyGate3Lifecycle(inspection({ actors: 4, provisionVerified: true }));
+
+		expect(selectNextScenarioStep(generic, registry)).toBeNull();
+		expect(selectNextScenarioStep(inspection({ actors: 4, provisionVerified: true }), registry)).toBeNull();
+	});
+
+	it('selects exactly one registry entry only from exact fresh run, target, release, state, and manifest evidence', () => {
+		const registry = scenarioRegistry();
+		const selected = selectNextScenarioStep(scenarioInspection(), registry, scenarioEvidence());
+
+		expect(selected).toMatchObject({
+			command: 'scenario',
+			phase: 'scenario',
+			checkpoint: registry[0],
+			mode: 'mutate',
+			revision: 7,
+			coordinates: scenarioCoordinates
+		});
+		expect(selected?.checkpoint).toBe(registry[0]);
+		expect(Object.isFrozen(selected?.coordinates)).toBe(true);
+	});
+
+	it('mints a read-only canonical probe before final mutation authorization', () => {
+		const registry = scenarioRegistry();
+		const probe = selectNextScenarioProbe(scenarioInspection(), registry, scenarioEvidence());
+		expect(probe).toMatchObject({ checkpoint: registry[0], revision: 7, coordinates: scenarioCoordinates });
+		expect(Reflect.ownKeys(probe ?? {})).toEqual(['checkpoint', 'revision', 'coordinates']);
+		expect(Object.isFrozen(probe)).toBe(true);
+	});
+
+	it('mints at most one capability grant for one exact lifecycle authorization and consumes that grant once', () => {
+		const registry = scenarioRegistry();
+		const inspected = scenarioInspection();
+		const selected = selectNextScenarioStep(inspected, registry, scenarioEvidence());
+		expect(selected).not.toBeNull();
+		const first = mintGate3ScenarioCapabilityGrant(selected, registry, inspected);
+		expect(first).not.toBeNull();
+		expect(mintGate3ScenarioCapabilityGrant(selected, registry, inspected)).toBeNull();
+		expect(consumeGate3ScenarioCapabilityGrant(first)).toMatchObject({ checkpoint: registry[0], mode: 'mutate' });
+		expect(consumeGate3ScenarioCapabilityGrant(first)).toBeNull();
+	});
+
+	it('mints only an inert exact readback probe for a strict one-artifact manifest-ahead window', () => {
+		const registry = scenarioRegistry();
+		const inspected = scenarioInspection({
+			ambiguous: true,
+			manifestBindingStatus: 'manifest-ahead-state',
+			manifestExactMatch: false,
+			manifestAheadState: true,
+			manifestMatches: false,
+			manifestMismatch: false,
+			deletionScopeTrusted: false
+		});
+		const probe = selectNextScenarioProbe(inspected, registry, scenarioEvidence());
+		expect(probe).toMatchObject({ checkpoint: registry[0], revision: 7, coordinates: scenarioCoordinates });
+		expect(Reflect.ownKeys(probe ?? {})).toEqual(['checkpoint', 'revision', 'coordinates']);
+		expect(Object.isFrozen(probe)).toBe(true);
+	});
+
+	it.each([
+		['run', { runId: 'gate3-20260822-deadbeef' }],
+		['project', { projectRef: 'wrong-project' }],
+		['Supabase URL', { supabaseUrl: 'https://attacker.invalid' }],
+		['worker', { workerOrigin: 'https://wrong.invalid' }],
+		['release', { releaseCommitSha: 'f'.repeat(40) }],
+		['revision', { stateRevision: 8 }],
+		['state SHA', { stateSha256: 'f'.repeat(64) }],
+		['manifest path', { manifestPath: 'C:/private/other.json' }],
+		['manifest SHA', { manifestSha256: 'f'.repeat(64) }],
+		['inspection provenance', { inspectionNonce: 'f'.repeat(64) }]
+	])('fails closed for same-looking evidence from a different %s', (_name, attack) => {
+		const registry = scenarioRegistry();
+		expect(selectNextScenarioStep(scenarioInspection(), registry, scenarioEvidence(attack))).toBeNull();
+	});
+
+	it('selects reconciliation for the same exact entry without advancing or replaying it', () => {
+		const registry = scenarioRegistry();
+		const selected = selectNextScenarioStep(
+			scenarioInspection(),
+			registry,
+			scenarioEvidence({ hostedCheckpointId: 'first-step' })
+		);
+
+		expect(selected).toMatchObject({
+			checkpoint: registry[0],
+			mode: 'reconcile',
+			revision: 7
+		});
+	});
+
+	it('authorizes only a lifecycle-matched exact multi-field A10 manifest-ahead delta', () => {
+		const registry = scenarioRegistry();
+		const inspected = scenarioInspection({
+			ambiguous: true,
+			manifestBindingStatus: 'unexplained-mismatch',
+			manifestExactMatch: false,
+			manifestAheadState: false,
+			manifestMatches: false,
+			manifestMismatch: true,
+			deletionScopeTrusted: false,
+			recognizedA10AtomicManifestAhead: true,
+			a10AtomicManifestDelta: 'report-upload'
+		});
+		const selected = selectNextScenarioStep(inspected, registry, scenarioEvidence({
+			hostedCheckpointId: 'first-step',
+			manifestCheckpointId: null
+		}));
+		expect(selected).toMatchObject({ checkpoint: registry[0], mode: 'reconcile', manifestState: 'ahead' });
+		expect(selectNextScenarioStep({ ...inspected, a10AtomicManifestDelta: 'upload-queue' }, registry, scenarioEvidence({ hostedCheckpointId: 'first-step', manifestCheckpointId: null }))).toBeNull();
+	});
+
+	it.each([
+		['unknown completed checkpoint', { completedCheckpointIds: ['unknown-step'] }],
+		['non-prefix completed checkpoints', { completedCheckpointIds: ['second-step'] }],
+		['ambiguous hosted and manifest checkpoints', { hostedCheckpointId: 'first-step', manifestCheckpointId: 'second-step' }],
+		['stale hosted checkpoint behind persisted evidence', { completedCheckpointIds: ['first-step'], hostedCheckpointId: 'first-step' }],
+		['manifest checkpoint without hosted proof', { manifestCheckpointId: 'first-step' }],
+		['no remaining step', { completedCheckpointIds: ['first-step', 'second-step'] }]
+	])('fails closed for independently valid %s', (_name, attack) => {
+		const registry = scenarioRegistry();
+		expect(selectNextScenarioStep(scenarioInspection(), registry, scenarioEvidence(attack))).toBeNull();
+	});
+
+	it('fails closed for accessor, symbol, proxy, substituted, reordered, ambiguous, and prerequisite attacks', () => {
+		const registry = scenarioRegistry();
+		const accessor = scenarioEvidence();
+		Object.defineProperty(accessor, 'runId', { enumerable: true, get: () => scenarioCoordinates.runId });
+		const symbol = { ...scenarioEvidence(), [Symbol('hidden')]: true };
+		const proxy = new Proxy(scenarioEvidence(), {});
+		const substituted = Object.freeze([Object.freeze({ ...registry[0], id: 'substituted-step' }), registry[1]]);
+		const reordered = Object.freeze([...registry].reverse());
+		const ambiguous = scenarioInspection({ ambiguous: true });
+		const badPrerequisite = Object.freeze([
+			registry[0],
+			Object.freeze({ ...registry[1], prerequisiteIds: Object.freeze([]) })
+		]);
+
+		for (const [candidateRegistry, candidateInspection, candidateEvidence] of [
+			[registry, scenarioInspection(), accessor],
+			[registry, scenarioInspection(), symbol],
+			[registry, scenarioInspection(), proxy],
+			[substituted, scenarioInspection(), scenarioEvidence()],
+			[reordered, scenarioInspection(), scenarioEvidence()],
+			[registry, ambiguous, scenarioEvidence()],
+			[badPrerequisite, scenarioInspection(), scenarioEvidence()]
+		] as const) {
+			expect(selectNextScenarioStep(candidateInspection, candidateRegistry, candidateEvidence)).toBeNull();
+		}
+	});
+
+	it('rejects hostile frozen registry arrays, entries, and prerequisite arrays without invoking accessors', () => {
+		const getter = vi.fn(() => scenarioRegistry()[0]);
+		const arrayAccessor: unknown[] = [];
+		Object.defineProperty(arrayAccessor, '0', { enumerable: true, configurable: false, get: getter });
+		Object.defineProperty(arrayAccessor, 'length', { value: 1, writable: false, configurable: false });
+		Object.freeze(arrayAccessor);
+
+		const entryGetter = vi.fn(() => 'first-step');
+		const entry = { ...scenarioRegistry()[0] } as Record<string, unknown>;
+		Object.defineProperty(entry, 'id', { enumerable: true, configurable: false, get: entryGetter });
+		Object.freeze(entry);
+		const entryAccessor = Object.freeze([entry]);
+
+		const prerequisiteGetter = vi.fn(() => 'first-step');
+		const prerequisite: unknown[] = [];
+		Object.defineProperty(prerequisite, '0', { enumerable: true, configurable: false, get: prerequisiteGetter });
+		Object.defineProperty(prerequisite, 'length', { value: 1, writable: false, configurable: false });
+		Object.freeze(prerequisite);
+		const base = scenarioRegistry();
+		const prerequisiteAccessor = Object.freeze([
+			base[0],
+			Object.freeze({ ...base[1], prerequisiteIds: prerequisite })
+		]);
+
+		const hole = Object.freeze([base[0], , base[1]]);
+		const symbol = Object.freeze(Object.assign([...base], { [Symbol('hidden')]: true }));
+		const proxyTrap = vi.fn();
+		const proxied = new Proxy(base, { get: proxyTrap, ownKeys: proxyTrap, getOwnPropertyDescriptor: proxyTrap });
+
+		for (const candidate of [arrayAccessor, entryAccessor, prerequisiteAccessor, hole, symbol, proxied]) {
+			expect(selectNextScenarioStep(scenarioInspection(), candidate, scenarioEvidence())).toBeNull();
+		}
+		expect(getter).not.toHaveBeenCalled();
+		expect(entryGetter).not.toHaveBeenCalled();
+		expect(prerequisiteGetter).not.toHaveBeenCalled();
+		expect(proxyTrap).not.toHaveBeenCalled();
+	});
+
+	it('rejects hostile scenario inspections without invoking accessors, symbols, or proxy traps', () => {
+		const registry = scenarioRegistry();
+		const getter = vi.fn(() => false);
+		const accessorInspection = scenarioInspection();
+		Object.defineProperty(accessorInspection, 'ambiguous', { enumerable: true, get: getter });
+		const symbolInspection = { ...scenarioInspection(), [Symbol('hidden')]: true };
+		const proxyTrap = vi.fn();
+		const proxiedInspection = new Proxy(scenarioInspection(), {
+			get: proxyTrap,
+			getOwnPropertyDescriptor: proxyTrap,
+			ownKeys: proxyTrap,
+			getPrototypeOf: proxyTrap
+		});
+
+		expect(selectNextScenarioStep(accessorInspection, registry, scenarioEvidence())).toBeNull();
+		expect(selectNextScenarioStep(symbolInspection, registry, scenarioEvidence())).toBeNull();
+		expect(selectNextScenarioStep(proxiedInspection, registry, scenarioEvidence())).toBeNull();
+		expect(getter).not.toHaveBeenCalled();
+		expect(proxyTrap).not.toHaveBeenCalled();
+	});
+
+	it('rejects hostile completed checkpoint arrays without invoking nested accessors or proxy traps', () => {
+		const registry = scenarioRegistry();
+		const getter = vi.fn(() => 'first-step');
+		const accessorIds: string[] = [];
+		Object.defineProperty(accessorIds, '0', { enumerable: true, get: getter });
+		Object.defineProperty(accessorIds, 'length', { value: 1 });
+		const holeIds = new Array(1);
+		const symbolIds = Object.assign(['first-step'], { [Symbol('hidden')]: true });
+		const proxyTrap = vi.fn();
+		const proxyIds = new Proxy(['first-step'], {
+			get: proxyTrap,
+			getOwnPropertyDescriptor: proxyTrap,
+			ownKeys: proxyTrap,
+			getPrototypeOf: proxyTrap
+		});
+
+		for (const completedCheckpointIds of [accessorIds, holeIds, symbolIds, proxyIds]) {
+			expect(selectNextScenarioStep(
+				scenarioInspection(),
+				registry,
+				scenarioEvidence({ completedCheckpointIds })
+			)).toBeNull();
+		}
+		expect(getter).not.toHaveBeenCalled();
+		expect(proxyTrap).not.toHaveBeenCalled();
 	});
 });

@@ -1,10 +1,17 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as hostedOperatorModule from '../../scripts/hosted-report-evidence-operator.mjs';
 import { createEncryptedModeratorCredentialStore } from '../../scripts/hosted-a9-credential-store.mjs';
 import { deriveSyntheticIdentity } from '../../scripts/gate3-hosted-secrets.mjs';
+import { A10_STEP_REGISTRY } from '../../scripts/gate3-hosted-scenario-runner.mjs';
+import {
+	mintGate3ScenarioCapabilityGrant,
+	selectNextScenarioProbe,
+	selectNextScenarioStep
+} from '../../scripts/gate3-hosted-lifecycle.mjs';
 import {
 	HOSTED_STAGING,
 	HostedEvidenceOperatorError,
@@ -13,6 +20,8 @@ import {
 	assertSyntheticAccountAllowed,
 	cleanupHostedManifestFile,
 	cleanupHostedRun,
+	bindHostedA10CheckpointCapability,
+	createHostedA10ExecutionContext,
 	createHostedEvidenceOperator,
 	createHostedRunManifest,
 	createSanitizedOperatorRecord,
@@ -21,6 +30,7 @@ import {
 	createSupabaseHostedEvidenceReadAdapters,
 	createSupabaseHostedInspectionAdapter,
 	generateTotpCode,
+	inspectHostedA10CheckpointEvidence,
 	loadHostedRunManifest,
 	persistHostedRunManifest,
 	registerHostedActor,
@@ -75,6 +85,89 @@ const approvedCleanupEnvironment = {
 	E2E_REAL_REPORT_EVIDENCE_CLEANUP_RUN: 'true',
 	E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL: 'A11'
 };
+
+let reportTokenSequence = 0;
+function freshReportTokenProvider(factory: (() => Promise<string>) | null = null) {
+	return Object.freeze({
+		freshReportToken: vi.fn(factory ?? (async () => `turnstile-token-${++reportTokenSequence}-${'x'.repeat(24)}`))
+	});
+}
+
+function actorAuthorizationRead(input: RequestInfo | URL, init?: RequestInit): Response | null {
+	const request = input instanceof Request ? input : new Request(input, init);
+	const url = new URL(request.url);
+	if (!['/rest/v1/profiles', '/rest/v1/beta_memberships'].includes(url.pathname)) return null;
+	let actorId = '';
+	try {
+		const token = (request.headers.get('authorization') ?? '').replace(/^Bearer /u, '');
+		actorId = String(JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8')).sub ?? '');
+	} catch { /* fail closed below */ }
+	const role = Object.entries(actorIds).find(([, id]) => id === actorId)?.[0] ?? '';
+	const data = url.pathname === '/rest/v1/profiles'
+		? (role ? [{ id: actorId, role: role.includes('moderator') ? 'moderator' : 'user', is_suspended: false }] : [])
+		: (role ? [{ profile_id: actorId, status: 'active', onboarding_completed_at: actorCreatedAt }] : []);
+	return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+function a10LifecycleFacts(coordinates: Record<string, unknown>, index: number) {
+	return {
+		actors: 4,
+		provisionVerified: true,
+		scenarioPartial: index > 0,
+		scenarioVerified: false,
+		cleanupRequired: false,
+		cleanupPartial: false,
+		cleanupVerified: false,
+		archived: false,
+		ambiguous: false,
+		releaseMismatch: false,
+		credentialsLost: false,
+		exactRecoveryProvenance: false,
+		manifestMatches: true,
+		ownershipConflict: false,
+		deletionScopeTrusted: true,
+		authoritativeReleaseAvailable: true,
+		...coordinates,
+		boundReleaseCommitSha: coordinates.releaseCommitSha,
+		currentReleaseCommitSha: coordinates.releaseCommitSha,
+		stateValid: true,
+		stateCorrupt: false,
+		corruptState: false,
+		manifestValid: true,
+		manifestBindingStatus: 'exact',
+		manifestExactMatch: true,
+		manifestAheadState: false,
+		manifestMismatch: false,
+		authoritativeReleaseUnavailable: false,
+		releaseChanged: false,
+		hostedEvidenceAvailable: true,
+		cleanupCompleteContradiction: false,
+		duplicateRoles: 0,
+		metadataMismatches: 0,
+		actorIdentityConflicts: 0,
+		manifestActorsAbsent: 0,
+		hostedActorsManifestStale: 0
+	};
+}
+
+function a10LifecycleEvidence(coordinates: Record<string, unknown>, index: number) {
+	return {
+		completedCheckpointIds: A10_STEP_REGISTRY.slice(0, index).map((entry) => entry.id),
+		hostedCheckpointId: null,
+		manifestCheckpointId: null,
+		...coordinates
+	};
+}
+
+function a10CapabilityGrant(coordinates: Record<string, unknown>, index: number, confirmed = false, checkpointProof: unknown = null) {
+	const inspection = a10LifecycleFacts(coordinates, index);
+	const evidence = a10LifecycleEvidence(coordinates, index);
+	const selected = selectNextScenarioStep(inspection, A10_STEP_REGISTRY, confirmed ? { ...evidence, hostedCheckpointId: A10_STEP_REGISTRY[index].id } : evidence);
+	if (!selected) throw new Error('test authorization unavailable');
+	const grant = mintGate3ScenarioCapabilityGrant(selected, A10_STEP_REGISTRY, inspection, checkpointProof);
+	if (!grant) throw new Error('test grant unavailable');
+	return grant;
+}
 const approvedProvisionEnvironment = {
 	...baseEnvironment,
 	E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN: 'true',
@@ -151,11 +244,16 @@ function completeActorManifest(config: ReturnType<typeof validateHostedA9Environ
 	);
 }
 
+function hostedManifestDigest(manifest: unknown): string {
+	return createHash('sha256').update(Buffer.from(`${JSON.stringify(manifest)}\n`)).digest('hex');
+}
+
 function createInspectorServiceClient(options: {
 	users?: Array<Record<string, unknown>>;
 	authPages?: Record<number, { users: Array<Record<string, unknown>>; total?: number; lastPage?: number }>;
 	rows?: Record<string, Array<Record<string, unknown>>>;
 	objects?: Record<string, Array<Record<string, unknown>>>;
+	downloads?: Record<string, Uint8Array>;
 	selectedColumns?: string[];
 	queryCalls?: Array<Record<string, unknown>>;
 } = {}) {
@@ -225,7 +323,12 @@ function createInspectorServiceClient(options: {
 		storage: {
 			from: () => ({
 				list: (prefix: string) =>
-					Promise.resolve({ data: options.objects?.[prefix] ?? [], error: null })
+					Promise.resolve({ data: options.objects?.[prefix] ?? [], error: null }),
+				download: (path: string) => Promise.resolve(
+					Object.hasOwn(options.downloads ?? {}, path)
+						? { data: new Blob([Uint8Array.from(options.downloads?.[path] as Uint8Array).buffer as ArrayBuffer]), error: null }
+						: { data: null, error: { message: 'not found' } }
+				)
 			})
 		}
 	};
@@ -261,7 +364,7 @@ describe('universal Supabase inspection adapter', () => {
 		const config = validateHostedOperatorEnvironment(baseEnvironment);
 		const reads = createSupabaseHostedEvidenceReadAdapters({
 			config,
-			serviceClient: {} as never
+			serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never
 		});
 		expect(Object.keys(reads)).toEqual(['listPendingManifestUsers', 'inspectManifest']);
 		expect(Object.keys(reads)).not.toEqual(
@@ -1053,6 +1156,95 @@ describe('universal Supabase inspection adapter', () => {
 		}
 	);
 
+	it('derives canonical completion only from the exact reducer-implied manifest and every durable live anchor', async () => {
+		let manifest = gate3Manifest();
+		for (const [role, userId] of Object.entries(actorIds)) {
+			manifest = registerHostedActor(manifest, role, userId, actorCreatedAt);
+		}
+		const reportId = '66666666-6666-4666-8666-666666666666';
+		const uploadIds = {
+			primary: '77777777-7777-4777-8777-777777777777',
+			duplicate: '88888888-8888-4888-8888-888888888888',
+			rejected: '99999999-9999-4999-8999-999999999999',
+			abandoned: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+		};
+		const objectPath = `${actorIds.reporter}/${uploadIds.primary}.webp`;
+		const primaryBytes = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEALmk0mk0iIiIiIgBoSygABc6zbAAA', 'base64');
+		manifest = registerHostedReport(manifest, reportId, 'reporter');
+		for (const uploadId of Object.values(uploadIds)) {
+			manifest = registerHostedUpload(manifest, uploadId, 'reporter', `${actorIds.reporter}/${uploadId}.webp`);
+		}
+		manifest = registerHostedQueueRow(manifest, 17, uploadIds.duplicate);
+		manifest = registerHostedQueueRow(manifest, 18, uploadIds.rejected);
+		manifest = registerHostedQueueRow(manifest, 19, uploadIds.abandoned);
+		const users = expectedIdentities.map((identity, index) => ({
+			id: Object.values(actorIds)[index],
+			email: identity.email,
+			created_at: actorCreatedAt,
+			user_metadata: {
+				gate3_report_evidence_run_id: inspectorRunId,
+				gate3_report_evidence_provisioning_attempt_id:
+					baseEnvironment.E2E_REAL_REPORT_EVIDENCE_PROVISIONING_NONCE
+			}
+		}));
+		const checkpoints = Object.fromEntries(A10_STEP_REGISTRY.map(({ id }) => [
+			`scenario-${id}`,
+			{ status: 'complete', step: id, observedAt: actorCreatedAt }
+		]));
+		const finalCheckpoint = checkpoints[`scenario-${A10_STEP_REGISTRY.at(-1)?.id}`];
+		const inspect = async (omit: string | null = null) => {
+			const uploadRows = [
+				{ id: uploadIds.primary, status: 'attached', report_id: reportId, actual_content_hash: createHash('sha256').update(primaryBytes).digest('hex'), actual_byte_size: primaryBytes.length, actual_mime_type: 'image/webp', width_px: 1, height_px: 1, finalized_at: actorCreatedAt, attached_at: actorCreatedAt },
+				{ id: uploadIds.duplicate, status: 'rejected', report_id: null },
+				{ id: uploadIds.rejected, status: 'rejected', report_id: null },
+				{ id: uploadIds.abandoned, status: 'expired', report_id: null }
+			].filter((row) => omit !== `${row.id}-upload`).map((row) => ({ ...row, uploader_id: actorIds.reporter, storage_path: `${actorIds.reporter}/${row.id}.webp`, created_at: actorCreatedAt }));
+			const queueRows = [
+				{ id: 17, report_evidence_upload_id: uploadIds.duplicate },
+				{ id: 18, report_evidence_upload_id: uploadIds.rejected },
+				{ id: 19, report_evidence_upload_id: uploadIds.abandoned }
+			].filter((row) => omit !== `${row.report_evidence_upload_id}-queue`).map((row) => ({ ...row, storage_path: `${actorIds.reporter}/${row.report_evidence_upload_id}.webp`, processed_at: actorCreatedAt }));
+			const adapter = createSupabaseHostedInspectionAdapter({
+				projectRef: HOSTED_STAGING.projectRef,
+				serviceClient: createInspectorServiceClient({
+				users,
+				rows: {
+					reports: [{
+						id: reportId,
+						reporter_id: actorIds.reporter,
+						target_id: actorIds['cross-user'],
+						evidence_paths: [objectPath],
+						status: 'investigating',
+						assigned_to: actorIds['assigned-moderator']
+					}],
+					report_evidence_uploads: uploadRows,
+					upload_cleanup_queue: queueRows,
+					moderation_audit: omit === 'assignment-audit' ? [] : [{ id: 1, report_id: reportId, actor_id: actorIds['assigned-moderator'], action: 'report_assigned', created_at: actorCreatedAt }]
+				},
+				objects: { [actorIds.reporter]: [{ name: `${uploadIds.primary}.webp`, metadata: { size: primaryBytes.length, mimetype: 'image/webp' } }] },
+				downloads: { [objectPath]: omit === 'primary-bytes' ? Buffer.from('wrong') : primaryBytes }
+			}) as never
+			});
+			return adapter.inspectRun({
+				runId: inspectorRunId,
+				createdAfter: '2026-08-09T11:59:00.000Z',
+				manifest,
+				expectedIdentities,
+				scenarioRegistry: A10_STEP_REGISTRY,
+				scenarioEvidence: { phase: { status: 'complete', checkpoint: finalCheckpoint }, checkpoints }
+			});
+		};
+
+		await expect(inspect()).resolves.toMatchObject({ scenarioVerified: true, scenarioPartial: false });
+		for (const missing of [
+			`${uploadIds.duplicate}-upload`, `${uploadIds.rejected}-upload`, `${uploadIds.abandoned}-upload`,
+			`${uploadIds.duplicate}-queue`, `${uploadIds.rejected}-queue`, `${uploadIds.abandoned}-queue`,
+			'assignment-audit', 'primary-bytes'
+		]) {
+			await expect(inspect(missing)).resolves.toMatchObject({ scenarioVerified: false, scenarioPartial: true });
+		}
+	});
+
 	it.each([
 		['unrelated checkpoint', 'scenario-unrelated', 'unrelated-step', true, actorIds.reporter, true, true, true, false],
 		['unmanifested upload', 'scenario-primary-upload-attached', 'primary-upload-attached', false, actorIds.reporter, true, true, true, false],
@@ -1413,6 +1605,944 @@ it.each([
 });
 
 describe('hosted report-evidence target lock', () => {
+	it('distinguishes exact primary-report absence and requires same-origin HTTP 200 transport evidence', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = completeActorManifest(config as never);
+		const rows: Record<string, Array<Record<string, unknown>>> = { reports: [], report_evidence_uploads: [] };
+		const reportId = '99999999-9999-4999-8999-999999999999';
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+		const requestId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			from(table: string) {
+				const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+				const query: Record<string, unknown> = {
+					select: () => query,
+					eq: (key: string, value: unknown) => { filters.push((row) => row[key] === value); return query; },
+					in: (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return query; },
+					like: (key: string, pattern: string) => { const prefix = pattern.replace(/%$/u, ''); filters.push((row) => String(row[key] ?? '').startsWith(prefix)); return query; },
+					gte: () => query,
+					then: (resolve: (value: unknown) => unknown) => resolve({ data: (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))), error: null })
+				};
+				return query;
+			},
+			storage: { from: () => ({ list: vi.fn(async (prefix: string) => ({ data: prefix === actorIds.reporter ? [{ name: `${uploadId}.webp`, created_at: actorCreatedAt, metadata: { size: 68, mimetype: 'image/webp' } }] : [], error: null })) }) },
+			auth: { admin: { getUserById: vi.fn(async (id: string) => ({ data: { user: provisionedUser(Object.entries(actorIds).find(([, userId]) => userId === id)?.[0] as keyof typeof actorIds, id) }, error: null })) } }
+		};
+		const jwt = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: actorIds.reporter, aal: 'aal1', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.${Buffer.from('signature').toString('base64url')}`;
+		const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = input instanceof Request ? input.url : String(input);
+			const actorScopeResponse = actorAuthorizationRead(input, init);
+			if (actorScopeResponse) return actorScopeResponse;
+			if (url.includes('/auth/v1/token')) return new Response(JSON.stringify({ access_token: jwt, refresh_token: 'refresh-token-value', expires_in: 3600, token_type: 'bearer', user: { id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL } }), { status: 200, headers: { 'content-type': 'application/json' } });
+			if (url.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL }), { status: 200, headers: { 'content-type': 'application/json' } });
+			if (url.endsWith('/report')) {
+				expect(new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get('origin')).toBe(HOSTED_STAGING.workerOrigin);
+				rows.reports.push({ id: reportId, reporter_id: actorIds.reporter, target_id: actorIds['cross-user'], details: `Synthetic Gate 3 evidence ${config.runId}`, evidence_paths: [objectPath], status: 'open', assigned_to: null, created_at: actorCreatedAt });
+				rows.report_evidence_uploads.push({ id: uploadId, uploader_id: actorIds.reporter, storage_path: objectPath, status: 'attached', source_byte_size: 68, actual_content_hash: 'a'.repeat(64), actual_byte_size: 68, actual_mime_type: 'image/webp', width_px: 1, height_px: 1, report_id: reportId, finalized_at: actorCreatedAt, attached_at: actorCreatedAt });
+				return new Response('{}', { status: 200, headers: { 'content-type': 'application/json', 'x-request-id': requestId, 'x-deployed-git-sha': 'a'.repeat(40) } });
+			}
+			throw new Error('unexpected request');
+		});
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: fetchImpl as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const grant = a10CapabilityGrant(coordinates, 0);
+		const capability = bindHostedA10CheckpointCapability(context, { grant, manifestBytes });
+		expect(() => bindHostedA10CheckpointCapability(context, { grant, manifestBytes })).toThrow(/scenario authorization is invalid/u);
+		await capability.mutation?.();
+		await expect(capability.readBack({ mutationAttempted: true, mutationFailed: false })).resolves.toMatchObject({
+			outcome: 'confirmed',
+			receipt: { boundary: 'HTTP', actualResult: 'HTTP 200', requestId }
+		});
+		await expect(capability.mutation?.()).rejects.toThrow(/scenario capability is already consumed/u);
+		await expect(capability.readBack({ mutationAttempted: true, mutationFailed: false })).rejects.toThrow(/scenario capability is already consumed/u);
+		expect(fetchImpl.mock.calls.filter(([input]) => String(input).endsWith('/report'))).toHaveLength(1);
+
+		const readBackFirst = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 0), manifestBytes });
+		await expect(readBackFirst.readBack({ mutationAttempted: false, mutationFailed: false })).rejects.toThrow(/scenario capability is already consumed/u);
+		await expect(readBackFirst.mutation?.()).rejects.toThrow(/scenario capability is already consumed/u);
+		expect(fetchImpl.mock.calls.filter(([input]) => String(input).endsWith('/report'))).toHaveLength(1);
+
+		const racing = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 0), manifestBytes });
+		const raceResults = await Promise.allSettled([
+			racing.mutation?.(),
+			racing.readBack({ mutationAttempted: true, mutationFailed: false })
+		]);
+		expect(raceResults.map(({ status }) => status)).toEqual(['fulfilled', 'rejected']);
+		expect(fetchImpl.mock.calls.filter(([input]) => String(input).endsWith('/report'))).toHaveLength(2);
+		await expect(racing.readBack({ mutationAttempted: true, mutationFailed: false })).rejects.toThrow(/scenario capability is already consumed/u);
+
+		const reusedProvider = freshReportTokenProvider(async () => `turnstile-reused-${'x'.repeat(24)}`);
+		const reusedContext = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: reusedProvider, fetchImpl: fetchImpl as never });
+		const firstReuse = bindHostedA10CheckpointCapability(reusedContext, { grant: a10CapabilityGrant(coordinates, 0), manifestBytes });
+		const secondReuse = bindHostedA10CheckpointCapability(reusedContext, { grant: a10CapabilityGrant(coordinates, 0), manifestBytes });
+		const beforeReusePosts = fetchImpl.mock.calls.filter(([input]) => String(input).endsWith('/report')).length;
+		await firstReuse.mutation?.();
+		await expect(secondReuse.mutation?.()).rejects.toThrow(/exact scenario operation failed/u);
+		expect(reusedProvider.freshReportToken).toHaveBeenCalledTimes(2);
+		expect(fetchImpl.mock.calls.filter(([input]) => String(input).endsWith('/report'))).toHaveLength(beforeReusePosts + 1);
+
+		for (const attack of ['demoted-role', 'suspended', 'inactive-membership'] as const) {
+			const attackedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+				if (path === '/rest/v1/profiles') return new Response(JSON.stringify([{ id: actorIds.reporter, role: attack === 'demoted-role' ? 'moderator' : 'user', is_suspended: attack === 'suspended' }]), { status: 200, headers: { 'content-type': 'application/json' } });
+				if (path === '/rest/v1/beta_memberships') return new Response(JSON.stringify([{ profile_id: actorIds.reporter, status: attack === 'inactive-membership' ? 'inactive' : 'active', onboarding_completed_at: actorCreatedAt }]), { status: 200, headers: { 'content-type': 'application/json' } });
+				return fetchImpl(input, init);
+			});
+			const attackedContext = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: attackedFetch as never });
+			const attackedCapability = bindHostedA10CheckpointCapability(attackedContext, { grant: a10CapabilityGrant(coordinates, 0), manifestBytes });
+			const postCount = fetchImpl.mock.calls.filter(([input]) => String(input).endsWith('/report')).length;
+			await expect(attackedCapability.mutation?.()).rejects.toThrow(/exact scenario operation failed/u);
+			expect(fetchImpl.mock.calls.filter(([input]) => String(input).endsWith('/report'))).toHaveLength(postCount);
+		}
+	});
+
+	it.each([403, 302, 500, 'network', 'missing-request-id', 'invalid-request-id', 'missing-release', 'mismatch-release'])('never confirms primary-report transport status %s as absence or success', async (status) => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = completeActorManifest(config as never);
+		const reportId = '99999999-9999-4999-8999-999999999999';
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+		const rows: Record<string, Array<Record<string, unknown>>> = { reports: [], report_evidence_uploads: [] };
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			from(table: string) {
+				const filters: Array<[string, unknown]> = [];
+				const query: Record<string, unknown> = { select: () => query, eq: (key: string, value: unknown) => { filters.push([key, value]); return query; }, gte: () => query, then: (resolve: (value: unknown) => unknown) => resolve({ data: (rows[table] ?? []).filter((row) => filters.every(([key, value]) => row[key] === value)), error: null }) };
+				return query;
+			},
+			storage: { from: () => ({ list: vi.fn(async () => ({ data: rows.reports.length > 0 ? [{ name: `${uploadId}.webp`, created_at: actorCreatedAt, metadata: { size: 68, mimetype: 'image/webp' } }] : [], error: null })) }) },
+			auth: { admin: { getUserById: vi.fn() } }
+		};
+		const jwt = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: actorIds.reporter, aal: 'aal1', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.${Buffer.from('signature').toString('base64url')}`;
+		const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = input instanceof Request ? input.url : String(input);
+			const actorScopeResponse = actorAuthorizationRead(input, init);
+			if (actorScopeResponse) return actorScopeResponse;
+			if (url.includes('/auth/v1/token')) return new Response(JSON.stringify({ access_token: jwt, refresh_token: 'refresh-token-value', expires_in: 3600, token_type: 'bearer', user: { id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL } }), { status: 200, headers: { 'content-type': 'application/json' } });
+			if (url.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL }), { status: 200, headers: { 'content-type': 'application/json' } });
+			expect(new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get('origin')).toBe(HOSTED_STAGING.workerOrigin);
+			if (status === 'network') throw new Error('private provider network failure');
+			if (status === 'missing-request-id') return new Response('', { status: 200, headers: { 'x-deployed-git-sha': 'a'.repeat(40) } });
+			if (status === 'invalid-request-id') return new Response('', { status: 200, headers: { 'x-request-id': 'private-provider-token', 'x-deployed-git-sha': 'a'.repeat(40) } });
+			if (status === 'missing-release' || status === 'mismatch-release') {
+				rows.reports.push({ id: reportId, reporter_id: actorIds.reporter, target_id: actorIds['cross-user'], details: `Synthetic Gate 3 evidence ${config.runId}`, evidence_paths: [objectPath], status: 'open', assigned_to: null, created_at: actorCreatedAt });
+				rows.report_evidence_uploads.push({ id: uploadId, uploader_id: actorIds.reporter, storage_path: objectPath, status: 'attached', report_id: reportId });
+				return new Response('', { status: 200, headers: { 'x-request-id': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', ...(status === 'mismatch-release' ? { 'x-deployed-git-sha': 'f'.repeat(40) } : {}) } });
+			}
+			return new Response('', { status: Number(status), headers: { 'x-request-id': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'x-deployed-git-sha': 'a'.repeat(40) } });
+		});
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: fetchImpl as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const capability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 0), manifestBytes });
+		await expect(capability.mutation?.()).rejects.toThrow(/exact scenario operation failed/u);
+		await expect(capability.readBack({ mutationAttempted: true, mutationFailed: true })).resolves.toMatchObject({ outcome: 'uncertain' });
+	});
+
+	it.each([
+		['upload', true, false, false],
+		['object', false, true, false],
+		['queue', false, false, true],
+		['compound', true, true, true]
+	] as const)('treats report-absent residual %s evidence as uncertain before any POST', async (_label, withUpload, withObject, withQueue) => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = completeActorManifest(config as never);
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const path = `${actorIds.reporter}/${uploadId}.webp`;
+		const rows: Record<string, Array<Record<string, unknown>>> = {
+			reports: [],
+			report_evidence_uploads: withUpload ? [{ id: uploadId, uploader_id: actorIds.reporter, storage_path: path }] : [],
+			upload_cleanup_queue: withQueue ? [{ id: 17, storage_path: path, report_evidence_upload_id: uploadId, processed_at: null }] : []
+		};
+		const users = Object.fromEntries(Object.entries(actorIds).map(([role, id]) => [id, provisionedUser(role as keyof typeof actorIds, id)]));
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { getUserById: vi.fn(async (id: string) => ({ data: { user: users[id] }, error: null })), listUsers: vi.fn(async () => ({ data: { users: [], lastPage: 1 }, error: null })) } },
+			from(table: string) {
+				const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+				const query: Record<string, any> = {
+					select: () => query,
+					eq: (key: string, value: unknown) => { filters.push((row) => row[key] === value); return query; },
+					gte: () => query,
+					in: (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return query; },
+					like: (key: string, pattern: string) => { const prefix = pattern.replace(/%$/u, ''); filters.push((row) => String(row[key] ?? '').startsWith(prefix)); return query; },
+					order: () => query,
+					limit: () => query,
+					maybeSingle: async () => { const data = (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))); return { data: data.length === 1 ? data[0] : null, error: data.length > 1 ? { code: 'ambiguous' } : null }; },
+					then: (resolve: (value: unknown) => unknown) => resolve({ data: (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))), error: null })
+				};
+				return query;
+			},
+			storage: { from: () => ({ list: vi.fn(async (prefix: string) => ({ data: withObject && prefix === actorIds.reporter ? [{ name: `${uploadId}.webp` }] : [], error: null })) }) }
+		};
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const operationTrap = vi.fn(async () => { throw new Error('POST must not run'); });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: operationTrap as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const inspection = a10LifecycleFacts(coordinates, 0);
+		const probe = selectNextScenarioProbe(inspection, A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, 0));
+		await expect(inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes })).resolves.toMatchObject({ outcome: 'uncertain' });
+		expect(operationTrap).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['report-upload-no-object', 'attached', 'exact', false, false, false],
+		['wrong-object', 'attached', 'exact', true, false, true],
+		['wrong-status', 'pending', 'exact', true, false, false],
+		['wrong-link', 'attached', 'wrong', true, false, false],
+		['wrong-metadata', 'attached', 'exact', true, true, false]
+	] as const)('treats an existing incomplete primary boundary %s as uncertain and never authorizes POST', async (_label, status, linkage, withObject, wrongMetadata, wrongObject) => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = completeActorManifest(config as never);
+		const reportId = '99999999-9999-4999-8999-999999999999';
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+		const rows: Record<string, Array<Record<string, unknown>>> = {
+			reports: [{ id: reportId, reporter_id: actorIds.reporter, target_id: actorIds['cross-user'], details: `Synthetic Gate 3 evidence ${config.runId}`, evidence_paths: [objectPath], status: 'open', assigned_to: null, created_at: actorCreatedAt }],
+			report_evidence_uploads: [{ id: uploadId, uploader_id: actorIds.reporter, storage_path: objectPath, status, source_byte_size: 68, actual_content_hash: wrongMetadata ? 'invalid' : 'a'.repeat(64), actual_byte_size: wrongMetadata ? null : 68, actual_mime_type: 'image/webp', width_px: 1, height_px: 1, report_id: linkage === 'exact' ? reportId : 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', created_at: actorCreatedAt, updated_at: actorCreatedAt, expires_at: '2026-08-22T21:00:00.000Z', finalized_at: actorCreatedAt, attached_at: actorCreatedAt }],
+			upload_cleanup_queue: []
+		};
+		const users = Object.fromEntries(Object.entries(actorIds).map(([role, id]) => [id, provisionedUser(role as keyof typeof actorIds, id)]));
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { getUserById: vi.fn(async (id: string) => ({ data: { user: users[id] }, error: null })), listUsers: vi.fn(async () => ({ data: { users: [], lastPage: 1 }, error: null })) } },
+			from(table: string) {
+				const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+				const query: Record<string, any> = {
+					select: () => query,
+					eq: (key: string, value: unknown) => { filters.push((row) => row[key] === value); return query; },
+					gte: () => query,
+					in: (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return query; },
+					like: (key: string, pattern: string) => { const prefix = pattern.replace(/%$/u, ''); filters.push((row) => String(row[key] ?? '').startsWith(prefix)); return query; },
+					order: () => query,
+					limit: () => query,
+					maybeSingle: async () => { const data = (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))); return { data: data.length === 1 ? data[0] : null, error: data.length > 1 ? { code: 'ambiguous' } : null }; },
+					then: (resolve: (value: unknown) => unknown) => resolve({ data: (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))), error: null })
+				};
+				return query;
+			},
+			storage: { from: () => ({ list: vi.fn(async () => ({ data: withObject ? [{ name: `${uploadId}.webp`, created_at: actorCreatedAt, updated_at: actorCreatedAt, metadata: { size: wrongObject ? 69 : 68, mimetype: 'image/webp' } }] : [], error: null })) }) }
+		};
+		const operationTrap = vi.fn(async () => { throw new Error('POST must not run'); });
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: operationTrap as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const probe = selectNextScenarioProbe(a10LifecycleFacts(coordinates, 0), A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, 0));
+		await expect(inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes })).resolves.toMatchObject({ outcome: 'uncertain' });
+		expect(operationTrap).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['duplicate', 4, 'pending-upload', 'pending', true, false, false, 'confirmed'],
+		['duplicate', 4, 'finalized-upload', 'attached', true, false, false, 'uncertain'],
+		['duplicate', 4, 'rejected-upload', 'rejected', true, false, false, 'uncertain'],
+		['duplicate', 4, 'expired-upload', 'expired', true, false, false, 'uncertain'],
+		['duplicate', 4, 'object-only', 'pending', false, true, false, 'uncertain'],
+		['duplicate', 4, 'queue-only', 'pending', false, false, true, 'uncertain'],
+		['rejected', 10, 'pending-upload', 'pending', true, false, false, 'uncertain'],
+		['rejected', 10, 'finalized-upload', 'attached', true, false, false, 'uncertain'],
+		['rejected', 10, 'rejected-upload', 'rejected', true, false, false, 'uncertain'],
+		['rejected', 10, 'expired-upload', 'expired', true, false, false, 'uncertain'],
+		['rejected', 10, 'object-only', 'pending', false, true, false, 'uncertain'],
+		['rejected', 10, 'queue-only', 'pending', false, false, true, 'uncertain']
+	] as const)('does not treat %s checkpoint residual %s as clean status-filtered absence', async (boundary, checkpointIndex, _label, residualStatus, withUpload, withObject, withQueue, expectedOutcome) => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const primaryReportId = '99999999-9999-4999-8999-999999999999';
+		const primaryUploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const duplicateUploadId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+		const residualUploadId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+		let manifest = completeActorManifest(config as never);
+		manifest = registerHostedUpload(registerHostedReport(manifest, primaryReportId, 'reporter'), primaryUploadId, 'reporter', `${actorIds.reporter}/${primaryUploadId}.webp`);
+		if (boundary === 'rejected') {
+			manifest = registerHostedQueueRow(registerHostedUpload(manifest, duplicateUploadId, 'reporter', `${actorIds.reporter}/${duplicateUploadId}.webp`), 17, duplicateUploadId);
+		}
+		const residualPath = `${actorIds.reporter}/${residualUploadId}.webp`;
+		const rows: Record<string, Array<Record<string, unknown>>> = {
+			reports: [{ id: primaryReportId, reporter_id: actorIds.reporter }],
+			report_evidence_uploads: [
+				{ id: primaryUploadId, uploader_id: actorIds.reporter, storage_path: `${actorIds.reporter}/${primaryUploadId}.webp`, status: 'attached', source_byte_size: 68 },
+				...(boundary === 'rejected' ? [{ id: duplicateUploadId, uploader_id: actorIds.reporter, storage_path: `${actorIds.reporter}/${duplicateUploadId}.webp`, status: 'rejected', source_byte_size: 68 }] : []),
+				...(withUpload ? [{ id: residualUploadId, uploader_id: actorIds.reporter, storage_path: residualPath, status: residualStatus, source_byte_size: 68, report_id: null, created_at: '2026-08-22T20:00:01.000Z', finalized_at: residualStatus === 'attached' ? actorCreatedAt : null, attached_at: residualStatus === 'attached' ? actorCreatedAt : null }] : [])
+			],
+			upload_cleanup_queue: [
+				...(boundary === 'rejected' ? [{ id: 17, storage_path: `${actorIds.reporter}/${duplicateUploadId}.webp`, report_evidence_upload_id: duplicateUploadId, processed_at: actorCreatedAt }] : []),
+				...(withQueue ? [{ id: 18, storage_path: residualPath, report_evidence_upload_id: residualUploadId, bucket_id: 'report-evidence', processed_at: null }] : [])
+			]
+		};
+		const users = Object.fromEntries(Object.entries(actorIds).map(([role, id]) => [id, provisionedUser(role as keyof typeof actorIds, id)]));
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { getUserById: vi.fn(async (id: string) => ({ data: { user: users[id] }, error: null })), listUsers: vi.fn(async () => ({ data: { users: [], lastPage: 1 }, error: null })) } },
+			from(table: string) {
+				const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+				const query: Record<string, any> = {
+					select: () => query,
+					eq: (key: string, value: unknown) => { filters.push((row) => row[key] === value); return query; },
+					gte: (key: string, value: string) => { filters.push((row) => Date.parse(String(row[key])) >= Date.parse(value)); return query; },
+					in: (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return query; },
+					like: (key: string, pattern: string) => { const prefix = pattern.replace(/%$/u, ''); filters.push((row) => String(row[key] ?? '').startsWith(prefix)); return query; },
+					order: () => query,
+					limit: () => query,
+					maybeSingle: async () => { const data = (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))); return { data: data.length === 1 ? data[0] : null, error: data.length > 1 ? { code: 'ambiguous' } : null }; },
+					then: (resolve: (value: unknown) => unknown) => resolve({ data: (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))), error: null })
+				};
+				return query;
+			},
+			storage: { from: () => ({ list: vi.fn(async (prefix: string) => ({ data: [
+				...(prefix === actorIds.reporter ? [{ name: `${primaryUploadId}.webp` }] : []),
+				...(withObject && prefix === actorIds.reporter ? [{ name: `${residualUploadId}.webp` }] : [])
+			], error: null })) }) }
+		};
+		const operationTrap = vi.fn(async () => { throw new Error('mutation must not run during inspection'); });
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: operationTrap as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const probe = selectNextScenarioProbe(a10LifecycleFacts(coordinates, checkpointIndex), A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, checkpointIndex));
+		await expect(inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes })).resolves.toMatchObject({ outcome: expectedOutcome });
+		expect(operationTrap).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[400, 'current', 'exact', false],
+		[401, 'current', 'exact', false],
+		[403, 'staging', 'exact', true],
+		[403, 'current', 'exact', true],
+		[403, 'legacy', 'exact', true],
+		[404, 'current', 'exact', true],
+		[404, 'legacy', 'exact', true],
+		[429, 'current', 'exact', false],
+		[500, 'current', 'exact', false],
+		[403, 'empty', 'exact', false],
+		[403, 'current', 'wrong-size', false],
+		[403, 'current', 'wrong-hash', false],
+		['network', 'current', 'exact', false]
+	] as const)('accepts only an exact authenticated storage denial with byte-bound reporter control: %s/%s/%s', async (storageStatus, bodyKind, positiveKind, expectedConfirmed) => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const fixtureBytes = Buffer.from('fixture-bytes');
+		let manifest = completeActorManifest(config as never);
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', `${actorIds.reporter}/${uploadId}.webp`);
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			from: vi.fn((table: string) => {
+				const query: Record<string, unknown> = {
+					select: () => query,
+					eq: () => query,
+					maybeSingle: async () => ({ data: { id: uploadId, actual_byte_size: fixtureBytes.length, actual_content_hash: positiveKind === 'wrong-hash' ? 'f'.repeat(64) : createHash('sha256').update(fixtureBytes).digest('hex') }, error: null })
+				};
+				return query;
+			}),
+			storage: { from: vi.fn() },
+			auth: { admin: { getUserById: vi.fn(async (id: string) => {
+				const actor = Object.entries(actorIds).find(([, actorId]) => actorId === id);
+				return { data: { user: actor ? provisionedUser(actor[0] as keyof typeof actorIds, id) : null }, error: null };
+			}) } }
+		};
+		const jwtFor = (actorId: string) => `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: actorId, aal: 'aal1', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.${Buffer.from('signature').toString('base64url')}`;
+		const requestId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+		let deniedReads = 0;
+		let positiveReads = 0;
+		const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = input instanceof Request ? input.url : String(input);
+			const actorScopeResponse = actorAuthorizationRead(input, init);
+			if (actorScopeResponse) return actorScopeResponse;
+			const authorization = new Headers(init?.headers).get('authorization');
+			const isReporter = authorization === `Bearer ${jwtFor(actorIds.reporter)}`;
+			if (url.includes('/auth/v1/token')) {
+				const body = JSON.parse(String(init?.body ?? '{}')) as { email?: string };
+				const reporter = body.email === actorEnvironment.E2E_REAL_REPORTER_EMAIL;
+				const id = reporter ? actorIds.reporter : actorIds['cross-user'];
+				const email = reporter ? actorEnvironment.E2E_REAL_REPORTER_EMAIL : actorEnvironment.E2E_REAL_CROSS_USER_EMAIL;
+				return new Response(JSON.stringify({ access_token: jwtFor(id), refresh_token: 'refresh-token-value', expires_in: 3600, token_type: 'bearer', user: { id, email } }), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			if (url.endsWith('/auth/v1/user')) {
+				const id = isReporter ? actorIds.reporter : actorIds['cross-user'];
+				const email = isReporter ? actorEnvironment.E2E_REAL_REPORTER_EMAIL : actorEnvironment.E2E_REAL_CROSS_USER_EMAIL;
+				return new Response(JSON.stringify({ id, email }), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			expect(url).toBe(`${HOSTED_STAGING.supabaseUrl}/storage/v1/object/authenticated/report-evidence/${actorIds.reporter}/${uploadId}.webp`);
+			if (isReporter) {
+				positiveReads += 1;
+				const bytes = positiveKind === 'wrong-size' ? Buffer.from('wrong') : fixtureBytes;
+				return new Response(bytes, { status: 200, headers: { 'sb-request-id': 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' } });
+			}
+			deniedReads += 1;
+			if (storageStatus === 'network') throw new Error('private provider network failure');
+			const body = bodyKind === 'staging'
+				? { statusCode: String(storageStatus), error: 'Unauthorized' }
+				: bodyKind === 'legacy'
+					? { httpStatusCode: storageStatus, code: storageStatus === 404 ? 'NoSuchKey' : 'AccessDenied', message: storageStatus === 404 ? 'Object not found' : 'Unauthorized' }
+					: bodyKind === 'empty'
+						? {}
+						: { code: storageStatus === 404 ? 'NoSuchKey' : 'AccessDenied', message: storageStatus === 404 ? 'Object not found' : 'Unauthorized' };
+			return new Response(JSON.stringify(body), {
+				status: storageStatus,
+				headers: { 'content-type': 'application/json', 'sb-request-id': requestId, 'x-request-id': 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }
+			});
+		});
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: fetchImpl as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const inspection = a10LifecycleFacts(coordinates, 2);
+		const probe = selectNextScenarioProbe(inspection, A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, 2));
+		await expect(inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes })).resolves.toMatchObject({ outcome: positiveKind === 'exact' || positiveKind === 'wrong-hash' ? (positiveKind === 'exact' ? 'confirmed-absent' : 'uncertain') : 'uncertain' });
+		expect(deniedReads).toBe(0);
+		expect(positiveReads).toBe(1);
+		const capability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 2), manifestBytes });
+		if (expectedConfirmed) {
+			await capability.mutation?.();
+			await expect(capability.readBack({ mutationAttempted: true, mutationFailed: false })).resolves.toMatchObject({ outcome: 'confirmed', receipt: { boundary: 'Storage', actualResult: 'Storage denied non-2xx', requestId } });
+			expect(positiveReads).toBe(2);
+		} else {
+			await expect(capability.mutation?.()).rejects.toThrow(/exact scenario operation failed/u);
+			await expect(capability.readBack({ mutationAttempted: true, mutationFailed: true })).resolves.toMatchObject({ outcome: 'uncertain' });
+			expect(positiveReads).toBe(bodyKind === 'current' && [403].includes(Number(storageStatus)) ? 2 : 1);
+		}
+		expect(deniedReads).toBe(1);
+	});
+
+	it.each([
+		[403, '42501', 'report evidence is not a finalized owned object', true],
+		[401, 'PGRST301', 'JWT expired', false],
+		[409, '23505', 'unrelated duplicate row', false],
+		[404, 'PGRST116', 'target missing', false],
+		[429, 'PGRST003', 'resource exhausted', false]
+	] as const)('accepts only the exact duplicate-reuse database denial: %s/%s', async (status, code, message, expectedConfirmed) => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const reportId = '99999999-9999-4999-8999-999999999999';
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+		let manifest = completeActorManifest(config as never);
+		manifest = registerHostedReport(manifest, reportId, 'reporter');
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+		const actorUsers = Object.entries(actorIds).map(([role, id]) => provisionedUser(role as keyof typeof actorIds, id));
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { getUserById: vi.fn(async (id: string) => ({ data: { user: actorUsers.find((user) => user.id === id) }, error: null })) } },
+			from: vi.fn((table: string) => {
+				const query: Record<string, unknown> = {
+					select: () => query,
+					contains: () => Promise.resolve({ data: [{ id: reportId, reporter_id: actorIds.reporter, evidence_paths: [objectPath] }], error: null })
+				};
+				return query;
+			}),
+			storage: { from: vi.fn() }
+		};
+		const jwt = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: actorIds.reporter, aal: 'aal1', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.${Buffer.from('signature').toString('base64url')}`;
+		const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = input instanceof Request ? input.url : String(input);
+			const actorScopeResponse = actorAuthorizationRead(input, init);
+			if (actorScopeResponse) return actorScopeResponse;
+			if (url.includes('/auth/v1/token')) return new Response(JSON.stringify({ access_token: jwt, refresh_token: 'refresh-token-value', expires_in: 3600, token_type: 'bearer', user: { id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL } }), { status: 200, headers: { 'content-type': 'application/json' } });
+			if (url.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL }), { status: 200, headers: { 'content-type': 'application/json' } });
+			if (url.includes('/rest/v1/reports')) return new Response(JSON.stringify({ code, message, details: null, hint: null }), { status, headers: { 'content-type': 'application/json' } });
+			throw new Error('unexpected request');
+		});
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: fetchImpl as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const inspection = a10LifecycleFacts(coordinates, 3);
+		const probe = selectNextScenarioProbe(inspection, A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, 3));
+		await expect(inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes })).resolves.toMatchObject({ outcome: 'confirmed-absent' });
+		const capability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 3), manifestBytes });
+		await capability.mutation?.();
+		await expect(capability.readBack({ mutationAttempted: true, mutationFailed: false })).resolves.toMatchObject({ outcome: expectedConfirmed ? 'confirmed' : 'uncertain' });
+	});
+
+	it('discovers the exact rejected fixture from the checkpoint lower bound and excludes earlier same-size rows', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const oldId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+		const newId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+		const newPath = `${actorIds.reporter}/${newId}.webp`;
+		const rows: Record<string, Array<Record<string, unknown>>> = {
+			report_evidence_uploads: [
+				{ id: oldId, uploader_id: actorIds.reporter, storage_path: `${actorIds.reporter}/${oldId}.webp`, status: 'rejected', source_byte_size: 68, created_at: '2026-08-22T19:59:59.000Z' },
+				{ id: newId, uploader_id: actorIds.reporter, storage_path: newPath, status: 'rejected', source_byte_size: 68, created_at: '2026-08-22T20:00:01.000Z' }
+			],
+			upload_cleanup_queue: [{ id: 18, report_evidence_upload_id: newId, bucket_id: 'report-evidence', storage_path: newPath, processed_at: null }]
+		};
+		const actorUsers = Object.entries(actorIds).map(([role, id]) => provisionedUser(role as keyof typeof actorIds, id));
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { getUserById: vi.fn(async (id: string) => ({ data: { user: actorUsers.find((user) => user.id === id) }, error: null })) } },
+			from(table: string) {
+				const filters: Array<(row: Record<string, unknown>) => boolean> = [];
+				const query: Record<string, unknown> = {
+					select: () => query,
+					eq: (key: string, value: unknown) => { filters.push((row) => row[key] === value); return query; },
+					gte: (key: string, value: string) => { filters.push((row) => Date.parse(String(row[key])) >= Date.parse(value)); return query; },
+					in: (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return query; },
+					like: (key: string, pattern: string) => { const prefix = pattern.replace(/%$/u, ''); filters.push((row) => String(row[key] ?? '').startsWith(prefix)); return query; },
+					order: () => query,
+					limit: () => query,
+					maybeSingle: async () => {
+						const data = (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row)));
+						return { data: data.length === 1 ? data[0] : null, error: data.length > 1 ? { code: 'ambiguous' } : null };
+					},
+					then: (resolve: (value: unknown) => unknown) => resolve({ data: (rows[table] ?? []).filter((row) => filters.every((filter) => filter(row))), error: null })
+				};
+				return query;
+			},
+			storage: { from: () => ({ list: vi.fn(async () => ({ data: [], error: null })) }) }
+		};
+		let manifest = completeActorManifest(config as never);
+		manifest = registerHostedUpload(manifest, oldId, 'reporter', `${actorIds.reporter}/${oldId}.webp`);
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: vi.fn() as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T20:00:00.000Z' };
+		const inspection = a10LifecycleFacts(coordinates, 10);
+		const probe = selectNextScenarioProbe(inspection, A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, 10));
+		await expect(inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes })).resolves.toMatchObject({
+			outcome: 'confirmed',
+			manifestEvidence: { uploadId: newId, objectPath: newPath, queueId: 18 }
+		});
+	});
+
+	it.each([
+		['malformed', 16, 400, 'Заявката за сигнал е невалидна.'],
+		['invalid-image', 17, 400, 'Изображението не можа да бъде проверено и безопасно обработено.'],
+		['per-file', 18, 413, 'Общият размер на заявката е твърде голям.'],
+		['aggregate', 19, 413, 'Общият размер на заявката е твърде голям.'],
+		['chunked', 20, 413, 'Общият размер на заявката е твърде голям.'],
+		['understated', 21, 413, 'Общият размер на заявката е твърде голям.']
+	] as const)('constructs the exact %s hostile request and requires release-bound reason plus zero side effects', async (kind, checkpointIndex, expectedStatus, expectedReason) => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = completeActorManifest(config as never);
+		const requestId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+		const releaseCommitSha = 'a'.repeat(40);
+		let responseReason: string = expectedReason;
+		const jwt = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: actorIds.reporter, aal: 'aal1', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.${Buffer.from('signature').toString('base64url')}`;
+		const actorUsers = Object.entries(actorIds).map(([role, id]) => provisionedUser(role as keyof typeof actorIds, id));
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { getUserById: vi.fn(async (id: string) => ({ data: { user: actorUsers.find((user) => user.id === id) }, error: null })) } },
+			from: vi.fn(() => {
+				const query: Record<string, unknown> = { select: () => query, in: () => query, like: () => query, then: (resolve: (value: unknown) => unknown) => resolve({ data: [], error: null }) };
+				return query;
+			}),
+			storage: { from: vi.fn(() => ({ list: vi.fn(async () => ({ data: [], error: null })) })) }
+		};
+		const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+		const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = input instanceof Request ? input.url : String(input);
+			const actorScopeResponse = actorAuthorizationRead(input, init);
+			if (actorScopeResponse) return actorScopeResponse;
+			if (url.includes('/auth/v1/token')) return new Response(JSON.stringify({ access_token: jwt, refresh_token: 'refresh-token-value', expires_in: 3600, token_type: 'bearer', user: { id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL } }), { status: 200, headers: { 'content-type': 'application/json' } });
+			if (url.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: actorIds.reporter, email: actorEnvironment.E2E_REAL_REPORTER_EMAIL }), { status: 200, headers: { 'content-type': 'application/json' } });
+			fetchCalls.push({ url, init });
+			return new Response(responseReason, { status: expectedStatus, headers: { 'x-request-id': requestId, 'x-deployed-git-sha': releaseCommitSha } });
+		});
+		const rawCalls: Array<{ url: string; options: Record<string, unknown>; bytes: number }> = [];
+		const httpsRequestImpl = vi.fn((url: URL, options: Record<string, unknown>, onResponse: (response: unknown) => void) => {
+			const call = { url: String(url), options, bytes: 0 };
+			rawCalls.push(call);
+			const response: Record<string, any> = {
+				statusCode: expectedStatus,
+				headers: { 'x-request-id': requestId, 'x-deployed-git-sha': releaseCommitSha }
+			};
+			response.on = (event: string, listener: (chunk: Buffer) => void) => { if (event === 'data') queueMicrotask(() => listener(Buffer.from(responseReason))); return response; };
+			response.once = (event: string, listener: () => void) => { if (event === 'end') setTimeout(listener, 0); return response; };
+			onResponse(response);
+			const request = {
+				once: vi.fn(() => request),
+				write: vi.fn((bytes: Buffer) => { call.bytes += bytes.length; return true; }),
+				end: vi.fn()
+			};
+			return request;
+		});
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: fetchImpl as never, httpsRequestImpl: httpsRequestImpl as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha, stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const inspection = a10LifecycleFacts(coordinates, checkpointIndex);
+		const probe = selectNextScenarioProbe(inspection, A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, checkpointIndex));
+		await expect(inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes })).resolves.toMatchObject({ outcome: 'confirmed-absent' });
+		const capability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, checkpointIndex), manifestBytes });
+		await capability.mutation?.();
+		await expect(capability.readBack({ mutationAttempted: true, mutationFailed: false })).resolves.toMatchObject({ outcome: 'confirmed', receipt: { boundary: 'HTTP', actualResult: `HTTP ${expectedStatus}`, requestId } });
+		if (kind === 'chunked' || kind === 'understated') {
+			expect(fetchCalls).toEqual([]);
+			expect(rawCalls).toHaveLength(1);
+			expect(rawCalls[0]?.url).toBe(`${HOSTED_STAGING.workerOrigin}/report`);
+			const headers = new Headers(rawCalls[0]?.options.headers as HeadersInit);
+			expect(headers.get('origin')).toBe(HOSTED_STAGING.workerOrigin);
+			expect(headers.get(kind === 'chunked' ? 'transfer-encoding' : 'content-length')).toBe(kind === 'chunked' ? 'chunked' : '1024');
+			expect(rawCalls[0]?.bytes).toBeGreaterThan(40 * 1024 * 1024);
+		} else {
+			expect(rawCalls).toEqual([]);
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0]?.url).toBe(`${HOSTED_STAGING.workerOrigin}/report`);
+			expect(fetchCalls[0]?.init?.method).toBe('POST');
+			expect(new Headers(fetchCalls[0]?.init?.headers).get('origin')).toBe(HOSTED_STAGING.workerOrigin);
+		}
+		responseReason = 'Проверката срещу автоматични заявки не беше успешна.';
+		const wrongReasonCapability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, checkpointIndex), manifestBytes });
+		await expect(wrongReasonCapability.mutation?.()).rejects.toThrow(/exact scenario operation failed/u);
+		await expect(wrongReasonCapability.readBack({ mutationAttempted: true, mutationFailed: true })).resolves.toMatchObject({ outcome: 'uncertain' });
+
+		for (const drift of ['object', 'provenance'] as const) {
+			const callsByActor = new Map<string, number>();
+			const operationTrap = vi.fn(async () => { throw new Error('mutation must not run'); });
+			const driftClient = {
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				auth: { admin: { getUserById: vi.fn(async (id: string) => {
+					const calls = (callsByActor.get(id) ?? 0) + 1;
+					callsByActor.set(id, calls);
+					const exact = actorUsers.find((user) => user.id === id);
+					return { data: { user: drift === 'provenance' && id === actorIds.reporter && calls > 1 ? { ...exact, user_metadata: {} } : exact }, error: null };
+				}) } },
+				from: vi.fn(() => {
+					const query: Record<string, unknown> = { select: () => query, in: () => query, like: () => query, then: (resolve: (value: unknown) => unknown) => resolve({ data: [], error: null }) };
+					return query;
+				}),
+				storage: { from: vi.fn(() => ({ list: vi.fn(async () => ({ data: drift === 'object' ? [{ name: 'foreign.webp' }] : [], error: null })) })) }
+			};
+			const driftAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: driftClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+			const driftContext = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters: driftAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: operationTrap as never });
+			const driftProbe = selectNextScenarioProbe(inspection, A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, checkpointIndex));
+			await expect(inspectHostedA10CheckpointEvidence(driftContext, { probe: driftProbe, manifestBytes })).resolves.toMatchObject({ outcome: 'uncertain' });
+			expect(operationTrap).not.toHaveBeenCalled();
+		}
+	});
+
+	it('does not export any legacy checkpoint-preselected actor or operator authority', async () => {
+		const module = await import('../../scripts/hosted-report-evidence-operator.mjs');
+		expect(module).not.toHaveProperty('createHostedA10ActorCapability');
+		expect(module).not.toHaveProperty('createHostedA10ScenarioOperator');
+		expect(module).not.toHaveProperty('inspectHostedA10ScenarioEvidence');
+	});
+
+	it('rejects privileged adapters branded for a different run and service-role keys in the actor path', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const otherConfig = { ...config, runId: 'gate3-20260809-deadbeef' };
+		expect(() => createHostedA10ExecutionContext({ config: otherConfig as never, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: vi.fn() as never })).toThrow(/scenario adapter configuration is invalid/u);
+		expect(() => createHostedA10ExecutionContext({ config, publishableKey: 'sb_secret_service-role-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: vi.fn() as never })).toThrow(/scenario publishable key is invalid/u);
+	});
+
+	it('binds the complete immutable staging target and rejects wrong configured or actual Supabase URLs before credential use', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const credentialTrap = vi.fn();
+		const wrongServiceAdapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: { supabaseUrl: 'https://attacker.invalid', auth: new Proxy({}, { get: credentialTrap }) } as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn() as never
+		});
+		expect(() => createHostedA10ExecutionContext({
+			config,
+			publishableKey: 'sb_publishable_test-key',
+			privilegedAdapters: wrongServiceAdapters,
+			reportTokenProvider: freshReportTokenProvider(),
+			fetchImpl: vi.fn() as never
+		})).toThrow(/scenario adapter configuration is invalid/u);
+
+		const exactAdapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn() as never
+		});
+		const wrongConfig = { ...config, target: { ...config.target, supabaseUrl: 'https://attacker.invalid' } };
+		expect(() => createHostedA10ExecutionContext({
+			config: wrongConfig as never,
+			publishableKey: 'sb_publishable_test-key',
+			privilegedAdapters: exactAdapters,
+			reportTokenProvider: freshReportTokenProvider(),
+			fetchImpl: vi.fn() as never
+		})).toThrow(/scenario adapter configuration is invalid/u);
+		expect(credentialTrap).not.toHaveBeenCalled();
+	});
+
+	it('rejects substituted production transports before any credential or client use', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const originalNodeEnv = process.env.NODE_ENV;
+		process.env.NODE_ENV = 'production';
+		try {
+			expect(() => createSupabaseHostedEvidenceAdapters({
+				config,
+				serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
+				managementAccessToken: 'management-token',
+				cleanupSecret: 'x'.repeat(32),
+				fetchImpl: vi.fn() as never
+			})).toThrow(/adapter configuration is invalid/u);
+
+			const privilegedAdapters = createSupabaseHostedEvidenceAdapters({
+				config,
+				serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
+				managementAccessToken: 'management-token',
+				cleanupSecret: 'x'.repeat(32)
+			});
+			expect(() => createHostedA10ExecutionContext({
+				config,
+				publishableKey: 'sb_publishable_test-key',
+				privilegedAdapters,
+				reportTokenProvider: freshReportTokenProvider(),
+				fetchImpl: vi.fn() as never,
+				httpsRequestImpl: vi.fn() as never
+			} as never)).toThrow(/scenario adapter configuration is invalid/u);
+		} finally {
+			process.env.NODE_ENV = originalNodeEnv;
+		}
+	});
+
+	it('rejects credential-store proxy and accessor smuggling without invocation', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const trap = vi.fn();
+		const proxy = new Proxy({}, { get: trap, getOwnPropertyDescriptor: trap, getPrototypeOf: trap });
+		expect(() => createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: vi.fn() as never, credentialStore: proxy })).toThrow(/scenario adapter configuration is invalid/u);
+		expect(trap).not.toHaveBeenCalled();
+	});
+
+	it('creates a checkpoint-independent opaque execution context and binds only lifecycle-selected stable manifest bytes', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = completeActorManifest(config as never);
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex');
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn() as never
+		});
+		const context = createHostedA10ExecutionContext({
+			config,
+			publishableKey: 'sb_publishable_test-key',
+			privilegedAdapters,
+			reportTokenProvider: freshReportTokenProvider(),
+			fetchImpl: vi.fn() as never
+		});
+		expect(Object.keys(context)).toEqual([]);
+		expect(JSON.stringify(context)).toBe('{}');
+
+		const checkpoint = {
+			id: 'primary-report-created',
+			scenario: 2,
+			kind: 'mutation',
+			roleCapability: 'reporter',
+			mutationMethod: 'createPrimaryReport',
+			readBackMethod: 'readPrimaryReport',
+			manifestReducer: 'registerPrimaryReport'
+		};
+		const coordinates = {
+			runId: config.runId,
+			projectRef: HOSTED_STAGING.projectRef,
+			workerOrigin: HOSTED_STAGING.workerOrigin,
+			releaseCommitSha: 'a'.repeat(40),
+			stateRevision: 7,
+			stateSha256: 'b'.repeat(64),
+			manifestPath: 'C:/private/gate3-run-manifest.json',
+			manifestSha256
+		};
+		expect(() => bindHostedA10CheckpointCapability(context, {
+			checkpoint,
+			mode: 'mutate',
+			coordinates,
+			manifestBytes
+		} as never)).toThrow(/scenario authorization is invalid/u);
+	});
+
+	it('requires an exact fresh single-use report-token provider instead of a reusable token string', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		expect(() => createHostedA10ExecutionContext({
+			config,
+			publishableKey: 'sb_publishable_test-key',
+			privilegedAdapters,
+			reportTokenProvider: freshReportTokenProvider(),
+			fetchImpl: vi.fn() as never
+		} as never)).not.toThrow();
+		expect(() => createHostedA10ExecutionContext({
+			config,
+			publishableKey: 'sb_publishable_test-key',
+			privilegedAdapters,
+			turnstileToken: 'test-turnstile-token',
+			fetchImpl: vi.fn() as never
+		} as never)).toThrow(/scenario adapter configuration is invalid/u);
+	});
+
+	it('mints a genuinely read-only exact capability only after a verification checkpoint is selected', () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		let manifest = completeActorManifest(config as never);
+		const reportId = '55555555-5555-4555-8555-555555555555';
+		const uploadId = '66666666-6666-4666-8666-666666666666';
+		manifest = registerHostedReport(manifest, reportId, 'reporter');
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', `${actorIds.reporter}/${uploadId}.webp`);
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex');
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn() as never
+		});
+		const context = createHostedA10ExecutionContext({
+			config,
+			publishableKey: 'sb_publishable_test-key',
+			privilegedAdapters,
+			reportTokenProvider: freshReportTokenProvider(),
+			fetchImpl: vi.fn() as never
+		});
+		const coordinates = {
+				runId: config.runId,
+				projectRef: HOSTED_STAGING.projectRef,
+				supabaseUrl: HOSTED_STAGING.supabaseUrl,
+				workerOrigin: HOSTED_STAGING.workerOrigin,
+				releaseCommitSha: 'a'.repeat(40),
+				stateRevision: 7,
+				stateSha256: 'b'.repeat(64),
+				manifestPath: 'C:/private/gate3-run-manifest.json',
+				manifestSha256,
+				inspectionNonce: 'c'.repeat(64),
+				checkpointObservedAfter: '2026-08-22T19:00:00.000Z'
+			};
+		const capability = bindHostedA10CheckpointCapability(context, {
+			grant: a10CapabilityGrant(coordinates, 1),
+			manifestBytes
+		} as never);
+		expect(capability).toMatchObject({ roleCapability: 'reporter', mutation: null, reduceManifest: null });
+		expect(typeof capability.readBack).toBe('function');
+		expect(Reflect.ownKeys(capability)).toEqual(['roleCapability', 'mutation', 'readBack', 'reduceManifest']);
+		expect(JSON.stringify(capability)).not.toMatch(/service|secret|client|fetch|cleanup/u);
+	});
+
+	it('requires a one-shot same-context pre-probe expiry proof before binding the exact backdate CAS', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		const objectPath = `${actorIds.reporter}/${uploadId}.webp`;
+		let manifest = completeActorManifest(config as never);
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', objectPath);
+		const expiresAt = '2026-08-22T21:00:00.000Z';
+		const selectedColumns: string[] = [];
+		const serviceClient = {
+			supabaseUrl: HOSTED_STAGING.supabaseUrl,
+			auth: { admin: { getUserById: vi.fn(async (id: string) => {
+				const role = Object.entries(actorIds).find(([, value]) => value === id)?.[0] as keyof typeof actorIds | undefined;
+				return { data: { user: role ? provisionedUser(role, id) : null }, error: null };
+			}) } },
+			from: vi.fn((table: string) => {
+				const query: Record<string, any> = {
+					select: (columns: string) => { selectedColumns.push(columns); return query; },
+					eq: () => query,
+					order: () => query,
+					limit: () => query,
+					maybeSingle: async () => ({ data: table === 'report_evidence_uploads' ? { id: uploadId, uploader_id: actorIds.reporter, storage_path: objectPath, status: 'pending', expires_at: expiresAt } : null, error: null })
+				};
+				return query;
+			}),
+			storage: { from: vi.fn() }
+		};
+		const managementFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify([{ id: uploadId }]), { status: 200, headers: { 'content-type': 'application/json' } }));
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: managementFetch as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: vi.fn() as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const probe = selectNextScenarioProbe(a10LifecycleFacts(coordinates, 14), A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, 14));
+		const observed = await inspectHostedA10CheckpointEvidence(context, { probe, manifestBytes });
+		expect(observed).toMatchObject({ outcome: 'confirmed-absent', checkpointProof: expect.any(Object) });
+		expect(selectedColumns.some((columns) => columns.split(',').map((column) => column.trim()).includes('expires_at'))).toBe(true);
+		expect(() => bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 14), manifestBytes })).toThrow(/scenario authorization is invalid|scenario artifact binding is invalid/u);
+		const checkpointProof = (observed as Record<string, unknown>).checkpointProof;
+		const capability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 14, false, checkpointProof), manifestBytes } as never);
+		await capability.mutation?.();
+		const query = JSON.parse(String(managementFetch.mock.calls[0]?.[1]?.body)).query as string;
+		expect(query).toContain(`expires_at = '${expiresAt}'::timestamptz`);
+		expect(query).toContain("status = 'pending'");
+		expect(() => bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 14, false, checkpointProof), manifestBytes } as never)).toThrow(/scenario authorization is invalid|scenario artifact binding is invalid/u);
+	});
+
+	it('rejects a checkpoint probe whose decoded manifest bytes do not match its fresh digest', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const manifest = completeActorManifest(config as never);
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: vi.fn() as never });
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update('stale-manifest').digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const inspection = a10LifecycleFacts(coordinates, 0);
+		const probe = selectNextScenarioProbe(inspection, A10_STEP_REGISTRY, a10LifecycleEvidence(coordinates, 0));
+		await expect(inspectHostedA10CheckpointEvidence(context, {
+			probe,
+			manifestBytes
+		} as never)).rejects.toThrow(/exact scenario inspection failed/u);
+	});
+
+	it('revalidates the exact actor session immediately before every actor operation', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const uploadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+		let manifest = completeActorManifest(config as never);
+		manifest = registerHostedUpload(manifest, uploadId, 'reporter', `${actorIds.reporter}/${uploadId}.webp`);
+		const serviceClient = { supabaseUrl: HOSTED_STAGING.supabaseUrl, from: vi.fn(), storage: { from: vi.fn() }, auth: { admin: { getUserById: vi.fn() } } };
+		const jwt = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: actorIds['cross-user'], aal: 'aal1', exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.${Buffer.from('signature').toString('base64url')}`;
+		let userReads = 0;
+		let storageCalls = 0;
+		const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = input instanceof Request ? input.url : String(input);
+			const actorScopeResponse = actorAuthorizationRead(input, init);
+			if (actorScopeResponse) return actorScopeResponse;
+			if (url.includes('/auth/v1/token')) return new Response(JSON.stringify({ access_token: jwt, refresh_token: 'refresh-token-value', expires_in: 3600, token_type: 'bearer', user: { id: actorIds['cross-user'], email: actorEnvironment.E2E_REAL_CROSS_USER_EMAIL } }), { status: 200, headers: { 'content-type': 'application/json' } });
+			if (url.endsWith('/auth/v1/user')) {
+				userReads += 1;
+				const id = userReads === 1 ? actorIds['cross-user'] : actorIds.reporter;
+				const email = userReads === 1 ? actorEnvironment.E2E_REAL_CROSS_USER_EMAIL : actorEnvironment.E2E_REAL_REPORTER_EMAIL;
+				return new Response(JSON.stringify({ id, email }), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			storageCalls += 1;
+			return new Response('', { status: 403, headers: { 'x-request-id': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } });
+		});
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: serviceClient as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: fetchImpl as never });
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+		const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+		const capability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, 2), manifestBytes });
+		await expect(capability.mutation?.()).rejects.toThrow(/scenario actor provenance is invalid|exact scenario operation failed/u);
+		expect(storageCalls).toBe(1);
+	});
+	it('registers duplicate, rejected, and scheduled queue coordinates with exact cleanup scope', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		let manifest = completeActorManifest(config as never);
+		const uploadId = '77777777-7777-4777-8777-777777777777';
+		manifest = registerHostedUpload(
+			manifest,
+			uploadId,
+			'reporter',
+			`${actorIds.reporter}/${uploadId}.webp`
+		);
+		const rejectedId = '88888888-8888-4888-8888-888888888888';
+		const rejectedPath = `${actorIds.reporter}/${rejectedId}.webp`;
+		const reducers = [
+			[5, { queueId: 17, uploadId }, [{ id: 17, uploadId }]],
+			[10, { uploadId: rejectedId, objectPath: rejectedPath, queueId: 18 }, [{ id: 18, uploadId: rejectedId }]],
+			[14, { queueId: 19, uploadId }, [{ id: 19, uploadId }]]
+		] as const;
+		const privilegedAdapters = createSupabaseHostedEvidenceAdapters({ config, serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never, managementAccessToken: 'management-token', cleanupSecret: 'x'.repeat(32), fetchImpl: vi.fn() as never });
+		const context = createHostedA10ExecutionContext({ config, publishableKey: 'sb_publishable_test-key', privilegedAdapters, reportTokenProvider: freshReportTokenProvider(), fetchImpl: vi.fn() as never });
+		for (const [index, evidence, expectedQueue] of reducers) {
+			const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+			const coordinates = { runId: config.runId, projectRef: HOSTED_STAGING.projectRef, supabaseUrl: HOSTED_STAGING.supabaseUrl, workerOrigin: HOSTED_STAGING.workerOrigin, releaseCommitSha: 'a'.repeat(40), stateRevision: 7, stateSha256: 'b'.repeat(64), manifestPath: 'C:/private/gate3-run-manifest.json', manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'), inspectionNonce: 'c'.repeat(64), checkpointObservedAfter: '2026-08-22T19:00:00.000Z' };
+			const capability = bindHostedA10CheckpointCapability(context, { grant: a10CapabilityGrant(coordinates, index, index === 14), manifestBytes });
+			if (typeof capability.reduceManifest !== 'function') throw new Error('expected reducer capability');
+			const next = capability.reduceManifest(evidence);
+			expect(next.queueRows).toEqual(expectedQueue);
+			if (index === 10) expect(next.uploads.at(-1)).toMatchObject({ id: rejectedId, objectPath: rejectedPath });
+		}
+	});
+
 	it('accepts only the exact Frankfurt project, URL, and Worker origin', () => {
 		const config = validateHostedOperatorEnvironment(baseEnvironment);
 		expect(config.target).toEqual(HOSTED_STAGING);
@@ -2948,7 +4078,8 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			from(table: keyof typeof rows) {
 				const query = {
 					select: () => query,
-					in: () => Promise.resolve({ data: rows[table], error: null })
+					in: () => Promise.resolve({ data: rows[table], error: null }),
+					like: () => Promise.resolve({ data: rows[table], error: null })
 				};
 				return query;
 			},
@@ -3021,7 +4152,8 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 									]
 									: [],
 							error: null
-						})
+						}),
+					like: () => Promise.resolve({ data: [], error: null })
 				};
 				return query;
 			},
@@ -3061,6 +4193,125 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		expect(body.query).toContain('delete from public.upload_cleanup_queue');
 		expect(body.query).toContain(objectPath);
 		expect(body.query).not.toContain('delete from auth.users');
+	});
+
+	it('adds only the exact canonical checkpoint ID to the approved A10 receipt allow-list', () => {
+		const record = createSanitizedOperatorRecord(
+			{
+				event: 'hosted_scenario_2',
+				runId,
+				actorRole: 'reporter',
+				status: 'PASS',
+				boundary: 'HTTP',
+				actualResult: 'HTTP 200',
+				requestId: 'not-exposed',
+				before: cleanInventory(),
+				after: cleanInventory(),
+				cleanup: 'pending-A11',
+				providerBody: 'private-provider-body'
+			},
+			'primary-report-created'
+		);
+
+		expect(record).toEqual({
+			event: 'hosted_scenario_2',
+			runId,
+			actorRole: 'reporter',
+			status: 'PASS',
+			boundary: 'HTTP',
+			actualResult: 'HTTP 200',
+			requestId: 'not-exposed',
+			before: cleanInventory(),
+			after: cleanInventory(),
+			cleanup: 'pending-A11',
+			checkpointId: 'primary-report-created'
+		});
+		expect(JSON.stringify(record)).not.toContain('private-provider-body');
+	});
+
+	it('binds and deeply freezes annotation evidence to the exact run, scenario, role, and checkpoint', () => {
+		const base = {
+			event: 'hosted_scenario_2',
+			runId,
+			actorRole: 'reporter',
+			status: 'PASS',
+			boundary: 'HTTP',
+			actualResult: 'HTTP 200',
+			requestId: 'not-exposed',
+			before: cleanInventory(),
+			after: cleanInventory(),
+			cleanup: 'pending-A11',
+			checkpointId: 'primary-report-created'
+		};
+		const expected = { checkpointId: 'primary-report-created', runId, scenario: 2, actorRole: 'reporter' };
+		const record = createSanitizedOperatorRecord(base, expected as never);
+		expect(Object.isFrozen(record)).toBe(true);
+		expect(Object.isFrozen(record.before)).toBe(true);
+		expect(Object.isFrozen(record.after)).toBe(true);
+		for (const attack of [
+			{ ...base, runId: 'gate3-20260809-deadbeef' },
+			{ ...base, event: 'hosted_scenario_3' },
+			{ ...base, actorRole: 'cross-user' },
+			base
+		]) {
+			const attackedExpected = attack === base ? { ...expected, checkpointId: 'other-checkpoint' } : expected;
+			expect(() => createSanitizedOperatorRecord(attack, attackedExpected as never)).toThrow(
+				/operator receipt contains an unsafe field/u
+			);
+		}
+	});
+
+	it('does not probe or leak inherited, accessor, symbol, nested accessor, or proxy receipt attacks', () => {
+		const sensitiveSentinel = ['receipt', 'secret', 'reporter@example.invalid'].join('-');
+		const base = {
+			event: 'hosted_scenario_2',
+			runId,
+			actorRole: 'reporter',
+			status: 'PASS',
+			boundary: 'HTTP',
+			actualResult: 'HTTP 200',
+			requestId: 'not-exposed',
+			before: cleanInventory(),
+			after: cleanInventory(),
+			cleanup: 'pending-A11'
+		};
+		let accessorCalls = 0;
+		const accessor = { ...base } as Record<string, unknown>;
+		Object.defineProperty(accessor, 'event', {
+			enumerable: true,
+			get() {
+				accessorCalls += 1;
+				throw new Error(sensitiveSentinel);
+			}
+		});
+		const nested = { ...base, before: {} as Record<string, unknown> };
+		Object.defineProperty(nested.before, 'accounts', {
+			enumerable: true,
+			get() {
+				accessorCalls += 1;
+				throw new Error(sensitiveSentinel);
+			}
+		});
+		const inherited = Object.assign(Object.create({ password: sensitiveSentinel }), base);
+		const symbol = { ...base, [Symbol(sensitiveSentinel)]: sensitiveSentinel };
+		const proxy = new Proxy(base, {
+			get() {
+				accessorCalls += 1;
+				throw new Error(sensitiveSentinel);
+			}
+		});
+
+		for (const hostile of [accessor, nested, inherited, symbol, proxy]) {
+			let caught: unknown;
+			try {
+				createSanitizedOperatorRecord(hostile as never, 'primary-report-created');
+			} catch (error) {
+				caught = error;
+			}
+			const serialized = caught ? String(caught) : JSON.stringify(createSanitizedOperatorRecord(hostile as never, 'primary-report-created'));
+			expect(serialized).not.toContain(sensitiveSentinel);
+		}
+		expect(accessorCalls).toBe(0);
 	});
 
 	it('routes a manifest-owned upload and queue row to exact cleanup coordinates', async () => {
@@ -3173,7 +4424,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		});
 		const adapters = createSupabaseHostedEvidenceAdapters({
 			config,
-			serviceClient: {} as never,
+			serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
 			managementAccessToken: 'management-token',
 			cleanupSecret: 'x'.repeat(32),
 			fetchImpl: fetchImpl as never
@@ -3208,7 +4459,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		const requestId = '44444444-4444-4444-8444-444444444444';
 		const adapters = createSupabaseHostedEvidenceAdapters({
 			config,
-			serviceClient: {} as never,
+			serviceClient: { supabaseUrl: HOSTED_STAGING.supabaseUrl } as never,
 			managementAccessToken: 'management-token',
 			cleanupSecret: 'x'.repeat(32),
 			fetchImpl: vi.fn().mockResolvedValue({
@@ -3249,7 +4500,8 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			from: () => {
 				const query = {
 					select: () => query,
-					in: () => Promise.resolve({ data: [], error: null })
+					in: () => Promise.resolve({ data: [], error: null }),
+					like: () => Promise.resolve({ data: [], error: null })
 				};
 				return query;
 			},
@@ -3295,7 +4547,8 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 				const query = {
 					delete: () => query,
 					select: () => query,
-					in: () => Promise.resolve({ data: [], error: null })
+					in: () => Promise.resolve({ data: [], error: null }),
+					like: () => Promise.resolve({ data: [], error: null })
 				};
 				return query;
 			},
@@ -3350,7 +4603,8 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 			from() {
 				const query = {
 					select: () => query,
-					in: () => Promise.resolve({ data: [], error: null })
+					in: () => Promise.resolve({ data: [], error: null }),
+					like: () => Promise.resolve({ data: [], error: null })
 				};
 				return query;
 			},
@@ -3406,7 +4660,8 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 					in: () => {
 						if (deleting) deleteCalls();
 						return Promise.resolve({ data: [], error: null });
-					}
+					},
+					like: () => Promise.resolve({ data: [], error: null })
 				};
 				return query;
 			},

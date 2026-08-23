@@ -1,12 +1,18 @@
 import { createHash, createHmac } from 'node:crypto';
 import { readFile, stat, unlink } from 'node:fs/promises';
+import { request as httpsRequest } from 'node:https';
 import { isPromise, isProxy } from 'node:util/types';
+import { createClient } from '@supabase/supabase-js';
 import {
 	atomicPrivateWrite,
 	reservePrivateFile,
 	resolveOutsideRepositoryFile
 } from './hosted-private-file.mjs';
 import { verifyStagingTarget } from './staging-db-operator.mjs';
+import {
+	consumeGate3ScenarioCapabilityGrant,
+	consumeGate3ScenarioProbe
+} from './gate3-hosted-lifecycle.mjs';
 
 /** @typedef {Record<string, string | undefined>} OperatorEnvironment */
 /** @typedef {import('@supabase/supabase-js').SupabaseClient} SupabaseClient */
@@ -84,16 +90,19 @@ const SAFE_ACTOR_ROLES = new Set([
 	'unassigned-moderator',
 	'unassigned-moderator-aal2',
 	'cleanup-operator',
+	'fixture-operator',
 	'operator'
 ]);
 const SAFE_BOUNDARIES = new Set(['HTTP', 'Storage', 'database', 'operator']);
 const SAFE_RESULTS = new Set([
 	'HTTP 200',
 	'HTTP 400',
+	'HTTP 403',
 	'HTTP 413',
 	'Storage 200 bytes',
 	'Storage denied non-2xx',
 	'database transition verified',
+	'targeted readback verified',
 	'zero residual artifacts',
 	'cleanup required',
 	'verified'
@@ -726,6 +735,1081 @@ export function assertServiceRoleOperation(operation) {
 	return operation;
 }
 
+/** @param {unknown} value @returns {value is Record<string, any>} */
+function isPlainScenarioRecord(value) {
+	if (!value || typeof value !== 'object' || Array.isArray(value) || isProxy(value)) return false;
+	try {
+		const prototype = Object.getPrototypeOf(value);
+		return prototype === Object.prototype || prototype === null;
+	} catch {
+		return false;
+	}
+}
+
+/** @param {unknown} value */
+function isSafeScenarioObject(value) {
+	return Boolean(value && typeof value === 'object' && !Array.isArray(value) && !isProxy(value));
+}
+
+/** @param {object} value @param {string} name */
+function scenarioDataMember(value, name) {
+	let current = value;
+	while (current && current !== Object.prototype) {
+		const descriptor = Object.getOwnPropertyDescriptor(current, name);
+		if (descriptor) {
+			if (!Object.hasOwn(descriptor, 'value')) throw new HostedEvidenceOperatorError('scenario actor provenance is invalid');
+			return descriptor.value;
+		}
+		current = Object.getPrototypeOf(current);
+	}
+	throw new HostedEvidenceOperatorError('scenario actor provenance is invalid');
+}
+
+/** @param {Record<string, any>} value @param {string} key */
+function scenarioOwnValue(value, key) {
+	const descriptor = Object.getOwnPropertyDescriptor(value, key);
+	if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+		throw new HostedEvidenceOperatorError('scenario adapter input is invalid');
+	}
+	return descriptor.value;
+}
+
+const A10_EXECUTION_CONTEXTS = new WeakMap();
+const A10_PRIVILEGED_ADAPTERS = new WeakMap();
+const A10_BACKDATE_PROOFS = new WeakMap();
+const A10_BINDING_KEYS = Object.freeze([
+	'runId',
+	'projectRef',
+	'supabaseUrl',
+	'workerOrigin',
+	'releaseCommitSha',
+	'stateRevision',
+	'stateSha256',
+	'manifestPath',
+	'manifestSha256',
+	'checkpointObservedAfter',
+	'checkpointId',
+	'scenario'
+]);
+const A10_ARTIFACT_BINDING_KEYS = Object.freeze(A10_BINDING_KEYS.slice(0, -2));
+/** @type {Readonly<Record<string, Readonly<{ role: string, aal: string }>>>} */
+const A10_ACTOR_ROLE = Object.freeze({
+	reporter: Object.freeze({ role: 'reporter', aal: 'any' }),
+	'cross-user': Object.freeze({ role: 'cross-user', aal: 'any' }),
+	'assigned-moderator-aal1': Object.freeze({ role: 'assigned-moderator', aal: 'aal1' }),
+	'assigned-moderator-aal2': Object.freeze({ role: 'assigned-moderator', aal: 'aal2' }),
+	'unassigned-moderator-aal2': Object.freeze({ role: 'unassigned-moderator', aal: 'aal2' })
+});
+/** @param {unknown} value @param {readonly string[]} keys */
+function exactScenarioKeys(value, keys) {
+	if (!isPlainScenarioRecord(value)) return false;
+	try {
+		const ownKeys = Reflect.ownKeys(value);
+		return ownKeys.length === keys.length && ownKeys.every(
+			(key) => typeof key === 'string' && keys.includes(key) && scenarioOwnValue(value, key) !== undefined
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** @param {unknown} input */
+function exactA10Binding(input) {
+	if (!exactScenarioKeys(input, A10_BINDING_KEYS)) {
+		throw new HostedEvidenceOperatorError('scenario artifact binding is invalid');
+	}
+	const binding = /** @type {Record<string, any>} */ (input);
+	if (
+		!/^gate3-[a-z0-9-]{8,64}$/u.test(binding.runId) ||
+		binding.projectRef !== HOSTED_STAGING.projectRef ||
+		binding.supabaseUrl !== HOSTED_STAGING.supabaseUrl ||
+		binding.workerOrigin !== HOSTED_STAGING.workerOrigin ||
+		!/^[a-f0-9]{40}$/u.test(binding.releaseCommitSha) ||
+		!Number.isSafeInteger(binding.stateRevision) ||
+		binding.stateRevision < 0 ||
+		!/^[a-f0-9]{64}$/u.test(binding.stateSha256) ||
+		typeof binding.manifestPath !== 'string' ||
+		binding.manifestPath.length < 3 ||
+		!/^[a-f0-9]{64}$/u.test(binding.manifestSha256) ||
+		typeof binding.checkpointObservedAfter !== 'string' ||
+		Number.isNaN(Date.parse(binding.checkpointObservedAfter)) ||
+		!/^[a-z][a-z0-9-]{2,79}$/u.test(binding.checkpointId) ||
+		!Number.isSafeInteger(binding.scenario) ||
+		binding.scenario < 1 ||
+		binding.scenario > 10
+	) {
+		throw new HostedEvidenceOperatorError('scenario artifact binding is invalid');
+	}
+	return Object.freeze(Object.fromEntries(A10_BINDING_KEYS.map((key) => [key, binding[key]])));
+}
+
+/** @param {unknown} input */
+function exactA10ArtifactBinding(input) {
+	if (!exactScenarioKeys(input, A10_ARTIFACT_BINDING_KEYS)) {
+		throw new HostedEvidenceOperatorError('scenario artifact binding is invalid');
+	}
+	const source = /** @type {Record<string, any>} */ (input);
+	const candidate = { ...Object.fromEntries(A10_ARTIFACT_BINDING_KEYS.map((key) => [key, source[key]])), checkpointId: 'inspection-only', scenario: 1 };
+	const validated = exactA10Binding(candidate);
+	return Object.freeze(Object.fromEntries(A10_ARTIFACT_BINDING_KEYS.map((key) => [key, validated[key]])));
+}
+
+/** @param {Record<string, any>} left @param {Record<string, any>} right */
+function sameA10Binding(left, right) {
+	return A10_BINDING_KEYS.every((key) => left[key] === right[key]);
+}
+
+/** @param {string} key */
+function assertA10PublishableKey(key) {
+	if (typeof key !== 'string' || key.length < 16 || key.startsWith('sb_secret_')) {
+		throw new HostedEvidenceOperatorError('scenario publishable key is invalid');
+	}
+	if (key.startsWith('sb_publishable_')) return key;
+	try {
+		const payload = JSON.parse(Buffer.from(key.split('.')[1] ?? '', 'base64url').toString('utf8'));
+		if (payload?.role !== 'anon') throw new Error('not publishable');
+		return key;
+	} catch {
+		throw new HostedEvidenceOperatorError('scenario publishable key is invalid');
+	}
+}
+
+/** @param {HostedRunManifest} manifest @param {string} reducerName @param {unknown} evidence */
+function reduceHostedA10Manifest(manifest, reducerName, evidence) {
+	if (!isPlainScenarioRecord(evidence)) throw new HostedEvidenceOperatorError('scenario manifest evidence is invalid');
+	/** @param {string[]} keys */
+	const exact = (keys) => {
+		if (!exactScenarioKeys(evidence, keys)) throw new HostedEvidenceOperatorError('scenario manifest evidence is invalid');
+		return Object.freeze(Object.fromEntries(keys.map((key) => [key, scenarioOwnValue(evidence, key)])));
+	};
+	if (reducerName === 'registerPrimaryReport') {
+		const value = exact(['reportId', 'uploadId', 'objectPath']);
+		const report = manifest.reports.find((entry) => entry.id === value.reportId);
+		const upload = manifest.uploads.find((entry) => entry.id === value.uploadId);
+		if (report || upload) {
+			if (report?.actorRole !== 'reporter' || upload?.actorRole !== 'reporter' || upload?.objectPath !== value.objectPath) {
+				throw new HostedEvidenceOperatorError('scenario manifest evidence is invalid');
+			}
+			return manifest;
+		}
+		return registerHostedUpload(registerHostedReport(manifest, value.reportId, 'reporter'), value.uploadId, 'reporter', value.objectPath);
+	}
+	if (reducerName === 'registerDuplicateUpload' || reducerName === 'registerAbandonedUpload') {
+		const value = exact(['uploadId', 'objectPath']);
+		const upload = manifest.uploads.find((entry) => entry.id === value.uploadId);
+		if (upload) {
+			if (upload.actorRole !== 'reporter' || upload.objectPath !== value.objectPath) throw new HostedEvidenceOperatorError('scenario manifest evidence is invalid');
+			return manifest;
+		}
+		return registerHostedUpload(manifest, value.uploadId, 'reporter', value.objectPath);
+	}
+	if (reducerName === 'registerDuplicateQueue' || reducerName === 'registerScheduledQueueCoordinate') {
+		const value = exact(['queueId', 'uploadId']);
+		const queue = manifest.queueRows.find((entry) => entry.id === value.queueId);
+		if (queue) {
+			if (queue.uploadId !== value.uploadId) throw new HostedEvidenceOperatorError('scenario manifest evidence is invalid');
+			return manifest;
+		}
+		return registerHostedQueueRow(manifest, value.queueId, value.uploadId);
+	}
+	if (reducerName === 'registerRejectedUploadAndQueue') {
+		const value = exact(['uploadId', 'objectPath', 'queueId']);
+		const upload = manifest.uploads.find((entry) => entry.id === value.uploadId);
+		const queue = manifest.queueRows.find((entry) => entry.id === value.queueId);
+		if (upload || queue) {
+			if (upload?.actorRole !== 'reporter' || upload?.objectPath !== value.objectPath || queue?.uploadId !== value.uploadId) {
+				throw new HostedEvidenceOperatorError('scenario manifest evidence is invalid');
+			}
+			return manifest;
+		}
+		return registerHostedQueueRow(registerHostedUpload(manifest, value.uploadId, 'reporter', value.objectPath), value.queueId, value.uploadId);
+	}
+	throw new HostedEvidenceOperatorError('exact scenario reducer is unavailable');
+}
+
+/**
+ * @param {HostedOperatorConfig} config
+ * @param {Record<string, any>} checkpoint
+ * @param {{ boundary: string, actualResult: string, requestId: string, status?: number } | null} [transport]
+ */
+function hostedA10Receipt(config, checkpoint, transport = null) {
+	const counts = Object.freeze({ accounts: 0, reports: 0, uploads: 0, objects: 0, queueRows: 0, foreignArtifacts: 0, preExistingAccounts: 0 });
+	const http400 = new Set(['rejected-upload-created', 'malformed-request-rejected', 'invalid-image-rejected']);
+	const http413 = new Set(['per-file-limit-rejected', 'aggregate-limit-rejected', 'chunked-limit-rejected', 'understated-length-rejected']);
+	const storageDenied = new Set(['cross-user-storage-denied', 'assigned-moderator-aal1-denied', 'unassigned-moderator-denied']);
+	const storageAllowed = checkpoint.id === 'assigned-moderator-read-verified';
+	const boundary = transport?.boundary ?? (checkpoint.id === 'primary-report-created' || http400.has(checkpoint.id) || http413.has(checkpoint.id)
+		? 'HTTP'
+		: storageDenied.has(checkpoint.id) || storageAllowed
+			? 'Storage'
+			: checkpoint.roleCapability.includes('operator') ? 'operator' : 'database');
+	const actualResult = transport?.actualResult ?? (
+		checkpoint.id === 'primary-report-created' || http400.has(checkpoint.id) || http413.has(checkpoint.id)
+			? 'targeted readback verified'
+			: storageDenied.has(checkpoint.id)
+				? 'Storage denied non-2xx'
+				: storageAllowed ? 'Storage 200 bytes' : 'database transition verified'
+	);
+	return Object.freeze({
+		event: `hosted_scenario_${checkpoint.scenario}`,
+		runId: config.runId,
+		actorRole: checkpoint.roleCapability,
+		status: 'PASS',
+		boundary,
+		actualResult,
+		requestId: transport?.requestId ?? 'not-exposed',
+		before: counts,
+		after: counts,
+		cleanup: 'pending-A11',
+		checkpointId: checkpoint.id
+	});
+}
+
+/** @param {Response} response */
+async function cappedA10ResponseText(response) {
+	const reader = response.body?.getReader();
+	if (!reader) return '';
+	const chunks = [];
+	let total = 0;
+	try {
+		while (true) {
+			const next = await reader.read();
+			if (next.done) break;
+			total += next.value.byteLength;
+			if (total > 8192) { await reader.cancel(); return null; }
+			chunks.push(next.value);
+		}
+		return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
+	} catch {
+		return null;
+	}
+}
+
+/** @param {unknown} response @param {string} boundary @param {string} expectedReleaseCommitSha @param {string | null} expectedReason */
+async function exactA10Transport(response, boundary, expectedReleaseCommitSha, expectedReason = null) {
+	if (!response || typeof response !== 'object') return null;
+	const status = Number(/** @type {any} */ (response).status);
+	let requestId = null;
+	let releaseCommitSha = null;
+	try {
+		const headers = /** @type {any} */ (response).headers;
+		if (typeof headers?.get === 'function') {
+			requestId = headers.get('x-request-id');
+			releaseCommitSha = headers.get('x-deployed-git-sha');
+		} else {
+			requestId = /** @type {any} */ (response).requestId;
+			releaseCommitSha = /** @type {any} */ (response).releaseCommitSha;
+		}
+	} catch {
+		return null;
+	}
+	if (
+		!Number.isSafeInteger(status) ||
+		!UUID_PATTERN.test(String(requestId ?? '')) ||
+		String(releaseCommitSha ?? '') !== expectedReleaseCommitSha
+	) return null;
+	if (expectedReason !== null) {
+		let body = null;
+		if (response instanceof Response) body = await cappedA10ResponseText(response);
+		else if (typeof /** @type {any} */ (response).body === 'string' && Buffer.byteLength(/** @type {any} */ (response).body, 'utf8') <= 8192) body = /** @type {any} */ (response).body;
+		if (body === null || !body.includes(expectedReason) || body.split(expectedReason).length !== 2 || PRIVATE_RESPONSE_PATTERN.test(body)) return null;
+	}
+	return Object.freeze({ status, boundary, actualResult: `${boundary} ${status}`, requestId: String(requestId) });
+}
+
+const A10_HTTP_REASONS = Object.freeze({
+	'rejected-upload-created': 'You are not allowed to perform this action.',
+	'malformed-request-rejected': 'Заявката за сигнал е невалидна.',
+	'invalid-image-rejected': 'Изображението не можа да бъде проверено и безопасно обработено.',
+	'per-file-limit-rejected': 'Общият размер на заявката е твърде голям.',
+	'aggregate-limit-rejected': 'Общият размер на заявката е твърде голям.',
+	'chunked-limit-rejected': 'Общият размер на заявката е твърде голям.',
+	'understated-length-rejected': 'Общият размер на заявката е твърде голям.'
+});
+
+/** @param {unknown} response @param {'denied'|'positive'} mode @param {{ byteSize: number, sha256: string } | null} expectedObject */
+async function exactA10StorageResponse(response, mode, expectedObject = null) {
+	if (!(response instanceof Response)) return null;
+	let requestId = null;
+	try {
+		requestId = response.headers.get('sb-request-id');
+	} catch {
+		return null;
+	}
+	if (!UUID_PATTERN.test(String(requestId ?? ''))) return null;
+	if (mode === 'positive') {
+		if (response.status !== 200 || !expectedObject || !Number.isSafeInteger(expectedObject.byteSize) || !/^[a-f0-9]{64}$/u.test(expectedObject.sha256)) return null;
+		let bytes;
+		try {
+			bytes = Buffer.from(await response.arrayBuffer());
+		} catch {
+			return null;
+		}
+		return bytes.length === expectedObject.byteSize && createHash('sha256').update(bytes).digest('hex') === expectedObject.sha256
+			? Object.freeze({ status: 200, requestId: String(requestId) })
+			: null;
+	}
+	if (![403, 404].includes(response.status) || response.headers.get('content-type')?.split(';', 1)[0] !== 'application/json') return null;
+	let body;
+	try {
+		body = await response.json();
+	} catch {
+		return null;
+	}
+	if (!isPlainScenarioRecord(body)) return null;
+	const currentStaging = response.status === 403 && exactScenarioKeys(body, Object.freeze(['statusCode', 'error'])) &&
+		scenarioOwnValue(body, 'statusCode') === '403' && scenarioOwnValue(body, 'error') === 'Unauthorized';
+	const current = exactScenarioKeys(body, Object.freeze(['code', 'message'])) && (
+		(response.status === 403 && scenarioOwnValue(body, 'code') === 'AccessDenied' && scenarioOwnValue(body, 'message') === 'Unauthorized') ||
+		(response.status === 404 && scenarioOwnValue(body, 'code') === 'NoSuchKey' && scenarioOwnValue(body, 'message') === 'Object not found')
+	);
+	const legacy = exactScenarioKeys(body, Object.freeze(['httpStatusCode', 'code', 'message'])) &&
+		scenarioOwnValue(body, 'httpStatusCode') === response.status && (
+			(response.status === 403 && scenarioOwnValue(body, 'code') === 'AccessDenied' && scenarioOwnValue(body, 'message') === 'Unauthorized') ||
+			(response.status === 404 && scenarioOwnValue(body, 'code') === 'NoSuchKey' && scenarioOwnValue(body, 'message') === 'Object not found')
+		);
+	if (!currentStaging && !current && !legacy) return null;
+	return Object.freeze({
+		status: 403,
+		boundary: 'Storage',
+		actualResult: 'Storage denied non-2xx',
+		requestId: String(requestId)
+	});
+}
+
+const A10_PNG_BYTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+const A10_WEBP_BYTES = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEALmk0mk0iIiIiIgBoSygABc6zbAAA', 'base64');
+const A10_MAX_FILE_BYTES = 10 * 1024 * 1024;
+const A10_MAX_REQUEST_BYTES = 4 * A10_MAX_FILE_BYTES + 512 * 1024;
+
+/** @param {Record<string, any>} execution @param {HostedRunManifest} manifest @param {string} roleCapability */
+async function createFreshHostedA10ActorSession(execution, manifest, roleCapability) {
+	const rule = A10_ACTOR_ROLE[roleCapability];
+	if (!rule) throw new HostedEvidenceOperatorError('scenario actor provenance is invalid');
+	const actor = manifest.actors.find((entry) => entry.role === rule.role);
+	const credentials = execution.config.actorRoles[rule.role];
+	if (!actor || !credentials) throw new HostedEvidenceOperatorError('scenario actor provenance is invalid');
+	const client = createClient(execution.config.target.supabaseUrl, execution.publishableKey, {
+		auth: { autoRefreshToken: false, persistSession: false },
+		global: { fetch: execution.fetchImpl }
+	});
+	try {
+		if (scenarioDataMember(client, 'supabaseUrl') !== HOSTED_STAGING.supabaseUrl) {
+			throw new Error('actor client target mismatch');
+		}
+		const signedIn = await client.auth.signInWithPassword({ email: credentials.email, password: credentials.password });
+		if (signedIn.error || signedIn.data.user?.id !== actor.userId || signedIn.data.session?.user?.id !== actor.userId) {
+			throw new Error('sign-in mismatch');
+		}
+		if (rule.aal === 'aal2') {
+			const getSecret = execution.credentialReader;
+			if (typeof getSecret !== 'function') throw new Error('credential unavailable');
+			const factors = await client.auth.mfa.listFactors();
+			const factor = factors.data?.totp?.filter((entry) => entry.status === 'verified');
+			if (factors.error || !Array.isArray(factor) || factor.length !== 1) throw new Error('factor mismatch');
+			const secret = await getSecret({ role: rule.role });
+			const elevated = await client.auth.mfa.challengeAndVerify({ factorId: factor[0].id, code: generateTotpCode(secret, Date.now()) });
+			if (elevated.error) throw new Error('aal elevation failed');
+		}
+		const userResult = await client.auth.getUser();
+		const sessionResult = await client.auth.getSession();
+		const aalResult = await client.auth.mfa.getAuthenticatorAssuranceLevel();
+		const [profileResult, membershipResult] = await Promise.all([
+			client.from('profiles').select('id, role, is_suspended').eq('id', actor.userId).maybeSingle(),
+			client.from('beta_memberships').select('profile_id, status, onboarding_completed_at').eq('profile_id', actor.userId).maybeSingle()
+		]);
+		const user = userResult.data.user;
+		const session = sessionResult.data.session;
+		const currentLevel = aalResult.data?.currentLevel ?? null;
+		if (
+			userResult.error || sessionResult.error || aalResult.error ||
+			!user || !session || user.id !== actor.userId || session.user?.id !== actor.userId ||
+			typeof user.email !== 'string' || user.email.toLowerCase() !== credentials.email ||
+			typeof session.access_token !== 'string' || session.access_token.length < 16 ||
+			typeof currentLevel !== 'string' || !['aal1', 'aal2'].includes(currentLevel) ||
+			(rule.aal !== 'any' && currentLevel !== rule.aal)
+			|| profileResult.error || membershipResult.error ||
+			profileResult.data?.id !== actor.userId || profileResult.data?.is_suspended !== false ||
+			profileResult.data?.role !== (rule.role.includes('moderator') ? 'moderator' : 'user') ||
+			membershipResult.data?.profile_id !== actor.userId || membershipResult.data?.status !== 'active' ||
+			!inspectorTimestamp(membershipResult.data?.onboarding_completed_at)
+		) throw new Error('fresh actor attestation mismatch');
+		return Object.freeze({ actorId: actor.userId, client, session });
+	} catch {
+		throw new HostedEvidenceOperatorError('scenario actor provenance is invalid');
+	}
+}
+
+/** @param {Record<string, any>} execution */
+async function freshHostedA10ReportToken(execution) {
+	try {
+		const token = await execution.reportTokenReader();
+		if (typeof token !== 'string' || !/^[A-Za-z0-9._~+-]{20,4096}$/u.test(token)) throw new Error('invalid token');
+		const digest = createHash('sha256').update(token, 'utf8').digest('hex');
+		if (execution.usedReportTokenDigests.has(digest)) throw new Error('reused token');
+		execution.usedReportTokenDigests.add(digest);
+		return token;
+	} catch {
+		throw new HostedEvidenceOperatorError('exact scenario operation failed');
+	}
+}
+
+/** @param {Record<string, any>} execution @param {Record<string, any>} session */
+function hostedA10SessionCookie(execution, session) {
+	const encoded = Buffer.from(JSON.stringify(session), 'utf8').toString('base64url');
+	return `sb-${execution.config.target.projectRef}-auth-token=base64-${encoded}`;
+}
+
+/** @param {Record<string, any>} execution @param {HostedRunManifest} manifest @param {Record<string, any>} session @param {'primary'|'rejected'|'malformed'|'invalid'|'per-file'|'aggregate'|'chunked'|'understated'} kind */
+async function submitHostedA10ReportRequest(execution, manifest, session, kind) {
+	const reportToken = await freshHostedA10ReportToken(execution);
+	const targetId = kind === 'rejected'
+		? '00000000-0000-4000-8000-000000000001'
+		: manifestActor(manifest, 'cross-user').userId;
+	const details = kind === 'primary'
+		? `Synthetic Gate 3 evidence ${execution.config.runId}`
+		: `Synthetic hostile upload ${execution.config.runId}`;
+	const cookie = hostedA10SessionCookie(execution, session);
+	const common = [
+		['targetType', 'profile'],
+		['targetId', targetId],
+		['reasonCode', 'harassment'],
+		['details', details],
+		['cf-turnstile-response', reportToken]
+	];
+	if (!['malformed', 'chunked', 'understated'].includes(kind)) {
+		const form = new FormData();
+		for (const [name, value] of common) form.append(name, value);
+		const files = kind === 'aggregate'
+			? Array.from({ length: 4 }, () => Buffer.alloc(A10_MAX_FILE_BYTES))
+			: [kind === 'per-file' ? Buffer.alloc(A10_MAX_FILE_BYTES + 1) : kind === 'invalid' ? Buffer.from('not an image') : A10_PNG_BYTES];
+		for (const [index, bytes] of files.entries()) form.append('evidence', new Blob([bytes], { type: 'image/png' }), `gate3-${index}.png`);
+		if (kind === 'aggregate') form.set('details', `${details}${'x'.repeat(600 * 1024)}`);
+		return execution.fetchImpl(new URL('/report', execution.config.target.workerOrigin), {
+			method: 'POST', headers: { cookie, origin: execution.config.target.workerOrigin }, body: form, redirect: 'manual'
+		});
+	}
+	const boundary = `gate3-${kind}-${execution.config.runId}`;
+	const chunks = [];
+	for (const [name, value] of common) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+	const bytes = ['chunked', 'understated'].includes(kind) ? Buffer.alloc(A10_MAX_REQUEST_BYTES + 1) : A10_PNG_BYTES;
+	chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="evidence"; filename="gate3.png"\r\nContent-Type: image/png\r\n\r\n`), bytes, Buffer.from('\r\n'));
+	if (kind !== 'malformed') chunks.push(Buffer.from(`--${boundary}--\r\n`));
+	const body = Buffer.concat(chunks);
+	if (kind === 'chunked' || kind === 'understated') {
+		return await new Promise((resolve, reject) => {
+			const request = execution.httpsRequestImpl(new URL('/report', execution.config.target.workerOrigin), {
+				method: 'POST',
+				headers: {
+					cookie,
+					origin: execution.config.target.workerOrigin,
+					'content-type': `multipart/form-data; boundary=${boundary}`,
+					...(kind === 'chunked'
+						? { 'transfer-encoding': 'chunked' }
+						: { 'content-length': String(Math.min(1024, body.length - 1)) })
+				}
+			}, (/** @type {any} */ response) => {
+				/** @type {Buffer[]} */
+				const responseChunks = [];
+				let responseBytes = 0;
+				let invalidBody = false;
+				response.on('data', (/** @type {unknown} */ chunk) => {
+					const bytes = typeof chunk === 'string'
+						? Buffer.from(chunk)
+						: Buffer.isBuffer(chunk)
+							? chunk
+							: chunk instanceof Uint8Array
+								? Buffer.from(chunk)
+								: null;
+					if (!bytes) {
+						invalidBody = true;
+						return;
+					}
+					responseBytes += bytes.length;
+					if (responseBytes > 8192) invalidBody = true;
+					else responseChunks.push(bytes);
+				});
+				response.once('end', () => resolve(Object.freeze({
+					status: response.statusCode ?? 0,
+					requestId: response.headers['x-request-id'],
+					releaseCommitSha: response.headers['x-deployed-git-sha'],
+					body: invalidBody ? null : Buffer.concat(responseChunks).toString('utf8')
+				})));
+			});
+			request.once('error', () => reject(new HostedEvidenceOperatorError('exact scenario operation failed')));
+			for (let offset = 0; offset < body.length; offset += 64 * 1024) request.write(body.subarray(offset, Math.min(offset + 64 * 1024, body.length)));
+			request.end();
+		});
+	}
+	return execution.fetchImpl(new URL('/report', execution.config.target.workerOrigin), {
+		method: 'POST',
+		headers: {
+			cookie,
+			origin: execution.config.target.workerOrigin,
+			'content-type': `multipart/form-data; boundary=${boundary}`
+		},
+		body,
+		redirect: 'manual'
+	});
+}
+
+/** @param {Record<string, any>} execution @param {HostedRunManifest} manifest @param {Record<string, any>} checkpoint */
+/** @param {Record<string, any>} execution @param {HostedRunManifest} manifest @param {Record<string, any>} checkpoint @param {{ expectedExpiry: string } | null} [mutationProof] */
+async function executeBoundHostedA10Mutation(execution, manifest, checkpoint, mutationProof = null) {
+	const primaryReport = manifest.reports[0] ?? null;
+	const primaryUpload = manifest.uploads[0] ?? null;
+	if (checkpoint.id === 'primary-report-created') {
+		const actor = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+		return submitHostedA10ReportRequest(execution, manifest, actor.session, 'primary');
+	}
+	if (checkpoint.id === 'cross-user-storage-denied' || checkpoint.id === 'assigned-moderator-aal1-denied' || checkpoint.id === 'unassigned-moderator-denied') {
+		if (!primaryUpload) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		const actor = await createFreshHostedA10ActorSession(execution, manifest, checkpoint.roleCapability);
+		const exactUrl = `${execution.config.target.supabaseUrl}/storage/v1/object/authenticated/report-evidence/${primaryUpload.objectPath}`;
+		const deniedResponse = await execution.fetchImpl(
+			exactUrl,
+			{
+				method: 'GET',
+				headers: {
+					apikey: execution.publishableKey,
+					authorization: `Bearer ${actor.session.access_token}`
+				},
+				redirect: 'manual'
+			}
+		);
+		const denial = await exactA10StorageResponse(deniedResponse, 'denied');
+		if (!denial) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		const primaryRow = await execution.privilegedAdapters.inspectUpload({ manifest, uploadId: primaryUpload.id });
+		const expectedObject = { byteSize: primaryRow.actual_byte_size, sha256: primaryRow.actual_content_hash };
+		const reporter = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+		const positiveResponse = await execution.fetchImpl(exactUrl, {
+			method: 'GET',
+			headers: {
+				apikey: execution.publishableKey,
+				authorization: `Bearer ${reporter.session.access_token}`
+			},
+			redirect: 'manual'
+		});
+		if (!await exactA10StorageResponse(positiveResponse, 'positive', expectedObject)) {
+			throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		}
+		return Object.freeze({ storageDenial: denial });
+	}
+	if (checkpoint.id === 'duplicate-reuse-denied') {
+		if (!primaryUpload) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		const actor = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+		return actor.client.from('reports').insert({ reporter_id: actor.actorId, target_type: 'profile', target_id: manifestActor(manifest, 'cross-user').userId, reason_code: 'harassment', details: `Synthetic duplicate check ${execution.config.runId}`, evidence_paths: [primaryUpload.objectPath], status: 'open' });
+	}
+	if (checkpoint.id === 'duplicate-upload-created' || checkpoint.id === 'abandoned-upload-allocated') {
+		const actor = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+		const bytes = checkpoint.id === 'duplicate-upload-created' ? A10_PNG_BYTES : A10_WEBP_BYTES;
+		await actor.client.rpc('create_report_evidence_upload', { source_mime_type: checkpoint.id === 'duplicate-upload-created' ? 'image/png' : 'image/webp', source_byte_size: bytes.length });
+		return;
+	}
+	if (checkpoint.id === 'duplicate-upload-reconciled') {
+		const duplicate = manifest.uploads[1];
+		if (!primaryUpload || !duplicate) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		await execution.privilegedAdapters.reconcileExactUploads({ manifest, uploadIds: [primaryUpload.id, duplicate.id], rejectionCode: 'hosted_reconciliation_check' });
+		return;
+	}
+	if (checkpoint.id === 'assignment-applied') {
+		if (!primaryReport) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		const actor = await createFreshHostedA10ActorSession(execution, manifest, 'assigned-moderator-aal2');
+		await actor.client.from('reports').update({ assigned_to: actor.actorId, status: 'investigating' }).eq('id', primaryReport.id).eq('status', 'open').is('assigned_to', null).select('id, assigned_to, status').maybeSingle();
+		return;
+	}
+	if (checkpoint.id === 'rejected-upload-created') {
+		const actor = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+		return submitHostedA10ReportRequest(execution, manifest, actor.session, 'rejected');
+	}
+	if (checkpoint.id === 'manual-cleanup-verified') {
+		const rejected = manifest.uploads[2];
+		const queue = rejected && manifest.queueRows.find((entry) => entry.uploadId === rejected.id);
+		if (!rejected || !queue) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		await execution.privilegedAdapters.invokeExactCleanupWorker({ queueId: queue.id, bucketId: 'report-evidence', storagePath: rejected.objectPath });
+		return;
+	}
+	if (checkpoint.id === 'abandoned-object-created') {
+		const abandoned = manifest.uploads.at(-1);
+		if (!abandoned) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		await execution.privilegedAdapters.uploadExactObject({ manifest, uploadId: abandoned.id, bytes: A10_WEBP_BYTES });
+		return;
+	}
+	if (checkpoint.id === 'abandoned-upload-backdated') {
+		const abandoned = manifest.uploads.at(-1);
+		if (!abandoned || !mutationProof || !inspectorTimestamp(mutationProof.expectedExpiry)) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+		await execution.privilegedAdapters.backdateExactUpload({ projectRef: execution.config.target.projectRef, runId: execution.config.runId, uploadId: abandoned.id, uploaderId: abandoned.uploaderId, objectPath: abandoned.objectPath, expectedExpiry: mutationProof.expectedExpiry });
+		return;
+	}
+	/** @type {Record<string, 'malformed'|'invalid'|'per-file'|'aggregate'|'chunked'|'understated'>} */
+	const hostileKinds = {
+		'malformed-request-rejected': 'malformed',
+		'invalid-image-rejected': 'invalid',
+		'per-file-limit-rejected': 'per-file',
+		'aggregate-limit-rejected': 'aggregate',
+		'chunked-limit-rejected': 'chunked',
+		'understated-length-rejected': 'understated'
+	};
+	const kind = hostileKinds[checkpoint.id];
+	if (kind) {
+		const actor = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+		return submitHostedA10ReportRequest(execution, manifest, actor.session, kind);
+	}
+	throw new HostedEvidenceOperatorError('exact scenario operation failed');
+}
+
+/** @param {Record<string, any>} execution @param {HostedRunManifest} manifest @param {Record<string, any>} checkpoint @param {Record<string, any>} binding @param {'exact'|'ahead'} [manifestState] @param {'mutate'|'reconcile'} [mode] @param {{ expectedExpiry: string } | null} [mutationProof] */
+function createBoundHostedA10Operations(execution, manifest, checkpoint, binding, manifestState = 'exact', mode = 'mutate', mutationProof = null) {
+	/** @type {{ boundary: string, actualResult: string, requestId: string, status: number } | null} */
+	let mutationTransport = null;
+	/** @type {Record<string, any> | null} */
+	let mutationResult = null;
+	let invalidTransportResponse = false;
+	let phase = checkpoint.kind === 'mutation' && mode === 'mutate' ? 'mutation-ready' : 'readback-ready';
+	const readBack = async (/** @type {Record<string, any>} */ request = {}) => {
+		if (phase !== 'readback-ready') {
+			phase = 'invalid';
+			throw new HostedEvidenceOperatorError('scenario capability is already consumed');
+		}
+		phase = 'reading';
+		try {
+			const receipt = hostedA10Receipt(execution.config, checkpoint, mutationTransport);
+			const confirmed = (/** @type {unknown} */ manifestEvidence = null) => Object.freeze({ outcome: 'confirmed', manifestEvidence, receipt });
+			const absent = () => Object.freeze({ outcome: 'confirmed-absent', manifestEvidence: null, receipt });
+			const uncertain = () => Object.freeze({ outcome: 'uncertain', manifestEvidence: null, receipt });
+			if (request.mutationAttempted === true && invalidTransportResponse) return uncertain();
+			/** @param {{ reports: number, uploads: number, objects: number, queueRows: number }} [deltas] */
+			const exactInventoryMatches = async (deltas = Object.freeze({ reports: 0, uploads: 0, objects: 0, queueRows: 0 })) => {
+				const counts = await execution.privilegedAdapters.inspectManifest({ manifest });
+				const expectedForeign = deltas.reports + deltas.uploads + deltas.objects + deltas.queueRows;
+				return counts.foreignArtifacts === expectedForeign &&
+					counts.preExistingAccounts === 0 &&
+					counts.accounts === manifest.actors.length &&
+					counts.reports === manifest.reports.length + deltas.reports &&
+					counts.uploads === manifest.uploads.length + deltas.uploads &&
+					counts.queueRows === manifest.queueRows.length + deltas.queueRows &&
+					counts.objects === manifest.reports.length + deltas.objects;
+			};
+			const exactInventoryUnchanged = () => exactInventoryMatches();
+			const primaryReport = manifest.reports[0] ?? null;
+			const primaryUpload = manifest.uploads[0] ?? null;
+			if (checkpoint.id === 'primary-report-created') {
+				const reporter = manifestActor(manifest, 'reporter');
+				const target = manifestActor(manifest, 'cross-user');
+				const report = await execution.privilegedAdapters.discoverReportByRun({ manifest, reporterId: reporter.userId, targetId: target.userId, details: `Synthetic Gate 3 evidence ${execution.config.runId}` });
+				if (report === null) {
+					if (request.mutationAttempted === true) return Object.freeze({ outcome: 'uncertain', manifestEvidence: null, receipt });
+					return await exactInventoryUnchanged() ? absent() : uncertain();
+				}
+				const upload = await execution.privilegedAdapters.discoverUploadForReportCoordinate({ manifest, reportId: report.id, reporterId: reporter.userId });
+				const object = await execution.privilegedAdapters.inspectObjectCoordinate({ manifest, uploadId: upload.id, uploaderId: reporter.userId, objectPath: upload.storage_path });
+				const exactMetadata =
+					report.reporter_id === reporter.userId && report.target_id === target.userId &&
+					report.details === `Synthetic Gate 3 evidence ${execution.config.runId}` &&
+					Array.isArray(report.evidence_paths) && report.evidence_paths.length === 1 && report.evidence_paths[0] === upload.storage_path &&
+					upload.uploader_id === reporter.userId && upload.storage_path === `${reporter.userId}/${upload.id}.webp` &&
+					upload.status === 'attached' && upload.report_id === report.id && upload.source_byte_size === A10_PNG_BYTES.length &&
+					typeof upload.actual_content_hash === 'string' && /^[a-f0-9]{64}$/u.test(upload.actual_content_hash) &&
+					Number.isSafeInteger(upload.actual_byte_size) && upload.actual_byte_size > 0 && upload.actual_mime_type === 'image/webp' &&
+					Number.isSafeInteger(upload.width_px) && upload.width_px > 0 && Number.isSafeInteger(upload.height_px) && upload.height_px > 0 &&
+					inspectorTimestamp(upload.finalized_at) !== null && inspectorTimestamp(upload.attached_at) !== null &&
+					object.exists === true && object.byteSize === upload.actual_byte_size && object.mimeType === 'image/webp';
+				if (!exactMetadata) return uncertain();
+				const expectedInventoryDelta = manifestState === 'ahead'
+					? Object.freeze({ reports: 0, uploads: 0, objects: 0, queueRows: 0 })
+					: Object.freeze({ reports: 1, uploads: 1, objects: 1, queueRows: 0 });
+				if (!await exactInventoryMatches(expectedInventoryDelta)) return uncertain();
+				return confirmed(Object.freeze({ reportId: report.id, uploadId: upload.id, objectPath: upload.storage_path }));
+			}
+			if (checkpoint.id === 'primary-upload-attached-verified') {
+				if (!primaryReport || !primaryUpload) return absent();
+				const [reportRow, uploadRow, object] = await Promise.all([
+					execution.privilegedAdapters.inspectReport({ manifest, reportId: primaryReport.id }),
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: primaryUpload.id }),
+					execution.privilegedAdapters.inspectObject({ manifest, uploadId: primaryUpload.id })
+				]);
+				const actor = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+				const download = await actor.client.storage.from('report-evidence').download(primaryUpload.objectPath);
+				const bytes = download.data ? Buffer.from(await download.data.arrayBuffer()) : null;
+				const hash = bytes ? createHash('sha256').update(bytes).digest('hex') : null;
+				const metadataComplete =
+					reportRow.id === primaryReport.id && uploadRow.id === primaryUpload.id &&
+					uploadRow.status === 'attached' && uploadRow.report_id === primaryReport.id && object.exists === true &&
+					typeof object.createdAt === 'string' && typeof uploadRow.finalized_at === 'string' && typeof uploadRow.attached_at === 'string' &&
+					Date.parse(object.createdAt) <= Date.parse(uploadRow.finalized_at) && Date.parse(uploadRow.finalized_at) <= Date.parse(uploadRow.attached_at) &&
+					uploadRow.actual_mime_type === 'image/webp' && /^[a-f0-9]{64}$/u.test(String(uploadRow.actual_content_hash ?? '')) &&
+					uploadRow.actual_byte_size === object.byteSize && uploadRow.actual_byte_size === bytes?.length && hash === uploadRow.actual_content_hash &&
+					Number.isSafeInteger(uploadRow.width_px) && uploadRow.width_px >= 1 && uploadRow.width_px <= 10_000 &&
+					Number.isSafeInteger(uploadRow.height_px) && uploadRow.height_px >= 1 && uploadRow.height_px <= 10_000;
+				return metadataComplete ? confirmed() : absent();
+			}
+			if (checkpoint.id === 'cross-user-storage-denied' || checkpoint.id === 'assigned-moderator-aal1-denied' || checkpoint.id === 'unassigned-moderator-denied') {
+				if (!primaryUpload) return absent();
+				if (request.mutationAttempted !== true) {
+					const reporter = await createFreshHostedA10ActorSession(execution, manifest, 'reporter');
+					const response = await execution.fetchImpl(
+						`${execution.config.target.supabaseUrl}/storage/v1/object/authenticated/report-evidence/${primaryUpload.objectPath}`,
+						{
+							method: 'GET',
+							headers: { apikey: execution.publishableKey, authorization: `Bearer ${reporter.session.access_token}` },
+							redirect: 'manual'
+						}
+					);
+					const primaryRow = await execution.privilegedAdapters.inspectUpload({ manifest, uploadId: primaryUpload.id });
+					return await exactA10StorageResponse(response, 'positive', { byteSize: primaryRow.actual_byte_size, sha256: primaryRow.actual_content_hash }) ? absent() : uncertain();
+				}
+				if (!mutationTransport || mutationTransport.status !== 403) return uncertain();
+				return confirmed();
+			}
+			if (checkpoint.id === 'duplicate-reuse-denied') {
+				if (!primaryUpload) return absent();
+				const exactUseCount = await execution.privilegedAdapters.countReportsUsingObject({ manifest, objectPath: primaryUpload.objectPath });
+				if (request.mutationAttempted !== true) return exactUseCount === 1 ? absent() : uncertain();
+				const error = isPlainScenarioRecord(mutationResult) ? scenarioOwnValue(mutationResult, 'error') : null;
+				if (!isPlainScenarioRecord(error)) return uncertain();
+				const exactDenial = scenarioOwnValue(error, 'code') === '42501' &&
+					scenarioOwnValue(error, 'message') === 'report evidence is not a finalized owned object';
+				return exactDenial && exactUseCount === 1 ? confirmed() : uncertain();
+			}
+			if (checkpoint.id === 'duplicate-upload-created' || checkpoint.id === 'abandoned-upload-allocated') {
+				const bytes = checkpoint.id === 'duplicate-upload-created' ? A10_PNG_BYTES : A10_WEBP_BYTES;
+				if (manifestState === 'ahead') {
+					const upload = checkpoint.id === 'duplicate-upload-created' ? manifest.uploads[1] : manifest.uploads.at(-1);
+					if (!upload) return uncertain();
+					const row = await execution.privilegedAdapters.inspectUploadCoordinate({ manifest, uploadId: upload.id, uploaderId: upload.uploaderId, objectPath: upload.objectPath });
+					return row.status === 'pending' && row.source_byte_size === bytes.length
+						? confirmed(Object.freeze({ uploadId: upload.id, objectPath: upload.objectPath }))
+						: uncertain();
+				}
+				const upload = await execution.privilegedAdapters.discoverAllocatedUpload({ manifest, actorRole: 'reporter', status: 'pending', sourceByteSize: bytes.length, createdAfter: binding.checkpointObservedAfter, excludeUploadIds: manifest.uploads.map((entry) => entry.id) });
+				if (upload === null) return request.mutationAttempted === true || !await exactInventoryUnchanged() ? uncertain() : absent();
+				return await exactInventoryMatches(Object.freeze({ reports: 0, uploads: 1, objects: 0, queueRows: 0 }))
+					? confirmed(Object.freeze({ uploadId: upload.id, objectPath: upload.storage_path }))
+					: uncertain();
+			}
+			if (checkpoint.id === 'duplicate-upload-reconciled') {
+				const duplicate = manifest.uploads[1];
+				if (!primaryUpload || !duplicate) return absent();
+				const [primary, rejected, queue] = await Promise.all([
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: primaryUpload.id }),
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: duplicate.id }),
+					execution.privilegedAdapters.discoverQueueForUpload({ manifest, uploadId: duplicate.id })
+				]);
+				if (queue === null || queue.id === null) return request.mutationAttempted === true ? uncertain() : absent();
+				return primary.status === 'attached' && rejected.status === 'rejected'
+					? confirmed(Object.freeze({ queueId: queue.id, uploadId: duplicate.id }))
+					: absent();
+			}
+			if (checkpoint.id === 'assignment-applied') {
+				if (!primaryReport) return absent();
+				const moderator = manifestActor(manifest, 'assigned-moderator');
+				const [report, audit] = await Promise.all([
+					execution.privilegedAdapters.inspectReport({ manifest, reportId: primaryReport.id }),
+					execution.privilegedAdapters.inspectAssignmentAudit({ manifest, reportId: primaryReport.id, actorId: moderator.userId })
+				]);
+				return report.assigned_to === moderator.userId && report.status === 'investigating' && audit === 1 ? confirmed() : absent();
+			}
+			if (checkpoint.id === 'assigned-moderator-read-verified') {
+				if (!primaryUpload) return absent();
+				const actor = await createFreshHostedA10ActorSession(execution, manifest, 'assigned-moderator-aal2');
+				const [result, primaryRow] = await Promise.all([
+					actor.client.storage.from('report-evidence').download(primaryUpload.objectPath),
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: primaryUpload.id })
+				]);
+				if (result.error || !result.data || typeof result.data.arrayBuffer !== 'function') return absent();
+				const bytes = Buffer.from(await result.data.arrayBuffer());
+				return bytes.length === Number(primaryRow.actual_byte_size) && createHash('sha256').update(bytes).digest('hex') === primaryRow.actual_content_hash ? confirmed() : absent();
+			}
+			if (checkpoint.id === 'rejected-upload-created') {
+				if (manifestState === 'ahead') {
+					const upload = manifest.uploads.at(-1);
+					if (!upload) return uncertain();
+					const [row, queue] = await Promise.all([
+						execution.privilegedAdapters.inspectUploadCoordinate({ manifest, uploadId: upload.id, uploaderId: upload.uploaderId, objectPath: upload.objectPath }),
+						execution.privilegedAdapters.discoverQueueForCoordinate({ manifest, uploadId: upload.id, uploaderId: upload.uploaderId, objectPath: upload.objectPath })
+					]);
+					return row.status === 'rejected' && row.source_byte_size === A10_PNG_BYTES.length
+						? confirmed(Object.freeze({ uploadId: upload.id, objectPath: upload.objectPath, queueId: queue.id }))
+						: uncertain();
+				}
+				const upload = await execution.privilegedAdapters.discoverAllocatedUpload({ manifest, actorRole: 'reporter', status: 'rejected', sourceByteSize: A10_PNG_BYTES.length, createdAfter: binding.checkpointObservedAfter, excludeUploadIds: manifest.uploads.map((entry) => entry.id) });
+				if (upload === null) return request.mutationAttempted === true || !await exactInventoryUnchanged() ? uncertain() : absent();
+				const queue = await execution.privilegedAdapters.discoverQueueForCoordinate({ manifest, uploadId: upload.id, uploaderId: upload.uploader_id, objectPath: upload.storage_path });
+				return await exactInventoryMatches(Object.freeze({ reports: 0, uploads: 1, objects: 0, queueRows: 1 }))
+					? confirmed(Object.freeze({ uploadId: upload.id, objectPath: upload.storage_path, queueId: queue.id }))
+					: uncertain();
+			}
+			if (checkpoint.id === 'manual-cleanup-verified') {
+				const rejected = manifest.uploads[2];
+				if (!rejected) return absent();
+				const [upload, object, queue] = await Promise.all([
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: rejected.id }),
+					execution.privilegedAdapters.inspectObject({ manifest, uploadId: rejected.id }),
+					execution.privilegedAdapters.discoverQueueForUpload({ manifest, uploadId: rejected.id })
+				]);
+				return queue && upload.status === 'rejected' && object.exists === false && typeof queue.processedAt === 'string' ? confirmed() : absent();
+			}
+			if (checkpoint.id === 'abandoned-object-created') {
+				const abandoned = manifest.uploads.at(-1);
+				if (!abandoned) return absent();
+				const object = await execution.privilegedAdapters.inspectObject({ manifest, uploadId: abandoned.id });
+				return object.exists === true && object.byteSize === A10_WEBP_BYTES.length && object.mimeType === 'image/webp' ? confirmed() : absent();
+			}
+			if (checkpoint.id === 'abandoned-upload-backdated') {
+				const abandoned = manifest.uploads.at(-1);
+				if (!abandoned) return absent();
+				const [row, queue] = await Promise.all([
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: abandoned.id }),
+					execution.privilegedAdapters.discoverQueueForUpload({ manifest, uploadId: abandoned.id })
+				]);
+				if (queue && queue.id !== null) return row.status === 'expired'
+					? confirmed(Object.freeze({ queueId: queue.id, uploadId: abandoned.id }))
+					: uncertain();
+				const expiry = inspectorTimestamp(row.expires_at);
+				if (!expiry) return uncertain();
+				if (Date.parse(expiry) <= Date.parse(binding.checkpointObservedAfter) || request.mutationAttempted === true) return uncertain();
+				if (mode !== 'reconcile' || manifestState !== 'exact') return uncertain();
+				const baselineKey = `${binding.runId}\0${abandoned.id}\0${abandoned.uploaderId}\0${abandoned.objectPath}\0${binding.manifestSha256}`;
+				const existingBaseline = execution.backdateExpiryBaselines.get(baselineKey);
+				if (existingBaseline !== undefined && existingBaseline !== expiry) return uncertain();
+				if (existingBaseline === undefined) execution.backdateExpiryBaselines.set(baselineKey, expiry);
+				const checkpointProof = Object.freeze(Object.create(null));
+				A10_BACKDATE_PROOFS.set(checkpointProof, Object.freeze({ execution, checkpoint, binding, expectedExpiry: expiry }));
+				return Object.freeze({ outcome: 'confirmed-absent', manifestEvidence: null, receipt, checkpointProof });
+			}
+			if (checkpoint.id === 'scheduled-cleanup-verified') {
+				const abandoned = manifest.uploads.at(-1);
+				if (!abandoned || !primaryUpload) return absent();
+				const [row, object, queue, primary] = await Promise.all([
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: abandoned.id }),
+					execution.privilegedAdapters.inspectObject({ manifest, uploadId: abandoned.id }),
+					execution.privilegedAdapters.discoverQueueForUpload({ manifest, uploadId: abandoned.id }),
+					execution.privilegedAdapters.inspectUpload({ manifest, uploadId: primaryUpload.id })
+				]);
+				return queue && row.status === 'expired' && object.exists === false && typeof queue.processedAt === 'string' && primary.status === 'attached' ? confirmed() : absent();
+			}
+			if (checkpoint.id.endsWith('-rejected')) {
+				const expectedStatus = ['per-file-limit-rejected', 'aggregate-limit-rejected', 'chunked-limit-rejected', 'understated-length-rejected'].includes(checkpoint.id) ? 413 : 400;
+				const exact = await exactInventoryUnchanged();
+				if (request.mutationAttempted !== true) return exact ? absent() : uncertain();
+				if (mutationTransport?.status !== expectedStatus) return uncertain();
+				return exact ? confirmed() : uncertain();
+			}
+			return Object.freeze({ outcome: 'uncertain', manifestEvidence: null, receipt });
+		} catch {
+			return Object.freeze({ outcome: 'uncertain', manifestEvidence: null, receipt: hostedA10Receipt(execution.config, checkpoint, mutationTransport) });
+		} finally {
+			if (phase === 'reading') phase = 'consumed';
+		}
+	};
+	const mutation = checkpoint.kind === 'mutation'
+		? async () => {
+			if (phase !== 'mutation-ready') {
+				phase = 'invalid';
+				throw new HostedEvidenceOperatorError('scenario capability is already consumed');
+			}
+			phase = 'mutating';
+			try {
+				mutationResult = await executeBoundHostedA10Mutation(execution, manifest, checkpoint, mutationProof);
+			} catch {
+				throw new HostedEvidenceOperatorError('exact scenario operation failed');
+			} finally {
+				if (phase === 'mutating') phase = 'readback-ready';
+			}
+			if (checkpoint.id === 'primary-report-created' || checkpoint.id === 'rejected-upload-created' || checkpoint.id.endsWith('-rejected')) {
+				mutationTransport = await exactA10Transport(mutationResult, 'HTTP', binding.releaseCommitSha, /** @type {Record<string, string>} */ (A10_HTTP_REASONS)[checkpoint.id] ?? null);
+				const expected = checkpoint.id === 'primary-report-created' ? 200 : checkpoint.id === 'rejected-upload-created' ? 403 : ['per-file-limit-rejected', 'aggregate-limit-rejected', 'chunked-limit-rejected', 'understated-length-rejected'].includes(checkpoint.id) ? 413 : 400;
+				if (!mutationTransport || mutationTransport.status !== expected) {
+					invalidTransportResponse = mutationResult !== null;
+					throw new HostedEvidenceOperatorError('exact scenario operation failed');
+				}
+				} else if (['cross-user-storage-denied', 'assigned-moderator-aal1-denied', 'unassigned-moderator-denied'].includes(checkpoint.id)) {
+					mutationTransport = isPlainScenarioRecord(mutationResult)
+						? scenarioOwnValue(mutationResult, 'storageDenial')
+						: null;
+					if (!mutationTransport || ![403, 404].includes(mutationTransport.status)) throw new HostedEvidenceOperatorError('exact scenario operation failed');
+				}
+		}
+		: null;
+	return Object.freeze({ mutation, readBack });
+}
+
+/**
+ * Creates a checkpoint-independent opaque A10 execution context. No manifest,
+ * checkpoint, actor client, or operation closure is accepted from the caller;
+ * those are minted from stable bytes only after lifecycle selection.
+ * @param {{ config: HostedOperatorConfig, publishableKey: string, privilegedAdapters: unknown, reportTokenProvider: unknown, fetchImpl?: typeof fetch, httpsRequestImpl?: typeof httpsRequest, credentialStore?: unknown }} options
+ */
+export function createHostedA10ExecutionContext({
+	config,
+	publishableKey,
+	privilegedAdapters,
+	reportTokenProvider,
+	fetchImpl = fetch,
+	httpsRequestImpl = httpsRequest,
+	credentialStore = null
+}) {
+	const privilegedBinding = privilegedAdapters && typeof privilegedAdapters === 'object'
+		? A10_PRIVILEGED_ADAPTERS.get(privilegedAdapters)
+		: null;
+	let credentialReader = null;
+	let reportTokenReader = null;
+	try {
+		if (!isSafeScenarioObject(reportTokenProvider) || !Object.isFrozen(reportTokenProvider)) throw new Error('invalid provider');
+		const method = scenarioDataMember(/** @type {object} */ (reportTokenProvider), 'freshReportToken');
+		if (typeof method !== 'function' || !exactScenarioKeys(reportTokenProvider, Object.freeze(['freshReportToken']))) throw new Error('invalid provider');
+		reportTokenReader = () => method.call(reportTokenProvider);
+	} catch {
+		throw new HostedEvidenceOperatorError('scenario adapter configuration is invalid');
+	}
+	if (credentialStore !== null) {
+		if (!isSafeScenarioObject(credentialStore) || !Object.isFrozen(credentialStore)) {
+			throw new HostedEvidenceOperatorError('scenario adapter configuration is invalid');
+		}
+		let method;
+		try {
+			method = scenarioDataMember(/** @type {object} */ (credentialStore), 'getModeratorTotpSecret');
+		} catch {
+			throw new HostedEvidenceOperatorError('scenario adapter configuration is invalid');
+		}
+		if (typeof method !== 'function') throw new HostedEvidenceOperatorError('scenario adapter configuration is invalid');
+		credentialReader = (/** @type {{ role: string }} */ request) => method.call(credentialStore, request);
+	}
+	if (
+		config?.target !== HOSTED_STAGING ||
+		!privilegedBinding ||
+		privilegedBinding.runId !== config.runId ||
+		privilegedBinding.projectRef !== config.target.projectRef ||
+		privilegedBinding.workerOrigin !== config.target.workerOrigin ||
+		privilegedBinding.supabaseUrl !== config.target.supabaseUrl ||
+		typeof fetchImpl !== 'function' ||
+		typeof httpsRequestImpl !== 'function' ||
+		(process.env.NODE_ENV !== 'test' && (fetchImpl !== fetch || httpsRequestImpl !== httpsRequest)) ||
+		typeof reportTokenReader !== 'function'
+	) {
+		throw new HostedEvidenceOperatorError('scenario adapter configuration is invalid');
+	}
+	const exactPublishableKey = assertA10PublishableKey(publishableKey);
+	const context = Object.freeze(Object.create(null));
+	A10_EXECUTION_CONTEXTS.set(context, Object.freeze({
+		config,
+		credentialReader,
+		fetchImpl,
+		httpsRequestImpl,
+		privilegedAdapters,
+		publishableKey: exactPublishableKey,
+		reportTokenReader,
+		usedReportTokenDigests: new Set(),
+		backdateExpiryBaselines: new Map()
+	}));
+	return context;
+}
+
+/** @param {unknown} operator @param {{ grant: unknown, manifestBytes?: Buffer }} authorization */
+export function bindHostedA10CheckpointCapability(operator, authorization) {
+	const execution = operator && typeof operator === 'object' ? A10_EXECUTION_CONTEXTS.get(operator) : null;
+	if (execution) {
+		if (!isPlainScenarioRecord(authorization) || !exactScenarioKeys(authorization, Object.freeze(['grant', 'manifestBytes']))) {
+			throw new HostedEvidenceOperatorError('scenario authorization is invalid');
+		}
+		let trustedAuthorization;
+		try {
+			trustedAuthorization = consumeGate3ScenarioCapabilityGrant(scenarioOwnValue(authorization, 'grant'));
+		} catch {
+			throw new HostedEvidenceOperatorError('scenario authorization is invalid');
+		}
+		if (!trustedAuthorization) throw new HostedEvidenceOperatorError('scenario authorization is invalid');
+		const manifestBytes = scenarioOwnValue(authorization, 'manifestBytes');
+		const rawCoordinates = trustedAuthorization.coordinates;
+		if (!Buffer.isBuffer(manifestBytes) || !isPlainScenarioRecord(rawCoordinates)) {
+			throw new HostedEvidenceOperatorError('scenario artifact binding is invalid');
+		}
+		const coordinates = exactA10ArtifactBinding(Object.fromEntries(
+			A10_ARTIFACT_BINDING_KEYS.map((key) => [key, scenarioOwnValue(rawCoordinates, key)])
+		));
+		const digest = createHash('sha256').update(manifestBytes).digest('hex');
+		if (digest !== coordinates.manifestSha256 || coordinates.runId !== execution.config.runId) {
+			throw new HostedEvidenceOperatorError('scenario artifact binding is invalid');
+		}
+		let exactManifest;
+		try {
+			exactManifest = validateHostedRunManifest(execution.config, JSON.parse(manifestBytes.toString('utf8')));
+		} catch {
+			throw new HostedEvidenceOperatorError('scenario artifact binding is invalid');
+		}
+		const checkpoint = trustedAuthorization.checkpoint;
+		const mode = trustedAuthorization.mode;
+		if (!isPlainScenarioRecord(checkpoint) || !['mutate', 'reconcile'].includes(mode)) {
+			throw new HostedEvidenceOperatorError('scenario adapter configuration is invalid');
+		}
+		const expected = checkpoint;
+		const binding = exactA10Binding({ ...coordinates, checkpointId: expected.id, scenario: expected.scenario });
+		let mutationProof = null;
+		if (expected.id === 'abandoned-upload-backdated' && mode === 'mutate') {
+			const proofToken = trustedAuthorization.checkpointProof;
+			const trustedProof = proofToken && typeof proofToken === 'object' ? A10_BACKDATE_PROOFS.get(proofToken) : null;
+			if (!trustedProof) throw new HostedEvidenceOperatorError('scenario authorization is invalid');
+			A10_BACKDATE_PROOFS.delete(proofToken);
+			if (
+				trustedProof.execution !== execution || trustedProof.checkpoint !== expected ||
+				trustedProof.binding.runId !== binding.runId || trustedProof.binding.stateRevision !== binding.stateRevision ||
+				trustedProof.binding.stateSha256 !== binding.stateSha256 || trustedProof.binding.manifestSha256 !== binding.manifestSha256 ||
+				trustedProof.binding.inspectionNonce !== binding.inspectionNonce || trustedProof.binding.checkpointObservedAfter !== binding.checkpointObservedAfter ||
+				!inspectorTimestamp(trustedProof.expectedExpiry)
+			) throw new HostedEvidenceOperatorError('scenario authorization is invalid');
+			mutationProof = Object.freeze({ expectedExpiry: trustedProof.expectedExpiry });
+		} else if (trustedAuthorization.checkpointProof !== null) {
+			throw new HostedEvidenceOperatorError('scenario authorization is invalid');
+		}
+		const operations = createBoundHostedA10Operations(execution, exactManifest, expected, binding, trustedAuthorization.manifestState, mode, mutationProof);
+		const reducer = expected.manifestReducer === null
+			? null
+			: (/** @type {unknown} */ evidence) => reduceHostedA10Manifest(exactManifest, expected.manifestReducer, evidence);
+		return Object.freeze({
+			roleCapability: expected.roleCapability,
+			mutation: expected.kind === 'mutation' && mode === 'mutate' ? operations.mutation : null,
+			readBack: operations.readBack,
+			reduceManifest: reducer
+		});
+	}
+	throw new HostedEvidenceOperatorError('scenario operator provenance is invalid');
+}
+
+/**
+ * Executes only the readback half of a lifecycle-selected canonical probe.
+ * Mutation authority is deliberately removed by binding in reconcile mode.
+ * @param {unknown} context @param {{ probe: unknown, manifestBytes: Buffer }} probe
+ */
+export async function inspectHostedA10CheckpointEvidence(context, probe) {
+	try {
+		if (!isPlainScenarioRecord(probe)) throw new Error('invalid probe');
+		const execution = context && typeof context === 'object' ? A10_EXECUTION_CONTEXTS.get(context) : null;
+		if (!execution) throw new Error('untrusted context');
+		const trustedProbe = consumeGate3ScenarioProbe(scenarioOwnValue(probe, 'probe'));
+		if (!trustedProbe) throw new Error('invalid probe authorization');
+		const manifestBytes = scenarioOwnValue(probe, 'manifestBytes');
+		if (!Buffer.isBuffer(manifestBytes)) throw new Error('invalid manifest bytes');
+		const manifest = validateHostedRunManifest(execution.config, JSON.parse(manifestBytes.toString('utf8')));
+		const coordinates = exactA10ArtifactBinding(Object.fromEntries(
+			A10_ARTIFACT_BINDING_KEYS.map((key) => [key, scenarioOwnValue(trustedProbe.coordinates, key)])
+		));
+		if (createHash('sha256').update(manifestBytes).digest('hex') !== coordinates.manifestSha256) throw new Error('invalid manifest bytes');
+		const probeBinding = exactA10Binding({
+			...coordinates,
+			checkpointId: trustedProbe.checkpoint.id,
+			scenario: trustedProbe.checkpoint.scenario
+		});
+		const operations = createBoundHostedA10Operations(execution, manifest, trustedProbe.checkpoint, probeBinding, trustedProbe.manifestState, 'reconcile', null);
+		for (const actor of manifest.actors) {
+			await execution.privilegedAdapters.attestActor({ manifest, role: actor.role, userId: actor.userId });
+		}
+		return await operations.readBack(Object.freeze({ mutationAttempted: false, mutationFailed: false }));
+	} catch (error) {
+		if (error instanceof HostedEvidenceOperatorError) throw error;
+		throw new HostedEvidenceOperatorError('exact scenario inspection failed');
+	}
+}
+
 /**
  * @param {{
  *   config: HostedOperatorConfig,
@@ -733,7 +1817,7 @@ export function assertServiceRoleOperation(operation) {
  *     provisionActor?: (scope: { role: string }) => Promise<{ role: string, userId: string, createdAt: string }>,
  *     attestActor?: (scope: { manifest: HostedRunManifest, role: string, userId: string }) => Promise<ManifestActor>,
  *     inspectManifest: (scope: { target: typeof HOSTED_STAGING, runId: string, manifest: HostedRunManifest }) => Promise<InventoryCounts>,
- *     backdateExactUpload: (scope: { projectRef: string, runId: string, uploadId: string, uploaderId: string, objectPath: string }) => Promise<void>,
+	 *     backdateExactUpload: (scope: { projectRef: string, runId: string, uploadId: string, uploaderId: string, objectPath: string, expectedExpiry?: string }) => Promise<void>,
  *     uploadExactObject?: (scope: { manifest: HostedRunManifest, uploadId: string, bytes: Uint8Array }) => Promise<void>,
  *     inspectReport?: (scope: { manifest: HostedRunManifest, reportId: string }) => Promise<Record<string, unknown>>,
  *     inspectUpload?: (scope: { manifest: HostedRunManifest, uploadId: string }) => Promise<Record<string, unknown>>,
@@ -3030,7 +4114,8 @@ export function createSupabaseHostedInspectionAdapter({
 		beta_memberships: 'profile_id',
 		reports: 'id',
 		report_evidence_uploads: 'id',
-		upload_cleanup_queue: 'id'
+		upload_cleanup_queue: 'id',
+		moderation_audit: 'id'
 	}));
 
 	/**
@@ -3298,19 +4383,26 @@ export function createSupabaseHostedInspectionAdapter({
 		const uploads = uniqueRows([
 			...(await rowsByValues(
 				'report_evidence_uploads',
-				'id, uploader_id, storage_path, status, report_id, created_at, finalized_at, attached_at',
+				'id, uploader_id, storage_path, status, report_id, source_byte_size, actual_content_hash, actual_byte_size, actual_mime_type, width_px, height_px, created_at, finalized_at, attached_at',
 				'uploader_id',
 				allOwnerIds
 			)),
 			...(await rowsByValues(
 				'report_evidence_uploads',
-				'id, uploader_id, storage_path, status, report_id, created_at, finalized_at, attached_at',
+				'id, uploader_id, storage_path, status, report_id, source_byte_size, actual_content_hash, actual_byte_size, actual_mime_type, width_px, height_px, created_at, finalized_at, attached_at',
 				'id',
 				manifest.uploads.map((upload) => String(upload.id))
 			))
 		]);
 
-		/** @type {Array<{ ownerId: string, path: string }>} */
+		const moderationAudit = await rowsByValues(
+			'moderation_audit',
+			'id, report_id, actor_id, action, created_at',
+			'report_id',
+			manifest.reports.map((report) => String(report.id))
+		);
+
+		/** @type {Array<{ ownerId: string, path: string, byteSize: number | null, mimeType: string | null }>} */
 		const objects = [];
 		for (const ownerId of allOwnerIds) {
 			for (let page = 0; page < 100; page += 1) {
@@ -3320,7 +4412,15 @@ export function createSupabaseHostedInspectionAdapter({
 				if (listed.error || !Array.isArray(listed.data)) throw new Error('provider read failed');
 				for (const object of listed.data) {
 					if (typeof object?.name === 'string') {
-						objects.push({ ownerId, path: `${ownerId}/${object.name}` });
+						const metadata = object?.metadata;
+						const metadataSize = metadata?.size;
+						const metadataMimeType = metadata?.mimetype;
+						objects.push({
+							ownerId,
+							path: `${ownerId}/${object.name}`,
+							byteSize: Number.isSafeInteger(metadataSize) ? Number(metadataSize) : null,
+							mimeType: typeof metadataMimeType === 'string' ? metadataMimeType : null
+						});
 					}
 				}
 				if (listed.data.length < 1000) break;
@@ -3504,6 +4604,31 @@ export function createSupabaseHostedInspectionAdapter({
 			!Array.isArray(scope.scenarioEvidence)
 				? scope.scenarioEvidence
 				: { phase: { status: 'pending', checkpoint: null }, checkpoints: {} };
+		const canonicalRegistry = (() => {
+			const registry = scope.scenarioRegistry;
+			if (!Array.isArray(registry) || !Object.isFrozen(registry) || isProxy(registry)) return null;
+			try {
+				const descriptors = Object.getOwnPropertyDescriptors(registry);
+				const keys = Reflect.ownKeys(descriptors);
+				if (keys.some((key) => typeof key === 'symbol') || keys.length !== registry.length + 1) return null;
+				/** @type {Array<{ id: string, manifestReducer: string | null }>} */
+				const entries = [];
+				for (let index = 0; index < registry.length; index += 1) {
+					const itemDescriptor = descriptors[String(index)];
+					if (!itemDescriptor || !Object.hasOwn(itemDescriptor, 'value') || itemDescriptor.enumerable !== true) return null;
+					const entry = itemDescriptor.value;
+					if (!isPlainScenarioRecord(entry) || !Object.isFrozen(entry)) return null;
+					const id = scenarioOwnValue(entry, 'id');
+					const manifestReducer = scenarioOwnValue(entry, 'manifestReducer');
+					if (typeof id !== 'string' || entries.some((item) => item.id === id) || !(manifestReducer === null || typeof manifestReducer === 'string')) return null;
+					entries.push(Object.freeze({ id, manifestReducer }));
+				}
+				return Object.freeze(entries);
+			} catch {
+				return null;
+			}
+		})();
+		const canonicalRegistryIds = canonicalRegistry?.map((entry) => entry.id) ?? null;
 		const scenarioCheckpointKey = 'scenario-primary-upload-attached';
 		const scenarioCheckpointStep = 'primary-upload-attached';
 		/** @param {unknown} checkpoint */
@@ -3527,11 +4652,26 @@ export function createSupabaseHostedInspectionAdapter({
 				? /** @type {Record<string, unknown>} */ (scenarioEvidence.checkpoints)
 				: {};
 		const exactCheckpoint = scenarioCheckpoints[scenarioCheckpointKey];
-		const exactCheckpointComplete = checkpointIsExactAndComplete(exactCheckpoint);
+		const checkpointKeys = Object.keys(scenarioCheckpoints);
+		const expectedCheckpointKeys = canonicalRegistryIds?.map((id) => `scenario-${id}`) ?? null;
+		const exactCheckpointComplete = canonicalRegistryIds === null
+			? checkpointIsExactAndComplete(exactCheckpoint)
+			: checkpointKeys.length === (expectedCheckpointKeys ?? []).length &&
+				checkpointKeys.every((key, index) => key === (expectedCheckpointKeys ?? [])[index]) &&
+				canonicalRegistryIds.every((id) => {
+				const checkpoint = scenarioCheckpoints[`scenario-${id}`];
+				return checkpoint && typeof checkpoint === 'object' &&
+					/** @type {Record<string, unknown>} */ (checkpoint).status === 'complete' &&
+					/** @type {Record<string, unknown>} */ (checkpoint).step === id &&
+					Boolean(inspectorTimestamp(/** @type {Record<string, unknown>} */ (checkpoint).observedAt));
+			});
+		const finalCheckpoint = canonicalRegistryIds === null ? exactCheckpoint : scenarioCheckpoints[`scenario-${canonicalRegistryIds.at(-1)}`];
 		const phaseCheckpointMatches = Boolean(
-			checkpointIsExactAndComplete(scenarioPhase.checkpoint) &&
-			scenarioPhase.checkpoint.observedAt ===
-				/** @type {Record<string, unknown>} */ (exactCheckpoint).observedAt
+			canonicalRegistryIds === null
+				? checkpointIsExactAndComplete(scenarioPhase.checkpoint) && scenarioPhase.checkpoint.observedAt === /** @type {Record<string, unknown>} */ (exactCheckpoint).observedAt
+				: finalCheckpoint && typeof finalCheckpoint === 'object' && scenarioPhase.checkpoint && typeof scenarioPhase.checkpoint === 'object' &&
+					/** @type {Record<string, unknown>} */ (scenarioPhase.checkpoint).step === canonicalRegistryIds.at(-1) &&
+					/** @type {Record<string, unknown>} */ (scenarioPhase.checkpoint).observedAt === /** @type {Record<string, unknown>} */ (finalCheckpoint).observedAt
 		);
 		const scenarioStarted = Boolean(
 			scenarioPhase.status !== 'pending' || Object.keys(scenarioCheckpoints).length > 0
@@ -3539,51 +4679,91 @@ export function createSupabaseHostedInspectionAdapter({
 		const reporterId = (exactByRole.get('reporter') ?? [])[0]?.id;
 		const crossUserId = (exactByRole.get('cross-user') ?? [])[0]?.id;
 		const assignedModeratorId = (exactByRole.get('assigned-moderator') ?? [])[0]?.id;
-		const liveScenarioAnchor = manifest.reports
+		const legacyLiveScenarioAnchor = manifest.reports
 			.filter((report) => report.actorRole === 'reporter')
 			.some((manifestReport) => {
-				const liveReport = reports.find(
-					(row) =>
-						String(row.id) === String(manifestReport.id) &&
-						String(row.reporter_id) === String(reporterId) &&
-						String(row.target_id) === String(crossUserId) &&
-						String(row.assigned_to) === String(assignedModeratorId) &&
-						row.status === 'investigating'
+				const liveReport = reports.find((row) =>
+					String(row.id) === String(manifestReport.id) &&
+					String(row.reporter_id) === String(reporterId) &&
+					String(row.target_id) === String(crossUserId) &&
+					String(row.assigned_to) === String(assignedModeratorId) &&
+					row.status === 'investigating'
 				);
 				if (!liveReport || !Array.isArray(liveReport.evidence_paths)) return false;
-				const evidencePaths = liveReport.evidence_paths.map(String);
-				return manifest.uploads
-					.filter(
-						(upload) =>
-							upload.actorRole === 'reporter' &&
-							String(upload.uploaderId) === String(reporterId)
-					)
-					.some((manifestUpload) => {
-						const liveUpload = uploads.find(
-							(upload) =>
-								String(upload.id) === String(manifestUpload.id) &&
-								String(upload.uploader_id) === String(reporterId) &&
-								String(upload.storage_path) === String(manifestUpload.objectPath) &&
-								String(upload.report_id) === String(manifestReport.id) &&
-								upload.status === 'attached' &&
-								Boolean(inspectorTimestamp(upload.attached_at))
-						);
-						return Boolean(
-							liveUpload &&
-							evidencePaths.includes(String(manifestUpload.objectPath)) &&
-							objects.some(
-								(object) =>
-									object.ownerId === String(reporterId) &&
-									object.path === String(manifestUpload.objectPath)
-							)
-						);
-					});
+				return manifest.uploads.some((manifestUpload) => {
+					const liveUpload = uploads.find((upload) => String(upload.id) === String(manifestUpload.id) && String(upload.uploader_id) === String(reporterId) && String(upload.storage_path) === String(manifestUpload.objectPath) && String(upload.report_id) === String(manifestReport.id) && upload.status === 'attached' && Boolean(inspectorTimestamp(upload.attached_at)));
+					return Boolean(liveUpload && /** @type {unknown[]} */ (liveReport.evidence_paths).map(String).includes(String(manifestUpload.objectPath)) && objects.some((object) => object.path === String(manifestUpload.objectPath)));
+				});
 			});
+		const legacyCleanupAnchors = manifest.uploads
+			.filter((upload) => !reports.some((report) => Array.isArray(report.evidence_paths) && report.evidence_paths.map(String).includes(String(upload.objectPath))))
+			.every((manifestUpload) => {
+				const upload = uploads.find((row) => String(row.id) === String(manifestUpload.id));
+				const queue = exactQueueRows.find((row) => String(row.report_evidence_upload_id ?? row.upload_id) === String(manifestUpload.id));
+				return Boolean(upload && ['rejected', 'expired'].includes(String(upload.status)) && !objects.some((object) => object.path === String(manifestUpload.objectPath)) && queue && inspectorTimestamp(queue.processed_at));
+			});
+		const durableScenarioAnchors = await (async () => {
+			if (canonicalRegistry === null) return { live: legacyLiveScenarioAnchor, cleanup: legacyCleanupAnchors };
+			const uploadReducers = canonicalRegistry.filter((entry) => ['registerPrimaryReport', 'registerDuplicateUpload', 'registerRejectedUploadAndQueue', 'registerAbandonedUpload'].includes(String(entry.manifestReducer)));
+			const queueReducers = canonicalRegistry.filter((entry) => ['registerDuplicateQueue', 'registerRejectedUploadAndQueue', 'registerScheduledQueueCoordinate'].includes(String(entry.manifestReducer)));
+			if (uploadReducers.length !== 4 || queueReducers.length !== 3 || manifest.reports.length !== 1 || manifest.uploads.length !== 4 || manifest.queueRows.length !== 3) return { live: false, cleanup: false };
+			/** @param {string} reducer */
+			const uploadFor = (reducer) => manifest.uploads[uploadReducers.findIndex((entry) => entry.manifestReducer === reducer)];
+			/** @param {string} reducer */
+			const queueFor = (reducer) => manifest.queueRows[queueReducers.findIndex((entry) => entry.manifestReducer === reducer)];
+			const primary = uploadFor('registerPrimaryReport');
+			const duplicate = uploadFor('registerDuplicateUpload');
+			const rejected = uploadFor('registerRejectedUploadAndQueue');
+			const abandoned = uploadFor('registerAbandonedUpload');
+			const duplicateQueue = queueFor('registerDuplicateQueue');
+			const rejectedQueue = queueFor('registerRejectedUploadAndQueue');
+			const abandonedQueue = queueFor('registerScheduledQueueCoordinate');
+			if (![primary, duplicate, rejected, abandoned, duplicateQueue, rejectedQueue, abandonedQueue].every(Boolean)) return { live: false, cleanup: false };
+			const manifestReport = manifest.reports[0];
+			const liveReport = reports.find((row) => String(row.id) === String(manifestReport.id));
+			const livePrimary = uploads.find((row) => String(row.id) === String(primary.id));
+			const primaryObject = objects.find((object) => object.ownerId === String(reporterId) && object.path === String(primary.objectPath));
+			const assignmentAudits = moderationAudit.filter((row) => String(row.report_id) === String(manifestReport.id) && String(row.actor_id) === String(assignedModeratorId) && row.action === 'report_assigned');
+			const primaryBase = Boolean(
+				liveReport && Array.isArray(liveReport.evidence_paths) && liveReport.evidence_paths.map(String).includes(String(primary.objectPath)) &&
+				String(liveReport.reporter_id) === String(reporterId) && String(liveReport.target_id) === String(crossUserId) &&
+				String(liveReport.assigned_to) === String(assignedModeratorId) && liveReport.status === 'investigating' && assignmentAudits.length === 1 &&
+				livePrimary && String(livePrimary.uploader_id) === String(reporterId) && String(livePrimary.storage_path) === String(primary.objectPath) &&
+				String(livePrimary.report_id) === String(manifestReport.id) && livePrimary.status === 'attached' && Boolean(inspectorTimestamp(livePrimary.attached_at)) &&
+				primaryObject && Number.isSafeInteger(livePrimary.actual_byte_size) && typeof livePrimary.actual_content_hash === 'string' && livePrimary.actual_content_hash.length === 64 &&
+				primaryObject.byteSize === Number(livePrimary.actual_byte_size) && primaryObject.mimeType === livePrimary.actual_mime_type
+			);
+			let primaryBytesExact = false;
+			if (primaryBase) {
+				const expectedByteSize = Number(livePrimary?.actual_byte_size);
+				const expectedSha256 = String(livePrimary?.actual_content_hash);
+				const downloaded = await serviceClient.storage.from('report-evidence').download(primary.objectPath);
+				if (!downloaded.error && downloaded.data && typeof downloaded.data.arrayBuffer === 'function') {
+					const bytes = Buffer.from(await downloaded.data.arrayBuffer());
+					primaryBytesExact = bytes.length === expectedByteSize && createHash('sha256').update(bytes).digest('hex') === expectedSha256;
+				}
+			}
+			const cleanupExact = [
+				{ manifestUpload: duplicate, manifestQueue: duplicateQueue, status: 'rejected' },
+				{ manifestUpload: rejected, manifestQueue: rejectedQueue, status: 'rejected' },
+				{ manifestUpload: abandoned, manifestQueue: abandonedQueue, status: 'expired' }
+			].every(({ manifestUpload, manifestQueue, status }) => {
+				const upload = uploads.find((row) => String(row.id) === String(manifestUpload.id));
+				const queue = exactQueueRows.find((row) => String(row.id) === String(manifestQueue.id));
+				return Boolean(upload && upload.status === status && String(upload.storage_path) === String(manifestUpload.objectPath) &&
+					queue && String(queue.report_evidence_upload_id ?? queue.upload_id) === String(manifestUpload.id) && String(queue.storage_path) === String(manifestUpload.objectPath) &&
+					inspectorTimestamp(queue.processed_at) && !objects.some((object) => object.path === String(manifestUpload.objectPath)));
+			});
+			return { live: primaryBase && primaryBytesExact, cleanup: cleanupExact };
+		})();
+		const liveScenarioAnchor = durableScenarioAnchors.live;
+		const finalCleanupAnchors = durableScenarioAnchors.cleanup;
 		const scenarioVerified = Boolean(
 			scenarioPhase.status === 'complete' &&
 			exactCheckpointComplete &&
 			phaseCheckpointMatches &&
 			liveScenarioAnchor &&
+			finalCleanupAnchors &&
 			metadataMismatches === 0
 		);
 		const scenarioPartial = !scenarioVerified && scenarioStarted;
@@ -3659,6 +4839,16 @@ export function createSupabaseHostedEvidenceReadAdapters({ config, serviceClient
 	if (config.target.projectRef !== HOSTED_STAGING.projectRef) {
 		throw new HostedEvidenceOperatorError('hosted read adapter configuration is invalid');
 	}
+	/** @param {Array<Record<string, unknown>>} rows */
+	const dedupeExactQueueRows = (rows) => {
+		const seen = new Set();
+		return rows.filter((row) => {
+			const key = `${String(row.id)}\0${String(row.storage_path)}\0${String(row.processed_at)}`;
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
+	};
 
 	/** @param {HostedRunManifest} manifest @returns {Promise<Array<{ pending: PendingManifestActor, user: SupabaseUser }>>} */
 	async function listPendingManifestUsers(manifest) {
@@ -3765,6 +4955,18 @@ export function createSupabaseHostedEvidenceReadAdapters({ config, serviceClient
 				) ?? []
 			);
 		}
+		for (const actorId of actorIds) {
+			const ownedQueueRows = /** @type {any[]} */ (
+				resultData(
+					await serviceClient
+						.from('upload_cleanup_queue')
+						.select('id, storage_path, processed_at')
+						.like('storage_path', `${actorId}/%`),
+					'exact hosted queue inspection failed'
+				) ?? []
+			);
+			queueRows = dedupeExactQueueRows([...queueRows, ...ownedQueueRows]);
+		}
 
 		const reportIds = new Set(manifest.reports.map((report) => report.id));
 		const uploadIds = new Set(manifest.uploads.map((upload) => upload.id));
@@ -3828,6 +5030,15 @@ export function createSupabaseHostedEvidenceAdapters({
 	cleanupSecret,
 	fetchImpl = fetch
 }) {
+	if (process.env.NODE_ENV !== 'test' && fetchImpl !== fetch) {
+		throw new HostedEvidenceOperatorError('adapter configuration is invalid');
+	}
+	let serviceSupabaseUrl = null;
+	try {
+		serviceSupabaseUrl = scenarioDataMember(/** @type {object} */ (serviceClient), 'supabaseUrl');
+	} catch {
+		// The opaque A10 context will reject an unbound privileged client.
+	}
 	if (
 		config.target.projectRef !== HOSTED_STAGING.projectRef ||
 		managementAccessToken.trim().length < 1 ||
@@ -3889,7 +5100,7 @@ export function createSupabaseHostedEvidenceAdapters({
 		return actor;
 	}
 
-	/** @param {{ projectRef: string, uploadId: string, uploaderId: string, objectPath: string }} scope */
+	/** @param {{ projectRef: string, uploadId: string, uploaderId: string, objectPath: string, expectedExpiry?: string }} scope */
 	async function backdateExactUpload(scope) {
 		if (scope.projectRef !== config.target.projectRef) {
 			throw new HostedEvidenceOperatorError('database fixture target does not match approved staging');
@@ -3899,7 +5110,9 @@ export function createSupabaseHostedEvidenceAdapters({
 		if (scope.objectPath !== `${scope.uploaderId}/${scope.uploadId}.webp`) {
 			throw new HostedEvidenceOperatorError('database fixture path is outside the exact run manifest');
 		}
-		const query = `update public.report_evidence_uploads set expires_at = now() - interval '1 minute', updated_at = now() where id = '${scope.uploadId}'::uuid and uploader_id = '${scope.uploaderId}'::uuid and storage_path = '${scope.objectPath}' and status = 'pending' returning id`;
+		const expectedExpiry = scope.expectedExpiry === undefined ? null : inspectorTimestamp(scope.expectedExpiry);
+		if (scope.expectedExpiry !== undefined && !expectedExpiry) throw new HostedEvidenceOperatorError('database fixture expiry proof is invalid');
+		const query = `update public.report_evidence_uploads set expires_at = now() - interval '1 minute', updated_at = now() where id = '${scope.uploadId}'::uuid and uploader_id = '${scope.uploaderId}'::uuid and storage_path = '${scope.objectPath}' and status = 'pending'${expectedExpiry ? ` and expires_at = '${expectedExpiry}'::timestamptz` : ''} returning id`;
 		const response = await fetchImpl(
 			`https://api.supabase.com/v1/projects/${config.target.projectRef}/database/query`,
 			{
@@ -3949,7 +5162,7 @@ export function createSupabaseHostedEvidenceAdapters({
 		exactManifestUpload(scope.manifest, scope.uploadId);
 		const result = await serviceClient
 			.from('report_evidence_uploads')
-			.select('id, uploader_id, storage_path, status, source_byte_size, actual_content_hash, actual_byte_size, actual_mime_type, width_px, height_px, report_id, created_at, finalized_at, attached_at')
+			.select('id, uploader_id, storage_path, status, source_byte_size, actual_content_hash, actual_byte_size, actual_mime_type, width_px, height_px, report_id, created_at, updated_at, expires_at, finalized_at, attached_at')
 			.eq('id', scope.uploadId)
 			.maybeSingle();
 		if (result.error || !result.data) throw new HostedEvidenceOperatorError('exact upload inspection failed');
@@ -4027,7 +5240,8 @@ export function createSupabaseHostedEvidenceAdapters({
 			.order('id', { ascending: false })
 			.limit(1)
 			.maybeSingle();
-		if (result.error || !result.data) throw new HostedEvidenceOperatorError('exact queue discovery failed');
+		if (result.error) throw new HostedEvidenceOperatorError('exact queue discovery failed');
+		if (!result.data) return Object.freeze({ id: null, processedAt: null, absent: true });
 		return Object.freeze({ id: result.data.id, processedAt: result.data.processed_at ?? null });
 	}
 
@@ -4068,6 +5282,165 @@ export function createSupabaseHostedEvidenceAdapters({
 			throw new HostedEvidenceOperatorError('exact hosted cleanup receipt is invalid');
 		}
 		return { status: response.status, requestId: String(body.requestId) };
+	}
+
+	/** @param {{ manifest: HostedRunManifest, reporterId: string, targetId: string, details: string }} scope */
+	async function discoverReportByRun(scope) {
+		assertManifestTarget(config, scope.manifest);
+		const reporter = manifestActor(scope.manifest, 'reporter');
+		const target = manifestActor(scope.manifest, 'cross-user');
+		if (
+			scope.reporterId !== reporter.userId ||
+			scope.targetId !== target.userId ||
+			scope.details !== `Synthetic Gate 3 evidence ${config.runId}`
+		) throw new HostedEvidenceOperatorError('report discovery scope is invalid');
+		const result = await serviceClient
+			.from('reports')
+			.select('id, reporter_id, target_id, details, evidence_paths, status, assigned_to, created_at')
+			.eq('reporter_id', scope.reporterId)
+			.eq('target_id', scope.targetId)
+			.eq('details', scope.details)
+			.gte('created_at', config.provisionedAfter);
+		if (result.error || !Array.isArray(result.data) || result.data.length > 1) {
+			throw new HostedEvidenceOperatorError('exact report discovery failed');
+		}
+		if (result.data.length === 0) return null;
+		return Object.freeze({ ...result.data[0] });
+	}
+
+	/** @param {{ manifest: HostedRunManifest, reportId: string, reporterId: string }} scope */
+	async function discoverUploadForReportCoordinate(scope) {
+		assertManifestTarget(config, scope.manifest);
+		requireUuid(scope.reportId, 'report ID');
+		const reporter = manifestActor(scope.manifest, 'reporter');
+		if (scope.reporterId !== reporter.userId) {
+			throw new HostedEvidenceOperatorError('upload discovery scope is invalid');
+		}
+		const result = await serviceClient
+			.from('report_evidence_uploads')
+			.select('id, uploader_id, storage_path, status, source_byte_size, actual_content_hash, actual_byte_size, actual_mime_type, width_px, height_px, report_id, created_at, updated_at, expires_at, finalized_at, attached_at')
+			.eq('report_id', scope.reportId)
+			.eq('uploader_id', scope.reporterId);
+		if (result.error || !Array.isArray(result.data) || result.data.length !== 1) {
+			throw new HostedEvidenceOperatorError('exact report upload discovery failed');
+		}
+		const row = result.data[0];
+		if (row.storage_path !== `${scope.reporterId}/${row.id}.webp`) {
+			throw new HostedEvidenceOperatorError('exact report upload discovery failed');
+		}
+		return Object.freeze({ ...row });
+	}
+
+	/** @param {{ manifest: HostedRunManifest, actorRole: string, status: string, sourceByteSize: number, createdAfter: string, excludeUploadIds: readonly string[] }} scope */
+	async function discoverAllocatedUpload(scope) {
+		assertManifestTarget(config, scope.manifest);
+		const actor = manifestActor(scope.manifest, scope.actorRole);
+		if (
+			!['pending', 'rejected', 'expired'].includes(scope.status) ||
+			!Number.isSafeInteger(scope.sourceByteSize) ||
+			scope.sourceByteSize < 1 ||
+			!Number.isFinite(Date.parse(scope.createdAfter)) ||
+			!Array.isArray(scope.excludeUploadIds) ||
+			scope.excludeUploadIds.some((id) => !UUID_PATTERN.test(id))
+		) throw new HostedEvidenceOperatorError('upload discovery scope is invalid');
+		const result = await serviceClient
+			.from('report_evidence_uploads')
+			.select('id, uploader_id, storage_path, status, source_byte_size, report_id, created_at, finalized_at, attached_at')
+			.eq('uploader_id', actor.userId)
+			.eq('status', scope.status)
+			.eq('source_byte_size', scope.sourceByteSize)
+			.gte('created_at', scope.createdAfter);
+		const candidates = Array.isArray(result.data)
+			? result.data.filter((row) => !scope.excludeUploadIds.includes(row.id))
+			: null;
+		if (result.error || candidates === null || candidates.length > 1) {
+			throw new HostedEvidenceOperatorError('exact allocated upload discovery failed');
+		}
+		if (candidates.length === 0) return null;
+		const row = candidates[0];
+		if (row.storage_path !== `${actor.userId}/${row.id}.webp`) {
+			throw new HostedEvidenceOperatorError('exact allocated upload discovery failed');
+		}
+		return Object.freeze({ ...row });
+	}
+
+	/** @param {{ manifest: HostedRunManifest, uploadId: string, uploaderId: string, objectPath: string }} scope */
+	async function inspectUploadCoordinate(scope) {
+		assertManifestTarget(config, scope.manifest);
+		requireUuid(scope.uploadId, 'upload ID');
+		requireUuid(scope.uploaderId, 'actor ID');
+		if (scope.objectPath !== `${scope.uploaderId}/${scope.uploadId}.webp`) {
+			throw new HostedEvidenceOperatorError('upload coordinate is invalid');
+		}
+		const result = await serviceClient
+			.from('report_evidence_uploads')
+			.select('id, uploader_id, storage_path, status, source_byte_size, actual_content_hash, actual_byte_size, actual_mime_type, width_px, height_px, report_id, created_at, updated_at, expires_at, finalized_at, attached_at')
+			.eq('id', scope.uploadId)
+			.eq('uploader_id', scope.uploaderId)
+			.eq('storage_path', scope.objectPath)
+			.maybeSingle();
+		if (result.error || !result.data) throw new HostedEvidenceOperatorError('exact upload inspection failed');
+		return Object.freeze({ ...result.data });
+	}
+
+	/** @param {{ manifest: HostedRunManifest, uploadId: string, uploaderId: string, objectPath: string }} scope */
+	async function inspectObjectCoordinate(scope) {
+		assertManifestTarget(config, scope.manifest);
+		requireUuid(scope.uploadId, 'upload ID');
+		requireUuid(scope.uploaderId, 'actor ID');
+		if (scope.objectPath !== `${scope.uploaderId}/${scope.uploadId}.webp`) throw new HostedEvidenceOperatorError('object coordinate is invalid');
+		const result = await serviceClient.storage.from('report-evidence').list(scope.uploaderId, { search: `${scope.uploadId}.webp`, limit: 2 });
+		if (result.error || result.data.length > 1) throw new HostedEvidenceOperatorError('exact object inspection failed');
+		if (result.data.length === 0) return Object.freeze({ exists: false, createdAt: null, updatedAt: null, byteSize: null, mimeType: null });
+		if (result.data[0].name !== `${scope.uploadId}.webp`) throw new HostedEvidenceOperatorError('exact object inspection failed');
+		const object = result.data[0];
+		const metadata = object.metadata;
+		return Object.freeze({
+			exists: true,
+			createdAt: object.created_at ?? null,
+			updatedAt: object.updated_at ?? null,
+			byteSize: metadata && Number.isSafeInteger(metadata.size) ? metadata.size : null,
+			mimeType: metadata && typeof metadata.mimetype === 'string' ? metadata.mimetype : null
+		});
+	}
+
+	/** @param {{ manifest: HostedRunManifest, uploadId: string, uploaderId: string, objectPath: string }} scope */
+	async function discoverQueueForCoordinate(scope) {
+		assertManifestTarget(config, scope.manifest);
+		requireUuid(scope.uploadId, 'upload ID');
+		requireUuid(scope.uploaderId, 'actor ID');
+		if (scope.objectPath !== `${scope.uploaderId}/${scope.uploadId}.webp`) {
+			throw new HostedEvidenceOperatorError('queue coordinate is invalid');
+		}
+		const result = await serviceClient
+			.from('upload_cleanup_queue')
+			.select('id, processed_at, report_evidence_upload_id, bucket_id, storage_path')
+			.eq('report_evidence_upload_id', scope.uploadId)
+			.eq('bucket_id', 'report-evidence')
+			.eq('storage_path', scope.objectPath)
+			.order('id', { ascending: false })
+			.limit(1)
+			.maybeSingle();
+		if (result.error || !result.data || result.data.report_evidence_upload_id !== scope.uploadId) {
+			throw new HostedEvidenceOperatorError('exact queue discovery failed');
+		}
+		return Object.freeze({ id: result.data.id, processedAt: result.data.processed_at ?? null });
+	}
+
+	/** @param {{ manifest: HostedRunManifest, objectPath: string }} scope */
+	async function countReportsUsingObject(scope) {
+		assertManifestTarget(config, scope.manifest);
+		const upload = scope.manifest.uploads.find((entry) => entry.objectPath === scope.objectPath);
+		if (!upload) throw new HostedEvidenceOperatorError('report evidence coordinate is invalid');
+		const result = await serviceClient
+			.from('reports')
+			.select('id, reporter_id, evidence_paths')
+			.contains('evidence_paths', [scope.objectPath]);
+		if (result.error || !Array.isArray(result.data)) throw new HostedEvidenceOperatorError('exact report evidence inspection failed');
+		if (result.data.some((row) => !scope.manifest.reports.some((report) => report.id === row.id))) {
+			throw new HostedEvidenceOperatorError('exact report evidence inspection found a foreign report');
+		}
+		return result.data.length;
 	}
 
 	/** @param {{ queueId: number, bucketId: 'report-evidence', storagePath: string }} scope */
@@ -4237,7 +5610,7 @@ export function createSupabaseHostedEvidenceAdapters({
 		await deleteExactQueueRows(manifest);
 	}
 
-	return Object.freeze({
+	const adapters = Object.freeze({
 		provisionActor,
 		attestActor,
 		inspectManifest,
@@ -4247,6 +5620,13 @@ export function createSupabaseHostedEvidenceAdapters({
 		inspectUpload,
 		inspectObject,
 		discoverUploadForReport,
+		discoverReportByRun,
+		discoverUploadForReportCoordinate,
+		discoverAllocatedUpload,
+		inspectUploadCoordinate,
+		inspectObjectCoordinate,
+		discoverQueueForCoordinate,
+		countReportsUsingObject,
 		discoverUploadByStatus,
 		discoverQueueForUpload,
 		inspectAssignmentAudit,
@@ -4255,6 +5635,13 @@ export function createSupabaseHostedEvidenceAdapters({
 		invokeExactCleanupWorker,
 		removeManifest
 	});
+	A10_PRIVILEGED_ADAPTERS.set(adapters, Object.freeze({
+		runId: config.runId,
+		projectRef: config.target.projectRef,
+		workerOrigin: config.target.workerOrigin,
+		supabaseUrl: serviceSupabaseUrl
+	}));
+	return adapters;
 }
 
 /** @param {Partial<InventoryCounts>} [counts] @returns {InventoryCounts} */
@@ -4270,32 +5657,136 @@ function sanitizeCounts(counts = {}) {
 	));
 }
 
-/** @param {OperatorRecordInput} input */
-export function createSanitizedOperatorRecord(input) {
-	if (
-		!SAFE_EVENTS.test(input.event) ||
-		!/^gate3-[a-z0-9-]{8,64}$/u.test(input.runId) ||
-		!SAFE_ACTOR_ROLES.has(input.actorRole) ||
-		!new Set(['PASS', 'FAIL', 'BLOCKED']).has(input.status) ||
-		!SAFE_BOUNDARIES.has(input.boundary) ||
-		!SAFE_RESULTS.has(input.actualResult) ||
-		!(input.requestId === 'not-exposed' || UUID_PATTERN.test(input.requestId)) ||
-		!SAFE_CLEANUP_STATES.has(input.cleanup)
-	) {
+/** @param {unknown} input @param {string | { checkpointId: string, runId: string, scenario: number, actorRole: string } | null} [expectedBinding] */
+export function createSanitizedOperatorRecord(input, expectedBinding = null) {
+	/** @returns {never} */
+	const unsafe = () => {
+		throw new HostedEvidenceOperatorError('operator receipt contains an unsafe field');
+	};
+	try {
+		let checkpointId = null;
+		let expectedRunId = null;
+		let expectedScenario = null;
+		let expectedActorRole = null;
+		let requireProvidedCheckpoint = false;
+		if (typeof expectedBinding === 'string') {
+			checkpointId = expectedBinding;
+		} else if (expectedBinding !== null) {
+			if (!exactScenarioKeys(expectedBinding, ['checkpointId', 'runId', 'scenario', 'actorRole'])) unsafe();
+			const binding = /** @type {Record<string, any>} */ (expectedBinding);
+			checkpointId = scenarioOwnValue(binding, 'checkpointId');
+			expectedRunId = scenarioOwnValue(binding, 'runId');
+			expectedScenario = scenarioOwnValue(binding, 'scenario');
+			expectedActorRole = scenarioOwnValue(binding, 'actorRole');
+			requireProvidedCheckpoint = true;
+		}
+		if (!input || typeof input !== 'object' || Array.isArray(input) || isProxy(input)) unsafe();
+		const prototype = Object.getPrototypeOf(input);
+		if (prototype !== Object.prototype && prototype !== null) unsafe();
+		const source = /** @type {Record<string, unknown>} */ (input);
+		if (Reflect.ownKeys(source).some((key) => typeof key === 'symbol')) unsafe();
+		const descriptors = Object.getOwnPropertyDescriptors(source);
+		/** @param {string} name */
+		const value = (name) => {
+			const descriptor = descriptors[name];
+			if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) unsafe();
+			return descriptor.value;
+		};
+		const event = value('event');
+		const runId = value('runId');
+		const actorRole = value('actorRole');
+		const status = value('status');
+		const boundary = value('boundary');
+		const actualResult = value('actualResult');
+		const requestId = value('requestId');
+		const before = sanitizeReceiptCounts(value('before'));
+		const after = sanitizeReceiptCounts(value('after'));
+		const cleanup = value('cleanup');
+		const providedCheckpoint = requireProvidedCheckpoint ? value('checkpointId') : checkpointId;
+		if (
+			typeof event !== 'string' ||
+			!SAFE_EVENTS.test(event) ||
+			typeof runId !== 'string' ||
+			!/^gate3-[a-z0-9-]{8,64}$/u.test(runId) ||
+			typeof actorRole !== 'string' ||
+			!SAFE_ACTOR_ROLES.has(actorRole) ||
+			typeof status !== 'string' ||
+			!new Set(['PASS', 'FAIL', 'BLOCKED']).has(status) ||
+			typeof boundary !== 'string' ||
+			!SAFE_BOUNDARIES.has(boundary) ||
+			typeof actualResult !== 'string' ||
+			!SAFE_RESULTS.has(actualResult) ||
+			typeof requestId !== 'string' ||
+			!(requestId === 'not-exposed' || UUID_PATTERN.test(requestId)) ||
+			typeof cleanup !== 'string' ||
+			!SAFE_CLEANUP_STATES.has(cleanup) ||
+			!(checkpointId === null || /^[a-z][a-z0-9-]{2,79}$/u.test(checkpointId)) ||
+			!(expectedRunId === null || runId === expectedRunId) ||
+			!(expectedScenario === null || (Number.isSafeInteger(expectedScenario) && event === `hosted_scenario_${expectedScenario}`)) ||
+			!(expectedActorRole === null || actorRole === expectedActorRole)
+			|| providedCheckpoint !== checkpointId
+		) {
+			unsafe();
+		}
+		const record = {
+			event,
+			runId,
+			actorRole,
+			status,
+			boundary,
+			actualResult,
+			requestId,
+			before,
+			after,
+			cleanup
+		};
+		if (checkpointId !== null) Object.defineProperty(record, 'checkpointId', {
+			value: checkpointId,
+			enumerable: true,
+			writable: true,
+			configurable: true
+		});
+		return Object.freeze(record);
+	} catch (error) {
+		if (error instanceof HostedEvidenceOperatorError) throw error;
+		unsafe();
+	}
+}
+
+/** @param {unknown} input */
+function sanitizeReceiptCounts(input) {
+	if (!input || typeof input !== 'object' || Array.isArray(input) || isProxy(input)) {
 		throw new HostedEvidenceOperatorError('operator receipt contains an unsafe field');
 	}
-	return {
-		event: input.event,
-		runId: input.runId,
-		actorRole: input.actorRole,
-		status: input.status,
-		boundary: input.boundary,
-		actualResult: input.actualResult,
-		requestId: input.requestId,
-		before: sanitizeCounts(input.before),
-		after: sanitizeCounts(input.after),
-		cleanup: input.cleanup
-	};
+	const prototype = Object.getPrototypeOf(input);
+	if (prototype !== Object.prototype && prototype !== null) {
+		throw new HostedEvidenceOperatorError('operator receipt contains an unsafe field');
+	}
+	if (Reflect.ownKeys(input).some((key) => typeof key === 'symbol')) {
+		throw new HostedEvidenceOperatorError('operator receipt contains an unsafe field');
+	}
+	const descriptors = Object.getOwnPropertyDescriptors(input);
+	const counts = {};
+	for (const field of INVENTORY_FIELDS) {
+		const descriptor = descriptors[field];
+		if (
+			!descriptor ||
+			!Object.hasOwn(descriptor, 'value') ||
+			descriptor.enumerable !== true ||
+			typeof descriptor.value !== 'number' ||
+			!Number.isSafeInteger(descriptor.value) ||
+			descriptor.value < 0
+		) {
+			throw new HostedEvidenceOperatorError('operator receipt contains an unsafe field');
+		}
+		Object.defineProperty(counts, field, {
+			value: descriptor.value,
+			enumerable: true,
+			writable: true,
+			configurable: true
+		});
+	}
+	return Object.freeze(counts);
 }
 
 /** @param {string} body @param {string} expectedMessage @param {readonly string[]} forbiddenValues */
