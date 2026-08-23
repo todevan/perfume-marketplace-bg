@@ -14,8 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / ".codex" / "config.toml"
 MARKER_PATH = ROOT / ".codex" / "aromatika-project-root"
 PACKAGE_PATH = ROOT / "package.json"
+ATTRIBUTES_PATH = ROOT / ".gitattributes"
 
 EXPECTED_MARKER = "aromatika-codex-root-v1\n"
+REQUIRED_LF_ATTRIBUTES = {
+    "/.codex/aromatika-project-root text eol=lf",
+    "/.codex/config.toml text eol=lf",
+}
 SVELTE_MCP_BOOTSTRAP = (
     "import{readFile,realpath,stat}from'node:fs/promises';"
     "import{dirname,isAbsolute,join,relative,sep}from'node:path';"
@@ -53,6 +58,8 @@ SVELTE_MCP_BOOTSTRAP = (
 SVELTE_MCP_ARGS = ["--input-type=module", "--eval", SVELTE_MCP_BOOTSTRAP]
 
 EXPECTED_RAW = (
+    'model_reasoning_effort = "high"\n'
+    "\n"
     "[mcp_servers.aromatika-svelte]\n"
     'command = "node"\n'
     f"args = {json.dumps(SVELTE_MCP_ARGS)}\n"
@@ -63,9 +70,68 @@ EXPECTED_RAW = (
     'url = "https://observability.mcp.cloudflare.com/mcp"\n'
     'enabled_tools = ["query_worker_observability", "observability_keys", "observability_values"]\n'
     'default_tools_approval_mode = "prompt"\n'
+    "\n"
+    "[mcp_servers.codegraph]\n"
+    'command = "codegraph"\n'
+    'args = ["serve", "--mcp"]\n'
+    'enabled = true\n'
+    "\n"
+    "[mcp_servers.MCP_DOCKER]\n"
+    'command = "docker.exe"\n'
+    'args = ["mcp", "gateway", "run", "--profile", "profile"]\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.cloudflare]\n"
+    'url = "https://mcp.cloudflare.com/mcp"\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.cloudflare-bindings]\n"
+    'url = "https://bindings.mcp.cloudflare.com/mcp"\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.cloudflare-builds]\n"
+    'url = "https://builds.mcp.cloudflare.com/mcp"\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.cloudflare-docs]\n"
+    'url = "https://docs.mcp.cloudflare.com/mcp"\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.cloudflare-observability]\n"
+    'url = "https://observability.mcp.cloudflare.com/mcp"\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.context7]\n"
+    'url = "https://mcp.context7.com/mcp"\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.github]\n"
+    'command = "npx"\n'
+    'args = ["-y", "@modelcontextprotocol/server-github"]\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.playwright]\n"
+    'command = "npx"\n'
+    'args = ["@playwright/mcp@latest"]\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.sequential-thinking]\n"
+    'command = "npx"\n'
+    'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.supabase]\n"
+    'url = "https://mcp.supabase.com/mcp"\n'
+    'enabled = false\n'
+    "\n"
+    "[mcp_servers.svelte]\n"
+    'command = "npx"\n'
+    'args = ["-y", "@sveltejs/mcp"]\n'
+    'enabled = false\n'
 )
 
 EXPECTED = {
+    "model_reasoning_effort": "high",
     "mcp_servers": {
         "aromatika-svelte": {
             "command": "node",
@@ -86,6 +152,64 @@ EXPECTED = {
             ],
             "default_tools_approval_mode": "prompt",
         },
+        "codegraph": {
+            "command": "codegraph",
+            "args": ["serve", "--mcp"],
+            "enabled": True,
+        },
+        "MCP_DOCKER": {
+            "command": "docker.exe",
+            "args": ["mcp", "gateway", "run", "--profile", "profile"],
+            "enabled": False,
+        },
+        "cloudflare": {
+            "url": "https://mcp.cloudflare.com/mcp",
+            "enabled": False,
+        },
+        "cloudflare-bindings": {
+            "url": "https://bindings.mcp.cloudflare.com/mcp",
+            "enabled": False,
+        },
+        "cloudflare-builds": {
+            "url": "https://builds.mcp.cloudflare.com/mcp",
+            "enabled": False,
+        },
+        "cloudflare-docs": {
+            "url": "https://docs.mcp.cloudflare.com/mcp",
+            "enabled": False,
+        },
+        "cloudflare-observability": {
+            "url": "https://observability.mcp.cloudflare.com/mcp",
+            "enabled": False,
+        },
+        "context7": {
+            "url": "https://mcp.context7.com/mcp",
+            "enabled": False,
+        },
+        "github": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "enabled": False,
+        },
+        "playwright": {
+            "command": "npx",
+            "args": ["@playwright/mcp@latest"],
+            "enabled": False,
+        },
+        "sequential-thinking": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            "enabled": False,
+        },
+        "supabase": {
+            "url": "https://mcp.supabase.com/mcp",
+            "enabled": False,
+        },
+        "svelte": {
+            "command": "npx",
+            "args": ["-y", "@sveltejs/mcp"],
+            "enabled": False,
+        },
     },
 }
 
@@ -105,13 +229,18 @@ def fail(message: str) -> None:
 
 
 def main() -> None:
-    raw = CONFIG_PATH.read_text(encoding="utf-8")
-    marker = MARKER_PATH.read_text(encoding="utf-8")
+    raw = CONFIG_PATH.read_bytes().decode("utf-8")
+    marker = MARKER_PATH.read_bytes().decode("utf-8")
+    if not ATTRIBUTES_PATH.exists():
+        fail(".gitattributes must pin security-critical Codex files to LF")
+    attributes = set(ATTRIBUTES_PATH.read_text(encoding="utf-8").splitlines())
 
     if raw != EXPECTED_RAW:
         fail("config.toml must match the canonical no-comment form")
     if marker != EXPECTED_MARKER:
         fail("the repository-root marker must match the canonical value")
+    if not REQUIRED_LF_ATTRIBUTES <= attributes:
+        fail("security-critical Codex files must be checked out with LF bytes")
     if FORBIDDEN_FIELD.search(raw):
         fail("credential-bearing fields are not allowed")
     if TOKEN_SHAPE.search(raw):

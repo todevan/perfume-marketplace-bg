@@ -3,7 +3,7 @@
 This path is retained for compatibility and is **not current authority**.
 
 Use:
-- `../../AGENTS.md` for owner role and R0-R3;
+- `../../AGENTS.md` for owner role and R1-R3;
 - `SECURITY.md` for R2/R3;
 - `WORKFLOW.md` for task handoff.
 

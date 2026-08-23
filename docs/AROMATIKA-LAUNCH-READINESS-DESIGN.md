@@ -163,8 +163,8 @@ Detailed engineering lifecycle.
 ### `docs/agents/SECURITY.md`
 Security-sensitive engineering and protected-action rules.
 
-### `docs/agents/MODEL-ROUTER.md`
-Model tiers, escalation, context, retry, and cost rules.
+Model tiers, escalation, context, retry, and cost rules are consolidated in
+`docs/agents/WORKFLOW.md`.
 
 ### `MASTER-PLAN.md`
 No longer a strategic authority. It becomes a small roadmap/index pointing to the current authoritative documents.
@@ -830,7 +830,6 @@ Create/maintain:
 - concise `AGENTS.md`;
 - `docs/agents/WORKFLOW.md`;
 - `docs/agents/SECURITY.md`;
-- `docs/agents/MODEL-ROUTER.md`;
 - legacy pointers instead of duplicate authorities.
 
 ### Phase 2 — Correct and execute Repository Truth Cleanup

@@ -9,6 +9,6 @@ Use:
 - `../ARCHITECTURE.md` for technical architecture;
 - `../PROJECT-STATUS.md` for current operational state;
 - `../BUSINESS-MODEL.md` for monetization;
-- the active issue/spec for task-specific acceptance criteria.
+- the approved active issue for task-specific acceptance criteria.
 
 Historical plans do not override these current authorities.
