@@ -243,6 +243,20 @@ Where acceptance requires deployed/provider evidence, follow the repository's ho
 
 A named release or reconciliation gate authorizes only the mutations explicitly inside that scope.
 
+### Hosted operator boundary
+
+Hosted inspection and hosted mutation are separate capabilities. Read-only inspection may establish target, release, ownership, manifest, and current provider state, but it neither authorizes nor performs a mutation.
+
+For a hosted state transition:
+
+1. bind the operation to one exact authorized target and run;
+2. obtain fresh read-only inspection and release evidence;
+3. let lifecycle policy select one exact permitted boundary;
+4. give the runner only the capability required for that boundary;
+5. read back and verify the provider result before persisting manifest evidence and then orchestration state.
+
+An uncertain mutation outcome is a stop condition. It requires fresh inspection and reconciliation; it must not trigger automatic retry, a wider mutation, or a hidden repair path. Local orchestration state is not hosted truth, and a manifest is evidence only for the exact target, run, release, ownership, and provider state it binds.
+
 ---
 
 ## Launch and deferred boundaries
