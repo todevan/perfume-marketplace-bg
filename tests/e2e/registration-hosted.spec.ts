@@ -195,6 +195,9 @@ test('exact-target hosted registration and hostile R2 boundaries', async ({ brow
 		const crossProfile = await a.client.from('profiles').update({ city: 'Sofia' }).eq('id', b.userId).select('id');
 		expect(crossProfile.error).toBeNull();
 		expect(crossProfile.data).toEqual([]);
+		const bProfile = await b.client.from('profiles').select('city').eq('id', b.userId).single();
+		expect(bProfile.error).toBeNull();
+		expect(bProfile.data?.city).toBe('Saint-Rémy');
 
 		const crossMembership = await a.client
 			.from('beta_memberships')
@@ -203,6 +206,13 @@ test('exact-target hosted registration and hostile R2 boundaries', async ({ brow
 			.select('profile_id');
 		expect(crossMembership.error).toBeNull();
 		expect(crossMembership.data).toEqual([]);
+		const bMembership = await b.client
+			.from('beta_memberships')
+			.select('status')
+			.eq('profile_id', b.userId)
+			.single();
+		expect(bMembership.error).toBeNull();
+		expect(bMembership.data?.status).toBe('active');
 
 		const escalation = await a.client.from('profiles').update({ role: 'admin' }).eq('id', a.userId);
 		expect(escalation.error).not.toBeNull();
