@@ -253,6 +253,13 @@ test(
 		mkdirSync(join(projectRoot, '.codex'), { recursive: true })
 		mkdirSync(dirname(wrapper), { recursive: true })
 		mkdirSync(nestedDirectory, { recursive: true })
+		const initialized = spawnSync('git', ['init', '--quiet'], {
+			cwd: projectRoot,
+			env: buildSvelteMcpEnvironment(process.env),
+			shell: false,
+			windowsHide: true
+		})
+		assert.equal(initialized.status, 0, initialized.stderr?.toString())
 		writeFileSync(
 			join(projectRoot, '.codex/aromatika-project-root'),
 			'aromatika-codex-root-v1\n',
