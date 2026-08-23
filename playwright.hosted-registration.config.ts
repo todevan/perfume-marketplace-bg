@@ -12,7 +12,7 @@ export default defineConfig({
 	timeout: 360_000,
 	use: {
 		baseURL: process.env.ISSUE22_HOSTED_ORIGIN ?? 'https://invalid.invalid',
-		trace: 'retain-on-failure'
+		trace: 'off'
 	},
 	projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
 });

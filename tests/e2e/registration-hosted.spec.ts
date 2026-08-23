@@ -13,6 +13,17 @@ interface HostedTarget {
 	runId: string;
 }
 
+function runProofHelper(action: 'attest' | 'record-intent' | 'record-actor' | 'cleanup', extra = {}): void {
+	const result = spawnSync(process.execPath, [join(process.cwd(), 'scripts', 'issue22-hosted-proof.mjs'), action], {
+		encoding: 'utf8',
+		env: { ...process.env, ...extra },
+		windowsHide: true
+	});
+	if (result.status !== 0) {
+		throw new Error(`Issue 22 private provenance action failed: ${action}.`);
+	}
+}
+
 function required(name: string): string {
 	const value = process.env[name]?.trim();
 	if (!value) throw new Error(`Missing required hosted-proof environment variable: ${name}`);
@@ -37,6 +48,15 @@ function hostedTarget(): HostedTarget {
 	if (!/^[a-z0-9-]{3,12}$/u.test(runId)) {
 		throw new Error('ISSUE22_RUN_ID must be a 3-12 character lowercase cleanup label.');
 	}
+	for (const name of [
+		'ISSUE22_SUPABASE_PARENT_PROJECT_REF',
+		'ISSUE22_SUPABASE_BRANCH_NAME',
+		'ISSUE22_CLOUDFLARE_WORKER_NAME',
+		'ISSUE22_CLOUDFLARE_VERSION_ID',
+		'ISSUE22_PROVENANCE_PATH'
+	]) {
+		required(name);
+	}
 	return {
 		origin: origin.origin,
 		supabaseUrl: supabaseUrl.origin,
@@ -47,14 +67,18 @@ function hostedTarget(): HostedTarget {
 	};
 }
 
-function account(target: HostedTarget, label: 'a' | 'b') {
+function account(target: HostedTarget, label: string) {
 	const nonce = `${Date.now().toString(36)}${crypto.randomUUID().slice(0, 6)}`;
 	const cleanupLabel = `issue22-${target.runId}-${target.candidateSha.slice(0, 8)}-${label}`;
 	return {
 		email: `${cleanupLabel}-${nonce}@example.invalid`,
 		password: `Issue22-${nonce}-Safe!`,
-		username: `i22_${target.runId.slice(0, 6)}_${label}_${nonce}`
+		username: `i22_${target.runId.slice(0, 6)}_${label.slice(0, 6)}_${nonce}`
 	};
+}
+
+function recordIntent(target: HostedTarget, label: string, email: string): void {
+	runProofHelper('record-intent', { ISSUE22_ACTOR_LABEL: label, ISSUE22_ACTOR_EMAIL: email });
 }
 
 function confirmationLink(target: HostedTarget, recipient: string): string {
@@ -108,9 +132,16 @@ async function authenticatedClient(target: HostedTarget, context: BrowserContext
 	return { client, user: result.data.user };
 }
 
-async function registerAndOnboard(browser: Browser, target: HostedTarget, label: 'a' | 'b') {
+async function registerAndOnboard(
+	browser: Browser,
+	target: HostedTarget,
+	label: 'a' | 'b',
+	contexts: BrowserContext[]
+) {
 	const actor = account(target, label);
+	recordIntent(target, label, actor.email);
 	const context = await browser.newContext();
+	contexts.push(context);
 	const page = await context.newPage();
 	await page.goto(`${target.origin}/login?next=%2Fdashboard`);
 	await page.getByRole('button', { name: 'Нова регистрация' }).click();
@@ -128,6 +159,7 @@ async function registerAndOnboard(browser: Browser, target: HostedTarget, label:
 	await expect(page).toHaveURL(/\/onboarding\?next=%2Fdashboard$/u);
 
 	const { client, user } = await authenticatedClient(target, context);
+	runProofHelper('record-actor', { ISSUE22_ACTOR_LABEL: label, ISSUE22_ACTOR_USER_ID: user.id });
 	expect(user.phone ?? '').toBe('');
 	const pending = await client
 		.from('beta_memberships')
@@ -168,30 +200,35 @@ async function registerAndOnboard(browser: Browser, target: HostedTarget, label:
 test('exact-target hosted registration and hostile R2 boundaries', async ({ browser }) => {
 	test.setTimeout(360_000);
 	const target = hostedTarget();
-
-	for (const captchaToken of [undefined, 'invalid']) {
-		const actor = account(target, captchaToken ? 'b' : 'a');
-		const response = await fetch(`${target.supabaseUrl}/auth/v1/signup`, {
-			method: 'POST',
-			headers: {
-				apikey: target.publishableKey,
-				authorization: `Bearer ${target.publishableKey}`,
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				email: actor.email,
-				password: actor.password,
-				data: { username: actor.username },
-				...(captchaToken ? { gotrue_meta_security: { captcha_token: captchaToken } } : {})
-			})
-		});
-		expect(response.status).toBe(400);
-		expect((await response.text()).toLowerCase()).toContain('captcha');
-	}
-
-	const a = await registerAndOnboard(browser, target, 'a');
-	const b = await registerAndOnboard(browser, target, 'b');
+	runProofHelper('attest');
+	const contexts: BrowserContext[] = [];
 	try {
+		for (const [label, captchaToken] of [
+			['captcha-missing', undefined],
+			['captcha-invalid', 'invalid']
+		] as const) {
+			const actor = account(target, label);
+			recordIntent(target, label, actor.email);
+			const response = await fetch(`${target.supabaseUrl}/auth/v1/signup`, {
+				method: 'POST',
+				headers: {
+					apikey: target.publishableKey,
+					authorization: `Bearer ${target.publishableKey}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					email: actor.email,
+					password: actor.password,
+					data: { username: actor.username },
+					...(captchaToken ? { gotrue_meta_security: { captcha_token: captchaToken } } : {})
+				})
+			});
+			expect(response.status).toBe(400);
+			expect((await response.text()).toLowerCase()).toContain('captcha');
+		}
+
+		const a = await registerAndOnboard(browser, target, 'a', contexts);
+		const b = await registerAndOnboard(browser, target, 'b', contexts);
 		const crossProfile = await a.client.from('profiles').update({ city: 'Sofia' }).eq('id', b.userId).select('id');
 		expect(crossProfile.error).toBeNull();
 		expect(crossProfile.data).toEqual([]);
@@ -225,11 +262,17 @@ test('exact-target hosted registration and hostile R2 boundaries', async ({ brow
 		expect(cleared.error).toBeNull();
 		await a.page.goto(`${target.origin}/dashboard`);
 		await expect(a.page).toHaveURL(/\/onboarding\?next=%2Fdashboard$/u);
-		const restored = await a.client.from('profiles').update({ city: "L'Aquila" }).eq('id', a.userId);
-		expect(restored.error).toBeNull();
-		await a.page.goto(`${target.origin}/dashboard`);
+		await a.page.getByLabel('Град').fill("L'Aquila");
+		for (const checkbox of await a.page.locator('fieldset input[type="checkbox"]').all()) {
+			if (!(await checkbox.isChecked())) await checkbox.check();
+		}
+		await a.page.getByRole('button', { name: 'Активирай достъпа' }).click();
+		const repaired = await a.client.from('profiles').select('city').eq('id', a.userId).single();
+		expect(repaired.error).toBeNull();
+		expect(repaired.data?.city).toBe("L'Aquila");
 		await expect(a.page).toHaveURL(`${target.origin}/dashboard`);
 	} finally {
-		await Promise.all([a.context.close(), b.context.close()]);
+		await Promise.all(contexts.map((context) => context.close()));
+		runProofHelper('cleanup');
 	}
 });
