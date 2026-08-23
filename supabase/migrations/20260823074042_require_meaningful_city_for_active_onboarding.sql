@@ -160,6 +160,19 @@ begin
   set status = 'active'
   where profile_id = requesting_user;
 
+  -- The inherited workflow trigger stamps fresh activations with
+  -- statement_timestamp(), while the canonical access predicate intentionally
+  -- evaluates against transaction time. Align only a new pending-to-active
+  -- transition so this transaction can observe the access it just granted;
+  -- do not rewrite timestamps while repairing an existing active membership.
+  if membership_record.status = 'pending' then
+    update public.beta_memberships
+    set activated_at = transaction_timestamp(),
+        onboarding_completed_at = transaction_timestamp()
+    where profile_id = requesting_user
+      and status = 'active';
+  end if;
+
   update public.profiles
   set username = normalized_username,
       city = normalized_city

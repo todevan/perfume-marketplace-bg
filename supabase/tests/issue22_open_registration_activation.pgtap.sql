@@ -291,10 +291,8 @@ select throws_ok(
 
 select set_config('request.jwt.claim.sub', '31222222-2222-4222-8222-222222222222', true);
 select set_config('request.jwt.claims', '{"sub":"31222222-2222-4222-8222-222222222222","role":"authenticated","aal":"aal1"}', true);
-select lives_ok(
-  $sql$select public.complete_beta_onboarding('cyrillic_city', '  София  ')$sql$,
-  'Cyrillic city input activates without phone verification'
-);
+create temp table cyrillic_onboarding_result on commit drop as
+select public.complete_beta_onboarding('cyrillic_city', '  София  ') as payload;
 select set_config('request.jwt.claim.sub', '31333333-3333-4333-8333-333333333333', true);
 select set_config('request.jwt.claims', '{"sub":"31333333-3333-4333-8333-333333333333","role":"authenticated","aal":"aal1"}', true);
 select lives_ok(
@@ -309,25 +307,21 @@ select lives_ok(
 );
 select set_config('request.jwt.claim.sub', '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', true);
 select set_config('request.jwt.claims', '{"sub":"31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"authenticated","aal":"aal1","user_metadata":{"role":"admin"}}', true);
-select lives_ok(
-  $sql$select public.complete_beta_onboarding('hostile_user', 'Sofia')$sql$,
-  'valid onboarding activates an ordinary hostile-metadata user'
-);
+create temp table hostile_onboarding_result on commit drop as
+select public.complete_beta_onboarding('hostile_user', 'Sofia') as payload;
 reset role;
 set local role postgres;
 
--- Membership activation uses statement_timestamp(), while now() is fixed at
--- this test transaction's start. Align the fixture clock after activation so
--- the canonical public gate can be asserted in the same transaction.
-update public.beta_memberships
-set activated_at = transaction_timestamp()
-where profile_id in (
-  '31222222-2222-4222-8222-222222222222',
-  '31333333-3333-4333-8333-333333333333',
-  '31444444-4444-4444-8444-444444444444',
-  '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-)
-and status = 'active';
+select is(
+  (select (payload ->> 'isActive')::boolean from cyrillic_onboarding_result),
+  true,
+  'fresh phone-null onboarding reports canonical active access immediately'
+);
+select is(
+  (select (payload ->> 'isActive')::boolean from hostile_onboarding_result),
+  true,
+  'fresh hostile-metadata onboarding reports canonical active access immediately'
+);
 
 select is(
   (select p.city from public.profiles p where p.id = '31222222-2222-4222-8222-222222222222'),
