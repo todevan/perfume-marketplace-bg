@@ -19,13 +19,10 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
  *   E2E_REAL_SELLER_EMAIL / E2E_REAL_SELLER_PASSWORD / E2E_REAL_SELLER_USERNAME
  *   E2E_REAL_BUYER_EMAIL / E2E_REAL_BUYER_PASSWORD / E2E_REAL_BUYER_USERNAME
  *
- * To exercise the real image pipeline and publication wizard, also set:
+ * The full hosted deal lifecycle proof creates a unique listing per test and
+ * therefore also requires:
  *   E2E_REAL_UPLOADS=true
  *   E2E_REAL_BRAND=<exact canonical brand name present in the staging catalogue>
- *
- * When Cloudflare Images/Storage is not available, instead provide a disposable,
- * active, seller-owned listing with no pending offers/deal:
- *   E2E_REAL_LISTING_SLUG / E2E_REAL_LISTING_QUERY
  *
  * Required for the independent staff/MFA check:
  *   E2E_REAL_MODERATOR_EMAIL / E2E_REAL_MODERATOR_PASSWORD
@@ -43,9 +40,7 @@ interface MarketplaceConfig {
 	seller: Credentials;
 	buyer: Credentials;
 	turnstileTesting: true;
-	publication:
-		| { mode: 'uploads'; brand: string }
-		| { mode: 'seeded'; slug: string; query: string };
+	publication: { mode: 'uploads'; brand: string };
 }
 
 interface ModeratorConfig {
@@ -100,17 +95,15 @@ function marketplaceConfig(): MarketplaceConfig {
 		throw new Error('Seller and buyer must be different pre-provisioned users.');
 	}
 
-	const uploadsEnabled = process.env.E2E_REAL_UPLOADS === 'true';
-	const publication: MarketplaceConfig['publication'] = uploadsEnabled
-		? { mode: 'uploads', brand: requiredEnvironment('E2E_REAL_BRAND') }
-		: {
-				mode: 'seeded',
-				slug: requiredEnvironment('E2E_REAL_LISTING_SLUG').replace(/^\/+|\/+$/gu, ''),
-				query: requiredEnvironment('E2E_REAL_LISTING_QUERY')
-			};
-	if (publication.mode === 'seeded' && publication.slug.includes('/')) {
-		throw new Error('E2E_REAL_LISTING_SLUG must contain only the listing slug, not a path.');
+	if (process.env.E2E_REAL_UPLOADS !== 'true') {
+		throw new Error(
+			'E2E_REAL_UPLOADS=true is required for the full hosted deal lifecycle proof; each lifecycle test must publish a unique listing.'
+		);
 	}
+	const publication: MarketplaceConfig['publication'] = {
+		mode: 'uploads',
+		brand: requiredEnvironment('E2E_REAL_BRAND')
+	};
 
 	return {
 		origin: realOrigin(),
@@ -242,14 +235,6 @@ async function publishListing(
 	config: MarketplaceConfig,
 	runId: string
 ): Promise<{ slug: string; query: string }> {
-	if (config.publication.mode === 'seeded') {
-		await gotoApp(page, config.origin, `/listing/${encodeURIComponent(config.publication.slug)}`);
-		await expect(page.getByRole('heading', { name: config.publication.query })).toBeVisible();
-		await expect(page.getByRole('link', { name: config.seller.username, exact: true })).toBeVisible();
-		await expect(page.getByText('Активна', { exact: true })).toBeVisible();
-		return { slug: config.publication.slug, query: config.publication.query };
-	}
-
 	const fragrance = `BetaFlow${runId}`;
 	await gotoApp(page, config.origin, '/publish');
 	await expect(page.getByRole('heading', { name: 'Разкажи историята на аромата' })).toBeVisible();
@@ -322,12 +307,24 @@ async function findConversation(page: Page, query: string, counterpart: string):
 	await expect(page.locator('.chat-head')).toContainText(counterpart);
 }
 
-async function confirmDeal(page: Page, origin: string, query: string): Promise<void> {
+async function completeDeal(page: Page, origin: string, query: string): Promise<void> {
 	await gotoApp(page, origin, '/deals');
 	const deal = page.locator('article.deal-card').filter({ hasText: query }).first();
 	await expect(deal).toBeVisible({ timeout: 30_000 });
-	await deal.getByRole('button', { name: 'Сделката приключи' }).click();
+	await deal.getByRole('button', { name: 'Отбележи като приключена' }).click();
 	await expect(page.getByRole('status')).toHaveText('Действието е записано.');
+}
+
+async function cancelDeal(page: Page, origin: string, query: string, reason: string): Promise<void> {
+	await gotoApp(page, origin, '/deals');
+	const deal = page.locator('article.deal-card').filter({ hasText: query }).first();
+	await expect(deal).toBeVisible({ timeout: 30_000 });
+	await deal.getByText('Откажи сделката', { exact: true }).click();
+	await deal.getByLabel('Причина').fill(reason);
+	await deal.getByRole('button', { name: 'Потвърди отказа' }).click();
+	await expect(page.getByRole('status')).toHaveText('Действието е записано.');
+	await expect(deal).toContainText(reason);
+	await expect(deal.getByRole('button', { name: 'Публикувай отзив' })).toHaveCount(0);
 }
 
 function decodeBase32(secret: string): Buffer {
@@ -366,10 +363,7 @@ test.describe('real hosted marketplace', () => {
 		const config = marketplaceConfig();
 		testInfo.annotations.push({
 			type: 'environment',
-			description:
-				config.publication.mode === 'uploads'
-					? 'Real publication with Cloudflare Images, private Storage and four PNG evidence roles.'
-					: 'Disposable pre-seeded active listing; publication providers are outside this run.'
+			description: 'Unique real publication with Cloudflare Images, private Storage and four PNG evidence roles.'
 		});
 
 		const sellerContext = await browser.newContext();
@@ -425,8 +419,11 @@ test.describe('real hosted marketplace', () => {
 			await buyer.getByRole('button', { name: 'Изпрати' }).click();
 			await expect(buyer.getByText(buyerMessage, { exact: true })).toBeVisible();
 
-			await confirmDeal(buyer, config.origin, listing.query);
-			await confirmDeal(seller, config.origin, listing.query);
+			await gotoApp(buyer, config.origin, '/deals');
+			const buyerDeal = buyer.locator('article.deal-card').filter({ hasText: listing.query }).first();
+			await expect(buyerDeal.getByRole('button', { name: 'Отбележи като приключена' })).toHaveCount(0);
+			await expect(buyerDeal).toContainText('Продавачът отбелязва сделката като приключена.');
+			await completeDeal(seller, config.origin, listing.query);
 
 			await gotoApp(buyer, config.origin, '/deals');
 			const completedDeal = buyer.locator('article.deal-card').filter({ hasText: listing.query }).first();
@@ -439,6 +436,52 @@ test.describe('real hosted marketplace', () => {
 			await Promise.all([sellerContext.close(), buyerContext.close()]);
 		}
 	});
+
+	for (const cancellingRole of ['seller', 'buyer'] as const) {
+		test(`${cancellingRole} cancels an accepted deal with a stored reason and no review`, async ({ browser }, testInfo) => {
+			onlyExplicitRealChromium(testInfo);
+			test.setTimeout(240_000);
+			const config = marketplaceConfig();
+			const sellerContext = await browser.newContext();
+			const buyerContext = await browser.newContext();
+			const seller = await sellerContext.newPage();
+			const buyer = await buyerContext.newPage();
+			seller.setDefaultTimeout(30_000);
+			buyer.setDefaultTimeout(30_000);
+			const runId = `${Date.now().toString(36)}-${cancellingRole}-${testInfo.retry}`;
+
+			try {
+				await login(seller, config.origin, config.seller);
+				const listing = await publishListing(seller, config, runId);
+				await login(buyer, config.origin, config.buyer);
+				await gotoApp(buyer, config.origin, `/listing/${listing.slug}`);
+				const offerNote = `Cancellation offer ${runId}`;
+				await buyer.getByRole('button', { name: 'Изпрати оферта' }).click();
+				const offerDialog = buyer.getByRole('dialog', { name: 'Твоята оферта' });
+				await offerDialog.getByLabel('Предложена сума').fill('40');
+				await offerDialog.getByLabel('Кратка бележка (по избор)').fill(offerNote);
+				await waitForTestingTurnstile(buyer, '.cf-turnstile', 'Offer');
+				await offerDialog.getByRole('button', { name: 'Изпрати намерение' }).click();
+				await expect(offerDialog.getByRole('heading', { name: 'Офертата е изпратена.' })).toBeVisible();
+				await gotoApp(seller, config.origin, '/offers?direction=received');
+				const receivedOffer = seller.locator('article.offer-card').filter({ hasText: offerNote }).first();
+				await receivedOffer.getByRole('button', { name: 'Приеми и резервирай' }).click();
+				await seller.waitForURL((url) => url.pathname === '/deals' && Boolean(url.searchParams.get('highlight')));
+
+				const reason = `Cancellation reason ${runId}`;
+				await cancelDeal(cancellingRole === 'seller' ? seller : buyer, config.origin, listing.query, reason);
+				await gotoApp(cancellingRole === 'seller' ? buyer : seller, config.origin, '/deals');
+				const counterpartDeal = (cancellingRole === 'seller' ? buyer : seller)
+					.locator('article.deal-card')
+					.filter({ hasText: listing.query })
+					.first();
+				await expect(counterpartDeal).toContainText(reason);
+				await expect(counterpartDeal.getByRole('button', { name: 'Публикувай отзив' })).toHaveCount(0);
+			} finally {
+				await Promise.all([sellerContext.close(), buyerContext.close()]);
+			}
+		});
+	}
 
 	test('moderator reaches the AAL2 moderation queue', async ({ browser }, testInfo) => {
 		onlyExplicitRealChromium(testInfo);

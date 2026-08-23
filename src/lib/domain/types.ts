@@ -109,11 +109,6 @@ export interface DealParticipantSet {
 	partyBId: string;
 }
 
-export interface DealConfirmation {
-	profileId: string;
-	confirmedAt: Date | string;
-}
-
 export interface ReviewInput {
 	dealId: string;
 	reviewerId: string;

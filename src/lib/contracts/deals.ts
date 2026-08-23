@@ -13,7 +13,6 @@ export interface DealDto {
 	readonly partyB: ActorSummaryDto;
 	readonly conversationId: string;
 	readonly status: z.infer<typeof dealStatusSchema>;
-	readonly confirmedBy: readonly string[];
 	readonly completedAt: string | null;
 	readonly disputedAt: string | null;
 	readonly cancelledAt: string | null;

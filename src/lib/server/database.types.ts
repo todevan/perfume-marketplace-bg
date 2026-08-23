@@ -2390,10 +2390,6 @@ export type Database = {
         Args: { reason: string; target_deal_id: string }
         Returns: undefined
       }
-      cancel_deal_foundation: {
-        Args: { reason: string; target_deal_id: string }
-        Returns: undefined
-      }
       cancel_listing_upload: {
         Args: { target_upload_id: string }
         Returns: undefined
@@ -2499,7 +2495,7 @@ export type Database = {
         Args: { target_queue_id: number; worker_request_id: string }
         Returns: undefined
       }
-      confirm_deal: {
+      complete_deal: {
         Args: { target_deal_id: string }
         Returns: {
           accepted_offer_id: string
@@ -3115,6 +3111,7 @@ export type Database = {
         | "report_updated"
         | "merchant_application_updated"
         | "payment_updated"
+        | "deal_cancelled"
       notification_status: "unread" | "read" | "archived"
       offer_kind: "cash" | "swap" | "cash_plus_swap"
       offer_status:
@@ -3409,6 +3406,7 @@ export const Constants = {
         "report_updated",
         "merchant_application_updated",
         "payment_updated",
+        "deal_cancelled",
       ],
       notification_status: ["unread", "read", "archived"],
       offer_kind: ["cash", "swap", "cash_plus_swap"],

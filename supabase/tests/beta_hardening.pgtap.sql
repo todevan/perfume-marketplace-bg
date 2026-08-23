@@ -305,13 +305,12 @@ select is(
     where not t.tgisinternal and (
       (t.tgrelid = 'public.offers'::regclass and t.tgname = 'notify_offer_received')
       or (t.tgrelid = 'public.messages'::regclass and t.tgname = 'notify_message_received')
-      or (t.tgrelid = 'public.deal_confirmations'::regclass and t.tgname = 'notify_deal_confirmation_needed')
       or (t.tgrelid = 'public.reviews'::regclass and t.tgname = 'notify_review_received')
       or (t.tgrelid = 'public.reports'::regclass and t.tgname in ('notify_report_created', 'notify_report_updated'))
       or (t.tgrelid = 'public.merchant_applications'::regclass and t.tgname in ('notify_merchant_application_staff', 'notify_merchant_application_owner'))
     )
   ),
-  8,
+  7,
   'all required in-app domain event triggers are installed'
 );
 select ok(
@@ -416,11 +415,18 @@ select ok(
 );
 select ok(
   position(
-    '''/deals?highlight=''' in pg_get_functiondef(
-      'public.notify_deal_confirmation_needed()'::regprocedure
-    )
+    '''/deals?highlight=''' in pg_get_functiondef('public.complete_deal(uuid)'::regprocedure)
+  ) > 0
+  and position(
+    '''deal_completed:''' in pg_get_functiondef('public.complete_deal(uuid)'::regprocedure)
+  ) > 0
+  and position(
+    '''/deals?highlight=''' in pg_get_functiondef('public.cancel_deal(uuid,text)'::regprocedure)
+  ) > 0
+  and position(
+    '''deal_cancelled:''' in pg_get_functiondef('public.cancel_deal(uuid,text)'::regprocedure)
   ) > 0,
-  'deal confirmation notifications link to the highlighted deal'
+  'deal completion and cancellation notifications link and deduplicate by lifecycle event'
 );
 select ok(
   position(

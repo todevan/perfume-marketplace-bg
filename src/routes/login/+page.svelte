@@ -58,7 +58,7 @@
       <ScentMark size={68} inverted />
       <span class="eyebrow">Отворена регистрация</span>
       <h1>Колекцията ти заслужава подредена история.</h1>
-      <div class="trust-points"><span><ShieldCheck size={20} /> Имейлът остава скрит</span><span><BadgeCheck size={20} /> Рейтинг само от потвърдени сделки</span><span><LockKeyhole size={20} /> Частни разговори с RLS защита</span></div>
+      <div class="trust-points"><span><ShieldCheck size={20} /> Имейлът остава скрит</span><span><BadgeCheck size={20} /> Рейтинг само от приключени сделки</span><span><LockKeyhole size={20} /> Частни разговори с RLS защита</span></div>
       <p>Плащането и доставката за парфюма остават извън платформата.</p>
     </div>
   </div>

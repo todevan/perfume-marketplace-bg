@@ -127,8 +127,6 @@ Offer acceptance locks the physical listing(s), reserves them and creates the de
 
 Reviews are permitted only after seller completion. Cancelled deals do not unlock reviews.
 
-The current mutual-confirmation implementation is a known product gap recorded in `docs/PROJECT-STATUS.md`; it is not the target architecture.
-
 Opening a dispute atomically marks the deal and creates its moderation case.
 
 The transaction and state-transition boundaries above are domain invariants. Do not split an atomic domain transition into unrelated application writes unless an explicitly approved architectural change establishes equivalent correctness.
@@ -193,7 +191,9 @@ Realtime availability does not authorize additional read or write access. RLS re
 
 ## Notifications
 
-Database triggers create deduplicated in-app notifications for offers, messages, deal confirmation, reviews, reports, merchant review and listing expiry.
+Database workflows and triggers create deduplicated in-app notifications for offers, messages, deal completion/cancellation, reviews, reports, merchant review and listing expiry.
+
+Legacy `deal_confirmation_needed` records are rewritten and archived. Unsent delivery ledger rows are removed and future claims are rejected; because an already-claimed worker may already hold the old payload, deployments applying this reconciliation must quiesce or drain the notification worker first.
 
 An INSERT-only Database Webhook calls the notification Edge Function.
 
