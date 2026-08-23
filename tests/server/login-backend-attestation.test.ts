@@ -17,7 +17,8 @@ const stagingRuntime: ProductionRuntimeConfiguration = {
 	publicSupabaseKey: 'browser-publishable-key',
 	publicSupabaseAnonKey: 'browser-publishable-key',
 	supabaseSecretKey: 'server-secret-key',
-	imageProcessorMode: 'disabled'
+	imageProcessorMode: 'disabled',
+	turnstileExpectedHostname: 'market.example'
 };
 
 function loadEvent(runtime: App.Locals['runtime']) {
@@ -140,7 +141,7 @@ describe('open email registration', () => {
 			}),
 			url: new URL('https://market.example/login?/register'),
 			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'login' }), { status: 200 })
+				new Response(JSON.stringify({ success: true, action: 'login', hostname: 'market.example' }), { status: 200 })
 			),
 			locals: {
 				runtime: {
@@ -176,7 +177,7 @@ describe('open email registration', () => {
 			}),
 			url: new URL('https://market.example/login?/register'),
 			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'register' }), { status: 200 })
+				new Response(JSON.stringify({ success: true, action: 'register', hostname: 'market.example' }), { status: 200 })
 			),
 			locals: {
 				runtime: {
@@ -222,7 +223,7 @@ describe('open email registration', () => {
 			}),
 			url: new URL('https://market.example/login?/register'),
 			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'register' }), { status: 200 })
+				new Response(JSON.stringify({ success: true, action: 'register', hostname: 'market.example' }), { status: 200 })
 			),
 			locals: {
 				runtime: {

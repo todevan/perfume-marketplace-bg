@@ -2,6 +2,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import type { ProductionRuntimeConfiguration } from '$lib/server/env';
 
 const VERIFY_ENDPOINT = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+const MAX_TOKEN_LENGTH = 2048;
 
 const CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY = '1x00000000000000000000AA';
 const CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY =
@@ -41,8 +42,13 @@ export async function verifyTurnstile(options: {
 }): Promise<TurnstileVerificationResult> {
 	const token = options.token?.trim();
 	const secretKey = options.secretKey?.trim();
-	if (!secretKey) return { success: false, reason: 'not_configured' };
+	const expectedAction = options.expectedAction?.trim();
+	const expectedHostname = options.expectedHostname?.trim();
+	if (!secretKey || !expectedAction || !expectedHostname) {
+		return { success: false, reason: 'not_configured' };
+	}
 	if (!token) return { success: false, reason: 'missing_token' };
+	if (token.length > MAX_TOKEN_LENGTH) return { success: false, reason: 'rejected' };
 
 	const payload = new URLSearchParams({ secret: secretKey, response: token });
 	if (options.remoteIp) payload.set('remoteip', options.remoteIp);
@@ -73,9 +79,8 @@ export async function verifyTurnstile(options: {
 
 		if (isCloudflareTestingReceipt) return { success: true };
 
-		const matchesAction = !options.expectedAction || result.action === options.expectedAction;
-		const matchesHostname =
-			!options.expectedHostname || result.hostname === options.expectedHostname;
+		const matchesAction = result.action === expectedAction;
+		const matchesHostname = result.hostname === expectedHostname;
 
 		if (result.success === true && matchesAction && matchesHostname) return { success: true };
 		return {
