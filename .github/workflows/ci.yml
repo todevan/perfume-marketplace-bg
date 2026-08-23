@@ -17,8 +17,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Validate project-scoped Codex configuration
         run: python scripts/validate-codex-config.py
+      - name: Verify isolated Svelte MCP launcher
+        run: node --test scripts/run-svelte-mcp.contract.test.mjs
 
   app:
     runs-on: ubuntu-latest

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -11,16 +12,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / ".codex" / "config.toml"
+PACKAGE_PATH = ROOT / "package.json"
+
+EXPECTED_RAW = """[mcp_servers.aromatika-svelte]
+command = "node"
+args = ["scripts/run-svelte-mcp.mjs"]
+enabled_tools = ["list-sections", "get-documentation", "svelte-autofixer"]
+default_tools_approval_mode = "auto"
+
+[mcp_servers.aromatika-cloudflare-observability]
+url = "https://observability.mcp.cloudflare.com/mcp"
+enabled_tools = ["query_worker_observability", "observability_keys", "observability_values"]
+default_tools_approval_mode = "prompt"
+"""
 
 EXPECTED = {
-    "shell_environment_policy": {
-        "inherit": "core",
-        "ignore_default_excludes": False,
-    },
     "mcp_servers": {
         "aromatika-svelte": {
-            "command": "npx",
-            "args": ["-y", "@sveltejs/mcp@0.1.26"],
+            "command": "node",
+            "args": ["scripts/run-svelte-mcp.mjs"],
             "enabled_tools": [
                 "list-sections",
                 "get-documentation",
@@ -58,6 +68,8 @@ def fail(message: str) -> None:
 def main() -> None:
     raw = CONFIG_PATH.read_text(encoding="utf-8")
 
+    if raw != EXPECTED_RAW:
+        fail("config.toml must match the canonical no-comment form")
     if FORBIDDEN_FIELD.search(raw):
         fail("credential-bearing fields are not allowed")
     if TOKEN_SHAPE.search(raw):
@@ -69,7 +81,11 @@ def main() -> None:
         fail("config.toml is not valid TOML")
 
     if parsed != EXPECTED:
-        fail("the server, tool, approval, or environment policy differs from the approved set")
+        fail("the server, tool, or approval policy differs from the approved set")
+
+    package = json.loads(PACKAGE_PATH.read_text(encoding="utf-8"))
+    if package.get("devDependencies", {}).get("@sveltejs/mcp") != "0.1.26":
+        fail("@sveltejs/mcp must be an exact locked development dependency")
 
     print("Codex config contract passed")
 
