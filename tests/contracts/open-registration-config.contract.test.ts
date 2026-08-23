@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 interface TomlNode {
-	[key: string]: boolean | string | TomlNode;
+	[key: string]: boolean | number | string | TomlNode;
 }
 
 const workspace = resolve(import.meta.dirname, '../..');
@@ -31,14 +31,16 @@ function parseContractToml(source: string): TomlNode {
 			continue;
 		}
 
-		const assignment = line.match(/^(\w+)\s*=\s*(true|false|"(?:[^"\\]|\\.)*")$/u);
+		const assignment = line.match(/^(\w+)\s*=\s*(true|false|\d+|"(?:[^"\\]|\\.)*")$/u);
 		if (!assignment) continue;
 		section[assignment[1]] =
 			assignment[2] === 'true'
 				? true
 				: assignment[2] === 'false'
 					? false
-					: (JSON.parse(assignment[2]) as string);
+					: /^\d+$/u.test(assignment[2])
+						? Number(assignment[2])
+						: (JSON.parse(assignment[2]) as string);
 	}
 
 	return root;
@@ -50,6 +52,7 @@ describe('open registration Supabase configuration', () => {
 			auth: {
 				enable_signup: boolean;
 				enable_anonymous_sign_ins: boolean;
+				minimum_password_length: number;
 				captcha: { enabled: boolean; provider: string; secret: string };
 				email: {
 					enable_signup: boolean;
@@ -65,6 +68,7 @@ describe('open registration Supabase configuration', () => {
 		expect(config.auth.email.enable_confirmations).toBe(true);
 		expect(config.auth.sms.enable_signup).toBe(false);
 		expect(config.auth.enable_anonymous_sign_ins).toBe(false);
+		expect(config.auth.minimum_password_length).toBe(12);
 		expect(config.auth.captcha.enabled).toBe(true);
 		expect(config.auth.captcha.provider).toBe('turnstile');
 		expect(config.auth.captcha.secret).toBe('env(LOCAL_AUTH_CAPTCHA_TEST_KEY)');
