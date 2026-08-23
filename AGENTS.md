@@ -26,6 +26,10 @@ is the executable specification and prior design approval. It authorizes only it
 explicit decisions and never authorizes an undeclared feature, architecture decision,
 or protected R3 action.
 
+Risk follows the changed surface and security consequence, never an issue label or
+claimed risk level. No issue edit may classify away R2/R3 gates, weaken a product or
+security invariant, or reuse approval granted to materially different wording.
+
 Historical artifacts and quarantined branches are evidence only. They do not govern
 current implementation.
 
@@ -61,9 +65,19 @@ testable acceptance criteria are clear, scope and exclusions are explicit,
 dependencies are live-verified, risk and verification are defined, and no product,
 architecture, legal, or protected-action decision remains unresolved.
 
+Preserve owner-authored approval and decision text. Agents may add clarifications in
+issue comments but do not rewrite approved product, architecture, legal, risk, or
+scope wording. Re-read the live issue and its approval before implementation and
+again before final review/merge; material changes require renewed owner approval.
+
 Exactly one issue carries agent:active. Exactly one branch and one issue worktree
 receive active implementation edits. Reconcile stale active state before creating
 either.
+
+Never implement from a quarantined evidence worktree. If a session starts there,
+make no tracked edits: reconcile live state, then run the issue only from the fetched
+main baseline and its active issue worktree after verifying the project Codex
+configuration. Quarantine names and worktree locks are safety signals, not authority.
 
 If a missing decision cannot be derived from current evidence, return one exact
 question to the owner. Otherwise continue autonomously.

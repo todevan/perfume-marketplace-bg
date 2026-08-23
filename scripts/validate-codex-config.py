@@ -56,6 +56,45 @@ SVELTE_MCP_BOOTSTRAP = (
     "}"
 )
 SVELTE_MCP_ARGS = ["--input-type=module", "--eval", SVELTE_MCP_BOOTSTRAP]
+CODEGRAPH_MCP_BOOTSTRAP = (
+    "import{readFile,realpath,stat}from'node:fs/promises';"
+    "import{dirname,isAbsolute,join,relative,sep}from'node:path';"
+    "import{pathToFileURL}from'node:url';"
+    "let candidate=process.cwd(),root;"
+    "for(;;){"
+    "try{"
+    "const[marker,manifest]=await Promise.all(["
+    "readFile(join(candidate,'.codex','aromatika-project-root'),'utf8'),"
+    "readFile(join(candidate,'package.json'),'utf8')"
+    "]);"
+    "const packageJson=JSON.parse(manifest);"
+    "if(marker==='aromatika-codex-root-v1\\n'&&"
+    "packageJson.name==='perfume-marketplace-bg'&&packageJson.private===true){"
+    "root=await realpath(candidate);break"
+    "}"
+    "}catch{}"
+    "const parent=dirname(candidate);"
+    "if(parent===candidate)throw new Error('Aromatika project root not found');"
+    "candidate=parent"
+    "}"
+    "const wrapper=await realpath(join(root,'scripts','run-codegraph-mcp.mjs'));"
+    "const wrapperRelative=relative(root,wrapper);"
+    "if(wrapperRelative===''||wrapperRelative==='..'||"
+    "wrapperRelative.startsWith(`..${sep}`)||isAbsolute(wrapperRelative)||"
+    "!(await stat(wrapper)).isFile())"
+    "throw new Error('Aromatika CodeGraph MCP wrapper is outside the project root');"
+    "if(process.argv.includes('--aromatika-resolve-only'))"
+    "process.stdout.write(wrapper);"
+    "else{"
+    "const{launchCodegraphMcp}=await import(pathToFileURL(wrapper).href);"
+    "launchCodegraphMcp({repositoryRoot:root})"
+    "}"
+)
+CODEGRAPH_MCP_ARGS = ["--input-type=module", "--eval", CODEGRAPH_MCP_BOOTSTRAP]
+DISABLED_21ST_BEARER_PLACEHOLDER = "AROMATIKA_DISABLED_21ST_MCP_NO_TOKEN"
+DISABLED_21ST_BEARER_LINE = (
+    f'bearer_token_env_var = "{DISABLED_21ST_BEARER_PLACEHOLDER}"'
+)
 
 EXPECTED_RAW = (
     'model_reasoning_effort = "high"\n'
@@ -71,9 +110,14 @@ EXPECTED_RAW = (
     'enabled_tools = ["query_worker_observability", "observability_keys", "observability_values"]\n'
     'default_tools_approval_mode = "prompt"\n'
     "\n"
+    "[mcp_servers.21st]\n"
+    'url = "https://21st.dev/api/mcp"\n'
+    'enabled = false\n'
+    f'{DISABLED_21ST_BEARER_LINE}\n'
+    "\n"
     "[mcp_servers.codegraph]\n"
-    'command = "codegraph"\n'
-    'args = ["serve", "--mcp"]\n'
+    'command = "node"\n'
+    f"args = {json.dumps(CODEGRAPH_MCP_ARGS)}\n"
     'enabled = true\n'
     "\n"
     "[mcp_servers.MCP_DOCKER]\n"
@@ -152,9 +196,14 @@ EXPECTED = {
             ],
             "default_tools_approval_mode": "prompt",
         },
+        "21st": {
+            "url": "https://21st.dev/api/mcp",
+            "enabled": False,
+            "bearer_token_env_var": DISABLED_21ST_BEARER_PLACEHOLDER,
+        },
         "codegraph": {
-            "command": "codegraph",
-            "args": ["serve", "--mcp"],
+            "command": "node",
+            "args": CODEGRAPH_MCP_ARGS,
             "enabled": True,
         },
         "MCP_DOCKER": {
@@ -241,7 +290,10 @@ def main() -> None:
         fail("the repository-root marker must match the canonical value")
     if not REQUIRED_LF_ATTRIBUTES <= attributes:
         fail("security-critical Codex files must be checked out with LF bytes")
-    if FORBIDDEN_FIELD.search(raw):
+    raw_without_approved_placeholder = raw.replace(
+        f"{DISABLED_21ST_BEARER_LINE}\n", ""
+    )
+    if FORBIDDEN_FIELD.search(raw_without_approved_placeholder):
         fail("credential-bearing fields are not allowed")
     if TOKEN_SHAPE.search(raw):
         fail("token-shaped values are not allowed")
@@ -257,6 +309,11 @@ def main() -> None:
     package = json.loads(PACKAGE_PATH.read_text(encoding="utf-8"))
     if package.get("devDependencies", {}).get("@sveltejs/mcp") != "0.1.26":
         fail("@sveltejs/mcp must be an exact locked development dependency")
+    if (
+        package.get("devDependencies", {}).get("@colbymchenry/codegraph")
+        != "1.5.0"
+    ):
+        fail("@colbymchenry/codegraph must be an exact locked development dependency")
 
     print("Codex config contract passed")
 

@@ -32,6 +32,13 @@ The issue may be clarified without changing product intent. Missing decisions re
 to the owner as one exact question. agent:ready, issue order, previous handoffs,
 historical plans, and labels never prove that dependencies remain resolved.
 
+Risk is derived from the changed surface and security consequence. Issue wording,
+labels, and agent edits cannot downgrade an R2/R3 surface or waive a mandatory gate.
+Preserve owner-authored approval/decision text; put agent clarifications in additive
+comments. Before implementation and again before final review/merge, re-read the
+live body, approval evidence, update time, dependencies, and exclusions. A material
+change requires renewed owner approval.
+
 Approval covers only decisions written in the issue. It never covers scope expansion,
 new product behavior, newly discovered architecture decisions, or protected R3
 operations.
@@ -72,6 +79,14 @@ Before creating work, reconcile:
 Reuse valid interrupted state. Dormant branches may preserve blocked/interrupted work
 but receive no edits while another issue is active. Never delete unknown work,
 hard-reset to remote, or create a second active issue to escape stale state.
+
+Quarantined evidence uses an unmistakable quarantine/archive branch name and a
+worktree lock reason when retained locally. It is never an active startup or
+implementation location. If a session opens there, make no tracked edits: inspect
+only what is needed to reconcile live state, then create/reuse the single active
+issue worktree from fetched main and verify its effective project configuration.
+Preserving historical untracked artifacts takes precedence over moving that
+worktree merely for cosmetic isolation.
 
 Use branch names of the form codex/issue-N-short-outcome. Create worktrees under the
 user home/project parent where CodeGraph can maintain an independent .codegraph
@@ -189,6 +204,9 @@ and ask only for the decision required to unblock it.
 
 A changed SHA invalidates approvals for changed surfaces and affected findings.
 Focused re-review is sufficient unless the risk surface materially changed.
+After every SHA change, each required reviewer must explicitly attest the final
+candidate SHA. Focused scope may reuse analysis of unchanged surfaces, but an
+approval bound only to an earlier SHA never authorizes merge.
 
 ## P0 interruption
 

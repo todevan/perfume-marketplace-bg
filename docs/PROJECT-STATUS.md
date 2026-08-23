@@ -62,8 +62,9 @@ Implemented source is not proof of hosted deployment or end-to-end readiness.
   branch-deletion prevention.
 - The repository contains deterministic application, database-contract, browser,
   Cloudflare dry-run, backup/restore, and security-check surfaces.
-- Project-scoped Codex configuration provides isolated Svelte tooling and bounded
-  Cloudflare observability without embedding credentials.
+- Project-scoped Codex configuration provides isolated, project-locked Svelte and
+  CodeGraph tooling plus bounded Cloudflare observability without embedding
+  credentials.
 
 ## Hosted and deployment truth
 

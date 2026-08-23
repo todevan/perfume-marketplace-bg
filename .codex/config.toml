@@ -11,9 +11,14 @@ url = "https://observability.mcp.cloudflare.com/mcp"
 enabled_tools = ["query_worker_observability", "observability_keys", "observability_values"]
 default_tools_approval_mode = "prompt"
 
+[mcp_servers.21st]
+url = "https://21st.dev/api/mcp"
+enabled = false
+bearer_token_env_var = "AROMATIKA_DISABLED_21ST_MCP_NO_TOKEN"
+
 [mcp_servers.codegraph]
-command = "codegraph"
-args = ["serve", "--mcp"]
+command = "node"
+args = ["--input-type=module", "--eval", "import{readFile,realpath,stat}from'node:fs/promises';import{dirname,isAbsolute,join,relative,sep}from'node:path';import{pathToFileURL}from'node:url';let candidate=process.cwd(),root;for(;;){try{const[marker,manifest]=await Promise.all([readFile(join(candidate,'.codex','aromatika-project-root'),'utf8'),readFile(join(candidate,'package.json'),'utf8')]);const packageJson=JSON.parse(manifest);if(marker==='aromatika-codex-root-v1\\n'&&packageJson.name==='perfume-marketplace-bg'&&packageJson.private===true){root=await realpath(candidate);break}}catch{}const parent=dirname(candidate);if(parent===candidate)throw new Error('Aromatika project root not found');candidate=parent}const wrapper=await realpath(join(root,'scripts','run-codegraph-mcp.mjs'));const wrapperRelative=relative(root,wrapper);if(wrapperRelative===''||wrapperRelative==='..'||wrapperRelative.startsWith(`..${sep}`)||isAbsolute(wrapperRelative)||!(await stat(wrapper)).isFile())throw new Error('Aromatika CodeGraph MCP wrapper is outside the project root');if(process.argv.includes('--aromatika-resolve-only'))process.stdout.write(wrapper);else{const{launchCodegraphMcp}=await import(pathToFileURL(wrapper).href);launchCodegraphMcp({repositoryRoot:root})}"]
 enabled = true
 
 [mcp_servers.MCP_DOCKER]
