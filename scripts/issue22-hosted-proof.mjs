@@ -145,6 +145,31 @@ function listFrom(value, key) {
 	return [];
 }
 
+/** @param {Record<string, any>} deployment */
+function deploymentTimestamp(deployment) {
+	const raw = field(deployment, ['created_on', 'createdOn']);
+	const match =
+		typeof raw === 'string'
+			? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u.exec(raw)
+			: null;
+	if (!match) throw new Error('Cloudflare deployment timestamp is missing or invalid.');
+	const [, year, month, day, hour, minute, second, fraction = ''] = match;
+	const timestamp = Date.parse(raw);
+	const expected = Date.UTC(
+		Number(year),
+		Number(month) - 1,
+		Number(day),
+		Number(hour),
+		Number(minute),
+		Number(second),
+		Number(fraction.padEnd(3, '0').slice(0, 3))
+	);
+	if (!Number.isFinite(timestamp) || timestamp !== expected) {
+		throw new Error('Cloudflare deployment timestamp is missing or invalid.');
+	}
+	return timestamp;
+}
+
 /**
  * @param {{ branchName: string, projectRef: string, parentProjectRef: string, candidateSha: string, versionId: string }} target
  * @param {Record<string, any>} evidence
@@ -187,7 +212,17 @@ export function assertProviderAttestation(target, evidence) {
 	}
 
 	const deployments = listFrom(evidence.deployments, 'deployments');
-	const active = deployments[0];
+	if (deployments.length === 0) throw new Error('Cloudflare deployment timestamp is missing or invalid.');
+	const ordered = deployments.map((deployment) => ({
+		deployment,
+		timestamp: deploymentTimestamp(deployment)
+	}));
+	if (new Set(ordered.map(({ timestamp }) => timestamp)).size !== ordered.length) {
+		throw new Error('Cloudflare deployment timestamps are ambiguous.');
+	}
+	const active = ordered.reduce((newest, current) =>
+		current.timestamp > newest.timestamp ? current : newest
+	).deployment;
 	const activeVersions = listFrom(active?.versions ?? active?.version_traffic, 'versions');
 	const allocation = activeVersions.find(
 		(item) => field(item, ['version_id', 'versionId', 'id']) === target.versionId

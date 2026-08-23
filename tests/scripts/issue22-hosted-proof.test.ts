@@ -37,7 +37,12 @@ function providerEvidence(overrides: Record<string, unknown> = {}) {
 				annotations: { 'workers/tag': candidateSha }
 			}
 		],
-		deployments: [{ versions: [{ version_id: versionId, percentage: 100 }] }],
+		deployments: [
+			{
+				created_on: '2026-08-23T10:00:00.000Z',
+				versions: [{ version_id: versionId, percentage: 100 }]
+			}
+		],
 		...overrides
 	};
 }
@@ -71,9 +76,76 @@ describe('Issue 22 hosted provider attestation', () => {
 		expect(() =>
 			assertProviderAttestation(
 				target,
-				providerEvidence({ deployments: [{ versions: [{ version_id: versionId, percentage: 50 }] }] })
+				providerEvidence({
+					deployments: [
+						{
+							created_on: '2026-08-23T10:00:00.000Z',
+							versions: [{ version_id: versionId, percentage: 50 }]
+						}
+					]
+				})
 			)
 		).toThrow(/active 100%/u);
+	});
+
+	it('rejects an old candidate when a newer foreign deployment is active', () => {
+		expect(() =>
+			assertProviderAttestation(
+				target,
+				providerEvidence({
+					deployments: [
+						{
+							created_on: '2026-08-23T09:00:00.000Z',
+							versions: [{ version_id: versionId, percentage: 100 }]
+						},
+						{
+							created_on: '2026-08-23T11:00:00.000Z',
+							versions: [{ version_id: '22222222-2222-4222-8222-222222222222', percentage: 100 }]
+						}
+					]
+				})
+			)
+		).toThrow(/active 100%/u);
+	});
+
+	it('accepts the candidate only when it is the newest deployment', () => {
+		expect(() =>
+			assertProviderAttestation(
+				target,
+				providerEvidence({
+					deployments: [
+						{
+							created_on: '2026-08-23T09:00:00.000Z',
+							versions: [{ version_id: '22222222-2222-4222-8222-222222222222', percentage: 100 }]
+						},
+						{
+							created_on: '2026-08-23T11:00:00.000Z',
+							versions: [{ version_id: versionId, percentage: 100 }]
+						}
+					]
+				})
+			)
+		).not.toThrow();
+	});
+
+	it('fails closed on missing or ambiguous deployment timestamps', () => {
+		for (const deployments of [
+			[{ versions: [{ version_id: versionId, percentage: 100 }] }],
+			[
+				{
+					created_on: '2026-08-23T10:00:00.000Z',
+					versions: [{ version_id: versionId, percentage: 100 }]
+				},
+				{
+					created_on: '2026-08-23T10:00:00.000Z',
+					versions: [{ version_id: versionId, percentage: 100 }]
+				}
+			]
+		]) {
+			expect(() => assertProviderAttestation(target, providerEvidence({ deployments }))).toThrow(
+				/deployment timestamp/u
+			);
+		}
 	});
 });
 
