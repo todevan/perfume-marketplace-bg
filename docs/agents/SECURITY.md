@@ -23,16 +23,18 @@ Treat a material change as R2 when it touches:
 
 ## Mandatory R2 gate
 R2 cannot merge until all applicable items pass:
-1. strong-enough implementation;
-2. relevant engineering specialist;
-3. independent strong engineering review;
-4. independent adversarial security review;
-5. deterministic security tests;
-6. database/RLS tests when authorization changes;
-7. browser/E2E tests when user journeys change;
-8. payment/webhook idempotency and forgery tests when monetization changes;
-9. dependency/static checks applicable to the change;
-10. full required CI.
+1. focused deterministic security tests;
+2. database/RLS and contract tests when authorization changes;
+3. browser/E2E tests when user journeys change;
+4. payment/webhook idempotency and forgery tests when monetization changes;
+5. applicable dependency/static checks and full required CI;
+6. one fresh independent engineering review;
+7. one fresh independent adversarial security review against the same candidate SHA.
+
+Specialists may contribute implementation or evidence inside this lifecycle; they
+do not create an additional approval stage. After any candidate change, both
+required reviewers explicitly attest the final SHA. Focused re-review may limit
+analysis to changed surfaces but cannot carry an earlier-SHA approval forward.
 
 The owner does not approve R2 code.
 

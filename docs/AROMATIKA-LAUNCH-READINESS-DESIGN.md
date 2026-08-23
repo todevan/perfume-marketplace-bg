@@ -163,8 +163,8 @@ Detailed engineering lifecycle.
 ### `docs/agents/SECURITY.md`
 Security-sensitive engineering and protected-action rules.
 
-### `docs/agents/MODEL-ROUTER.md`
-Model tiers, escalation, context, retry, and cost rules.
+Model tiers, escalation, context, retry, and cost rules are consolidated in
+`docs/agents/WORKFLOW.md`.
 
 ### `MASTER-PLAN.md`
 No longer a strategic authority. It becomes a small roadmap/index pointing to the current authoritative documents.
@@ -714,9 +714,11 @@ GitHub protection must be configured only after verifying actual account/reposit
 
 ## 25. Launch Readiness Queue
 
-GitHub Issues are the synchronized engineering execution queue, not the highest product authority.
-
-The approved local design and current product/status documents define direction.
+GitHub Issues are the sole engineering queue. The owner-approved active issue is the
+executable specification for its explicit decisions. Current product, design,
+architecture, security, and status documents remain governing evidence for concerns
+the issue does not explicitly decide; issue wording cannot silently downgrade a
+security invariant or redefine product intent.
 
 The queue should remain intentionally small, usually about 5–9 evidence-backed active issues.
 
@@ -823,14 +825,14 @@ Retain the strong structure of the August 15 plan, but update:
 - local workspace -> active working authority;
 - GitHub `main` -> synchronized reviewed baseline;
 - mandatory `Sync status`;
-- GitHub Issues -> synchronized execution queue, not top product authority.
+- GitHub Issues -> sole engineering queue and executable specification for explicit
+  owner-approved decisions, without authority to downgrade security invariants.
 
 Create/maintain:
 
 - concise `AGENTS.md`;
 - `docs/agents/WORKFLOW.md`;
 - `docs/agents/SECURITY.md`;
-- `docs/agents/MODEL-ROUTER.md`;
 - legacy pointers instead of duplicate authorities.
 
 ### Phase 2 — Correct and execute Repository Truth Cleanup

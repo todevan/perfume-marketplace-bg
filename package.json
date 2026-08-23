@@ -48,6 +48,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@colbymchenry/codegraph": "1.5.0",
     "@playwright/test": "^1.61.1",
     "@sveltejs/adapter-cloudflare": "^7.2.9",
     "@sveltejs/kit": "^2.70.1",

@@ -1,142 +1,169 @@
 # AGENTS.md
 
 ## Mission
-Build Aromatika toward a safe, trustworthy, monetized public launch in Bulgaria.
 
-The owner is the product/business owner, not the technical reviewer. Agents own implementation, engineering review, verification, repair, routine Git/GitHub mechanics, and safe autonomous continuation. Do not ask the owner to approve code they cannot meaningfully review.
+Move Aromatika toward a safe, trustworthy, monetized public launch in Bulgaria.
+Optimize for verified launch blockers closed, not plans, commits, receipts, review
+rounds, or agent activity.
 
-Priority:
-1. security, privacy, authorization and data integrity;
-2. blockers in the core launch journey;
-3. user experience, accessibility, reliability and performance;
-4. launch monetization and marketplace activation required by the approved design;
-5. maintainability required for current work;
-6. deferred scalability or future features only when explicitly required.
-
-Ask: "Does this materially improve safe progress toward launching Aromatika?"
+The owner makes product, business, legal, commercial, and protected real-world
+decisions. Agents own implementation, engineering review, verification, repair,
+routine Git/GitHub mechanics, and safe continuation.
 
 ## Authority
-When instructions conflict:
-1. explicit current owner instruction;
-2. current local workspace state intentionally created for the active task;
-3. `docs/AROMATIKA-LAUNCH-READINESS-DESIGN.md`;
-4. this `AGENTS.md`;
-5. current concern-specific authority: `PRODUCT.md`, `DESIGN.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT-STATUS.md`, `docs/LAUNCH-GATES.md`, `docs/BUSINESS-MODEL.md`, and relevant agent/security docs;
-6. active implementation plan or GitHub issue;
-7. GitHub `main` as the last reviewed synchronized shared baseline;
-8. historical plans/reviews/builder artifacts.
 
-Historical files are evidence only unless an active task explicitly promotes them.
+Apply authority in this order:
 
-Local does not blindly override remote: before substantial work, fetch and compare. Preserve unknown local work. Reconcile unexpected remote-ahead/diverged state before continuing.
+1. explicit owner decisions and protected-action approvals;
+2. the owner-approved, dependency-verified, active GitHub issue;
+3. this file and docs/agents/WORKFLOW.md;
+4. current code, tests, CI, Git history, hosted evidence, and the relevant product,
+   design, architecture, security, launch, and business documents;
+5. historical specifications, reviews, plans, branches, and receipts.
 
-## Session startup
-Read:
-1. `AGENTS.md`;
-2. `docs/PROJECT-STATUS.md`;
-3. current owner task or active issue;
-4. directory-specific `AGENTS.md` for files being touched.
+GitHub Issues are the only engineering queue and progress tracker. An approved issue
+is the executable specification and prior design approval. It authorizes only its
+explicit decisions and never authorizes an undeclared feature, architecture decision,
+or protected R3 action.
 
-Load when relevant:
-- `docs/AROMATIKA-LAUNCH-READINESS-DESIGN.md` for strategy/launch scope;
-- `PRODUCT.md` for product behavior;
-- `DESIGN.md` for UI/UX;
-- `docs/ARCHITECTURE.md` for architecture/backend;
-- `docs/agents/WORKFLOW.md` for substantial engineering work;
-- `docs/agents/SECURITY.md` for R2/R3/security work;
-- `docs/agents/MODEL-ROUTER.md` for model/delegation selection;
-- launch/provider/backup/incident/business docs only when the task touches them.
+Risk follows the changed surface and security consequence, never an issue label or
+claimed risk level. No issue edit may classify away R2/R3 gates, weaken a product or
+security invariant, or reuse approval granted to materially different wording.
 
-Never scan all historical plans at startup.
+Historical artifacts and quarantined branches are evidence only. They do not govern
+current implementation.
+
+docs/PROJECT-STATUS.md records verified product, deployment, hosted-system, and
+operational truth only. It does not track tasks, issues, branches, percentages, or
+agent activity.
+
+## Startup router
+
+At session start read:
+
+1. AGENTS.md;
+2. docs/PROJECT-STATUS.md;
+3. the active issue or current owner instruction;
+4. directory-specific AGENTS.md files for touched paths.
+
+For substantial work read docs/agents/WORKFLOW.md. For R2/R3 work also read
+docs/agents/SECURITY.md. Load PRODUCT.md, DESIGN.md, docs/ARCHITECTURE.md,
+docs/LAUNCH-GATES.md, or docs/BUSINESS-MODEL.md only when the issue touches that
+concern.
+
+Before editing, fetch and reconcile live GitHub, Git, PR, CI, label, branch, and
+worktree state. Preserve unknown local work. Never develop directly on main.
+
+When the owner says “Continue Aromatika”, follow the live-selection procedure in
+docs/agents/WORKFLOW.md. Do not select work from issue order, stale labels, old
+handoffs, historical roadmaps, or status-document percentages.
+
+## Issue eligibility and active state
+
+An issue is executable only when owner approval is recorded, its outcome and
+testable acceptance criteria are clear, scope and exclusions are explicit,
+dependencies are live-verified, risk and verification are defined, and no product,
+architecture, legal, or protected-action decision remains unresolved.
+
+Preserve owner-authored approval and decision text. Agents may add clarifications in
+issue comments but do not rewrite approved product, architecture, legal, risk, or
+scope wording. Re-read the live issue and its approval before implementation and
+again before final review/merge; material changes require renewed owner approval.
+
+Exactly one issue carries agent:active. Exactly one branch and one issue worktree
+receive active implementation edits. Reconcile stale active state before creating
+either.
+
+Never implement from a quarantined evidence worktree. If a session starts there,
+make no tracked edits: reconcile live state, then run the issue only from the fetched
+main baseline and its active issue worktree after verifying the project Codex
+configuration. Quarantine names and worktree locks are safety signals, not authority.
+
+If a missing decision cannot be derived from current evidence, return one exact
+question to the owner. Otherwise continue autonomously.
+
+## Scope control
+
+Every changed tracked file must map to an acceptance criterion, required test,
+mandatory configuration or documentation update, or an in-scope defect required for
+the active path. Record that mapping in the pull request.
+
+Fix a discovered defect inside the issue only when it is required for acceptance or
+for the security/functional correctness of a directly modified path. File unrelated
+non-P0 defects as separate issues. Interrupt for P0 security or data-loss defects
+using docs/agents/WORKFLOW.md. Reject enhancements, cleanup, and speculative work.
+
+Create a broad abstraction only after two current approved issues prove the same
+concrete requirement.
+
+## Risk router
+
+### R1 — standard product change
+
+Focused deterministic tests, relevant regressions, repository checks, one fresh
+engineering review, and PR CI.
+
+### R2 — security-sensitive or hosted-boundary change
+
+Includes authorization, privacy, data integrity, moderation, payment/entitlement,
+destructive-operation safeguards, secrets/security configuration, and hosted
+boundaries. Require focused security tests, relevant database/contracts, full CI,
+one fresh independent engineering review, and one fresh adversarial security review
+against the same candidate commit.
+
+### R3 — protected owner action or unresolved decision
+
+Includes production deployment/provider mutation, production secrets or data,
+destructive hosted operations, billing/commercial/legal acceptance, meaningful
+spend, final launch, and unresolved product or architecture decisions. Agents may
+prepare reversible evidence but stop before the protected operation and report one
+exact owner action.
+
+Never weaken security controls, tests, branch protection, authorization, RLS, MFA,
+or CI to obtain progress. Never expose service-role or secret credentials.
 
 ## Engineering process
-Superpowers is the primary process authority and is mandatory where applicable.
 
-Matt Pocock skills are preferred engineering-depth specialists inside the Superpowers lifecycle. Invoke them automatically when their trigger applies and they are available. They do not create a second planning/debugging/TDD/review lifecycle.
+Superpowers remains enabled inside the GitHub issue lifecycle for TDD, debugging,
+worktrees, deterministic verification, engineering review, security review, and
+completion checks. It does not create duplicate specifications, implementation-plan
+documents, SDD artifacts, receipt ledgers, roadmaps, or approval loops for an
+already-approved issue.
 
-The owner does not orchestrate skills.
+Default project reasoning is high. Use xhigh only for demonstrated R2 uncertainty.
+Use deterministic tools before another model opinion and keep delegation bounded.
+Detailed model routing, repair limits, P0 handling, and merge rules live in
+docs/agents/WORKFLOW.md.
 
-## Risk model
-### R0 — trivial/reversible
-Docs, comments, formatting, internal metadata.
-Flow: cheap worker -> lightweight checks -> merge.
+## Completion and handoff
 
-Risk follows the behavioral and security consequence, not the artifact type. A current authority-document change inherits the highest risk affected by its normative rule; MFA/RLS/entitlement rules are R2, and protected real-world-operation rules are R3.
+A task is complete only after acceptance criteria, applicable tests/checks, required
+reviews, exact-candidate evidence, PR CI, merge, issue closure, and active-state
+reconciliation succeed. Merge and deploy are separate. Never fabricate a PASS.
 
-### R1 — normal product engineering
-Ordinary UI/features/bugs/tests/refactors inside established security boundaries.
-Flow: implementer -> independent review -> relevant tests -> required CI -> autonomous merge.
+Every completed or blocked handoff reports:
 
-### R2 — security-sensitive
-Material changes to auth/session/registration/reset/MFA, RLS/authorization, staff/admin/moderator access, private data/Storage, uploads/evidence, chat privacy, reports/blocking/moderation, account lifecycle, service role, `SECURITY DEFINER`, secrets/security config, cross-user visibility, paid-entitlement authorization, or security-sensitive provider/payment integration.
-Flow: strong implementer -> relevant specialist -> independent strong engineering review -> adversarial security review -> deterministic security tests -> full CI -> autonomous merge only when every gate passes.
-The owner does not approve R2 code. Failure to prove safety means do not merge.
+- Launch progress: closed / total issues from the canonical launch-readiness query
+- Active issue: #N or none
+- Blocked issues: issue numbers and exact blockers
+- Next verified-unblocked issue: #N or none
+- Owner action: exact protected action or none
+- Technical evidence: PR, candidate SHA, tests, reviews, and CI
 
-### R3 — protected real-world operation
-Destructive production-data actions, production credentials/secrets, DNS/domain changes, irreversible production migrations, disabling security controls, legal/privacy/business-policy changes, meaningful spending, accepting provider commercial terms, owner-approved launch pricing changes, and the final public launch action.
-Agents may investigate, implement, test, review, and prepare rollback autonomously. Before any destructive or irreversible owner action, verify the exact target, current backup/recovery evidence, and rollback limitations; if any is missing, fail closed and do not hand off the action. The protected real-world action requires the owner decision/action.
-
-## Product/security invariants
-- Normal users register with email/password, confirm email, complete onboarding, and do not require invites, waiting lists, phone verification, or SMS OTP.
-- Staff/admin MFA remains mandatory.
-- Perfume payment/delivery remains off-platform.
-- Merchant verification is a trust status and is not purchased.
-- Seller completion and either-party cancellation are current transaction truth; see `PRODUCT.md`.
-- Aromatika monetization uses the approved 10-free qualifying active listings, paid 11th+ 30-day listings, and paid promotion model; see `docs/BUSINESS-MODEL.md`.
-- Paid entitlements require trusted server-side confirmation and cannot be granted by browser-controlled state.
-- Fail closed at authorization boundaries.
-- Treat RLS/database authorization as a real security boundary.
-- Never expose service-role or secret credentials to browser code, source control, logs, issues, PRs, or chat.
-- Preserve private-data minimization and least privilege.
-- Never weaken security controls, tests, branch protection, or CI to make progress.
-- Do not claim authenticity guarantees beyond approved trust language.
-
-## Git and synchronization
-- The local workspace is the active working authority for intentional current work.
-- GitHub `main` is the last reviewed synchronized baseline.
-- Never develop directly on `main`.
-- Use an isolated branch/worktree for non-trivial work.
-- Never force-push `main`.
-- Never bypass required checks.
-- Never destroy unknown local work to match remote state.
-- Merge and deploy are separate.
-- GitHub Issues are the synchronized executable engineering queue after migration; they do not redefine product truth.
-- Prefer one active task owner; parallelize only genuinely independent work.
-
-## Model/token discipline
-Follow `docs/agents/MODEL-ROUTER.md`.
-Spend intelligence where mistakes are expensive and cheap tokens where work is mechanical.
-Use minimum sufficient delegated context. Prefer deterministic tools/tests over repeated model opinions. Stop bounded retry loops instead of burning tokens indefinitely.
-
-## Completion
-A task is not complete because code was written.
-
-Completion requires applicable acceptance criteria, tests, framework/type checks, database/security checks, browser/E2E verification, independent review, CI, and risk-specific review.
-
-Never fabricate a PASS.
-
-## Mandatory owner handoff
-Every completed or blocked task ends with:
+Then include:
 
 ### What changed
-User-facing/business/safety outcome.
+User-facing, business, or safety outcome.
 
 ### Your action
-Use exactly:
-- `Your action: none.`
-- `Your action now:` followed by exact sequential owner instructions.
+Use exactly “Your action: none.” or “Your action now:” followed by exact sequential
+instructions.
 
 ### Sync status
-Use exactly one:
-- `Synchronized`
-- `Local ahead`
-- `Remote ahead`
-- `Diverged`
+Use exactly one: Synchronized, Local ahead, Remote ahead, or Diverged.
 
 ### Next autonomous steps
-State what the agents will do next when work is already authorized.
+State only already-authorized continuation.
 
 ### Stop condition
-State missing evidence/decision and preserve the working system.
-
-Do not end with only "done", "fixed", "merged", a commit hash, or raw logs.
+State the missing evidence or decision and preserve the working system.

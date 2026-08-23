@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import {
+	copyFileSync,
+	existsSync,
 	mkdtempSync,
 	mkdirSync,
 	readFileSync,
@@ -135,6 +137,109 @@ test('configured bootstrap resolves the trusted wrapper from root and nested ses
 	}
 })
 
+test('configured bootstrap ignores a nested forged Aromatika lookalike', () => {
+	const forgedRoot = mkdtempSync(join(REPOSITORY_ROOT, '.svelte-mcp-forgery-'))
+	const nestedDirectory = join(forgedRoot, 'src/routes')
+	const forgedWrapper = join(forgedRoot, 'scripts/run-svelte-mcp.mjs')
+	const sideEffect = join(forgedRoot, 'malicious-wrapper-imported')
+
+	mkdirSync(join(forgedRoot, '.codex'), { recursive: true })
+	mkdirSync(dirname(forgedWrapper), { recursive: true })
+	mkdirSync(nestedDirectory, { recursive: true })
+	writeFileSync(
+		join(forgedRoot, '.codex/aromatika-project-root'),
+		'aromatika-codex-root-v1\n',
+		'utf8'
+	)
+	writeFileSync(
+		join(forgedRoot, 'package.json'),
+		'{"name":"perfume-marketplace-bg","private":true}\n',
+		'utf8'
+	)
+	writeFileSync(
+		forgedWrapper,
+		`import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(sideEffect)},'selected');process.stdout.write('malicious-wrapper-ran')\n`,
+		'utf8'
+	)
+
+	try {
+		const result = runConfiguredBootstrap(nestedDirectory)
+		assert.equal(result.status, 0, result.stderr)
+		assert.equal(
+			result.stdout,
+			realpathSync(join(REPOSITORY_ROOT, 'scripts/run-svelte-mcp.mjs'))
+		)
+		assert.equal(existsSync(sideEffect), false)
+		assert.doesNotMatch(result.stdout, /malicious-wrapper-ran/)
+	} finally {
+		rmSync(forgedRoot, { recursive: true, force: true })
+	}
+})
+
+test(
+	'configured bootstrap does not execute a forged Git binary from the session directory',
+	{ skip: process.platform !== 'win32' },
+	() => {
+		const sessionRoot = mkdtempSync(join(REPOSITORY_ROOT, '.svelte-mcp-git-binary-'))
+		const nestedDirectory = join(sessionRoot, 'nested')
+		mkdirSync(nestedDirectory)
+		copyFileSync(
+			join(process.env.SYSTEMROOT, 'System32/where.exe'),
+			join(nestedDirectory, 'git.exe')
+		)
+
+		try {
+			const result = runConfiguredBootstrap(nestedDirectory)
+			assert.equal(result.status, 0, result.stderr)
+			assert.equal(
+				result.stdout,
+				realpathSync(join(REPOSITORY_ROOT, 'scripts/run-svelte-mcp.mjs'))
+			)
+		} finally {
+			rmSync(sessionRoot, { recursive: true, force: true })
+		}
+	}
+)
+
+test('configured bootstrap prefers the containing Aromatika worktree over a nested Git root', () => {
+	const nestedGitRoot = mkdtempSync(join(REPOSITORY_ROOT, '.svelte-mcp-nested-git-'))
+	const nestedDirectory = join(nestedGitRoot, 'nested')
+	const forgedWrapper = join(nestedGitRoot, 'scripts/run-svelte-mcp.mjs')
+	mkdirSync(join(nestedGitRoot, '.codex'), { recursive: true })
+	mkdirSync(dirname(forgedWrapper), { recursive: true })
+	mkdirSync(nestedDirectory)
+	writeFileSync(
+		join(nestedGitRoot, '.codex/aromatika-project-root'),
+		'aromatika-codex-root-v1\n',
+		'utf8'
+	)
+	writeFileSync(
+		join(nestedGitRoot, 'package.json'),
+		'{"name":"perfume-marketplace-bg","private":true}\n',
+		'utf8'
+	)
+	writeFileSync(forgedWrapper, "process.stdout.write('nested-git-wrapper-ran')\n", 'utf8')
+	const initialized = spawnSync('git', ['init', '--quiet'], {
+		cwd: nestedGitRoot,
+		env: buildSvelteMcpEnvironment(process.env),
+		shell: false,
+		windowsHide: true
+	})
+	assert.equal(initialized.status, 0, initialized.stderr?.toString())
+
+	try {
+		const result = runConfiguredBootstrap(nestedDirectory)
+		assert.equal(result.status, 0, result.stderr)
+		assert.equal(
+			result.stdout,
+			realpathSync(join(REPOSITORY_ROOT, 'scripts/run-svelte-mcp.mjs'))
+		)
+		assert.doesNotMatch(result.stdout, /nested-git-wrapper-ran/)
+	} finally {
+		rmSync(nestedGitRoot, { recursive: true, force: true })
+	}
+})
+
 test(
 	'configured bootstrap rejects a wrapper symlink that escapes the project root',
 	{ skip: process.platform === 'win32' },
@@ -148,6 +253,13 @@ test(
 		mkdirSync(join(projectRoot, '.codex'), { recursive: true })
 		mkdirSync(dirname(wrapper), { recursive: true })
 		mkdirSync(nestedDirectory, { recursive: true })
+		const initialized = spawnSync('git', ['init', '--quiet'], {
+			cwd: projectRoot,
+			env: buildSvelteMcpEnvironment(process.env),
+			shell: false,
+			windowsHide: true
+		})
+		assert.equal(initialized.status, 0, initialized.stderr?.toString())
 		writeFileSync(
 			join(projectRoot, '.codex/aromatika-project-root'),
 			'aromatika-codex-root-v1\n',
@@ -178,8 +290,19 @@ test('configured bootstrap rejects an unrelated host with a parent-level wrapper
 	const nestedDirectory = join(unrelatedRoot, 'nested')
 	const fakeWrapper = join(unrelatedRoot, 'scripts/run-svelte-mcp.mjs')
 
+	mkdirSync(join(unrelatedRoot, '.codex'), { recursive: true })
 	mkdirSync(dirname(fakeWrapper), { recursive: true })
 	mkdirSync(nestedDirectory)
+	writeFileSync(
+		join(unrelatedRoot, '.codex/aromatika-project-root'),
+		'aromatika-codex-root-v1\n',
+		'utf8'
+	)
+	writeFileSync(
+		join(unrelatedRoot, 'package.json'),
+		'{"name":"perfume-marketplace-bg","private":true}\n',
+		'utf8'
+	)
 	writeFileSync(fakeWrapper, "process.stdout.write('untrusted-wrapper-ran')\n", 'utf8')
 
 	try {
@@ -187,7 +310,7 @@ test('configured bootstrap rejects an unrelated host with a parent-level wrapper
 
 		assert.notEqual(result.status, 0)
 		assert.equal(result.stdout, '')
-		assert.match(result.stderr, /Aromatika project root not found/)
+		assert.match(result.stderr, /Aromatika Git worktree root not found/)
 	} finally {
 		rmSync(unrelatedRoot, { recursive: true, force: true })
 	}
