@@ -21,27 +21,37 @@ REQUIRED_LF_ATTRIBUTES = {
     "/.codex/aromatika-project-root text eol=lf",
     "/.codex/config.toml text eol=lf",
 }
-SVELTE_MCP_BOOTSTRAP = (
+GIT_WORKTREE_ROOT_BOOTSTRAP = (
+    "import{execFile}from'node:child_process';"
     "import{readFile,realpath,stat}from'node:fs/promises';"
     "import{dirname,isAbsolute,join,relative,sep}from'node:path';"
+    "import{promisify}from'node:util';"
     "import{pathToFileURL}from'node:url';"
-    "let candidate=process.cwd(),root;"
-    "for(;;){"
-    "try{"
+    "const gitEnv={},allowed=['PATH','PATHEXT','SYSTEMROOT','WINDIR','COMSPEC',"
+    "'TEMP','TMP','TMPDIR','HOME','USERPROFILE','APPDATA','LOCALAPPDATA'];"
+    "for(const name of allowed)"
+    "if(typeof process.env[name]==='string')gitEnv[name]=process.env[name];"
+    "const session=process.cwd(),gitCwd=dirname(process.execPath);"
+    "async function gitRoot(directory){try{"
+    "const{stdout}=await promisify(execFile)('git',"
+    "['-C',directory,'rev-parse','--show-toplevel'],"
+    "{cwd:gitCwd,env:gitEnv,windowsHide:true});"
+    "return await realpath(stdout.trim())}catch{return undefined}}"
+    "async function isAromatika(candidate){try{"
     "const[marker,manifest]=await Promise.all(["
     "readFile(join(candidate,'.codex','aromatika-project-root'),'utf8'),"
     "readFile(join(candidate,'package.json'),'utf8')"
-    "]);"
-    "const packageJson=JSON.parse(manifest);"
-    "if(marker==='aromatika-codex-root-v1\\n'&&"
-    "packageJson.name==='perfume-marketplace-bg'&&packageJson.private===true){"
-    "root=await realpath(candidate);break"
-    "}"
-    "}catch{}"
-    "const parent=dirname(candidate);"
-    "if(parent===candidate)throw new Error('Aromatika project root not found');"
-    "candidate=parent"
-    "}"
+    "]);const packageJson=JSON.parse(manifest);"
+    "return marker==='aromatika-codex-root-v1\\n'&&"
+    "packageJson.name==='perfume-marketplace-bg'&&packageJson.private===true"
+    "}catch{return false}}"
+    "let search=session,root;"
+    "for(;;){const candidate=await gitRoot(search);if(!candidate)break;"
+    "if(await isAromatika(candidate))root=candidate;"
+    "const parent=dirname(candidate);if(parent===candidate)break;search=parent}"
+    "if(!root)throw new Error('Aromatika Git worktree root not found');"
+)
+SVELTE_MCP_BOOTSTRAP = GIT_WORKTREE_ROOT_BOOTSTRAP + (
     "const wrapper=await realpath(join(root,'scripts','run-svelte-mcp.mjs'));"
     "const wrapperRelative=relative(root,wrapper);"
     "if(wrapperRelative===''||wrapperRelative==='..'||"
@@ -56,27 +66,7 @@ SVELTE_MCP_BOOTSTRAP = (
     "}"
 )
 SVELTE_MCP_ARGS = ["--input-type=module", "--eval", SVELTE_MCP_BOOTSTRAP]
-CODEGRAPH_MCP_BOOTSTRAP = (
-    "import{readFile,realpath,stat}from'node:fs/promises';"
-    "import{dirname,isAbsolute,join,relative,sep}from'node:path';"
-    "import{pathToFileURL}from'node:url';"
-    "let candidate=process.cwd(),root;"
-    "for(;;){"
-    "try{"
-    "const[marker,manifest]=await Promise.all(["
-    "readFile(join(candidate,'.codex','aromatika-project-root'),'utf8'),"
-    "readFile(join(candidate,'package.json'),'utf8')"
-    "]);"
-    "const packageJson=JSON.parse(manifest);"
-    "if(marker==='aromatika-codex-root-v1\\n'&&"
-    "packageJson.name==='perfume-marketplace-bg'&&packageJson.private===true){"
-    "root=await realpath(candidate);break"
-    "}"
-    "}catch{}"
-    "const parent=dirname(candidate);"
-    "if(parent===candidate)throw new Error('Aromatika project root not found');"
-    "candidate=parent"
-    "}"
+CODEGRAPH_MCP_BOOTSTRAP = GIT_WORKTREE_ROOT_BOOTSTRAP + (
     "const wrapper=await realpath(join(root,'scripts','run-codegraph-mcp.mjs'));"
     "const wrapperRelative=relative(root,wrapper);"
     "if(wrapperRelative===''||wrapperRelative==='..'||"
@@ -109,6 +99,7 @@ EXPECTED_RAW = (
     'url = "https://observability.mcp.cloudflare.com/mcp"\n'
     'enabled_tools = ["query_worker_observability", "observability_keys", "observability_values"]\n'
     'default_tools_approval_mode = "prompt"\n'
+    'enabled = false\n'
     "\n"
     "[mcp_servers.21st]\n"
     'url = "https://21st.dev/api/mcp"\n'
@@ -195,6 +186,7 @@ EXPECTED = {
                 "observability_values",
             ],
             "default_tools_approval_mode": "prompt",
+            "enabled": False,
         },
         "21st": {
             "url": "https://21st.dev/api/mcp",
