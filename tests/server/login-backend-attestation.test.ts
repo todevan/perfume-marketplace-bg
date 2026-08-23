@@ -14,7 +14,6 @@ const stagingRuntime: ProductionRuntimeConfiguration = {
 	demoMode: false,
 	appEnvironment: 'staging',
 	publicSupabaseUrl: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
-	expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 	publicSupabaseKey: 'browser-publishable-key',
 	publicSupabaseAnonKey: 'browser-publishable-key',
 	supabaseSecretKey: 'server-secret-key',
@@ -45,7 +44,6 @@ describe('login backend attestation boundary', () => {
 		expect(backendHealth.attestHostedBackendBaseline).toHaveBeenCalledOnce();
 		expect(backendHealth.attestHostedBackendBaseline).toHaveBeenCalledWith({
 			publicSupabaseUrl: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
-			expectedSupabaseProjectRef: 'nuhkpqjjyuygiemrxbdp',
 			supabaseSecretKey: 'server-secret-key'
 		});
 		expect(result).toMatchObject({
@@ -126,39 +124,6 @@ describe('open email registration', () => {
 		expect(signUp).not.toHaveBeenCalled();
 	});
 
-	it('passes the registration token once to Supabase Auth without consuming it in the action', async () => {
-		const signUp = vi.fn(async () => ({ data: { user: null, session: null }, error: new Error('invalid captcha') }));
-		const formData = new FormData();
-		formData.set('email', 'new.member@example.bg');
-		formData.set('password', 'correct-horse-battery-staple');
-		formData.set('username', 'scent_archive');
-		formData.set('ageAccepted', 'on');
-		formData.set('cf-turnstile-response', 'provider-validated-token');
-		const fetchImpl = vi.fn();
-
-		const result = await actions.register({
-			request: new Request('https://market.example/login?/register', {
-				method: 'POST',
-				body: formData
-			}),
-			url: new URL('https://market.example/login?/register'),
-			fetch: fetchImpl,
-			locals: {
-				runtime: {
-					...stagingRuntime,
-					turnstileSecretKey: 'turnstile-secret-key'
-				},
-				supabase: { auth: { signUp } }
-			}
-		} as never);
-
-		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(fetchImpl).not.toHaveBeenCalled();
-		expect(signUp).toHaveBeenCalledWith(expect.objectContaining({
-			options: expect.objectContaining({ captchaToken: 'provider-validated-token' })
-		}));
-	});
-
 	it('creates an email-password account and requests confirmation before onboarding', async () => {
 		const signUp = vi.fn(async () => ({
 			data: { user: { id: 'new-user' }, session: null },
@@ -173,15 +138,14 @@ describe('open email registration', () => {
 		formData.set('next', '/dashboard');
 		formData.set('cf-turnstile-response', 'verified-registration-token');
 
+		const eventFetch = vi.fn();
 		const result = await actions.register({
 			request: new Request('https://market.example/login?/register', {
 				method: 'POST',
 				body: formData
 			}),
 			url: new URL('https://market.example/login?/register'),
-			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'register' }), { status: 200 })
-			),
+			fetch: eventFetch,
 			locals: {
 				runtime: {
 					...stagingRuntime,
@@ -201,6 +165,7 @@ describe('open email registration', () => {
 				data: { username: 'scent_archive', account_kind: 'merchant' }
 			}
 		});
+		expect(eventFetch).not.toHaveBeenCalled();
 		expect(result).toMatchObject({ success: true, email: 'new.member@example.bg' });
 	});
 

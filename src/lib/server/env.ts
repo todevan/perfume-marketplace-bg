@@ -23,7 +23,6 @@ export interface ProductionRuntimeConfiguration {
 	publicSupabaseKey: string;
 	/** @deprecated Legacy alias retained for existing server modules. */
 	publicSupabaseAnonKey: string;
-	expectedSupabaseProjectRef?: string;
 	supabaseSecretKey?: string;
 	imageProcessorMode: 'disabled' | 'cloudflare-images';
 	publicAppUrl?: string;
@@ -173,17 +172,10 @@ export function getRuntimeConfiguration(
 		['PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'PUBLIC_SUPABASE_ANON_KEY'],
 		platformEnvironment
 	);
-	const expectedSupabaseProjectRef = firstValue(
-		'EXPECTED_SUPABASE_PROJECT_REF',
-		platformEnvironment
-	);
 	const missingVariables: string[] = [];
 	if (!publicSupabaseUrl) missingVariables.push('PUBLIC_SUPABASE_URL');
 	if (!publicSupabaseKey) {
 		missingVariables.push('PUBLIC_SUPABASE_PUBLISHABLE_KEY or PUBLIC_SUPABASE_ANON_KEY');
-	}
-	if (configuredAppEnvironment === 'staging' && !expectedSupabaseProjectRef) {
-		missingVariables.push('EXPECTED_SUPABASE_PROJECT_REF');
 	}
 	if (missingVariables.length > 0) throw new RuntimeConfigurationError(missingVariables);
 	if (!publicSupabaseUrl || !publicSupabaseKey) {
@@ -193,12 +185,6 @@ export function getRuntimeConfiguration(
 			'PUBLIC_SUPABASE_PUBLISHABLE_KEY or PUBLIC_SUPABASE_ANON_KEY'
 		]);
 	}
-	if (expectedSupabaseProjectRef && !/^[a-z]{20}$/u.test(expectedSupabaseProjectRef)) {
-		throw new RuntimeConfigurationError(
-			['EXPECTED_SUPABASE_PROJECT_REF'],
-			'Invalid EXPECTED_SUPABASE_PROJECT_REF: expected exactly 20 lowercase letters.'
-		);
-	}
 
 	return {
 		mode: 'production',
@@ -207,7 +193,6 @@ export function getRuntimeConfiguration(
 		publicSupabaseUrl,
 		publicSupabaseKey,
 		publicSupabaseAnonKey: publicSupabaseKey,
-		expectedSupabaseProjectRef,
 		supabaseSecretKey: firstValueForKeys(
 			['SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
 			platformEnvironment

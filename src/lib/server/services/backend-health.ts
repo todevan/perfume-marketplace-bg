@@ -45,7 +45,6 @@ export interface BackendHealthClient {
 
 export interface BackendAttestationInput {
 	publicSupabaseUrl: string;
-	expectedSupabaseProjectRef?: string;
 	supabaseSecretKey?: string;
 }
 
@@ -77,17 +76,11 @@ export class BackendAttestationError extends Error {
 	}
 }
 
-function normalizeExpectedOrigin(value: string, expectedProjectRef: string | undefined): string {
+function normalizeExpectedOrigin(value: string): string {
 	try {
-		const projectRef = expectedProjectRef?.trim();
-		if (!projectRef || !/^[a-z]{20}$/u.test(projectRef)) {
-			throw new BackendAttestationError('invalid_target');
-		}
 		const url = new URL(value);
 		if (
-				url.protocol !== 'https:' ||
-				url.hostname !== `${projectRef}.supabase.co` ||
-				url.port !== '' ||
+			url.origin !== STAGING_BACKEND_BASELINE.origin ||
 			url.pathname !== '/' ||
 			url.search ||
 			url.hash ||
@@ -177,10 +170,7 @@ export function createBackendAttestor(
 	let inFlight: InFlightAttestation | null = null;
 
 	return async (input: BackendAttestationInput): Promise<void> => {
-		const origin = normalizeExpectedOrigin(
-			input.publicSupabaseUrl,
-			input.expectedSupabaseProjectRef
-		);
+		const origin = normalizeExpectedOrigin(input.publicSupabaseUrl);
 		const secretKey = input.supabaseSecretKey?.trim();
 		if (!secretKey) throw new BackendAttestationError('missing_secret');
 

@@ -2,7 +2,6 @@ import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { loadRequestAuthContext } from '$lib/server/auth/context';
 import { safeRedirectPath } from '$lib/server/auth/redirect';
-import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
 import { attestHostedBackendBaseline } from '$lib/server/services/backend-health';
 import {
 	InvalidFormDataError,
@@ -25,7 +24,6 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 		try {
 			await attestHostedBackendBaseline({
 				publicSupabaseUrl: locals.runtime.publicSupabaseUrl,
-				expectedSupabaseProjectRef: locals.runtime.expectedSupabaseProjectRef,
 				supabaseSecretKey: locals.runtime.supabaseSecretKey
 			});
 		} catch {
@@ -75,27 +73,23 @@ export const actions: Actions = {
 			redirect(303, next);
 		}
 
-		const challenge = await verifyTurnstileForAction(
-			event,
-			formData,
-			event.locals.runtime,
-			'login'
-		);
-		if (!challenge.success) {
-			return fail(challenge.reason === 'not_configured' ? 503 : 400, {
+		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
+		if (!captchaToken) {
+			return fail(400, {
 				success: false,
 				email,
-				message:
-					challenge.reason === 'not_configured'
-						? 'Входът временно не е достъпен.'
-						: 'Потвърди, че не си автоматизиран клиент.'
+				message: 'Потвърди, че не си автоматизиран клиент.'
 			});
 		}
 
 		const supabase = event.locals.supabase;
 		if (!supabase) return fail(503, { success: false, email, message: 'Входът временно не е достъпен.' });
 
-		const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+		const { error: signInError } = await supabase.auth.signInWithPassword({
+			email,
+			password,
+			options: { captchaToken }
+		});
 		if (signInError) {
 			return fail(400, { success: false, email, message: 'Невалиден имейл или парола.' });
 		}
@@ -134,7 +128,6 @@ export const actions: Actions = {
 		const username = formData.get('username')?.toString().trim() ?? '';
 		const accountKind = formData.get('kind') === 'merchant' ? 'merchant' : 'private';
 		const next = safeRedirectPath(formData.get('next')?.toString(), '/dashboard');
-		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
 
 		if (event.locals.runtime.mode === 'demo') {
 			redirect(303, next);
@@ -145,13 +138,21 @@ export const actions: Actions = {
 			!USERNAME_PATTERN.test(username) ||
 			password.length < 12 ||
 			password.length > 128 ||
-			formData.get('ageAccepted') !== 'on' ||
-			!captchaToken
+			formData.get('ageAccepted') !== 'on'
 		) {
 			return fail(400, {
 				success: false,
 				email,
 				message: 'Провери имейла, потребителското име, паролата и потвърждението за възраст.'
+			});
+		}
+
+		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
+		if (!captchaToken) {
+			return fail(400, {
+				success: false,
+				email,
+				message: '\u041f\u043e\u0442\u0432\u044a\u0440\u0434\u0438, \u0447\u0435 \u043d\u0435 \u0441\u0438 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0437\u0438\u0440\u0430\u043d \u043a\u043b\u0438\u0435\u043d\u0442.'
 			});
 		}
 

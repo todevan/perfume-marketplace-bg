@@ -197,9 +197,8 @@ describe('safe redirects and runtime mode', () => {
 		const runtime = getRuntimeConfiguration({
 			APP_ENV: 'staging',
 			PUBLIC_DEMO_MODE: 'false',
-			PUBLIC_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+			PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
 			PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
-			EXPECTED_SUPABASE_PROJECT_REF: 'abcdefghijklmnopqrst',
 			PUBLIC_SUPABASE_ANON_KEY: 'legacy-anon-key',
 			SUPABASE_SECRET_KEY: 'server-secret',
 			IMAGE_PROCESSOR_MODE: 'cloudflare-images'
@@ -208,7 +207,6 @@ describe('safe redirects and runtime mode', () => {
 		if (runtime.mode === 'production') {
 			expect(runtime.appEnvironment).toBe('staging');
 			expect(runtime.publicSupabaseKey).toBe('publishable-key');
-			expect(runtime.expectedSupabaseProjectRef).toBe('abcdefghijklmnopqrst');
 			expect(runtime.supabaseSecretKey).toBe('server-secret');
 			expect(runtime.imageProcessorMode).toBe('cloudflare-images');
 		}
@@ -430,15 +428,6 @@ describe('Turnstile verification', () => {
 				fetch: siteverifyFetcher(payload)
 			})
 		).resolves.toMatchObject({ success: false, reason: 'rejected' });
-	});
-
-	it('requires an explicit project-ref binding for staging runtime', () => {
-		expect(() => getRuntimeConfiguration({
-			APP_ENV: 'staging',
-			PUBLIC_DEMO_MODE: 'false',
-			PUBLIC_SUPABASE_URL: 'https://zzrrutwlrkhevellwork.supabase.co',
-			PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
-		})).toThrow(RuntimeConfigurationError);
 	});
 
 	it.each(['login', 'register', 'report_submit'])(

@@ -19,6 +19,7 @@ type WorkflowStep = {
 	id?: string;
 	if?: string;
 	run?: string;
+	env?: Record<string, string>;
 };
 type WorkflowJob = {
 	if?: string;
@@ -291,7 +292,6 @@ describe('hosted staging rollback smoke runner', () => {
 		) as unknown as typeof fetch;
 		const receipts = await runStagingRollbackSmoke({
 			origin: server.origin,
-			expectedGitSha,
 			attempts: 1,
 			fetchImpl,
 			logger: { log() {}, warn() {} }
@@ -308,7 +308,6 @@ describe('hosted staging rollback smoke runner', () => {
 		await expect(
 			runStagingRollbackSmoke({
 				origin: server.origin,
-				expectedGitSha,
 				attempts: 1,
 				logger: { log() {}, warn() {} }
 			})
@@ -325,23 +324,21 @@ describe('manual staging deploy workflow smoke contract', () => {
 		const smoke = commands.indexOf('node scripts/smoke-staging.mjs');
 		const turnstileEvidence = commands.indexOf('node scripts/verify-staging-turnstile.mjs');
 		const rollback = commands.findIndex((command) =>
-			command.includes('wrangler deploy --config wrangler.rollback.jsonc --env staging')
+			command.includes('pnpm exec wrangler versions deploy "$SAFE_ROLLBACK_VERSION"')
 		);
 		const rollbackSmoke = commands.indexOf('node scripts/smoke-staging.mjs --mode rollback');
 
 		expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
 		expect(workflow.on.workflow_dispatch).toBeNull();
 		expect(job.if).toBe("github.ref == 'refs/heads/main'");
-		expect(job.env?.A7_REQUIRE_OPEN_EMAIL_SIGNUP).toBe('true');
-		expect(job.env).not.toHaveProperty('A7_REQUIRE_DISABLED_SIGNUP');
+		expect(job.env?.A7_REQUIRE_DISABLED_SIGNUP).toBe('true');
 		expect(job.env).toMatchObject({
 			STAGING_ORIGIN: expectedOrigin,
 			EXPECTED_GIT_SHA: '${{ github.sha }}',
 			STAGING_SMOKE_ATTEMPTS: '6',
-			STAGING_SMOKE_DELAY_MS: '5000'
+			STAGING_SMOKE_DELAY_MS: '5000',
+			SAFE_ROLLBACK_VERSION: '75593db4-12fd-486d-ae8a-bdf9ebbb3ece'
 		});
-		expect(job.env).not.toHaveProperty('SAFE_ROLLBACK_VERSION');
-		expect(commands).toContain('node scripts/verify-hosted-auth-config.mjs');
 		expect(job).not.toHaveProperty('environment');
 		expect(commands.some((command) => command.includes('wrangler deploy --env production'))).toBe(
 			false
@@ -358,6 +355,9 @@ describe('manual staging deploy workflow smoke contract', () => {
 		expect(
 			job.steps.find((step) => step.run === 'node scripts/smoke-staging.mjs --mode rollback')?.if
 		).toBe("failure() && steps.rollback.outcome == 'success'");
+		expect(
+			job.steps.find((step) => step.run === 'node scripts/smoke-staging.mjs --mode rollback')?.env
+		).toEqual({ STAGING_SMOKE_ATTEMPTS: '12' });
 		expect(commands.filter((command) => command === 'pnpm exec wrangler deploy --env staging')).toHaveLength(
 			1
 		);

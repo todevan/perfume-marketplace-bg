@@ -11,7 +11,9 @@ permissions:
 jobs:
   app:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -34,7 +36,8 @@ jobs:
         run: pnpm test:db:contracts
       - name: Run Svelte checks
         run: pnpm check
-      - run: pnpm exec playwright install --with-deps chromium webkit
+      - if: ${{ false }}
+        run: pnpm exec playwright install --with-deps chromium
       - name: Build once and run stable Playwright suite
         run: pnpm test:e2e
       - name: Validate staging Cloudflare bundle
@@ -44,8 +47,9 @@ jobs:
 
   database:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
+      # Cloudflare's documented public always-pass test credential; never use outside isolated CI.
       LOCAL_AUTH_CAPTCHA_TEST_KEY: 1x0000000000000000000000000000000AA
     steps:
       - uses: actions/checkout@v4
@@ -61,13 +65,11 @@ jobs:
         run: pnpm audit --prod
       - run: pnpm db:start
       - run: pnpm db:reset
-      - name: Run Issue 22 executable fingerprint drift tests
-        run: pnpm test:db:issue22-fingerprints
       - run: pnpm db:lint
       - run: pnpm db:test
-      - name: Install Chromium for real registration journey
+      - name: Install Chromium for the isolated registration journey
         run: pnpm exec playwright install --with-deps chromium
-      - name: Run real local registration journey
+      - name: Run local registration, fresh-login, and recovery journey
         run: pnpm test:e2e:registration
       - name: Run Node database operator contracts
         run: pnpm test:db:contracts

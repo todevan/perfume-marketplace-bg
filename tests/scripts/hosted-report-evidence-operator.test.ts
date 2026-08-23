@@ -235,7 +235,12 @@ describe('hosted report-evidence target lock', () => {
 		for (const operation of ['provision', 'inspect', 'cleanup'] as const) {
 			expect(assertServiceRoleOperation(operation)).toBe(operation);
 		}
-		for (const forbidden of ['access-assertion', 'download-evidence', 'moderator-read']) {
+		for (const forbidden of [
+			'access-assertion',
+			'actor-authorization-evidence',
+			'download-evidence',
+			'moderator-read'
+		]) {
 			expect(() => assertServiceRoleOperation(forbidden)).toThrow(
 				/service role cannot perform access assertions/u
 			);
@@ -278,6 +283,125 @@ describe('hosted report-evidence target lock', () => {
 				})
 			})
 		);
+	});
+
+	it('attests an A9 actor against the persisted manifest when its attempt differs from the provisioning nonce', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const provisioningAttemptId = '66666666-6666-4666-8666-666666666666';
+		const userId = actorIds.reporter;
+		const manifestDirectory = await mkdtemp(join(tmpdir(), 'hosted-a9-a10-handoff-'));
+		const manifestPath = join(manifestDirectory, 'manifest.json');
+		const a9Manifest = registerHostedActor(
+			createHostedRunManifest(config, { provisioningAttemptId }),
+			'reporter',
+			userId,
+			actorCreatedAt
+		);
+		const user = {
+			...provisionedUser('reporter', userId),
+			user_metadata: {
+				...provisionedUser('reporter', userId).user_metadata,
+				gate3_report_evidence_provisioning_attempt_id: provisioningAttemptId
+			}
+		};
+		const adapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: {
+				auth: {
+					admin: {
+						getUserById: vi.fn().mockResolvedValue({ data: { user }, error: null })
+					}
+				}
+			} as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn() as never
+		});
+		const operator = createHostedEvidenceOperator({ config, adapters });
+
+		try {
+			await persistHostedRunManifest(config, a9Manifest, manifestPath);
+			const persistedManifest = await loadHostedRunManifest(config, manifestPath);
+
+			await expect(
+				operator.attestFreshActor(persistedManifest, 'reporter', userId)
+			).resolves.toEqual({
+				role: 'reporter',
+				userId,
+				createdAt: actorCreatedAt,
+				provisioningAttemptId
+			});
+		} finally {
+			await rm(manifestDirectory, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects A10 attestation when manifest provenance or actor coordinates differ', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const provisioningAttemptId = '66666666-6666-4666-8666-666666666666';
+		const wrongProvisioningAttemptId = '77777777-7777-4777-8777-777777777777';
+		const userId = actorIds.reporter;
+		const user = {
+			...provisionedUser('reporter', userId),
+			user_metadata: {
+				...provisionedUser('reporter', userId).user_metadata,
+				gate3_report_evidence_provisioning_attempt_id: provisioningAttemptId
+			}
+		};
+		const getUserById = vi.fn().mockResolvedValue({ data: { user }, error: null });
+		const adapters = createSupabaseHostedEvidenceAdapters({
+			config,
+			serviceClient: { auth: { admin: { getUserById } } } as never,
+			managementAccessToken: 'management-token',
+			cleanupSecret: 'x'.repeat(32),
+			fetchImpl: vi.fn() as never
+		});
+		const operator = createHostedEvidenceOperator({ config, adapters });
+		const manifest = registerHostedActor(
+			createHostedRunManifest(config, { provisioningAttemptId }),
+			'reporter',
+			userId,
+			actorCreatedAt
+		);
+		const wrongAttemptManifest = registerHostedActor(
+			createHostedRunManifest(config, { provisioningAttemptId: wrongProvisioningAttemptId }),
+			'reporter',
+			userId,
+			actorCreatedAt
+		);
+		const wrongCreatedAtManifest = registerHostedActor(
+			createHostedRunManifest(config, { provisioningAttemptId }),
+			'reporter',
+			userId,
+			'2026-08-09T12:00:01.000Z'
+		);
+		const wrongRunConfig = validateHostedOperatorEnvironment({
+			...baseEnvironment,
+			E2E_REAL_REPORT_EVIDENCE_RUN_ID: 'gate3-20260809-0002'
+		});
+		const wrongRunManifest = registerHostedActor(
+			createHostedRunManifest(wrongRunConfig, { provisioningAttemptId }),
+			'reporter',
+			userId,
+			actorCreatedAt
+		);
+
+		await expect(
+			operator.attestFreshActor(wrongAttemptManifest, 'reporter', userId)
+		).rejects.toThrow(/fresh hosted actor provenance is invalid/u);
+		await expect(
+			operator.attestFreshActor(wrongCreatedAtManifest, 'reporter', userId)
+		).rejects.toThrow(/fresh hosted actor provenance is invalid/u);
+		await expect(
+			operator.attestFreshActor(wrongRunManifest, 'reporter', userId)
+		).rejects.toThrow(/run manifest target does not match approved staging/u);
+		await expect(
+			operator.attestFreshActor(manifest, 'reporter', actorIds['cross-user'])
+		).rejects.toThrow(/actor is outside the exact run manifest/u);
+		await expect(
+			operator.attestFreshActor(manifest, 'cross-user', userId)
+		).rejects.toThrow(/actor is outside the exact run manifest/u);
+		expect(getUserById).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -2103,13 +2227,48 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 		}
 	});
 
+	it('treats an already-absent purge tombstone as completed missing-manifest recovery', async () => {
+		const config = validateHostedOperatorEnvironment(baseEnvironment);
+		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
+		const manifestPath = join(directory, 'missing-run.json');
+		const storePath = join(directory, 'missing-moderator-totp.enc');
+		const store = createEncryptedModeratorCredentialStore({
+			filePath: storePath,
+			encryptionKey: 'k'.repeat(48),
+			projectRef: config.target.projectRef,
+			runId: config.runId
+		});
+		const finalizePurgeTombstone = vi.fn(() => store.finalizePurgeTombstone());
+		try {
+			await expect(
+				cleanupHostedManifestFile({
+					config,
+					environment: approvedCleanupEnvironment,
+					manifestPath,
+					operator: { inspect: vi.fn(), remove: vi.fn() },
+					credentialStore: {
+						credentialStoreId: store.credentialStoreId,
+						purgeModeratorTotpSecrets: vi.fn(),
+						finalizePurgeTombstone
+					},
+					logger: { info: vi.fn() }
+				})
+			).resolves.toEqual({ cleaned: true, counts: cleanInventory() });
+			expect(finalizePurgeTombstone).toHaveBeenCalledOnce();
+			await expect(stat(manifestPath)).rejects.toMatchObject({ code: 'ENOENT' });
+			await expect(stat(storePath)).rejects.toMatchObject({ code: 'ENOENT' });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('fails closed for non-finalizable concrete stores when the manifest is absent', async () => {
 		const config = validateHostedOperatorEnvironment(baseEnvironment);
 		const directory = await mkdtemp(join(tmpdir(), 'gate3-manifest-'));
 		const encryptionKey = 'k'.repeat(48);
 		const wrongEncryptionKey = 'w'.repeat(48);
 		try {
-			for (const scenario of ['missing', 'active', 'wrong-key', 'corrupt'] as const) {
+			for (const scenario of ['active', 'wrong-key', 'corrupt'] as const) {
 				const manifestPath = join(directory, `${scenario}.json`);
 				const storePath = join(directory, `${scenario}.enc`);
 				const exactStore = createEncryptedModeratorCredentialStore({
@@ -2118,7 +2277,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 					projectRef: config.target.projectRef,
 					runId: config.runId
 				});
-				if (scenario !== 'missing') await exactStore.initializeModeratorTotpSecrets();
+				await exactStore.initializeModeratorTotpSecrets();
 				if (scenario === 'wrong-key' || scenario === 'corrupt') {
 					await exactStore.purgeModeratorTotpSecrets();
 				}
@@ -2157,11 +2316,7 @@ describe('hosted report-evidence audit and cleanup safety', () => {
 				expect(remove).not.toHaveBeenCalled();
 				expect(purgeModeratorTotpSecrets).not.toHaveBeenCalled();
 				expect(finalizePurgeTombstone).toHaveBeenCalledOnce();
-				if (scenario === 'missing') {
-					await expect(stat(storePath)).rejects.toMatchObject({ code: 'ENOENT' });
-				} else {
-					await expect(readFile(storePath, 'utf8')).resolves.toBeTruthy();
-				}
+				await expect(readFile(storePath, 'utf8')).resolves.toBeTruthy();
 			}
 		} finally {
 			await rm(directory, { recursive: true, force: true });

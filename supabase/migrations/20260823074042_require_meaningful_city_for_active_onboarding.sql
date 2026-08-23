@@ -1,30 +1,30 @@
 begin;
 
-create or replace function private.normalize_city(city_value text)
+create or replace function private.normalize_city(value text)
 returns text
 language sql
 immutable
 parallel safe
+strict
 set search_path = ''
 as $$
-  select btrim(coalesce(city_value, ''), ' ');
+  select pg_catalog.btrim(value, ' ');
 $$;
 
-create or replace function private.is_valid_city(city_value text)
+create or replace function private.is_valid_city(value text)
 returns boolean
 language sql
 immutable
 parallel safe
 set search_path = ''
 as $$
-  select city_value is not null
-    and city_value = private.normalize_city(city_value)
-    and city_value !~ (
-      '[' || E'\t\n\v\f\r'
-      || U&'\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\200B\2028\2029\202F\205F\3000\FEFF'
-      || ']'
-    )
-    and char_length(city_value) between 2 and 100;
+  select normalized_city is not null
+    and pg_catalog.char_length(normalized_city) between 2 and 100
+    and normalized_city ~ '[[:alnum:]]'
+    and normalized_city !~ '[^[:alnum:] ''-]'
+  from (
+    select private.normalize_city(value) as normalized_city
+  ) normalized;
 $$;
 
 revoke execute on function private.normalize_city(text) from public, anon;
@@ -32,11 +32,13 @@ revoke execute on function private.is_valid_city(text) from public, anon;
 grant execute on function private.normalize_city(text) to authenticated, service_role;
 grant execute on function private.is_valid_city(text) to authenticated, service_role;
 
-alter table public.profiles drop constraint profiles_city_shape;
 alter table public.profiles
-  add constraint profiles_city_shape
-  check (city is null or private.is_valid_city(city))
-  not valid;
+  add constraint profiles_city_shape check (
+    city is null or (
+      city = private.normalize_city(city)
+      and private.is_valid_city(city)
+    )
+  ) not valid;
 
 create or replace function private.is_active_beta_user(check_user_id uuid)
 returns boolean
@@ -75,6 +77,9 @@ as $$
     );
 $$;
 
+revoke execute on function private.is_active_beta_user(uuid) from public, anon;
+grant execute on function private.is_active_beta_user(uuid) to authenticated, service_role;
+
 create or replace function public.complete_beta_onboarding(
   desired_username text,
   home_city text default null
@@ -98,7 +103,8 @@ begin
       using errcode = '22023';
   end if;
   if not private.is_valid_city(normalized_city) then
-    raise exception 'city must contain 2 to 100 characters' using errcode = '22023';
+    raise exception 'city must contain 2 to 100 letters or digits with spaces, hyphens, or apostrophes'
+      using errcode = '22023';
   end if;
 
   select * into membership_record
@@ -107,20 +113,6 @@ begin
   for update;
   if not found or membership_record.status not in ('pending', 'active') then
     raise exception 'pending beta onboarding was not found' using errcode = '42501';
-  end if;
-  if membership_record.status = 'active'
-     and membership_record.onboarding_completed_at is not null
-     and exists (
-       select 1 from public.profiles p
-       where p.id = requesting_user and private.is_valid_city(p.city)
-     )
-  then
-    return jsonb_build_object(
-      'profileId', requesting_user,
-      'username', (select p.username::text from public.profiles p where p.id = requesting_user),
-      'onboardingCompletedAt', membership_record.onboarding_completed_at,
-      'isActive', private.is_active_beta_user(requesting_user)
-    );
   end if;
   if not exists (
     select 1 from public.profiles p
@@ -145,10 +137,45 @@ begin
     raise exception 'all current required beta documents must be accepted'
       using errcode = '42501';
   end if;
+  if membership_record.status = 'active'
+     and membership_record.onboarding_completed_at is not null
+     and exists (
+       select 1
+       from public.profiles p
+       where p.id = requesting_user
+         and private.is_valid_city(p.city)
+     )
+  then
+    return jsonb_build_object(
+      'profileId', requesting_user,
+      'username', (select p.username::text from public.profiles p where p.id = requesting_user),
+      'onboardingCompletedAt', membership_record.onboarding_completed_at,
+      'isActive', private.is_active_beta_user(requesting_user)
+    );
+  end if;
 
-  update public.beta_memberships set status = 'active' where profile_id = requesting_user;
+  -- Activation and profile repair share one transaction. A username conflict or
+  -- any constraint failure rolls the membership transition back with the profile.
+  update public.beta_memberships
+  set status = 'active'
+  where profile_id = requesting_user;
+
+  -- The inherited workflow trigger stamps fresh activations with
+  -- statement_timestamp(), while the canonical access predicate intentionally
+  -- evaluates against transaction time. Align only a new pending-to-active
+  -- transition so this transaction can observe the access it just granted;
+  -- do not rewrite timestamps while repairing an existing active membership.
+  if membership_record.status = 'pending' then
+    update public.beta_memberships
+    set activated_at = transaction_timestamp(),
+        onboarding_completed_at = transaction_timestamp()
+    where profile_id = requesting_user
+      and status = 'active';
+  end if;
+
   update public.profiles
-  set username = normalized_username, city = normalized_city
+  set username = normalized_username,
+      city = normalized_city
   where id = requesting_user;
 
   select * into membership_record
@@ -157,16 +184,26 @@ begin
     'profileId', requesting_user,
     'username', normalized_username,
     'onboardingCompletedAt', membership_record.onboarding_completed_at,
-    'isActive', true
+    'isActive',
+      membership_record.status = 'active'
+      and (membership_record.expires_at is null or membership_record.expires_at > now())
+      and private.is_active_beta_user(requesting_user)
   );
 exception when unique_violation then
   raise exception 'username is already in use' using errcode = '23505';
 end;
 $$;
 
-revoke execute on function private.is_active_beta_user(uuid) from public, anon;
-grant execute on function private.is_active_beta_user(uuid) to authenticated, service_role;
-revoke execute on function public.complete_beta_onboarding(text, text) from public, anon;
-grant execute on function public.complete_beta_onboarding(text, text) to authenticated;
+revoke execute on function public.complete_beta_onboarding(text, text)
+  from public, anon;
+grant execute on function public.complete_beta_onboarding(text, text)
+  to authenticated;
+
+comment on function private.normalize_city(text) is
+  'Removes only surrounding ASCII spaces from onboarding city input.';
+comment on function private.is_valid_city(text) is
+  'Canonical city predicate: 2-100 characters, at least one alphanumeric, and only alphanumerics, ASCII spaces, hyphens, or apostrophes.';
+comment on function public.is_active_beta_user() is
+  'Canonical marketplace gate: verified, unsuspended, onboarded with a valid city, unexpired, and current on required consents.';
 
 commit;

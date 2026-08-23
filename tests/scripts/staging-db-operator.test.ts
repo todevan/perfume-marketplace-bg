@@ -6,7 +6,6 @@ import {
 	rmSync,
 	writeFileSync
 } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -19,7 +18,6 @@ import {
 	createPinnedSupabaseWorkdir,
 	runStagingCommand,
 	stagingCommandArguments,
-	verifyStagingInventoryReceipt,
 	verifyStagingTarget
 } from '../../scripts/staging-db-operator.mjs';
 
@@ -191,58 +189,6 @@ describe('Frankfurt staging target guard', () => {
 });
 
 describe('Frankfurt staging operator commands', () => {
-	it('requires public signup quiescence for the complete inventory receipt window', () => {
-		const fixtureBase = mkdtempSync(join(tmpdir(), 'staging-inventory-receipt-'));
-		const receiptPath = join(fixtureBase, 'receipt.json');
-		const receipt = {
-			createdAt: new Date().toISOString(),
-			projectRef: STAGING_PROJECT.ref,
-			completeCategories: [
-				'application_rows',
-				'auth_configuration',
-				'auth_users',
-				'database_objects',
-				'edge_functions',
-				'extensions',
-				'migrations',
-				'realtime',
-				'scheduled_jobs',
-				'secrets',
-				'storage'
-			],
-			stopConditionsClear: true,
-			containsRealData: false,
-			publicSignupEnabled: false,
-			unexpectedObjects: []
-		};
-		try {
-			const bytes = Buffer.from(`${JSON.stringify(receipt)}\n`, 'utf8');
-			writeFileSync(receiptPath, bytes);
-			const environment = {
-				STAGING_INVENTORY_RECEIPT_PATH: receiptPath,
-				STAGING_INVENTORY_RECEIPT_SHA256: createHash('sha256').update(bytes).digest('hex')
-			};
-
-			expect(() => verifyStagingInventoryReceipt(environment)).not.toThrow();
-
-			const openSignupBytes = Buffer.from(
-				`${JSON.stringify({ ...receipt, publicSignupEnabled: true })}\n`,
-				'utf8'
-			);
-			writeFileSync(receiptPath, openSignupBytes);
-			expect(() =>
-				verifyStagingInventoryReceipt({
-					...environment,
-					STAGING_INVENTORY_RECEIPT_SHA256: createHash('sha256')
-						.update(openSignupBytes)
-						.digest('hex')
-				})
-			).toThrow(/stop condition/u);
-		} finally {
-			rmSync(fixtureBase, { recursive: true, force: true });
-		}
-	});
-
 	it('maps push operations to fixed forward-only CLI arguments', () => {
 		expect(stagingCommandArguments('verify-target')).toBeNull();
 		expect(stagingCommandArguments('push-dry-run')).toEqual([

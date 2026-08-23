@@ -40,6 +40,41 @@ async function directSignup(body: Record<string, unknown>): Promise<Response> {
 	});
 }
 
+async function directPasswordSignup(
+	account: ReturnType<typeof uniqueAccount>,
+	password: string
+): Promise<Response> {
+	return directSignup({
+		email: account.email,
+		password,
+		data: { username: account.username },
+		gotrue_meta_security: { captcha_token: 'XXXX.DUMMY.TOKEN.XXXX' }
+	});
+}
+
+async function mailpitMessageIdsFor(email: string): Promise<Set<string>> {
+	const response = await fetch(`${mailpitUrl}/api/v1/messages`);
+	if (!response.ok) throw new Error(`Mailpit message list returned ${response.status}.`);
+	const payload = (await response.json()) as MailpitList;
+	return new Set(
+		payload.messages
+			.filter((message) => message.To.some((recipient) => recipient.Address === email))
+			.map((message) => message.ID)
+	);
+}
+
+async function expectNewMailpitMessage(email: string, existingIds: ReadonlySet<string>): Promise<void> {
+	await expect
+		.poll(
+			async () => {
+				const currentIds = await mailpitMessageIdsFor(email);
+				return [...currentIds].some((id) => !existingIds.has(id));
+			},
+			{ message: `new Mailpit message for ${email}`, timeout: 15_000 }
+		)
+		.toBe(true);
+}
+
 async function installTestingCaptchaToken(page: Page): Promise<void> {
 	await page.locator('.cf-turnstile').evaluate((host) => {
 		const input =
@@ -101,7 +136,18 @@ test.describe('open registration against local Supabase', () => {
 		expect(await malformedResponse.text()).toContain('captcha_token');
 	});
 
-	test('browser registration confirms through Mailpit, onboards, and reaches protected access', async ({
+	test('Supabase Auth enforces the 12-character password boundary on direct signup', async () => {
+		const tooShort = uniqueAccount();
+		const tooShortResponse = await directPasswordSignup(tooShort, 'Abcdefgh1!x');
+		expect(tooShortResponse.status).toBe(422);
+		expect(await tooShortResponse.text()).toContain('weak_password');
+
+		const accepted = uniqueAccount();
+		const acceptedResponse = await directPasswordSignup(accepted, 'Abcdefgh1!xy');
+		expect(acceptedResponse.status).toBe(200);
+	});
+
+	test('browser registration, fresh login, and password recovery work through GoTrue CAPTCHA', async ({
 		page
 	}) => {
 		test.setTimeout(60_000);
@@ -140,5 +186,22 @@ test.describe('open registration against local Supabase', () => {
 		await page.getByRole('button', { name: 'Активирай достъпа' }).click();
 		await expect(page).toHaveURL(/\/dashboard$/u);
 		await expect(page.getByRole('heading', { name: `Здравей, ${account.username}.` })).toBeVisible();
+
+		await page.getByRole('button', { name: 'Изход', exact: true }).click();
+		await expect(page).toHaveURL(/\/login$/u);
+		await page.getByLabel('Имейл').fill(account.email);
+		await page.locator('#password').fill(account.password);
+		await installTestingCaptchaToken(page);
+		await page.getByRole('button', { name: 'Влез в профила' }).click();
+		await expect(page).toHaveURL(/\/dashboard$/u);
+		await expect(page.getByRole('heading', { name: `Здравей, ${account.username}.` })).toBeVisible();
+
+		const previousMessageIds = await mailpitMessageIdsFor(account.email);
+		await page.goto('/auth/reset-password');
+		await page.getByLabel('Имейл').fill(account.email);
+		await installTestingCaptchaToken(page);
+		await page.getByRole('button', { name: 'Изпрати връзка' }).click();
+		await expect(page.getByRole('status')).toContainText('ще получиш връзка');
+		await expectNewMailpitMessage(account.email, previousMessageIds);
 	});
 });

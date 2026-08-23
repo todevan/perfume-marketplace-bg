@@ -19,19 +19,17 @@ export const publicProfileLookupSchema = z.object({
 	username: z.string().trim().min(3).max(40)
 });
 
-const meaningfulCityCharacter = /[\p{L}\p{N}]/u;
-const allowedCityCharacters = /^[-\p{L}\p{N} ']+$/u;
-
 export const cityInputSchema = z
 	.string()
 	.transform((value) => value.replace(/^ +| +$/gu, ''))
 	.pipe(
 		z
 			.string()
-			.min(2)
-			.max(100)
+			.min(2, 'City must be at least 2 characters')
+			.max(100, 'City must be at most 100 characters')
 			.refine(
-				(value) => meaningfulCityCharacter.test(value) && allowedCityCharacters.test(value)
+				(value) => /[\p{L}\p{N}]/u.test(value) && /^[-\p{L}\p{N} ']+$/u.test(value),
+				'Enter a valid city or location'
 			)
 	);
 

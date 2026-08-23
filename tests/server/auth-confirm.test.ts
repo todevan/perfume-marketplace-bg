@@ -1,21 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GET } from '../../src/routes/auth/confirm/+server';
 
-function confirmationEvent({
-	verifyError = null,
-	claimError = null,
-	next = '/onboarding?next=%2Fdashboard'
-}: {
-	verifyError?: Error | null;
+type ConfirmationOptions = {
+	type: 'email' | 'signup';
+	verificationError?: Error | null;
 	claimError?: Error | null;
 	next?: string;
-} = {}) {
-	const verifyOtp = vi.fn(async () => ({ data: { session: null, user: null }, error: verifyError }));
-	const rpc = vi.fn(async () => ({ data: claimError ? null : true, error: claimError }));
+};
+
+function confirmationEvent({
+	type,
+	verificationError = null,
+	claimError = null,
+	next = '/onboarding'
+}: ConfirmationOptions) {
+	const verifyOtp = vi.fn(async () => ({ data: {}, error: verificationError }));
+	const rpc = vi.fn(async () => ({ data: true, error: claimError }));
 	const signOut = vi.fn(async () => ({ error: null }));
 	const url = new URL('https://market.example/auth/confirm');
-	url.searchParams.set('token_hash', 'signup-token-hash');
-	url.searchParams.set('type', 'email');
+	url.searchParams.set('token_hash', 'confirmation-token-hash');
+	url.searchParams.set('type', type);
 	url.searchParams.set('next', next);
 
 	return {
@@ -32,44 +36,60 @@ function confirmationEvent({
 	};
 }
 
-describe('signup confirmation handler', () => {
-	it('verifies the signup token, claims pending membership, and follows the safe onboarding redirect', async () => {
-		const { event, verifyOtp, rpc, signOut } = confirmationEvent();
+describe('email confirmation admission boundary', () => {
+	it.each(['signup', 'email'] as const)(
+		'claims open registration after a valid %s confirmation',
+		async (type) => {
+			const { event, verifyOtp, rpc, signOut } = confirmationEvent({ type });
 
-		await expect(GET(event)).rejects.toMatchObject({
-			status: 303,
-			location: '/onboarding?next=%2Fdashboard'
-		});
-		expect(verifyOtp).toHaveBeenCalledExactlyOnceWith({
-			token_hash: 'signup-token-hash',
-			type: 'email'
-		});
-		expect(rpc).toHaveBeenCalledExactlyOnceWith('claim_open_registration');
-		expect(signOut).not.toHaveBeenCalled();
-	});
+			await expect(GET(event)).rejects.toMatchObject({
+				status: 303,
+				location: '/onboarding'
+			});
+			expect(verifyOtp).toHaveBeenCalledOnce();
+			expect(verifyOtp).toHaveBeenCalledWith({
+				token_hash: 'confirmation-token-hash',
+				type
+			});
+			expect(rpc).toHaveBeenCalledOnce();
+			expect(rpc).toHaveBeenCalledWith('claim_open_registration');
+			expect(signOut).not.toHaveBeenCalled();
+		}
+	);
 
-	it('rejects an invalid or expired token without claiming marketplace membership', async () => {
-		const { event, rpc } = confirmationEvent({ verifyError: new Error('expired') });
+	it('never claims registration when token verification fails', async () => {
+		const { event, rpc, signOut } = confirmationEvent({
+			type: 'email',
+			verificationError: new Error('expired')
+		});
 
 		await expect(GET(event)).rejects.toMatchObject({
 			status: 303,
 			location: '/auth/error?reason=invalid_or_expired'
 		});
 		expect(rpc).not.toHaveBeenCalled();
+		expect(signOut).not.toHaveBeenCalled();
 	});
 
-	it('signs out and fails closed when pending membership cannot be claimed', async () => {
-		const { event, signOut } = confirmationEvent({ claimError: new Error('database unavailable') });
+	it('signs out when open-registration claiming fails', async () => {
+		const { event, rpc, signOut } = confirmationEvent({
+			type: 'email',
+			claimError: new Error('claim failed')
+		});
 
 		await expect(GET(event)).rejects.toMatchObject({
 			status: 303,
 			location: '/auth/error?reason=profile_activation_failed'
 		});
+		expect(rpc).toHaveBeenCalledWith('claim_open_registration');
 		expect(signOut).toHaveBeenCalledOnce();
 	});
 
-	it('does not follow an external post-confirmation redirect', async () => {
-		const { event } = confirmationEvent({ next: 'https://attacker.example/steal' });
+	it('sanitizes an external next URL after successful confirmation', async () => {
+		const { event } = confirmationEvent({
+			type: 'email',
+			next: 'https://attacker.example/collect'
+		});
 
 		await expect(GET(event)).rejects.toMatchObject({ status: 303, location: '/dashboard' });
 	});

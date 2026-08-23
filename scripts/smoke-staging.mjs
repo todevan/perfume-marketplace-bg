@@ -46,7 +46,7 @@ const DEMO_SENTINELS = [
  */
 
 /**
- * @typedef {SmokeOptions} RollbackSmokeOptions
+ * @typedef {Omit<SmokeOptions, 'expectedGitSha'>} RollbackSmokeOptions
  */
 
 class SmokeAssertionError extends Error {
@@ -374,10 +374,9 @@ async function runSmokeAttempt(fetchImpl, origin, expectedGitSha, timeoutMs) {
 /**
  * @param {typeof fetch} fetchImpl
  * @param {string} origin
- * @param {string} expectedGitSha
  * @param {number} timeoutMs
  */
-async function runRollbackSmokeAttempt(fetchImpl, origin, expectedGitSha, timeoutMs) {
+async function runRollbackSmokeAttempt(fetchImpl, origin, timeoutMs) {
 	/** @type {SmokeReceipt[]} */
 	const receipts = [];
 
@@ -385,7 +384,7 @@ async function runRollbackSmokeAttempt(fetchImpl, origin, expectedGitSha, timeou
 		const response = await request(fetchImpl, origin, path, {}, timeoutMs);
 		const context = `GET ${path}`;
 		assertStatus(response, 503, context);
-		assertDeploymentIdentity(response, expectedGitSha, context);
+		assertSecurityHeaders(response, context);
 		assertNoStore(response, context);
 		assertSmoke(response.headers.get('retry-after') === '60', `${context}: missing Retry-After.`);
 		const body = await response.text();
@@ -460,7 +459,6 @@ export async function runStagingSmoke(options) {
  */
 export async function runStagingRollbackSmoke(options) {
 	const origin = normalizeOrigin(options.origin);
-	const expectedGitSha = normalizeExpectedGitSha(options.expectedGitSha);
 	const attempts = integerInRange(options.attempts ?? 1, 'attempts', {
 		minimum: 1,
 		maximum: 30
@@ -480,7 +478,7 @@ export async function runStagingRollbackSmoke(options) {
 	let lastFailure;
 	for (let attempt = 1; attempt <= attempts; attempt += 1) {
 		try {
-			const receipts = await runRollbackSmokeAttempt(fetchImpl, origin, expectedGitSha, timeoutMs);
+			const receipts = await runRollbackSmokeAttempt(fetchImpl, origin, timeoutMs);
 			for (const receipt of receipts) {
 				logger.log(`${receipt.method} ${receipt.path} -> ${receipt.status}`);
 			}
@@ -534,10 +532,7 @@ async function main() {
 	};
 
 	if (mode === 'rollback') {
-		await runStagingRollbackSmoke({
-			...commonOptions,
-			expectedGitSha: cli['expected-git-sha'] ?? process.env.EXPECTED_GIT_SHA ?? ''
-		});
+		await runStagingRollbackSmoke(commonOptions);
 		return;
 	}
 	if (mode !== 'functional') {

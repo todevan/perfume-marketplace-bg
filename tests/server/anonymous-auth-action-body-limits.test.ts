@@ -35,7 +35,13 @@ describe('anonymous auth action request-body limits', () => {
 		const turnstileFetch = vi.fn(async () =>
 			new Response(JSON.stringify({ success: true, action: 'login' }))
 		);
-		const signInWithPassword = vi.fn(async () => ({ error: new Error('invalid credentials') }));
+		const signInWithPassword = vi.fn(
+			async (_credentials: {
+				email: string;
+				password: string;
+				options: { captchaToken: string };
+			}) => ({ error: new Error('invalid credentials') })
+		);
 
 		const result = await loginActions.login({
 			request: formRequest(
@@ -144,7 +150,7 @@ describe('anonymous auth action request-body limits', () => {
 		expect(resetPasswordForEmail).not.toHaveBeenCalled();
 	});
 
-	it('keeps a within-limit login able to reach Turnstile and the provider', async () => {
+	it('passes a within-limit login CAPTCHA token once to Supabase Auth', async () => {
 		const turnstileFetch = vi.fn(async () =>
 			new Response(JSON.stringify({ success: true, action: 'login' }))
 		);
@@ -162,14 +168,14 @@ describe('anonymous auth action request-body limits', () => {
 		} as never);
 
 		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(turnstileFetch).toHaveBeenCalledOnce();
-		expect(signInWithPassword).toHaveBeenCalledWith({
+		expect(turnstileFetch).not.toHaveBeenCalled();
+		expect(signInWithPassword).toHaveBeenCalledWith(expect.objectContaining({
 			email: 'member@example.bg',
-			password: 'correct-horse-battery-staple'
-		});
+			options: { captchaToken: 'verified-login-token' }
+		}));
 	});
 
-	it('keeps a within-limit password reset able to reach Turnstile and the provider', async () => {
+	it('passes a within-limit password-reset CAPTCHA token once to Supabase Auth', async () => {
 		const turnstileFetch = vi.fn(async () =>
 			new Response(JSON.stringify({ success: true, action: 'password_reset' }))
 		);
@@ -186,9 +192,10 @@ describe('anonymous auth action request-body limits', () => {
 		} as never);
 
 		expect(result).toMatchObject({ success: true });
-		expect(turnstileFetch).toHaveBeenCalledOnce();
+		expect(turnstileFetch).not.toHaveBeenCalled();
 		expect(resetPasswordForEmail).toHaveBeenCalledWith('member@example.bg', {
-			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password'
+			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password',
+			captchaToken: 'verified-reset-token'
 		});
 	});
 });

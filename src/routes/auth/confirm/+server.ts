@@ -49,7 +49,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	}
 
 	if (type === 'recovery') redirect(303, '/auth/update-password');
-	if (type === 'email') {
+	if (type === 'signup' || type === 'email') {
 		const { error: admissionError } = await locals.supabase.rpc('claim_open_registration');
 		if (admissionError) {
 			await locals.supabase.auth.signOut();

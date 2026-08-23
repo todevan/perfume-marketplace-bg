@@ -8,8 +8,6 @@ build
 coverage
 playwright-report
 test-results
-scripts/issue22-hosted/private/
-.superpowers/issue22-hosted-new-target/
 .wrangler
 supabase/.temp
 supabase/.branches

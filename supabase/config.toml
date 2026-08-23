@@ -48,7 +48,7 @@ enable_refresh_token_rotation = true
 refresh_token_reuse_interval = 10
 enable_signup = true
 enable_anonymous_sign_ins = false
-minimum_password_length = 8
+minimum_password_length = 12
 
 [auth.rate_limit]
 email_sent = 10
@@ -56,6 +56,11 @@ sms_sent = 10
 token_refresh = 150
 sign_in_sign_ups = 30
 token_verifications = 30
+
+[auth.captcha]
+enabled = true
+provider = "turnstile"
+secret = "env(LOCAL_AUTH_CAPTCHA_TEST_KEY)"
 
 [auth.email]
 enable_signup = true
@@ -66,19 +71,13 @@ max_frequency = "1m"
 otp_length = 6
 otp_expiry = 3600
 
+[auth.email.template.confirmation]
+subject = "Потвърдете регистрацията си в Ароматика"
+content_path = "./supabase/templates/confirmation.html"
+
 [auth.email.template.invite]
 subject = "Покана за затворената beta"
 content_path = "./supabase/templates/invite.html"
-
-[auth.email.template.confirmation]
-subject = "Потвърди регистрацията си"
-content_path = "./supabase/templates/confirmation.html"
-
-[auth.captcha]
-enabled = true
-provider = "turnstile"
-# Cloudflare's documented always-pass test secret. Hosted projects use a managed secret.
-secret = "env(LOCAL_AUTH_CAPTCHA_TEST_KEY)"
 
 [auth.sms]
 enable_signup = false

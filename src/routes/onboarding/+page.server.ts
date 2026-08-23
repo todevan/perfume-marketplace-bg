@@ -2,7 +2,7 @@ import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { requireAuthenticated } from '$lib/server/auth/guards';
 import { safeRedirectPath } from '$lib/server/auth/redirect';
-import { cityInputSchema } from '$lib/contracts/profiles';
+import { cityInputSchema } from '$lib/contracts';
 
 const USERNAME_PATTERN = /^[\p{L}\p{N}_.-]{3,40}$/u;
 
@@ -68,8 +68,7 @@ export const actions: Actions = {
 		}
 
 		const username = formData.get('username')?.toString().trim() ?? '';
-		const cityResult = cityInputSchema.safeParse(formData.get('city'));
-		const cityValue = cityResult.success ? cityResult.data : '';
+		const cityValue = formData.get('city')?.toString() ?? '';
 
 		if (!USERNAME_PATTERN.test(username)) {
 			return fail(400, {
@@ -79,9 +78,16 @@ export const actions: Actions = {
 				message: 'Потребителското име трябва да е 3–40 букви, цифри, точки, тирета или долни черти.'
 			});
 		}
+		const cityResult = cityInputSchema.safeParse(cityValue);
 		if (!cityResult.success) {
-			return fail(400, { success: false, username, city: cityValue, message: 'Градът трябва да е между 2 и 100 знака.' });
+			return fail(400, {
+				success: false,
+				username,
+				city: cityValue,
+				message: cityResult.error.issues[0]?.message ?? 'Enter a valid city or location'
+			});
 		}
+		const city = cityResult.data;
 
 		const documents = await requiredLegalDocuments(locals);
 		if (documents.length === 0) {
@@ -119,7 +125,7 @@ export const actions: Actions = {
 
 		const { error: onboardingError } = await locals.supabase.rpc('complete_beta_onboarding', {
 			desired_username: username,
-			home_city: cityValue
+			home_city: city
 		});
 		if (onboardingError) {
 			return fail(400, {
