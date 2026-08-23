@@ -30,7 +30,7 @@ Launch issues closed             0 / 9   ░░░░░░░░░░   0%
 Golden journeys at grade A       0 / 5   ░░░░░░░░░░   0%
 ```
 
-The first two ratios describe the Gate 3 branch record. The latter two reflect the 2026-08-23 GitHub check. None is a launch-readiness percentage, and implementation presence never substitutes for acceptance evidence.
+The first two ratios describe the Gate 3 branch record. The `0 / 9` issue ratio is verified by the 2026-08-23 GitHub check. The `0 / 5` journey ratio records that the supplied and reconciled evidence contains no current grade-A proof for any complete golden journey; it is not a GitHub result or evidence that those journeys were executed on 2026-08-23. None is a launch-readiness percentage, and implementation presence never substitutes for acceptance evidence.
 
 ### 2.2 Domain snapshot
 
@@ -87,8 +87,9 @@ Freshly captured evidence at `2026-08-23T08:44:22+03:00`:
 | Plan blob | `bb2ff08d937f15aba24cb4d3a4646206bab8ba9d` |
 | Gate 3 PR/workflow | No associated PR or workflow run found for `3a481d…` |
 | PR #33 | Open draft, `73fd29d…`, 11 ahead/18 behind `main`, 68 files |
-| PR #34 | Open, `d3e85a5…`, 12 ahead/18 behind `main`, 12 files |
+| PR #34 | Open generated-tooling PR, `d3e85a5…`, diverged at 12 ahead/18 behind `main`, 12 files |
 | Issues #22–#30 | All open |
+| Active `main` ruleset | Pull request required; branch must be up to date; conversations must be resolved; `app` and `database` checks required; no bypass actor |
 
 Task 9 code is present across exactly six files: lifecycle, scenario runner, operator, and their three tests. Inspection of the code shape indicates lifecycle selects the scenario checkpoint and passes that selection to the runner. However, lifecycle and its test were added beyond the original four-file task scope. Scope authority, focused/broad tests, independent engineering review, adversarial R2 review, CI, and required evidence are not established. Task 9 is not complete.
 
@@ -233,7 +234,7 @@ flowchart TD
   Ops --> RC
 ```
 
-Only one implementation task runs at a time. Gate 3 does not displace the product queue or authorize hosted action. A resumed Gate 3 task must first reconcile local/remote state and close or checkpoint Task 9. Product work follows #22, then #25, then privacy/safety, entitlements, owner decisions, provider/promotion, merchant, operations, and exact-candidate release verification.
+Prefer one active task owner. Parallelize only genuinely independent work under the repository workflow. Gate 3 does not displace the product queue or authorize hosted action. Because current Gate 3 Task 9 verification and issue #22 both depend on reconciling overlapping branch/scope state, do not run those two tasks in parallel: reconcile and close or checkpoint the selected task first. The product sequence remains #22, then #25, then privacy/safety, entitlements, owner decisions, provider/promotion, merchant, operations, and exact-candidate release verification.
 
 ## 22. Illustrative checkpoint ledger
 
@@ -281,7 +282,7 @@ Evidence is stale after any relevant product rule, code, migration, configuratio
 ## 23. One-task agent prompt library
 
 > [!CAUTION]
-> These are task templates, not standing instructions or authorization. Before using one, re-read authorities, reconcile the exact worktree, confirm task priority/scope, and satisfy R2/R3 gates. Never execute more than one template at a time.
+> These are task templates, not standing instructions or authorization. Before using one, re-read authorities, reconcile the exact worktree, confirm task priority/scope, and satisfy R2/R3 gates. Select one template for each task owner. Parallel work is allowed only for genuinely independent tasks under the repository workflow; Gate 3 Task 9 verification and issue #22 are not currently independent and must not run in parallel.
 
 ### Global guardrail template
 
@@ -345,7 +346,7 @@ The following are **questions to decide**, not adopted requirements:
 
 ## 26. Hard red lines
 
-Never weaken open-registration or staff-MFA truth; guarantee authenticity; fabricate marketplace activity or proof; expose private contact/evidence; bypass server/RLS boundaries; use service role generically; edit applied migrations; reset hosted data for tests; delete unknown provider data; enable payment without provider/legal/business/security gates; claim PASS from code, schema, merge, dry-run, screenshot, or stale receipt; bypass exact-SHA CI; run two active tasks; automatically retry uncertain hosted mutation; mutate under ambiguous/release-changed lifecycle state; recover outside explicit recovery authorization; force or wildcard cleanup; remove stale locks without process proof and fresh inspection; retire compatibility entry points before replacement acceptance; let preflight/CI perform hosted mutation; or record state before mutation read-back and evidence.
+Never weaken open-registration or staff-MFA truth; guarantee authenticity; fabricate marketplace activity or proof; expose private contact/evidence; bypass server/RLS boundaries; use service role generically; edit applied migrations; reset hosted data for tests; delete unknown provider data; enable payment without provider/legal/business/security gates; claim PASS from code, schema, merge, dry-run, screenshot, or stale receipt; bypass exact-SHA CI; parallelize work that is not genuinely independent; automatically retry uncertain hosted mutation; mutate under ambiguous/release-changed lifecycle state; recover outside explicit recovery authorization; force or wildcard cleanup; remove stale locks without process proof and fresh inspection; retire compatibility entry points before replacement acceptance; let preflight/CI perform hosted mutation; or record state before mutation read-back and evidence.
 
 ## 27. Deferred features
 
@@ -381,7 +382,7 @@ Repository authorities to reread before work: `AGENTS.md`, `PRODUCT.md`, `DESIGN
 
 ## 31. Immediate next checkpoint
 
-This record starts no engineering task and authorizes no hosted action. The authoritative product queue keeps issue #22 before issue #25. If Gate 3 is explicitly resumed, first perform read-only reconciliation and establish Task 9 scope authority; otherwise it remains at this written checkpoint. Do not run Task 9 verification and product work concurrently.
+This record starts no engineering task and authorizes no hosted action. The authoritative product queue keeps issue #22 before issue #25. If Gate 3 is explicitly resumed, first perform read-only reconciliation and establish Task 9 scope authority; otherwise it remains at this written checkpoint. Do not run Gate 3 Task 9 verification and issue #22 concurrently because their current reconciliation scope overlaps; genuinely independent work remains eligible for parallel execution under the repository workflow.
 
 ### What changed
 
