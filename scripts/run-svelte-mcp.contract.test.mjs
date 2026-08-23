@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict'
-import { isAbsolute, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import {
+	mkdtempSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
 	SVELTE_MCP_ENTRYPOINT,
@@ -9,6 +21,46 @@ import {
 	getSvelteMcpLaunchSpec,
 	getSvelteMcpSpawnOptions
 } from './run-svelte-mcp.mjs'
+
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const CONFIG_RAW = readFileSync(join(REPOSITORY_ROOT, '.codex/config.toml'), 'utf8')
+const SVELTE_CONFIG_BODY = CONFIG_RAW.match(
+	/\[mcp_servers\.aromatika-svelte\]\n([\s\S]*?)(?=\n\[|$)/
+)?.[1]
+
+assert.ok(SVELTE_CONFIG_BODY, 'Svelte MCP config table must exist')
+
+function parseJsonCompatibleTomlField(name) {
+	const value = SVELTE_CONFIG_BODY.match(new RegExp(`^${name} = (.+)$`, 'm'))?.[1]
+	assert.ok(value, `${name} must exist in the Svelte MCP config table`)
+	return JSON.parse(value)
+}
+
+const SVELTE_CONFIG = Object.freeze({
+	command: parseJsonCompatibleTomlField('command'),
+	args: parseJsonCompatibleTomlField('args'),
+	cwd: SVELTE_CONFIG_BODY.match(/^cwd = (.+)$/m)?.[1]
+		? parseJsonCompatibleTomlField('cwd')
+		: undefined
+})
+
+function runConfiguredBootstrap(hostDirectory) {
+	assert.equal(SVELTE_CONFIG.command, 'node')
+
+	const childDirectory = SVELTE_CONFIG.cwd
+		? resolve(hostDirectory, SVELTE_CONFIG.cwd)
+		: hostDirectory
+
+	return spawnSync(
+		process.execPath,
+		[...SVELTE_CONFIG.args, '--', '--aromatika-resolve-only'],
+		{
+			cwd: childDirectory,
+			encoding: 'utf8',
+			env: buildSvelteMcpEnvironment(process.env)
+		}
+	)
+}
 
 test('Svelte MCP environment contains only approved non-secret runtime variables', () => {
 	const source = {
@@ -64,6 +116,80 @@ test('Svelte MCP entrypoint stays repository-rooted from a nested session direct
 		})
 	} finally {
 		process.chdir(originalDirectory)
+	}
+})
+
+test('configured bootstrap resolves the trusted wrapper from root and nested sessions', () => {
+	const expectedWrapper = realpathSync(join(REPOSITORY_ROOT, 'scripts/run-svelte-mcp.mjs'))
+	assert.equal(SVELTE_CONFIG.cwd, undefined)
+
+	for (const hostDirectory of [
+		REPOSITORY_ROOT,
+		join(REPOSITORY_ROOT, 'src'),
+		join(REPOSITORY_ROOT, 'src/routes/listing/[slug]')
+	]) {
+		const result = runConfiguredBootstrap(hostDirectory)
+
+		assert.equal(result.status, 0, result.stderr)
+		assert.equal(result.stdout, expectedWrapper)
+	}
+})
+
+test(
+	'configured bootstrap rejects a wrapper symlink that escapes the project root',
+	{ skip: process.platform === 'win32' },
+	() => {
+		const temporaryRoot = mkdtempSync(join(tmpdir(), 'aromatika-mcp-symlink-'))
+		const projectRoot = join(temporaryRoot, 'project')
+		const nestedDirectory = join(projectRoot, 'src/routes')
+		const wrapper = join(projectRoot, 'scripts/run-svelte-mcp.mjs')
+		const outsideTarget = join(temporaryRoot, 'outside-wrapper.mjs')
+
+		mkdirSync(join(projectRoot, '.codex'), { recursive: true })
+		mkdirSync(dirname(wrapper), { recursive: true })
+		mkdirSync(nestedDirectory, { recursive: true })
+		writeFileSync(
+			join(projectRoot, '.codex/aromatika-project-root'),
+			'aromatika-codex-root-v1\n',
+			'utf8'
+		)
+		writeFileSync(
+			join(projectRoot, 'package.json'),
+			'{"name":"perfume-marketplace-bg","private":true}\n',
+			'utf8'
+		)
+		writeFileSync(outsideTarget, "process.stdout.write('escaped-wrapper-ran')\n", 'utf8')
+		symlinkSync(outsideTarget, wrapper)
+
+		try {
+			const result = runConfiguredBootstrap(nestedDirectory)
+
+			assert.notEqual(result.status, 0)
+			assert.equal(result.stdout, '')
+			assert.match(result.stderr, /wrapper is outside the project root/)
+		} finally {
+			rmSync(temporaryRoot, { recursive: true, force: true })
+		}
+	}
+)
+
+test('configured bootstrap rejects an unrelated host with a parent-level wrapper', () => {
+	const unrelatedRoot = mkdtempSync(join(tmpdir(), 'aromatika-mcp-unrelated-'))
+	const nestedDirectory = join(unrelatedRoot, 'nested')
+	const fakeWrapper = join(unrelatedRoot, 'scripts/run-svelte-mcp.mjs')
+
+	mkdirSync(dirname(fakeWrapper), { recursive: true })
+	mkdirSync(nestedDirectory)
+	writeFileSync(fakeWrapper, "process.stdout.write('untrusted-wrapper-ran')\n", 'utf8')
+
+	try {
+		const result = runConfiguredBootstrap(nestedDirectory)
+
+		assert.notEqual(result.status, 0)
+		assert.equal(result.stdout, '')
+		assert.match(result.stderr, /Aromatika project root not found/)
+	} finally {
+		rmSync(unrelatedRoot, { recursive: true, force: true })
 	}
 })
 
