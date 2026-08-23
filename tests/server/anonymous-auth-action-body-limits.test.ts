@@ -10,7 +10,8 @@ const runtime: App.Locals['runtime'] = {
 	publicSupabaseKey: 'browser-publishable-key',
 	publicSupabaseAnonKey: 'browser-publishable-key',
 	imageProcessorMode: 'disabled',
-	turnstileSecretKey: 'turnstile-secret-key'
+	turnstileSecretKey: 'turnstile-secret-key',
+	turnstileExpectedHostname: 'market.example'
 };
 
 function oversizedForm(fields: Record<string, string>): FormData {
@@ -33,7 +34,7 @@ function actionStatus(result: unknown): number | undefined {
 describe('anonymous auth action request-body limits', () => {
 	it('rejects an oversized login before Turnstile verification or password sign-in', async () => {
 		const turnstileFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ success: true, action: 'login' }))
+			new Response(JSON.stringify({ success: true, action: 'login', hostname: 'market.example' }))
 		);
 		const signInWithPassword = vi.fn(async () => ({ error: new Error('invalid credentials') }));
 
@@ -89,7 +90,7 @@ describe('anonymous auth action request-body limits', () => {
 
 	it('rejects an oversized password-reset request before Turnstile verification or reset email', async () => {
 		const turnstileFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ success: true, action: 'password_reset' }))
+			new Response(JSON.stringify({ success: true, action: 'password_reset', hostname: 'market.example' }))
 		);
 		const resetPasswordForEmail = vi.fn(async () => ({ data: {}, error: null }));
 
@@ -146,7 +147,7 @@ describe('anonymous auth action request-body limits', () => {
 
 	it('keeps a within-limit login able to reach Turnstile and the provider', async () => {
 		const turnstileFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ success: true, action: 'login' }))
+			new Response(JSON.stringify({ success: true, action: 'login', hostname: 'market.example' }))
 		);
 		const signInWithPassword = vi.fn(async () => ({ error: new Error('invalid credentials') }));
 		const formData = new FormData();
@@ -171,7 +172,7 @@ describe('anonymous auth action request-body limits', () => {
 
 	it('keeps a within-limit password reset able to reach Turnstile and the provider', async () => {
 		const turnstileFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ success: true, action: 'password_reset' }))
+			new Response(JSON.stringify({ success: true, action: 'password_reset', hostname: 'market.example' }))
 		);
 		const resetPasswordForEmail = vi.fn(async () => ({ data: {}, error: null }));
 		const formData = new FormData();
