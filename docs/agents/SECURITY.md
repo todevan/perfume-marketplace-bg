@@ -85,9 +85,20 @@ Never trust filename or browser-declared MIME alone.
 ## Secrets/environments
 - Never commit secrets.
 - Never paste secrets into issues, PRs, logs, or chat.
+- Do not print or persist plaintext run credentials, session or refresh tokens, MFA secrets, provider response bodies, or secret-store contents in normal evidence or logs.
 - Verify exact provider/project/environment before hosted mutation.
 - Staging and production must remain distinguishable and fail closed.
 - Production/destructive/provider actions may be R3 even when repository implementation is complete.
+
+## Hosted mutation and cleanup
+
+- Read-only inspection is not mutation authorization. Before a hosted/operator mutation, bind the exact target, run, release, ownership/provenance, and one permitted lifecycle boundary.
+- Give a stateful runner only the capability required for that boundary; do not give it a general provider or deletion capability for convenience.
+- After mutation, perform targeted read-back before recording manifest evidence, and record orchestration state only after that evidence is durable.
+- If transport or provider outcome is uncertain, stop and inspect fresh. Do not retry automatically, widen scope, or infer success from local state.
+- Cleanup and recovery are exact, provenance-bound, and idempotent. Never use wildcard, blanket, foreign-data, or ambiguous deletion.
+- If ownership, coordinates, release identity, lifecycle state, or residual scope is ambiguous, fail closed and preserve the working system.
+- Recovery is a separate explicit boundary, not an automatic fallback from normal cleanup. Destructive provider operations remain subject to the applicable R2/R3 authority.
 
 ## Staff access
 Staff/admin MFA/AAL2 remains mandatory.
