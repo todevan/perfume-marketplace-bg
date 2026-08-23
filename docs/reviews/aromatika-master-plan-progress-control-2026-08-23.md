@@ -66,7 +66,7 @@ Gate states are `PASS`, `BLOCKED`, and `NOT FRESHLY VERIFIED`. Evidence grades a
 - **D:** historical proof, old SHA, scaffold, schema, design, or unmerged branch;
 - **E:** unsupported assertion or unknown state.
 
-A hosted-required gate passes only at A. Grade B may authorize the next engineering step, not launch.
+A hosted-required gate passes only at A. Grade B may provide sufficient evidence for an already-authorized next engineering step; it does not itself authorize work.
 
 Current authority order is: explicit owner instruction; intentional current local state after unknown work is preserved; `docs/AROMATIKA-LAUNCH-READINESS-DESIGN.md`; root `AGENTS.md`; concern-specific authorities (`PRODUCT.md`, `DESIGN.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT-STATUS.md`, `docs/LAUNCH-GATES.md`, `docs/BUSINESS-MODEL.md`, and agent rules); active issue/approved plan; GitHub `main`; historical material including this record.
 
