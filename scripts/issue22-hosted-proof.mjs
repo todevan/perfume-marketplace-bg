@@ -13,8 +13,9 @@ import { fileURLToPath } from 'node:url';
 /** @typedef {Record<string, string | undefined>} Environment */
 /** @typedef {{ origin: string, supabaseUrl: string, publishableKey: string, projectRef: string, parentProjectRef: string, branchName: string, candidateSha: string, runId: string, workerName: string, versionId: string, provenancePath: string }} HostedTarget */
 /** @typedef {{ label: string, email: string, userId: string | null }} ProvenanceActor */
+/** @typedef {{ label: string, email: string, userId: string | null }} DeletionPlanEntry */
 /** @typedef {{ origin: string, supabaseUrl: string, projectRef: string, parentProjectRef: string, branchName: string, candidateSha: string, runId: string, workerName: string, versionId: string }} TargetIdentity */
-/** @typedef {{ schemaVersion: number, state: 'attested' | 'cleaned', target: TargetIdentity, attestation: Record<string, unknown>, actors: ProvenanceActor[], cleanup?: Record<string, unknown> }} ProvenanceManifest */
+/** @typedef {{ schemaVersion: number, state: 'attested' | 'cleaned', target: TargetIdentity, attestation: Record<string, unknown>, actors: ProvenanceActor[], deletionPlan?: { resolvedAt: string, entries: DeletionPlanEntry[] }, cleanup?: Record<string, unknown> }} ProvenanceManifest */
 
 export const ISSUE22_PARENT_PROJECT_REF = 'nuhkpqjjyuygiemrxbdp';
 export const ISSUE22_WORKERS_DEV_SUFFIX = '.perfume-marketplace-bg.workers.dev';
@@ -348,7 +349,11 @@ function recordIntent(target, environment) {
 	const actorEmail = required(environment, 'ISSUE22_ACTOR_EMAIL');
 	if (!/^[a-z0-9-]{1,32}$/u.test(label)) throw new Error('Actor label has an invalid shape.');
 	const expectedPrefix = `issue22-${target.runId}-${target.candidateSha.slice(0, 8)}-`;
-	if (!actorEmail.startsWith(expectedPrefix) || !actorEmail.endsWith('@example.invalid')) {
+	if (
+		actorEmail !== normalizeEmail(actorEmail) ||
+		!actorEmail.startsWith(expectedPrefix) ||
+		!actorEmail.endsWith('@example.invalid')
+	) {
 		throw new Error('Actor email is outside the cleanup provenance namespace.');
 	}
 	updateManifest(target, (manifest) => {
@@ -403,6 +408,105 @@ async function listUsers(target, serviceKey) {
 	throw new Error('Supabase admin user inventory exceeded its safety bound.');
 }
 
+/** @param {string} value */
+function normalizeEmail(value) {
+	return value.trim().toLowerCase();
+}
+
+/** @param {Array<{ id: string, email?: string }>} users */
+function inventoryIndexes(users) {
+	/** @type {Map<string, { id: string, email: string }>} */
+	const byId = new Map();
+	/** @type {Map<string, { id: string, email: string }>} */
+	const byEmail = new Map();
+	for (const user of users) {
+		const email = typeof user.email === 'string' ? normalizeEmail(user.email) : '';
+		if (!user.id || !email) throw new Error('Auth inventory binding contains an invalid identity.');
+		if (byId.has(user.id) || byEmail.has(email)) {
+			throw new Error('Auth inventory binding contains duplicate identities.');
+		}
+		const identity = { id: user.id, email };
+		byId.set(user.id, identity);
+		byEmail.set(email, identity);
+	}
+	return { byId, byEmail };
+}
+
+/** @param {ProvenanceManifest} manifest @param {Array<{ id: string, email?: string }>} users */
+function resolveDeletionPlan(manifest, users) {
+	const { byId, byEmail } = inventoryIndexes(users);
+	const actorEmails = new Set();
+	const recordedIds = new Set();
+	const entries = manifest.actors.map((actor) => {
+		const email = normalizeEmail(actor.email);
+		if (email !== actor.email || actorEmails.has(email)) {
+			throw new Error('Auth inventory binding conflicts with provenance emails.');
+		}
+		actorEmails.add(email);
+		if (actor.userId && recordedIds.has(actor.userId)) {
+			throw new Error('Auth inventory binding conflicts with provenance IDs.');
+		}
+		if (actor.userId) recordedIds.add(actor.userId);
+		const byRecordedId = actor.userId ? byId.get(actor.userId) : undefined;
+		const byIntendedEmail = byEmail.get(email);
+		if (byRecordedId && byRecordedId.email !== email) {
+			throw new Error('Auth inventory binding maps a recorded ID to another email.');
+		}
+		if (actor.userId && byIntendedEmail && byIntendedEmail.id !== actor.userId) {
+			throw new Error('Auth inventory binding maps an intended email to another ID.');
+		}
+		if (actor.userId && !byRecordedId && byIntendedEmail) {
+			throw new Error('Auth inventory binding contains a stale ID conflict.');
+		}
+		return {
+			label: actor.label,
+			email,
+			userId: actor.userId ?? byIntendedEmail?.id ?? null
+		};
+	});
+	return { resolvedAt: new Date().toISOString(), entries };
+}
+
+/**
+ * @param {ProvenanceManifest} manifest
+ * @param {{ resolvedAt: string, entries: DeletionPlanEntry[] }} plan
+ * @param {Array<{ id: string, email?: string }>} users
+ */
+function validatePersistedDeletionPlan(manifest, plan, users) {
+	if (plan.entries.length !== manifest.actors.length) {
+		throw new Error('Persisted deletion plan does not cover every provenance actor.');
+	}
+	const { byId, byEmail } = inventoryIndexes(users);
+	const plannedIds = new Set();
+	const plannedEmails = new Set();
+	for (const actor of manifest.actors) {
+		const entry = plan.entries.find((item) => item.label === actor.label);
+		if (!entry || entry.email !== actor.email || plannedEmails.has(entry.email)) {
+			throw new Error('Persisted deletion plan provenance binding failed.');
+		}
+		plannedEmails.add(entry.email);
+		if (actor.userId && entry.userId !== actor.userId) {
+			throw new Error('Persisted deletion plan changed a recorded actor ID.');
+		}
+		if (entry.userId && plannedIds.has(entry.userId)) {
+			throw new Error('Persisted deletion plan contains duplicate IDs.');
+		}
+		if (entry.userId) plannedIds.add(entry.userId);
+		const byPlannedId = entry.userId ? byId.get(entry.userId) : undefined;
+		const byIntendedEmail = byEmail.get(entry.email);
+		if (byPlannedId && byPlannedId.email !== entry.email) {
+			throw new Error('Auth inventory binding maps a planned ID to another email.');
+		}
+		if (entry.userId && byIntendedEmail && byIntendedEmail.id !== entry.userId) {
+			throw new Error('Auth inventory binding maps a planned email to another ID.');
+		}
+		if (!byPlannedId && byIntendedEmail) {
+			throw new Error('Auth inventory binding changed after plan persistence.');
+		}
+	}
+	return [...plannedIds];
+}
+
 /** @param {HostedTarget} target @param {string} serviceKey @param {string} table @param {string} column @param {string[]} ids @returns {Promise<any[]>} */
 async function residualRows(target, serviceKey, table, column, ids) {
 	if (ids.length === 0) return [];
@@ -418,43 +522,76 @@ async function residualRows(target, serviceKey, table, column, ids) {
 
 /** @param {HostedTarget} target @param {Environment} environment */
 async function cleanup(target, environment) {
-	const manifest = readManifest(target);
+	let manifest = readManifest(target);
 	if (manifest.state === 'cleaned') return manifest.cleanup;
 	const serviceKey = assertServiceKey(required(environment, 'ISSUE22_SUPABASE_SERVICE_KEY'));
 	if (serviceKey === target.publishableKey) throw new Error('Cleanup key must not equal the publishable key.');
 	const intendedEmails = new Set(manifest.actors.map((actor) => actor.email));
 	const before = await listUsers(target, serviceKey);
-	/** @type {Set<string>} */
-	const userIds = new Set();
-	for (const actor of manifest.actors) if (actor.userId) userIds.add(actor.userId);
-	for (const user of before) if (user.email && intendedEmails.has(user.email)) userIds.add(user.id);
+	if (!manifest.deletionPlan) {
+		const deletionPlan = resolveDeletionPlan(manifest, before);
+		manifest = updateManifest(target, (value) => ({ ...value, deletionPlan }));
+	}
+	const deletionPlan = manifest.deletionPlan;
+	if (!deletionPlan) throw new Error('Deletion plan persistence failed.');
+	const validationInventory = await listUsers(target, serviceKey);
+	const userIds = validatePersistedDeletionPlan(manifest, deletionPlan, validationInventory);
+	const userIdSet = new Set(userIds);
+	let deletedUserCount = 0;
 	for (const userId of userIds) {
 		const response = await adminRequest(target, serviceKey, `/auth/v1/admin/users/${userId}`, { method: 'DELETE' });
 		if (!response.ok && response.status !== 404) throw new Error('Supabase synthetic user cleanup failed.');
+		if (response.ok) deletedUserCount += 1;
 	}
 	const after = await listUsers(target, serviceKey);
 	const residualUsers = after.filter(
-		(user) => (Boolean(user.email) && intendedEmails.has(user.email ?? '')) || userIds.has(user.id)
+		(user) =>
+			(Boolean(user.email) && intendedEmails.has(normalizeEmail(user.email ?? ''))) || userIdSet.has(user.id)
 	);
-	const ids = [...userIds];
-	const [profiles, memberships, consents] = await Promise.all([
+	const ids = userIds;
+	const [profiles, memberships, consents, authEvents] = await Promise.all([
 		residualRows(target, serviceKey, 'profiles', 'id', ids),
 		residualRows(target, serviceKey, 'beta_memberships', 'profile_id', ids),
-		residualRows(target, serviceKey, 'beta_consent_events', 'profile_id', ids)
+		residualRows(target, serviceKey, 'beta_consent_events', 'profile_id', ids),
+		residualRows(target, serviceKey, 'beta_auth_events', 'profile_id', ids)
 	]);
 	const residualCounts = {
 		authUsers: residualUsers.length,
 		profiles: profiles.length,
-		memberships: memberships.length,
-		consents: consents.length
+		memberships: memberships.length
 	};
 	if (Object.values(residualCounts).some((count) => count !== 0)) {
 		throw new Error('Synthetic actor cleanup residual readback failed.');
 	}
+	if (
+		[...consents, ...authEvents].some(
+			(row) => typeof row.profile_id !== 'string' || !userIdSet.has(row.profile_id)
+		)
+	) {
+		throw new Error('Retained audit inventory is not bound to the synthetic deletion plan.');
+	}
+	const retainedAuditByProfile = Object.fromEntries(
+		ids.map((profileId) => [
+			profileId,
+			{
+				betaConsentEvents: consents.filter((row) => row.profile_id === profileId).length,
+				betaAuthEvents: authEvents.filter((row) => row.profile_id === profileId).length
+			}
+		])
+	);
+	const retainedAuditCounts = {
+		betaConsentEvents: consents.length,
+		betaAuthEvents: authEvents.length
+	};
 	const cleaned = {
 		completedAt: new Date().toISOString(),
-		deletedUserCount: userIds.size,
-		residualCounts
+		deletedUserCount,
+		plannedUserCount: userIds.length,
+		residualCounts,
+		retainedAuditCounts,
+		retainedAuditByProfile,
+		retainedRowsRemovalBoundary:
+			'Retained append-only audit and consent rows are removed only when the disposable preview branch is deleted.'
 	};
 	updateManifest(target, (value) => ({ ...value, state: 'cleaned', cleanup: cleaned }));
 	return cleaned;

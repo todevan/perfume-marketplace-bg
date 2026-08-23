@@ -214,7 +214,7 @@ describe('Issue 22 private provenance recovery', () => {
 					inventoryCalls += 1;
 					return Response.json({
 						users:
-							inventoryCalls === 1
+							inventoryCalls <= 2
 								? [
 										{ id: userId, email: actorEmail },
 										{ id: partialUserId, email: partialEmail }
@@ -229,7 +229,18 @@ describe('Issue 22 private provenance recovery', () => {
 					].includes(url.pathname) &&
 					init?.method === 'DELETE'
 				) {
+					expect(JSON.parse(readFileSync(provenancePath, 'utf8')).deletionPlan.entries).toHaveLength(2);
 					return new Response(null, { status: 204 });
+				}
+				if (url.pathname === '/rest/v1/beta_consent_events') {
+					return Response.json([
+						{ profile_id: userId },
+						{ profile_id: userId },
+						{ profile_id: partialUserId }
+					]);
+				}
+				if (url.pathname === '/rest/v1/beta_auth_events') {
+					return Response.json([{ profile_id: userId }, { profile_id: partialUserId }]);
 				}
 				if (url.pathname.startsWith('/rest/v1/')) return Response.json([]);
 				return new Response(null, { status: 500 });
@@ -239,10 +250,75 @@ describe('Issue 22 private provenance recovery', () => {
 			expect(result).toMatchObject({
 				ok: true,
 				deletedUserCount: 2,
-				residualCounts: { authUsers: 0, profiles: 0, memberships: 0, consents: 0 }
+				plannedUserCount: 2,
+				residualCounts: { authUsers: 0, profiles: 0, memberships: 0 },
+				retainedAuditCounts: { betaConsentEvents: 3, betaAuthEvents: 2 }
 			});
-			expect(JSON.parse(readFileSync(provenancePath, 'utf8')).state).toBe('cleaned');
-			expect(fetchMock).toHaveBeenCalledTimes(7);
+			const manifest = JSON.parse(readFileSync(provenancePath, 'utf8'));
+			expect(manifest.state).toBe('cleaned');
+			expect(manifest.deletionPlan.entries).toEqual([
+				{ label: 'a', email: actorEmail, userId },
+				{ label: 'b', email: partialEmail, userId: partialUserId }
+			]);
+			expect(manifest.cleanup.retainedAuditByProfile).toEqual({
+				[userId]: { betaConsentEvents: 2, betaAuthEvents: 1 },
+				[partialUserId]: { betaConsentEvents: 1, betaAuthEvents: 1 }
+			});
+			expect(manifest.cleanup.retainedRowsRemovalBoundary).toMatch(/preview branch is deleted/iu);
+			expect(fetchMock).toHaveBeenCalledTimes(9);
+		} finally {
+			vi.unstubAllGlobals();
+			if (existsSync(provenancePath)) unlinkSync(provenancePath);
+			rmdirSync(privateDirectory);
+		}
+	});
+
+	it('fails closed before DELETE when a recorded ID belongs to another email', async () => {
+		const privateDirectory = mkdtempSync(join(tmpdir(), 'issue22-proof-'));
+		const provenancePath = join(privateDirectory, 'provenance.json');
+		const workerName = 'perfume-marketplace-bg-issue22-proof';
+		const environment = {
+			ISSUE22_HOSTED_ORIGIN: `https://${workerName}.perfume-marketplace-bg.workers.dev`,
+			ISSUE22_SUPABASE_URL: `https://${target.projectRef}.supabase.co`,
+			ISSUE22_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_public',
+			ISSUE22_SUPABASE_PROJECT_REF: target.projectRef,
+			ISSUE22_SUPABASE_PARENT_PROJECT_REF: target.parentProjectRef,
+			ISSUE22_SUPABASE_BRANCH_NAME: target.branchName,
+			ISSUE22_CANDIDATE_SHA: candidateSha,
+			ISSUE22_RUN_ID: 'proof',
+			ISSUE22_CLOUDFLARE_WORKER_NAME: workerName,
+			ISSUE22_CLOUDFLARE_VERSION_ID: versionId,
+			ISSUE22_PROVENANCE_PATH: provenancePath,
+			ISSUE22_SUPABASE_SERVICE_KEY: 'sb_secret_test-only'
+		};
+		const actorEmail = `issue22-proof-${candidateSha.slice(0, 8)}-a-fixture@example.invalid`;
+		const staleId = '44444444-4444-4444-8444-444444444444';
+		try {
+			const hostedTarget = parseHostedTarget(environment);
+			initializeManifest(hostedTarget, { branchStatus: 'MIGRATIONS_PASSED', dataClone: false });
+			await runIssue22HostedProof('record-intent', {
+				...environment,
+				ISSUE22_ACTOR_LABEL: 'a',
+				ISSUE22_ACTOR_EMAIL: actorEmail
+			});
+			await runIssue22HostedProof('record-actor', {
+				...environment,
+				ISSUE22_ACTOR_LABEL: 'a',
+				ISSUE22_ACTOR_USER_ID: staleId
+			});
+			const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+				const url = new URL(input instanceof Request ? input.url : input);
+				if (url.pathname === '/auth/v1/admin/users') {
+					return Response.json({ users: [{ id: staleId, email: 'unrelated@example.invalid' }] });
+				}
+				return new Response(null, { status: 500 });
+			});
+			vi.stubGlobal('fetch', fetchMock);
+			await expect(runIssue22HostedProof('cleanup', environment)).rejects.toThrow(/inventory binding/u);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(
+				fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE')
+			).toHaveLength(0);
 		} finally {
 			vi.unstubAllGlobals();
 			if (existsSync(provenancePath)) unlinkSync(provenancePath);
