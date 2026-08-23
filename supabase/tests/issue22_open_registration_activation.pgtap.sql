@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(42);
+select plan(50);
 
 select ok(
   to_regprocedure('private.normalize_city(text)') is not null,
@@ -89,7 +89,10 @@ values
    '{"provider":"email","providers":["email"]}', '{"username":"hostile_user","role":"admin"}', statement_timestamp(), statement_timestamp()),
   ('31bbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '00000000-0000-0000-0000-000000000000',
    'authenticated', 'authenticated', 'real-admin@example.test', 'test-password-hash', statement_timestamp(),
-   '{"provider":"email","providers":["email"]}', '{"username":"real_admin"}', statement_timestamp(), statement_timestamp());
+   '{"provider":"email","providers":["email"]}', '{"username":"real_admin"}', statement_timestamp(), statement_timestamp()),
+  ('31cccccc-cccc-4ccc-8ccc-cccccccccccc', '00000000-0000-0000-0000-000000000000',
+   'authenticated', 'authenticated', 'expired-legacy@example.test', 'test-password-hash', statement_timestamp(),
+   '{"provider":"email","providers":["email"]}', '{"username":"expired_legacy"}', statement_timestamp(), statement_timestamp());
 
 insert into public.beta_memberships (profile_id, invite_id, status)
 select id, null, 'pending'::public.beta_membership_status
@@ -121,10 +124,28 @@ where u.id in (
   '31555555-5555-4555-8555-555555555555',
   '31888888-8888-4888-8888-888888888888',
   '31999999-9999-4999-8999-999999999999',
-  '31bbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  '31bbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  '31cccccc-cccc-4ccc-8ccc-cccccccccccc'
 )
 and d.required_for_access
 and d.retired_at is null;
+
+-- Model a legacy active membership whose admission window has already ended.
+-- The current trigger correctly prevents creating this shape through the live
+-- workflow, so the rolled-back test fixture bypasses only that trigger.
+alter table public.beta_memberships disable trigger protect_beta_membership_workflow;
+insert into public.beta_memberships (
+  profile_id, invite_id, status, onboarding_completed_at, activated_at,
+  expires_at, created_at, updated_at
+) values (
+  '31cccccc-cccc-4ccc-8ccc-cccccccccccc', null, 'active',
+  transaction_timestamp() - interval '3 days',
+  transaction_timestamp() - interval '3 days',
+  transaction_timestamp() - interval '1 day',
+  transaction_timestamp() - interval '4 days',
+  transaction_timestamp() - interval '3 days'
+);
+alter table public.beta_memberships enable trigger protect_beta_membership_workflow;
 
 insert into public.beta_consent_events (
   profile_id, document_code, document_version, source
@@ -221,21 +242,23 @@ select throws_ok(
   '22023', 'city must contain 2 to 100 letters or digits with spaces, hyphens, or apostrophes',
   'unsupported city characters cannot activate onboarding'
 );
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('invalid_city', 'A')$sql$,
+  '22023', 'city must contain 2 to 100 letters or digits with spaces, hyphens, or apostrophes',
+  'a one-character city cannot activate onboarding'
+);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('invalid_city', repeat('A', 101))$sql$,
+  '22023', 'city must contain 2 to 100 letters or digits with spaces, hyphens, or apostrophes',
+  'a 101-character city cannot activate onboarding'
+);
+select ok(
+  private.is_valid_city('AB')
+  and private.is_valid_city(repeat('A', 100)),
+  'city validation accepts the exact 2-character and 100-character boundaries'
+);
 reset role;
 set local role postgres;
-
--- Membership activation uses statement_timestamp(), while now() is fixed at
--- this test transaction's start. Align the fixture clock so the canonical gate
--- can be asserted later in the same transaction.
-update public.beta_memberships
-set activated_at = transaction_timestamp()
-where profile_id in (
-  '31222222-2222-4222-8222-222222222222',
-  '31333333-3333-4333-8333-333333333333',
-  '31444444-4444-4444-8444-444444444444',
-  '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-)
-and status = 'active';
 
 select is(
   (select m.status::text from public.beta_memberships m where m.profile_id = '31111111-1111-4111-8111-111111111111'),
@@ -293,11 +316,34 @@ select lives_ok(
 reset role;
 set local role postgres;
 
+-- Membership activation uses statement_timestamp(), while now() is fixed at
+-- this test transaction's start. Align the fixture clock after activation so
+-- the canonical public gate can be asserted in the same transaction.
+update public.beta_memberships
+set activated_at = transaction_timestamp()
+where profile_id in (
+  '31222222-2222-4222-8222-222222222222',
+  '31333333-3333-4333-8333-333333333333',
+  '31444444-4444-4444-8444-444444444444',
+  '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+)
+and status = 'active';
+
 select is(
   (select p.city from public.profiles p where p.id = '31222222-2222-4222-8222-222222222222'),
   'София',
   'onboarding removes only surrounding ASCII spaces from city input'
 );
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '31222222-2222-4222-8222-222222222222', true);
+select set_config('request.jwt.claims', '{"sub":"31222222-2222-4222-8222-222222222222","role":"authenticated","aal":"aal1"}', true);
+select is(
+  public.is_active_beta_user(),
+  true,
+  'the phone-null onboarding user satisfies the canonical active-access gate'
+);
+reset role;
+set local role postgres;
 select ok(
   (select m.status = 'active' from public.beta_memberships m where m.profile_id = '31222222-2222-4222-8222-222222222222')
   and (select p.phone_verified_at is null from public.profiles p where p.id = '31222222-2222-4222-8222-222222222222'),
@@ -324,9 +370,10 @@ select throws_ok(
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', true);
 select set_config('request.jwt.claims', '{"sub":"31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"authenticated","aal":"aal1","user_metadata":{"role":"admin"}}', true);
-select lives_ok(
+select throws_ok(
   $sql$update public.profiles set role = 'admin' where id = '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'$sql$,
-  'a denied self-escalation does not leak an authorization error'
+  '42501', 'privileged profile fields cannot be changed by this user',
+  'an otherwise active user cannot self-escalate profile role'
 );
 select lives_ok(
   $sql$update public.profiles set bio = 'cross-user write' where id = '31222222-2222-4222-8222-222222222222'$sql$,
@@ -391,6 +438,29 @@ select is(
   'legacy city repair stores the normalized valid city'
 );
 
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '31cccccc-cccc-4ccc-8ccc-cccccccccccc', true);
+select set_config('request.jwt.claims', '{"sub":"31cccccc-cccc-4ccc-8ccc-cccccccccccc","role":"authenticated","aal":"aal1"}', true);
+create temp table expired_legacy_repair_result on commit drop as
+select public.complete_beta_onboarding('expired_legacy', 'Sofia') as payload;
+reset role;
+set local role postgres;
+select is(
+  (select (payload ->> 'isActive')::boolean from expired_legacy_repair_result),
+  private.is_active_beta_user('31cccccc-cccc-4ccc-8ccc-cccccccccccc'),
+  'legacy repair response matches the canonical active predicate for an expired membership'
+);
+select is(
+  private.is_active_beta_user('31cccccc-cccc-4ccc-8ccc-cccccccccccc'),
+  false,
+  'repairing an expired legacy membership does not reactivate access'
+);
+select is(
+  (select p.city from public.profiles p where p.id = '31cccccc-cccc-4ccc-8ccc-cccccccccccc'),
+  'Sofia',
+  'expired legacy onboarding still repairs the invalid city safely'
+);
+
 update public.beta_memberships
 set status = 'active'
 where profile_id in (
@@ -439,6 +509,7 @@ select is(
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', true);
 select set_config('request.jwt.claims', '{"sub":"31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"authenticated","aal":"aal2","user_metadata":{"role":"admin"}}', true);
+select is(public.is_active_beta_user(), true, 'the hostile-metadata identity is otherwise fully active');
 select is(public.is_admin(), false, 'hostile user metadata cannot grant administrator authority even at AAL2');
 
 select set_config('request.jwt.claim.sub', '31bbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', true);

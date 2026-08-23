@@ -171,9 +171,10 @@ begin
     'profileId', requesting_user,
     'username', normalized_username,
     'onboardingCompletedAt', membership_record.onboarding_completed_at,
-    -- All gate preconditions were locked and checked above; the transaction
-    -- snapshot used by a STABLE predicate may not observe its own activation yet.
-    'isActive', true
+    'isActive',
+      membership_record.status = 'active'
+      and (membership_record.expires_at is null or membership_record.expires_at > now())
+      and private.is_active_beta_user(requesting_user)
   );
 exception when unique_violation then
   raise exception 'username is already in use' using errcode = '23505';
