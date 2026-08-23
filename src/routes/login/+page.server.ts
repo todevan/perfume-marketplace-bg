@@ -152,20 +152,12 @@ export const actions: Actions = {
 			});
 		}
 
-		const challenge = await verifyTurnstileForAction(
-			event,
-			formData,
-			event.locals.runtime,
-			'register'
-		);
-		if (!challenge.success) {
-			return fail(challenge.reason === 'not_configured' ? 503 : 400, {
+		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
+		if (!captchaToken) {
+			return fail(400, {
 				success: false,
 				email,
-				message:
-					challenge.reason === 'not_configured'
-						? '\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f\u0442\u0430 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435 \u0435 \u0434\u043e\u0441\u0442\u044a\u043f\u043d\u0430.'
-						: '\u041f\u043e\u0442\u0432\u044a\u0440\u0434\u0438, \u0447\u0435 \u043d\u0435 \u0441\u0438 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0437\u0438\u0440\u0430\u043d \u043a\u043b\u0438\u0435\u043d\u0442.'
+				message: '\u041f\u043e\u0442\u0432\u044a\u0440\u0434\u0438, \u0447\u0435 \u043d\u0435 \u0441\u0438 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0437\u0438\u0440\u0430\u043d \u043a\u043b\u0438\u0435\u043d\u0442.'
 			});
 		}
 
@@ -183,6 +175,7 @@ export const actions: Actions = {
 			email,
 			password,
 			options: {
+				captchaToken,
 				emailRedirectTo: confirmationUrl.toString(),
 				data: { username, account_kind: accountKind }
 			}

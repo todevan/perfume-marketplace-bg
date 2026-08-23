@@ -124,37 +124,6 @@ describe('open email registration', () => {
 		expect(signUp).not.toHaveBeenCalled();
 	});
 
-	it('rejects a Turnstile response bound to a different action before account creation', async () => {
-		const signUp = vi.fn();
-		const formData = new FormData();
-		formData.set('email', 'new.member@example.bg');
-		formData.set('password', 'correct-horse-battery-staple');
-		formData.set('username', 'scent_archive');
-		formData.set('ageAccepted', 'on');
-		formData.set('cf-turnstile-response', 'wrong-action-token');
-
-		const result = await actions.register({
-			request: new Request('https://market.example/login?/register', {
-				method: 'POST',
-				body: formData
-			}),
-			url: new URL('https://market.example/login?/register'),
-			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'login' }), { status: 200 })
-			),
-			locals: {
-				runtime: {
-					...stagingRuntime,
-					turnstileSecretKey: 'turnstile-secret-key'
-				},
-				supabase: { auth: { signUp } }
-			}
-		} as never);
-
-		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(signUp).not.toHaveBeenCalled();
-	});
-
 	it('creates an email-password account and requests confirmation before onboarding', async () => {
 		const signUp = vi.fn(async () => ({
 			data: { user: { id: 'new-user' }, session: null },
@@ -169,15 +138,14 @@ describe('open email registration', () => {
 		formData.set('next', '/dashboard');
 		formData.set('cf-turnstile-response', 'verified-registration-token');
 
+		const eventFetch = vi.fn();
 		const result = await actions.register({
 			request: new Request('https://market.example/login?/register', {
 				method: 'POST',
 				body: formData
 			}),
 			url: new URL('https://market.example/login?/register'),
-			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'register' }), { status: 200 })
-			),
+			fetch: eventFetch,
 			locals: {
 				runtime: {
 					...stagingRuntime,
@@ -192,10 +160,12 @@ describe('open email registration', () => {
 			email: 'new.member@example.bg',
 			password: 'correct-horse-battery-staple',
 			options: {
+				captchaToken: 'verified-registration-token',
 				emailRedirectTo: 'https://market.example/auth/confirm?next=%2Fonboarding%3Fnext%3D%252Fdashboard',
 				data: { username: 'scent_archive', account_kind: 'merchant' }
 			}
 		});
+		expect(eventFetch).not.toHaveBeenCalled();
 		expect(result).toMatchObject({ success: true, email: 'new.member@example.bg' });
 	});
 

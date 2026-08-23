@@ -46,7 +46,7 @@ additional_redirect_urls = [
 jwt_expiry = 3600
 enable_refresh_token_rotation = true
 refresh_token_reuse_interval = 10
-enable_signup = false
+enable_signup = true
 enable_anonymous_sign_ins = false
 minimum_password_length = 8
 
@@ -57,14 +57,23 @@ token_refresh = 150
 sign_in_sign_ups = 30
 token_verifications = 30
 
+[auth.captcha]
+enabled = true
+provider = "turnstile"
+secret = "env(LOCAL_AUTH_CAPTCHA_TEST_KEY)"
+
 [auth.email]
-enable_signup = false
+enable_signup = true
 double_confirm_changes = true
 enable_confirmations = true
 secure_password_change = true
 max_frequency = "1m"
 otp_length = 6
 otp_expiry = 3600
+
+[auth.email.template.confirmation]
+subject = "Потвърдете регистрацията си в Ароматика"
+content_path = "./supabase/templates/confirmation.html"
 
 [auth.email.template.invite]
 subject = "Покана за затворената beta"
