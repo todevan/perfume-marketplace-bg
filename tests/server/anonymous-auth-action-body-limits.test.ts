@@ -35,7 +35,13 @@ describe('anonymous auth action request-body limits', () => {
 		const turnstileFetch = vi.fn(async () =>
 			new Response(JSON.stringify({ success: true, action: 'login' }))
 		);
-		const signInWithPassword = vi.fn(async () => ({ error: new Error('invalid credentials') }));
+		const signInWithPassword = vi.fn(
+			async (_credentials: {
+				email: string;
+				password: string;
+				options: { captchaToken: string };
+			}) => ({ error: new Error('invalid credentials') })
+		);
 
 		const result = await loginActions.login({
 			request: formRequest(
@@ -163,11 +169,10 @@ describe('anonymous auth action request-body limits', () => {
 
 		expect(result).toMatchObject({ status: 400, data: { success: false } });
 		expect(turnstileFetch).not.toHaveBeenCalled();
-		expect(signInWithPassword).toHaveBeenCalledOnce();
-		expect(signInWithPassword.mock.calls[0]?.[0]).toMatchObject({
+		expect(signInWithPassword).toHaveBeenCalledWith(expect.objectContaining({
 			email: 'member@example.bg',
 			options: { captchaToken: 'verified-login-token' }
-		});
+		}));
 	});
 
 	it('passes a within-limit password-reset CAPTCHA token once to Supabase Auth', async () => {
