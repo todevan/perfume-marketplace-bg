@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +38,13 @@ test('the beta hardening sequence is contiguous and has stable filenames', () =>
 		.filter((filename) => filename.startsWith('20260722000'))
 		.sort();
 	assert.deepEqual(actual, Object.values(filenames));
+});
+
+test('SQL migrations are checked out with LF line endings on every platform', () => {
+	const attributesUrl = new URL('../../.gitattributes', import.meta.url);
+	assert.ok(existsSync(attributesUrl), '.gitattributes must define SQL line endings');
+	const attributes = readFileSync(attributesUrl, 'utf8');
+	assert.match(attributes, /^supabase\/migrations\/\*\.sql text eol=lf$/mu);
 });
 
 test('database lint hardening is forward-only and fail-closed', () => {
