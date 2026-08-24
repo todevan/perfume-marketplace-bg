@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(80);
+select plan(96);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -69,6 +69,21 @@ select
   'reserved', 'deal-lifecycle-' || fixture.n, statement_timestamp(),
   statement_timestamp() + interval '60 days'
 from generate_series(0, 11) as fixture(n);
+insert into public.listings (
+  id, seller_id, kind, deal_mode, product_format, audience, brand_id,
+  fragrance_name, concentration, title, description, city,
+  bottle_volume_ml, remaining_ml, is_sealed, price_minor, status,
+  slug, activated_at, expires_at
+)
+select
+  ('250000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  '25111111-1111-4111-8111-111111111111', 'offer', 'sale', 'retail_bottle',
+  'unisex', '25999999-9999-4999-8999-999999999999',
+  'Lifecycle moderation fragrance ' || fixture.n, 'EDP', 'Lifecycle moderation listing ' || fixture.n,
+  'Deterministic completion and moderation fixture', 'Sofia', 100.0, 90.0, false, 4000,
+  'reserved', 'deal-lifecycle-moderation-' || fixture.n, statement_timestamp(),
+  statement_timestamp() + interval '60 days'
+from generate_series(12, 15) as fixture(n);
 alter table public.listings enable trigger user;
 
 alter table public.offers disable trigger user;
@@ -81,6 +96,15 @@ select
   '25222222-2222-4222-8222-222222222222', 'cash', 3500, 'accepted',
   statement_timestamp() + interval '7 days', statement_timestamp()
 from generate_series(0, 11) as fixture(n);
+insert into public.offers (
+  id, listing_id, offerer_id, kind, cash_amount_minor, status, expires_at, responded_at
+)
+select
+  ('260000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  ('250000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  '25222222-2222-4222-8222-222222222222', 'cash', 3500, 'accepted',
+  statement_timestamp() + interval '7 days', statement_timestamp()
+from generate_series(12, 15) as fixture(n);
 alter table public.offers enable trigger user;
 
 alter table public.conversations disable trigger user;
@@ -91,6 +115,13 @@ select
   ('2600000' || to_hex(fixture.n) || '-0000-4000-8000-00000000000' || to_hex(fixture.n))::uuid,
   'open'
 from generate_series(0, 11) as fixture(n);
+insert into public.conversations (id, listing_id, accepted_offer_id, status)
+select
+  ('280000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  ('250000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  ('260000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  'open'
+from generate_series(12, 15) as fixture(n);
 alter table public.conversations enable trigger user;
 
 alter table public.deals disable trigger user;
@@ -106,6 +137,17 @@ select
   case when fixture.n in (5, 8, 9, 10) then 'disputed'::public.deal_status else 'pending_confirmation'::public.deal_status end,
   case when fixture.n in (5, 8, 9, 10) then statement_timestamp() else null end
 from generate_series(0, 11) as fixture(n);
+insert into public.deals (
+  id, listing_id, accepted_offer_id, party_a_id, party_b_id, status
+)
+select
+  ('270000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  ('250000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  ('260000' || lpad(fixture.n::text, 2, '0') || '-0000-4000-8000-0000000000' || lpad(fixture.n::text, 2, '0'))::uuid,
+  '25111111-1111-4111-8111-111111111111',
+  '25222222-2222-4222-8222-222222222222',
+  'pending_confirmation'
+from generate_series(12, 15) as fixture(n);
 alter table public.deals enable trigger user;
 
 alter table public.deal_confirmations disable trigger user;
@@ -139,6 +181,34 @@ insert into public.reports (
     '25111111-1111-4111-8111-111111111111',
     'profile', '25333333-3333-4333-8333-333333333333', 'profile_abuse',
     'Profile moderation fixture for corrupted stored party regression', 'investigating',
+    '25444444-4444-4444-8444-444444444444'
+  ),
+  (
+    '29120000-0000-4000-8000-000000000012',
+    '25222222-2222-4222-8222-222222222222',
+    'listing', '25000012-0000-4000-8000-000000000012', 'counterfeit_suspected',
+    'Remove before seller completion regression fixture', 'investigating',
+    '25444444-4444-4444-8444-444444444444'
+  ),
+  (
+    '29130000-0000-4000-8000-000000000013',
+    '25222222-2222-4222-8222-222222222222',
+    'listing', '25000013-0000-4000-8000-000000000013', 'counterfeit_suspected',
+    'Reject before seller completion regression fixture', 'investigating',
+    '25444444-4444-4444-8444-444444444444'
+  ),
+  (
+    '29140000-0000-4000-8000-000000000014',
+    '25222222-2222-4222-8222-222222222222',
+    'listing', '25000014-0000-4000-8000-000000000014', 'misleading_content',
+    'Pause before seller completion regression fixture', 'investigating',
+    '25444444-4444-4444-8444-444444444444'
+  ),
+  (
+    '29150000-0000-4000-8000-000000000015',
+    '25222222-2222-4222-8222-222222222222',
+    'listing', '25000015-0000-4000-8000-000000000015', 'counterfeit_suspected',
+    'Remove after seller completion regression fixture', 'investigating',
     '25444444-4444-4444-8444-444444444444'
   );
 alter table public.reports enable trigger user;
@@ -817,6 +887,120 @@ select throws_ok(
   $$insert into public.reviews (deal_id, reviewer_id, reviewee_id, rating) values ('27000003-0000-4000-8000-000000000003', '25222222-2222-4222-8222-222222222222', '25111111-1111-4111-8111-111111111111', 5)$$,
   '23514', 'reviews require a seller-completed deal',
   'reviews remain locked after cancellation'
+);
+
+set local role postgres;
+update public.profiles
+set is_suspended = false
+where id = '25333333-3333-4333-8333-333333333333';
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"25444444-4444-4444-8444-444444444444","role":"authenticated","aal":"aal2"}', true);
+select set_config('request.jwt.claim.sub', '25444444-4444-4444-8444-444444444444', true);
+select lives_ok(
+  $$select public.moderate_listing('29120000-0000-4000-8000-000000000012', '25000012-0000-4000-8000-000000000012', 'Remove before seller completion regression', null, null, 'removed')$$,
+  'report-bound staff removal succeeds before seller completion'
+);
+select lives_ok(
+  $$select public.moderate_listing('29130000-0000-4000-8000-000000000013', '25000013-0000-4000-8000-000000000013', 'Reject before seller completion regression', null, null, 'rejected')$$,
+  'report-bound staff rejection succeeds before seller completion'
+);
+select lives_ok(
+  $$select public.moderate_listing('29140000-0000-4000-8000-000000000014', '25000014-0000-4000-8000-000000000014', 'Pause before seller completion regression', null, null, 'paused')$$,
+  'report-bound staff pause succeeds before seller completion'
+);
+
+select set_config('request.jwt.claims', '{"sub":"25111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '25111111-1111-4111-8111-111111111111', true);
+select lives_ok(
+  $$select public.complete_deal('27000012-0000-4000-8000-000000000012')$$,
+  'seller completion succeeds after staff removed the listing'
+);
+select lives_ok(
+  $$select public.complete_deal('27000013-0000-4000-8000-000000000013')$$,
+  'seller completion succeeds after staff rejected the listing'
+);
+select lives_ok(
+  $$select public.complete_deal('27000014-0000-4000-8000-000000000014')$$,
+  'seller completion succeeds after staff paused the listing'
+);
+set local role postgres;
+select ok(
+  (select status = 'completed' from public.deals where id = '27000012-0000-4000-8000-000000000012')
+  and (select status = 'removed' from public.listings where id = '25000012-0000-4000-8000-000000000012'),
+  'seller completion preserves a prior staff removal while completing the deal'
+);
+select ok(
+  (select status = 'completed' from public.deals where id = '27000013-0000-4000-8000-000000000013')
+  and (select status = 'rejected' from public.listings where id = '25000013-0000-4000-8000-000000000013'),
+  'seller completion preserves a prior staff rejection while completing the deal'
+);
+select ok(
+  (select status = 'completed' from public.deals where id = '27000014-0000-4000-8000-000000000014')
+  and (select status = 'paused' from public.listings where id = '25000014-0000-4000-8000-000000000014'),
+  'seller completion preserves another prior moderation state while completing the deal'
+);
+select ok(
+  (select count(*) = 2 and min(completed_deals_count) = 5 and max(completed_deals_count) = 5
+   from public.profiles
+   where id in ('25111111-1111-4111-8111-111111111111', '25222222-2222-4222-8222-222222222222'))
+  and (select count(*) = 6 and count(distinct dedupe_key) = 6
+       from public.notifications
+       where kind = 'deal_completed'
+         and data ->> 'dealId' in (
+           '27000012-0000-4000-8000-000000000012',
+           '27000013-0000-4000-8000-000000000013',
+           '27000014-0000-4000-8000-000000000014'
+         )),
+  'moderated-listing completion preserves participant counters and completion notifications'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"25222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '25222222-2222-4222-8222-222222222222', true);
+select lives_ok(
+  $$insert into public.reviews (deal_id, reviewer_id, reviewee_id, rating) values ('27000012-0000-4000-8000-000000000012', '25222222-2222-4222-8222-222222222222', '25111111-1111-4111-8111-111111111111', 5)$$,
+  'review eligibility remains unlocked after completion preserves listing moderation'
+);
+
+select set_config('request.jwt.claims', '{"sub":"25111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '25111111-1111-4111-8111-111111111111', true);
+select lives_ok(
+  $$select public.complete_deal('27000015-0000-4000-8000-000000000015')$$,
+  'ordinary seller completion succeeds while the listing is reserved'
+);
+set local role postgres;
+select ok(
+  (select status = 'completed' from public.deals where id = '27000015-0000-4000-8000-000000000015')
+  and (select status = 'completed' from public.listings where id = '25000015-0000-4000-8000-000000000015'),
+  'ordinary seller completion transitions a reserved linked listing to completed'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"25444444-4444-4444-8444-444444444444","role":"authenticated","aal":"aal2"}', true);
+select set_config('request.jwt.claim.sub', '25444444-4444-4444-8444-444444444444', true);
+select lives_ok(
+  $$select public.moderate_listing('29150000-0000-4000-8000-000000000015', '25000015-0000-4000-8000-000000000015', 'Remove after seller completion regression', null, null, 'removed')$$,
+  'report-bound staff removal succeeds after seller completion'
+);
+set local role postgres;
+select ok(
+  (select status = 'completed' from public.deals where id = '27000015-0000-4000-8000-000000000015')
+  and (select status = 'removed' from public.listings where id = '25000015-0000-4000-8000-000000000015'),
+  'later valid staff moderation remains authoritative after completion'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"25333333-3333-4333-8333-333333333333","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '25333333-3333-4333-8333-333333333333', true);
+select is(
+  (select count(*)::integer
+   from public.listings
+   where id in (
+     '25000012-0000-4000-8000-000000000012',
+     '25000013-0000-4000-8000-000000000013',
+     '25000014-0000-4000-8000-000000000014'
+   )),
+  0,
+  'an active unrelated user cannot read removed, rejected, or paused listings after deal completion'
 );
 
 select * from finish();

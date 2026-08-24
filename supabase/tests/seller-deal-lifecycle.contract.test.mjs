@@ -218,6 +218,65 @@ test('all deal lifecycle entry paths serialize profile state before mutable rows
 	);
 });
 
+test('seller completion preserves prior listing moderation without widening execution', () => {
+	const sql = readBySuffix('_preserve_listing_moderation_on_deal_completion.sql');
+	const completeStart = sql.indexOf('create or replace function public.complete_deal(target_deal_id uuid)');
+	const revokeStart = sql.indexOf(
+		'revoke execute on function public.complete_deal(uuid)',
+		completeStart
+	);
+	assert.ok(completeStart >= 0, 'Missing complete_deal replacement');
+	assert.ok(revokeStart > completeStart, 'Missing complete_deal execution boundary');
+
+	const completeSql = sql.slice(completeStart, revokeStart);
+	const linkedListingUpdate = completeSql.match(
+		/update public\.listings set status = 'completed', completed_at = statement_timestamp\(\) where [^;]+;/
+	)?.[0];
+	assert.ok(linkedListingUpdate, 'Missing linked-listing completion update');
+	assert.match(
+		linkedListingUpdate,
+		/\bstatus = 'reserved'/,
+		'Completion must only transition linked listings that are still reserved'
+	);
+	assert.ok(
+		sql.includes(
+			'revoke execute on function public.complete_deal(uuid) from public, anon, authenticated, service_role'
+		),
+		'Completion must retain its explicit deny-by-default execute boundary'
+	);
+	assert.ok(
+		sql.includes('grant execute on function public.complete_deal(uuid) to authenticated'),
+		'Completion must remain executable only through the authenticated workflow'
+	);
+
+	const moderateStart = sql.indexOf('create or replace function public.moderate_listing(');
+	const moderateRevokeStart = sql.indexOf(
+		'revoke execute on function public.moderate_listing(',
+		moderateStart
+	);
+	assert.ok(moderateStart >= 0, 'Missing moderate_listing replacement');
+	assert.ok(moderateRevokeStart > moderateStart, 'Missing moderate_listing execution boundary');
+
+	const moderateSql = sql.slice(moderateStart, moderateRevokeStart);
+	assert.match(
+		moderateSql,
+		/update public\.listings set status = moderated_status, completed_at = null where [^;]+;/,
+		'Status moderation must reconcile the completion timestamp when leaving completed'
+	);
+	const moderateSignature =
+		'public.moderate_listing(uuid, uuid, text, public.audience, public.segment[], public.listing_status)';
+	assert.ok(
+		sql.includes(
+			`revoke execute on function ${moderateSignature} from public, anon, authenticated, service_role`
+		),
+		'Moderation must retain its explicit deny-by-default execute boundary'
+	);
+	assert.ok(
+		sql.includes(`grant execute on function ${moderateSignature} to authenticated`),
+		'Moderation must remain executable only through the authenticated workflow'
+	);
+});
+
 test('the concurrency harness uses the project-independent database service alias', () => {
 	const source = readSource('./seller_deal_lifecycle_concurrency.pgtap.sql');
 	assert.equal(source.match(/host=db port=5432/g)?.length, 3);

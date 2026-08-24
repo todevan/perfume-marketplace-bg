@@ -60,17 +60,25 @@ delete from public.beta_auth_events where profile_id in (
   '35444444-4444-4444-8444-444444444444'
 );
 delete from public.moderation_audit where report_id in (
-  '39d00001-0000-4000-8000-000000000001', '39f00001-0000-4000-8000-000000000001'
+  '39c00001-0000-4000-8000-000000000001',
+  '39d00001-0000-4000-8000-000000000001',
+  '39f00001-0000-4000-8000-000000000001'
 );
 delete from public.notification_email_deliveries d using public.notifications n
 where d.notification_id = n.id and n.data ->> 'reportId' in (
-  '39d00001-0000-4000-8000-000000000001', '39f00001-0000-4000-8000-000000000001'
+  '39c00001-0000-4000-8000-000000000001',
+  '39d00001-0000-4000-8000-000000000001',
+  '39f00001-0000-4000-8000-000000000001'
 );
 delete from public.notifications where data ->> 'reportId' in (
-  '39d00001-0000-4000-8000-000000000001', '39f00001-0000-4000-8000-000000000001'
+  '39c00001-0000-4000-8000-000000000001',
+  '39d00001-0000-4000-8000-000000000001',
+  '39f00001-0000-4000-8000-000000000001'
 );
 delete from public.reports where id in (
-  '39d00001-0000-4000-8000-000000000001', '39f00001-0000-4000-8000-000000000001'
+  '39c00001-0000-4000-8000-000000000001',
+  '39d00001-0000-4000-8000-000000000001',
+  '39f00001-0000-4000-8000-000000000001'
 );
 delete from public.notification_email_deliveries d
 using public.notifications n
@@ -312,6 +320,39 @@ revoke execute on function private.issue25_catch_deal_resolution(uuid, uuid)
 grant execute on function private.issue25_catch_deal_resolution(uuid, uuid)
   to authenticated;
 
+create or replace function private.issue25_catch_listing_moderation(
+  target_report_id uuid,
+  target_listing_id uuid
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  perform public.moderate_listing(
+    target_report_id,
+    target_listing_id,
+    'Concurrent listing removal race proof',
+    null,
+    null,
+    'removed'
+  );
+  return jsonb_build_object('ok', true, 'action', 'moderate_listing');
+exception when others then
+  return jsonb_build_object(
+    'ok', false,
+    'action', 'moderate_listing',
+    'sqlstate', sqlstate,
+    'message', sqlerrm
+  );
+end;
+$$;
+revoke execute on function private.issue25_catch_listing_moderation(uuid, uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function private.issue25_catch_listing_moderation(uuid, uuid)
+  to authenticated;
+
 create temp table issue25_sessions (actor text primary key, pid integer not null);
 create temp table issue25_barrier (both_waiting boolean not null, transaction_waiters integer not null);
 create temp table issue25_outcomes (result jsonb not null);
@@ -402,7 +443,7 @@ begin
 end;
 $$;
 
-select plan(27);
+select plan(34);
 select is((select count(distinct pid)::integer from issue25_sessions), 3, 'controller and actors use three distinct PostgreSQL sessions');
 select ok(
   (select both_waiting and transaction_waiters >= 1 from issue25_barrier),
@@ -1083,12 +1124,239 @@ select ok(
   'cancellation-versus-suspension preserves a consistent cancelled-or-disputed state'
 );
 
+-- Queue report-bound listing removal before seller completion at the same
+-- controller-held listing row. Releasing the controller proves that moderation
+-- commits first and completion observes, but does not overwrite, that state.
+set session_replication_role = replica;
+delete from public.notification_email_deliveries d using public.notifications n
+where d.notification_id = n.id
+  and (
+    n.data ->> 'dealId' = '37000001-0000-4000-8000-000000000001'
+    or n.data ->> 'reportId' = '39c00001-0000-4000-8000-000000000001'
+  );
+delete from public.notifications
+where data ->> 'dealId' = '37000001-0000-4000-8000-000000000001'
+   or data ->> 'reportId' = '39c00001-0000-4000-8000-000000000001';
+delete from public.moderation_audit
+where report_id = '39c00001-0000-4000-8000-000000000001';
+delete from public.reports
+where id = '39c00001-0000-4000-8000-000000000001';
+delete from public.reviews
+where deal_id = '37000001-0000-4000-8000-000000000001';
+update public.profiles
+set completed_deals_count = 0,
+    is_suspended = false
+where id in (
+  '35111111-1111-4111-8111-111111111111',
+  '35222222-2222-4222-8222-222222222222'
+);
+update public.listings
+set status = 'reserved', completed_at = null
+where id = '35000001-0000-4000-8000-000000000001';
+update public.conversations
+set status = 'open'
+where id = '38000001-0000-4000-8000-000000000001';
+update public.deals
+set status = 'pending_confirmation',
+    completed_at = null,
+    cancelled_at = null,
+    cancelled_by = null,
+    cancellation_reason = null,
+    disputed_at = null
+where id = '37000001-0000-4000-8000-000000000001';
+insert into public.deal_listing_locks (listing_id, deal_id, item_role) values (
+  '35000001-0000-4000-8000-000000000001',
+  '37000001-0000-4000-8000-000000000001',
+  'target'
+) on conflict (listing_id) do update
+set deal_id = excluded.deal_id,
+    item_role = excluded.item_role;
+insert into public.reports (
+  id, reporter_id, target_type, target_id, reason_code, details, status, assigned_to
+) values (
+  '39c00001-0000-4000-8000-000000000001',
+  '35222222-2222-4222-8222-222222222222',
+  'listing',
+  '35000001-0000-4000-8000-000000000001',
+  'counterfeit_suspected',
+  'Committed listing moderation before completion concurrency fixture',
+  'investigating',
+  '35444444-4444-4444-8444-444444444444'
+);
+set session_replication_role = origin;
+
+create temp table issue25_listing_moderation_barrier (
+  moderation_waiting boolean not null,
+  both_waiting boolean not null,
+  lock_waiters integer not null
+);
+insert into issue25_listing_moderation_barrier values (false, false, 0);
+create temp table issue25_listing_moderation_outcomes (result jsonb not null);
+
+select extensions.dblink_exec('issue25_controller', 'begin');
+select * from extensions.dblink(
+  'issue25_controller',
+  $$select id::text from public.listings where id = '35000001-0000-4000-8000-000000000001' for update$$
+) as locked(id text);
+select extensions.dblink_exec('issue25_cancel', $$begin;
+  set local role authenticated;
+  set local "request.jwt.claims" = '{"sub":"35444444-4444-4444-8444-444444444444","role":"authenticated","aal":"aal2"}';
+  set local "request.jwt.claim.sub" = '35444444-4444-4444-8444-444444444444'$$);
+select extensions.dblink_send_query(
+  'issue25_cancel',
+  $$select private.issue25_catch_listing_moderation(
+    '39c00001-0000-4000-8000-000000000001',
+    '35000001-0000-4000-8000-000000000001'
+  )$$
+);
+do $$
+declare
+  attempt integer;
+  moderation_is_waiting boolean := false;
+begin
+  for attempt in 1..400 loop
+    select exists (
+      select 1
+      from pg_stat_activity activity
+      join issue25_sessions session on session.pid = activity.pid
+      where session.actor = 'cancel'
+        and activity.state = 'active'
+        and activity.wait_event_type = 'Lock'
+        and exists (
+          select 1 from pg_locks actor_lock
+          where actor_lock.pid = activity.pid and not actor_lock.granted
+        )
+    ) into moderation_is_waiting;
+    exit when moderation_is_waiting;
+    perform pg_sleep(0.025);
+  end loop;
+  update issue25_listing_moderation_barrier
+  set moderation_waiting = moderation_is_waiting;
+end;
+$$;
+select ok(
+  (select moderation_waiting from issue25_listing_moderation_barrier),
+  'report-bound listing removal is queued first at the controller-held listing row'
+);
+
+select extensions.dblink_exec('issue25_complete', $$begin;
+  set local role authenticated;
+  set local "request.jwt.claims" = '{"sub":"35111111-1111-4111-8111-111111111111","role":"authenticated"}';
+  set local "request.jwt.claim.sub" = '35111111-1111-4111-8111-111111111111'$$);
+select extensions.dblink_send_query(
+  'issue25_complete',
+  $$select private.issue25_catch_lifecycle('complete', '37000001-0000-4000-8000-000000000001')$$
+);
+do $$
+declare
+  attempt integer;
+  waiter_count integer := 0;
+begin
+  for attempt in 1..400 loop
+    select count(*)::integer into waiter_count
+    from pg_stat_activity activity
+    join issue25_sessions session on session.pid = activity.pid
+    where session.actor in ('complete', 'cancel')
+      and activity.state = 'active'
+      and activity.wait_event_type = 'Lock'
+      and exists (
+        select 1 from pg_locks actor_lock
+        where actor_lock.pid = activity.pid and not actor_lock.granted
+      );
+    exit when waiter_count = 2;
+    perform pg_sleep(0.025);
+  end loop;
+  update issue25_listing_moderation_barrier
+  set both_waiting = waiter_count = 2,
+      lock_waiters = waiter_count;
+end;
+$$;
+select ok(
+  (select both_waiting and lock_waiters = 2 from issue25_listing_moderation_barrier),
+  'staff removal and seller completion overlap at the same listing-row barrier'
+);
+
+select extensions.dblink_exec('issue25_controller', 'commit');
+do $$
+declare
+  attempt integer;
+begin
+  for attempt in 1..400 loop
+    exit when extensions.dblink_is_busy('issue25_cancel') = 0
+      and extensions.dblink_is_busy('issue25_complete') = 1;
+    perform pg_sleep(0.025);
+  end loop;
+  if extensions.dblink_is_busy('issue25_cancel') <> 0
+     or extensions.dblink_is_busy('issue25_complete') <> 1 then
+    raise exception 'queued listing moderation did not finish first before timeout';
+  end if;
+
+  insert into issue25_listing_moderation_outcomes
+  select result from extensions.dblink_get_result('issue25_cancel') as t(result jsonb);
+  perform result from extensions.dblink_get_result('issue25_cancel') as t(result jsonb);
+  perform extensions.dblink_exec('issue25_cancel', 'commit');
+
+  for attempt in 1..400 loop
+    exit when extensions.dblink_is_busy('issue25_complete') = 0;
+    perform pg_sleep(0.025);
+  end loop;
+  if extensions.dblink_is_busy('issue25_complete') <> 0 then
+    raise exception 'seller completion did not finish after moderation committed';
+  end if;
+  insert into issue25_listing_moderation_outcomes
+  select result from extensions.dblink_get_result('issue25_complete') as t(result jsonb);
+  perform result from extensions.dblink_get_result('issue25_complete') as t(result jsonb);
+  perform extensions.dblink_exec('issue25_complete', 'commit');
+end;
+$$;
+
+select ok(
+  (select count(*) = 2
+     and count(*) filter (where result ->> 'action' = 'moderate_listing') = 1
+     and count(*) filter (where result ->> 'action' = 'complete') = 1
+     and bool_and((result ->> 'ok')::boolean)
+   from issue25_listing_moderation_outcomes),
+  'both ordered operations finish successfully without deadlock'
+);
+select ok(
+  (select status = 'completed' from public.deals where id = '37000001-0000-4000-8000-000000000001')
+  and (select status = 'removed' from public.listings where id = '35000001-0000-4000-8000-000000000001')
+  and (select count(*) = 2
+         and count(*) filter (where action = 'content_removed') = 1
+         and count(*) filter (where action = 'report_resolved') = 1
+       from public.moderation_audit where report_id = '39c00001-0000-4000-8000-000000000001'),
+  'moderation commits first, the deal completes, and the listing remains removed'
+);
+select ok(
+  (select count(*) = 2 and min(completed_deals_count) = 1 and max(completed_deals_count) = 1
+   from public.profiles
+   where id in ('35111111-1111-4111-8111-111111111111', '35222222-2222-4222-8222-222222222222'))
+  and (select count(*) = 2 and count(distinct dedupe_key) = 2
+       from public.notifications
+       where kind = 'deal_completed'
+         and data ->> 'dealId' = '37000001-0000-4000-8000-000000000001')
+  and has_function_privilege('authenticated', 'public.complete_deal(uuid)', 'execute')
+  and not has_function_privilege('anon', 'public.complete_deal(uuid)', 'execute')
+  and not has_function_privilege('service_role', 'public.complete_deal(uuid)', 'execute'),
+  'ordered completion preserves counters, notifications, and the existing execute boundary'
+);
+set role authenticated;
+select set_config('request.jwt.claims', '{"sub":"35222222-2222-4222-8222-222222222222","role":"authenticated"}', false);
+select set_config('request.jwt.claim.sub', '35222222-2222-4222-8222-222222222222', false);
+select lives_ok(
+  $$insert into public.reviews (deal_id, reviewer_id, reviewee_id, rating) values ('37000001-0000-4000-8000-000000000001', '35222222-2222-4222-8222-222222222222', '35111111-1111-4111-8111-111111111111', 5)$$,
+  'review eligibility remains available after ordered moderation and completion'
+);
+reset role;
+set role postgres;
+
 select extensions.dblink_disconnect('issue25_controller');
 select extensions.dblink_disconnect('issue25_complete');
 select extensions.dblink_disconnect('issue25_cancel');
 drop function private.issue25_catch_lifecycle(text, uuid);
 drop function private.issue25_catch_profile_moderation(uuid, uuid);
 drop function private.issue25_catch_deal_resolution(uuid, uuid);
+drop function private.issue25_catch_listing_moderation(uuid, uuid);
 
 set session_replication_role = replica;
 delete from public.beta_auth_events where profile_id in (
@@ -1098,16 +1366,22 @@ delete from public.beta_auth_events where profile_id in (
 );
 create temp table issue25_cleanup_report_notification_ids as
 select id from public.notifications where data ->> 'reportId' in (
-  '39d00001-0000-4000-8000-000000000001', '39f00001-0000-4000-8000-000000000001'
+  '39c00001-0000-4000-8000-000000000001',
+  '39d00001-0000-4000-8000-000000000001',
+  '39f00001-0000-4000-8000-000000000001'
 );
 delete from public.moderation_audit where report_id in (
-  '39d00001-0000-4000-8000-000000000001', '39f00001-0000-4000-8000-000000000001'
+  '39c00001-0000-4000-8000-000000000001',
+  '39d00001-0000-4000-8000-000000000001',
+  '39f00001-0000-4000-8000-000000000001'
 );
 delete from public.notification_email_deliveries
 where notification_id in (select id from issue25_cleanup_report_notification_ids);
 delete from public.notifications where id in (select id from issue25_cleanup_report_notification_ids);
 delete from public.reports where id in (
-  '39d00001-0000-4000-8000-000000000001', '39f00001-0000-4000-8000-000000000001'
+  '39c00001-0000-4000-8000-000000000001',
+  '39d00001-0000-4000-8000-000000000001',
+  '39f00001-0000-4000-8000-000000000001'
 );
 delete from public.notification_email_deliveries d
 using public.notifications n
@@ -1180,6 +1454,7 @@ select is(
 );
 select is(
   (select count(*)::integer from public.notifications where data ->> 'reportId' in (
+    '39c00001-0000-4000-8000-000000000001',
     '39d00001-0000-4000-8000-000000000001',
     '39f00001-0000-4000-8000-000000000001'
   )),
@@ -1191,6 +1466,12 @@ select is(
    where notification_id in (select id from issue25_cleanup_report_notification_ids)),
   0,
   'committed concurrency cleanup removes fixture report delivery rows'
+);
+select is(
+  (select count(*)::integer from public.reports where id = '39c00001-0000-4000-8000-000000000001')
+  + (select count(*)::integer from public.moderation_audit where report_id = '39c00001-0000-4000-8000-000000000001'),
+  0,
+  'committed concurrency cleanup removes listing moderation report and audit residue'
 );
 
 select * from finish();
