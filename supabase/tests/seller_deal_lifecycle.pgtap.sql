@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(96);
+select plan(99);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -655,8 +655,58 @@ select ok(
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"25111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '25111111-1111-4111-8111-111111111111', true);
+select throws_ok(
+  $test$
+  do $block$
+  begin
+    perform public.cancel_deal(
+      '27000002-0000-4000-8000-000000000002',
+      U&'\0009\0009\000A\000A\000B\000B\000C\000C\000D\000D'
+    );
+    raise exception 'unsafe cancellation reason accepted';
+  end
+  $block$
+  $test$,
+  '23514', 'cancellation reason must contain between 2 and 1000 characters',
+  'authenticated cancellation rejects ASCII control whitespace as an empty reason'
+);
+select throws_ok(
+  $test$
+  do $block$
+  begin
+    perform public.cancel_deal(
+      '27000002-0000-4000-8000-000000000002',
+      U&'\00A0\00A0'
+    );
+    raise exception 'unsafe cancellation reason accepted';
+  end
+  $block$
+  $test$,
+  '23514', 'cancellation reason must contain between 2 and 1000 characters',
+  'authenticated cancellation rejects non-breaking spaces as an empty reason'
+);
+select throws_ok(
+  $test$
+  do $block$
+  begin
+    perform public.cancel_deal(
+      '27000002-0000-4000-8000-000000000002',
+      U&'\0009\0009\000A\000A\000B\000B\000C\000C\000D\000D\0020\0020\00A0\00A0\1680\1680\2000\2000\2001\2001\2002\2002\2003\2003\2004\2004\2005\2005\2006\2006\2007\2007\2008\2008\2009\2009\200A\200A\2028\2028\2029\2029\202F\202F\205F\205F\3000\3000\FEFF\FEFF'
+    );
+    raise exception 'unsafe cancellation reason accepted';
+  end
+  $block$
+  $test$,
+  '23514', 'cancellation reason must contain between 2 and 1000 characters',
+  'authenticated cancellation rejects mixed ECMAScript trim whitespace as an empty reason'
+);
 select lives_ok(
-  $$select public.cancel_deal('27000003-0000-4000-8000-000000000003', '  No delivery agreement  ')$$,
+  $$select public.cancel_deal(
+    '27000003-0000-4000-8000-000000000003',
+    U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF'
+      || 'No delivery agreement'
+      || U&'\FEFF\3000\205F\202F\2029\2028\200A\2009\2008\2007\2006\2005\2004\2003\2002\2001\2000\1680\00A0\0020\000D\000C\000B\000A\0009'
+  )$$,
   'the seller cancels an active accepted deal'
 );
 set local role postgres;
