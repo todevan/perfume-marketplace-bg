@@ -17,15 +17,17 @@ test('provisional legal-version migration fails closed and preserves consent evi
 		.trim();
 
 	for (const fragment of [
+		'activation_timestamp timestamptz;',
 		'lock table public.beta_legal_documents in share row exclusive mode',
+		'activation_timestamp := statement_timestamp()',
 		"document_version = '2026-07-22'",
 		"effective_at = timestamptz '2026-07-22 00:00:00+03'",
 		"raise exception 'expected current legal document versions are missing or drifted'",
-		"retired_at = timestamptz '2026-08-24 00:00:00+03'",
+		'retired_at = activation_timestamp',
 		"get diagnostics retired_count = row_count",
 		"if retired_count <> 2 then",
-		"('beta_terms', '2026-08-24-provisional.1', true, timestamptz '2026-08-24 00:00:00+03')",
-		"('marketplace_rules', '2026-08-24-provisional.1', true, timestamptz '2026-08-24 00:00:00+03')"
+		"('beta_terms', '2026-08-24-provisional.1', true, activation_timestamp)",
+		"('marketplace_rules', '2026-08-24-provisional.1', true, activation_timestamp)"
 	]) {
 		assert.ok(sql.includes(fragment), `missing fail-closed SQL contract: ${fragment}`);
 	}
@@ -33,4 +35,17 @@ test('provisional legal-version migration fails closed and preserves consent evi
 	assert.ok(!sql.includes('delete from public.beta_legal_documents'));
 	assert.ok(!sql.includes('delete from public.beta_consent_events'));
 	assert.ok(!sql.includes('update public.beta_consent_events'));
+	assert.ok(!sql.includes("retired_at = timestamptz '2026-08-24 00:00:00+03'"));
+
+	const lockIndex = sql.indexOf('lock table public.beta_legal_documents');
+	const timestampIndex = sql.indexOf('activation_timestamp := statement_timestamp()');
+	const collisionIndex = sql.indexOf("and d.document_version = '2026-08-24-provisional.1'");
+	const driftGuardIndex = sql.indexOf("raise exception 'expected current legal document versions are missing or drifted'");
+	const retirementIndex = sql.indexOf('update public.beta_legal_documents');
+	const insertionIndex = sql.indexOf('insert into public.beta_legal_documents');
+	assert.ok(lockIndex < timestampIndex, 'activation time must be captured after the table lock');
+	assert.ok(timestampIndex < collisionIndex, 'activation time must precede fail-closed validation');
+	assert.ok(collisionIndex < driftGuardIndex, 'replacement-version collisions must fail before mutation');
+	assert.ok(driftGuardIndex < retirementIndex, 'drift and version collisions must fail before mutation');
+	assert.ok(retirementIndex < insertionIndex, 'known versions must retire before replacements insert');
 });

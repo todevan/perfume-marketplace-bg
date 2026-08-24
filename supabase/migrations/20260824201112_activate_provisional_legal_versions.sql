@@ -3,10 +3,12 @@
 -- append-only consent event remain unchanged and provable.
 do $$
 declare
+  activation_timestamp timestamptz;
   expected_current_count integer;
   retired_count integer;
 begin
   lock table public.beta_legal_documents in share row exclusive mode;
+  activation_timestamp := statement_timestamp();
 
   select count(*)::integer
   into expected_current_count
@@ -41,7 +43,7 @@ begin
   end if;
 
   update public.beta_legal_documents
-  set retired_at = timestamptz '2026-08-24 00:00:00+03'
+  set retired_at = activation_timestamp
   where document_code in ('beta_terms', 'marketplace_rules')
     and document_version = '2026-07-22'
     and required_for_access = true
@@ -57,7 +59,7 @@ begin
   insert into public.beta_legal_documents (
     document_code, document_version, required_for_access, effective_at
   ) values
-    ('beta_terms', '2026-08-24-provisional.1', true, timestamptz '2026-08-24 00:00:00+03'),
-    ('marketplace_rules', '2026-08-24-provisional.1', true, timestamptz '2026-08-24 00:00:00+03');
+    ('beta_terms', '2026-08-24-provisional.1', true, activation_timestamp),
+    ('marketplace_rules', '2026-08-24-provisional.1', true, activation_timestamp);
 end;
 $$;

@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(18);
+select plan(19);
 
 select is(
   (
@@ -17,14 +17,15 @@ select is(
   'both historical provisional document rows survive version activation'
 );
 select ok(
-  not exists (
-    select 1
+  (
+    select count(distinct d.retired_at) = 1
+      and min(d.retired_at) > max(d.effective_at)
     from public.beta_legal_documents d
     where d.document_code in ('beta_terms', 'marketplace_rules')
       and d.document_version = '2026-07-22'
-      and d.retired_at is distinct from timestamptz '2026-08-24 00:00:00+03'
+      and d.retired_at is not null
   ),
-  'superseded document rows are retired at the new version boundary'
+  'superseded document rows share one actual post-original retirement boundary'
 );
 select is(
   (
@@ -40,12 +41,28 @@ select is(
 select ok(
   not exists (
     select 1
+    from public.beta_legal_documents current_document
+    join public.beta_legal_documents historical_document
+      on historical_document.document_code = current_document.document_code
+     and historical_document.document_version = '2026-07-22'
+    where current_document.document_code in ('beta_terms', 'marketplace_rules')
+      and current_document.document_version = '2026-08-24-provisional.1'
+      and (
+        current_document.effective_at is distinct from historical_document.retired_at
+        or current_document.effective_at > statement_timestamp()
+      )
+  ),
+  'both provisional documents become effective at the actual shared retirement boundary'
+);
+select ok(
+  (
+    select min(d.effective_at) >= pg_postmaster_start_time()
+      and max(d.effective_at) <= statement_timestamp()
     from public.beta_legal_documents d
     where d.document_code in ('beta_terms', 'marketplace_rules')
       and d.document_version = '2026-08-24-provisional.1'
-      and d.effective_at is distinct from timestamptz '2026-08-24 00:00:00+03'
   ),
-  'both provisional documents use the owner-approved effective timestamp'
+  'the activation boundary falls within the current database execution lifetime'
 );
 select ok(
   not exists (
