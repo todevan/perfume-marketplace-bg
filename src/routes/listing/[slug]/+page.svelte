@@ -29,6 +29,12 @@
     visualThemeForListing
   } from '$lib/components/listing/presentation';
 
+  interface TurnstileApi {
+    render: (element: HTMLElement, options: { sitekey: string; action: 'offer_submit' }) => string;
+    reset: (widgetId: string) => void;
+    remove: (widgetId: string) => void;
+  }
+
   let { data, form } = $props();
   let listing = $derived(data.listing);
   let percent = $derived(remainingPercent(listing));
@@ -41,6 +47,40 @@
   let selectedPhoto = $state(0);
   let offerTrigger = $state<HTMLButtonElement>();
   let offerCloseButton = $state<HTMLButtonElement>();
+  let turnstileElement = $state<HTMLDivElement>();
+  let turnstileScriptLoaded = $state(false);
+  let turnstileWidgetId = $state<string>();
+  let resetOfferResult: unknown;
+
+  function turnstileApi(): TurnstileApi | undefined {
+    return (window as Window & { turnstile?: TurnstileApi }).turnstile;
+  }
+
+  $effect(() => {
+    const sitekey = data.turnstileSiteKey;
+    const element = turnstileElement;
+    if (data.demoMode || !sitekey || !element) return;
+
+    const turnstile = turnstileApi();
+    if (!turnstile && !turnstileScriptLoaded) return;
+    if (!turnstile) return;
+
+    const widgetId = turnstile.render(element, { sitekey, action: 'offer_submit' });
+    turnstileWidgetId = widgetId;
+    return () => {
+      if (turnstileWidgetId !== widgetId) return;
+      turnstileWidgetId = undefined;
+      turnstile.remove(widgetId);
+    };
+  });
+
+  $effect(() => {
+    const offerResult = form?.offerResult;
+    const widgetId = turnstileWidgetId;
+    if (!offerResult || offerResult.ok || !widgetId || offerResult === resetOfferResult) return;
+    turnstileApi()?.reset(widgetId);
+    resetOfferResult = offerResult;
+  });
 
   $effect(() => {
     if (form?.offerResult) offerOpen = true;
@@ -105,7 +145,7 @@
 <svelte:head>
   <title>{listing.brandName} {listing.fragranceName} · {formatListingPrice(listing)}</title>
   <meta name="description" content={listing.description} />
-  {#if data.turnstileSiteKey && !data.demoMode}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{/if}
+  {#if data.turnstileSiteKey && !data.demoMode}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer onload={() => (turnstileScriptLoaded = true)}></script>{/if}
 </svelte:head>
 
 <div class="container breadcrumbs">
@@ -230,7 +270,7 @@
           {#if offerType !== 'swap'}<div class="field"><label for="offer-amount">Предложена сума</label><div class="money-input"><span>€</span><input id="offer-amount" name="cashAmount" type="number" min="1" step="0.01" bind:value={offerAmount} required /></div></div>{/if}
           {#if offerType !== 'cash'}<div class="field"><label for="swap-listing">Твоя активна обява</label><select id="swap-listing" name="offeredListingId" class="select" required><option value="">Избери обява</option>{#each data.offeredListings as own (own.id)}<option value={own.id}>{own.brandName} · {own.fragranceName}</option>{/each}</select>{#if !data.offeredListings.length}<p class="muted">Нямаш друга активна обява за размяна.</p>{/if}</div>{/if}
           <div class="field"><label for="offer-note">Кратка бележка (по избор)</label><textarea id="offer-note" name="message" maxlength="1000" class="textarea" placeholder="Например: мога да изпратя утре..."></textarea></div>
-          {#if data.turnstileSiteKey && !data.demoMode}<div class="cf-turnstile" data-sitekey={data.turnstileSiteKey} data-action="offer_submit"></div>{/if}
+          {#if data.turnstileSiteKey && !data.demoMode}<div class="cf-turnstile" bind:this={turnstileElement} data-sitekey={data.turnstileSiteKey} data-action="offer_submit"></div>{/if}
           {#if form?.offerResult && !form.offerResult.ok}<p class="form-error" role="alert">{form.offerResult.error.message}</p>{/if}
           <button class="button primary submit-offer" type="submit">Изпрати намерение <ArrowRight size={17} /></button>
         </form>

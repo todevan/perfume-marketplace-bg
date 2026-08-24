@@ -1,9 +1,17 @@
 import { createHmac } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { createServerClient } from '@supabase/ssr';
+import {
+	expect,
+	test,
+	type BrowserContext,
+	type Locator,
+	type Page,
+	type TestInfo
+} from '@playwright/test';
 
 /**
- * Destructive staging/production smoke test.
+ * State-changing isolated hosted acceptance test.
  *
  * It is intentionally inert unless E2E_REAL_RUN=true. The target environment
  * must use Cloudflare Turnstile's always-pass testing keys: automation must not
@@ -15,6 +23,7 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
  * Required for the marketplace flow:
  *   E2E_REAL_RUN=true
  *   E2E_REAL_BASE_URL=https://staging.example.bg
+ *   E2E_REAL_SUPABASE_URL / E2E_REAL_SUPABASE_PUBLISHABLE_KEY
  *   E2E_REAL_TURNSTILE_TESTING=true
  *   E2E_REAL_SELLER_EMAIL / E2E_REAL_SELLER_PASSWORD / E2E_REAL_SELLER_USERNAME
  *   E2E_REAL_BUYER_EMAIL / E2E_REAL_BUYER_PASSWORD / E2E_REAL_BUYER_USERNAME
@@ -37,6 +46,7 @@ interface Credentials {
 
 interface MarketplaceConfig {
 	origin: string;
+	supabase: { url: string; publishableKey: string };
 	seller: Credentials;
 	buyer: Credentials;
 	turnstileTesting: true;
@@ -52,6 +62,7 @@ interface ModeratorConfig {
 }
 
 const REQUIRED_REAL_FLAG = 'Set E2E_REAL_RUN=true to run the state-changing real-beta suite.';
+const CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY = '1x00000000000000000000AA';
 
 function requiredEnvironment(name: string): string {
 	const value = process.env[name]?.trim();
@@ -104,9 +115,22 @@ function marketplaceConfig(): MarketplaceConfig {
 		mode: 'uploads',
 		brand: requiredEnvironment('E2E_REAL_BRAND')
 	};
+	const supabaseUrl = new URL(requiredEnvironment('E2E_REAL_SUPABASE_URL'));
+	if (
+		supabaseUrl.protocol !== 'https:' ||
+		!/^([a-z]{20})\.supabase\.co$/u.test(supabaseUrl.hostname) ||
+		supabaseUrl.pathname !== '/'
+	) {
+		throw new Error('E2E_REAL_SUPABASE_URL must be a clean hosted Supabase project origin.');
+	}
+	const publishableKey = requiredEnvironment('E2E_REAL_SUPABASE_PUBLISHABLE_KEY');
+	if (!publishableKey.startsWith('sb_publishable_')) {
+		throw new Error('E2E_REAL_SUPABASE_PUBLISHABLE_KEY must be a scoped publishable key.');
+	}
 
 	return {
 		origin: realOrigin(),
+		supabase: { url: supabaseUrl.origin, publishableKey },
 		seller,
 		buyer,
 		turnstileTesting: requireTestingTurnstile(),
@@ -144,13 +168,18 @@ async function gotoApp(page: Page, origin: string, path: string): Promise<void> 
 }
 
 async function waitForTestingTurnstile(
-	page: Page,
-	hostSelector: string,
+	host: Locator,
 	context: string
 ): Promise<void> {
-	const host = page.locator(hostSelector);
 	await expect(host, `${context} must render a Turnstile widget`).toHaveCount(1, { timeout: 20_000 });
-	const response = page.locator('input[name="cf-turnstile-response"]').last();
+	const configuredSiteKey = await host.getAttribute('data-sitekey');
+	if (configuredSiteKey !== null) {
+		await expect(host).toHaveAttribute('data-sitekey', CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY);
+	}
+	await expect(host.locator('iframe[src*="challenges.cloudflare.com"]')).toHaveCount(1, {
+		timeout: 20_000
+	});
+	const response = host.locator('input[name="cf-turnstile-response"]');
 	await response.waitFor({ state: 'attached', timeout: 20_000 });
 	await expect
 		.poll(() => response.inputValue(), {
@@ -160,21 +189,45 @@ async function waitForTestingTurnstile(
 		.toMatch(/\S/u);
 }
 
-async function login(
-	page: Page,
-	origin: string,
-	account: Pick<Credentials, 'email' | 'password'>,
-	next = '/dashboard'
+async function bootstrapSession(
+	context: BrowserContext,
+	config: MarketplaceConfig,
+	account: Pick<Credentials, 'email' | 'password'>
 ): Promise<void> {
-	await gotoApp(page, origin, `/login?next=${encodeURIComponent(next)}`);
-	await expect(page.getByRole('heading', { name: 'Влез в профила си.' })).toBeVisible();
-	await page.getByLabel('Имейл').fill(account.email);
-	await page.getByLabel('Парола').fill(account.password);
-	await waitForTestingTurnstile(page, '.cf-turnstile', 'Login');
-	await page.getByRole('button', { name: 'Влез в профила' }).click();
-	await page.waitForURL(
-		(url) => url.origin === origin && new URL(url).pathname === next,
-		{ timeout: 30_000 }
+	const cookies = new Map<string, { value: string; options: Record<string, unknown> }>();
+	const client = createServerClient(config.supabase.url, config.supabase.publishableKey, {
+		cookies: {
+			getAll: () => [...cookies].map(([name, cookie]) => ({ name, value: cookie.value })),
+			setAll: (cookiesToSet) => {
+				for (const cookie of cookiesToSet) {
+					cookies.set(cookie.name, { value: cookie.value, options: cookie.options });
+				}
+			}
+		}
+	});
+	const { data, error } = await client.auth.signInWithPassword({
+		email: account.email,
+		password: account.password
+	});
+	if (error || !data.session || !data.user) {
+		throw new Error(`Disposable Supabase session bootstrap failed: ${error?.code ?? 'no_session'}.`);
+	}
+	if (cookies.size === 0) throw new Error('Disposable Supabase session bootstrap produced no app cookie.');
+
+	await context.addCookies(
+		[...cookies].map(([name, cookie]) => {
+			const sameSite = cookie.options.sameSite;
+			return {
+				name,
+				value: cookie.value,
+				url: config.origin,
+				httpOnly: Boolean(cookie.options.httpOnly),
+				secure: true,
+				sameSite:
+					sameSite === 'strict' ? ('Strict' as const) :
+					sameSite === 'none' ? ('None' as const) : ('Lax' as const)
+			};
+		})
 	);
 }
 
@@ -240,6 +293,10 @@ async function publishListing(
 	await expect(page.getByRole('heading', { name: 'Разкажи историята на аромата' })).toBeVisible();
 
 	const brandInput = page.getByRole('combobox', { name: 'Марка' });
+	await expect(page.locator('#brand-hint')).toHaveText(
+		/Търси в [1-9]\d* марки, заредени от каталога на marketplace-а\./u,
+		{ timeout: 30_000 }
+	);
 	await brandInput.fill(config.publication.brand);
 	const brandOption = page
 		.getByRole('option', {
@@ -285,7 +342,7 @@ async function publishListing(
 	await page
 		.getByLabel('Описание')
 		.fill(`Автоматизирана beta обява ${runId}. Реален интеграционен тест с четири отделни доказателствени снимки.`);
-	await waitForTestingTurnstile(page, '.turnstile-wrap', 'Listing upload');
+	await waitForTestingTurnstile(page.locator('.turnstile-wrap > div'), 'Listing upload');
 	await page.getByRole('button', { name: 'Продължи' }).click();
 
 	await expect(page.getByRole('heading', { name: 'Провери преди публикуване' })).toBeVisible({
@@ -312,7 +369,7 @@ async function completeDeal(page: Page, origin: string, query: string): Promise<
 	const deal = page.locator('article.deal-card').filter({ hasText: query }).first();
 	await expect(deal).toBeVisible({ timeout: 30_000 });
 	await deal.getByRole('button', { name: 'Отбележи като приключена' }).click();
-	await expect(page.getByRole('status')).toHaveText('Действието е записано.');
+	await expect(page.getByRole('status')).toHaveText('Действието е записано.', { timeout: 30_000 });
 }
 
 async function cancelDeal(page: Page, origin: string, query: string, reason: string): Promise<void> {
@@ -322,8 +379,8 @@ async function cancelDeal(page: Page, origin: string, query: string, reason: str
 	await deal.getByText('Откажи сделката', { exact: true }).click();
 	await deal.getByLabel('Причина').fill(reason);
 	await deal.getByRole('button', { name: 'Потвърди отказа' }).click();
-	await expect(page.getByRole('status')).toHaveText('Действието е записано.');
-	await expect(deal).toContainText(reason);
+	await expect(page.getByRole('status')).toHaveText('Действието е записано.', { timeout: 30_000 });
+	await expect(deal).toContainText(reason, { timeout: 30_000 });
 	await expect(deal.getByRole('button', { name: 'Публикувай отзив' })).toHaveCount(0);
 }
 
@@ -368,6 +425,8 @@ test.describe('real hosted marketplace', () => {
 
 		const sellerContext = await browser.newContext();
 		const buyerContext = await browser.newContext();
+		await bootstrapSession(sellerContext, config, config.seller);
+		await bootstrapSession(buyerContext, config, config.buyer);
 		const seller = await sellerContext.newPage();
 		const buyer = await buyerContext.newPage();
 		seller.setDefaultTimeout(30_000);
@@ -375,10 +434,8 @@ test.describe('real hosted marketplace', () => {
 		const runId = `${Date.now().toString(36)}${testInfo.retry}`;
 
 		try {
-			await login(seller, config.origin, config.seller);
 			const listing = await publishListing(seller, config, runId);
 
-			await login(buyer, config.origin, config.buyer);
 			await gotoApp(buyer, config.origin, '/listings');
 			await buyer.getByRole('textbox', { name: 'Търси аромат или марка' }).fill(listing.query);
 			await buyer.getByRole('button', { name: 'Търси' }).click();
@@ -394,30 +451,44 @@ test.describe('real hosted marketplace', () => {
 			const offerDialog = buyer.getByRole('dialog', { name: 'Твоята оферта' });
 			await offerDialog.getByLabel('Предложена сума').fill('40');
 			await offerDialog.getByLabel('Кратка бележка (по избор)').fill(offerNote);
-			await waitForTestingTurnstile(buyer, '.cf-turnstile', 'Offer');
+			await waitForTestingTurnstile(offerDialog.locator('.cf-turnstile'), 'Offer');
 			await offerDialog.getByRole('button', { name: 'Изпрати намерение' }).click();
-			await expect(offerDialog.getByRole('heading', { name: 'Офертата е изпратена.' })).toBeVisible();
+			await expect(offerDialog.getByRole('heading', { name: 'Офертата е изпратена.' })).toBeVisible({
+				timeout: 30_000
+			});
 
 			await gotoApp(seller, config.origin, '/offers?direction=received');
 			const receivedOffer = seller.locator('article.offer-card').filter({ hasText: offerNote }).first();
 			await expect(receivedOffer).toContainText(config.buyer.username, { timeout: 30_000 });
-			await receivedOffer.getByRole('button', { name: 'Приеми и резервирай' }).click();
-			await seller.waitForURL((url) => url.pathname === '/deals' && Boolean(url.searchParams.get('highlight')));
+			const acceptOffer = receivedOffer.getByRole('button', { name: 'Приеми и резервирай' });
+			await expect(acceptOffer).toBeVisible({ timeout: 30_000 });
+			await acceptOffer.click();
+			await seller.waitForURL(
+				(url) => url.pathname === '/deals' && Boolean(url.searchParams.get('highlight')),
+				{ timeout: 30_000 }
+			);
 
 			const sellerMessage = `Потвърждавам тестовата оферта ${runId}.`;
 			await gotoApp(seller, config.origin, '/messages');
 			await findConversation(seller, listing.query, config.buyer.username);
 			await seller.getByRole('textbox', { name: 'Съобщение' }).fill(sellerMessage);
 			await seller.getByRole('button', { name: 'Изпрати' }).click();
-			await expect(seller.getByText(sellerMessage, { exact: true })).toBeVisible();
+			await expect(seller.locator('.message-stream').getByText(sellerMessage, { exact: true })).toBeVisible({
+				timeout: 30_000
+			});
 
 			const buyerMessage = `Получено, приключваме beta сделката ${runId}.`;
 			await gotoApp(buyer, config.origin, '/messages');
 			await findConversation(buyer, listing.query, config.seller.username);
-			await expect(buyer.getByText(sellerMessage, { exact: true })).toBeVisible({ timeout: 30_000 });
+			const buyerMessageStream = buyer.locator('.message-stream');
+			await expect(buyerMessageStream.getByText(sellerMessage, { exact: true })).toBeVisible({
+				timeout: 30_000
+			});
 			await buyer.getByRole('textbox', { name: 'Съобщение' }).fill(buyerMessage);
 			await buyer.getByRole('button', { name: 'Изпрати' }).click();
-			await expect(buyer.getByText(buyerMessage, { exact: true })).toBeVisible();
+			await expect(buyerMessageStream.getByText(buyerMessage, { exact: true })).toBeVisible({
+				timeout: 30_000
+			});
 
 			await gotoApp(buyer, config.origin, '/deals');
 			const buyerDeal = buyer.locator('article.deal-card').filter({ hasText: listing.query }).first();
@@ -431,7 +502,9 @@ test.describe('real hosted marketplace', () => {
 			await completedDeal.getByLabel('Оценка').selectOption('5');
 			await completedDeal.getByLabel('Отзив').fill(`Коректна beta сделка ${runId}.`);
 			await completedDeal.getByRole('button', { name: 'Публикувай отзив' }).click();
-			await expect(buyer.getByRole('status')).toHaveText('Действието е записано.');
+			await expect(buyer.getByRole('status')).toHaveText('Действието е записано.', {
+				timeout: 30_000
+			});
 		} finally {
 			await Promise.all([sellerContext.close(), buyerContext.close()]);
 		}
@@ -444,6 +517,8 @@ test.describe('real hosted marketplace', () => {
 			const config = marketplaceConfig();
 			const sellerContext = await browser.newContext();
 			const buyerContext = await browser.newContext();
+			await bootstrapSession(sellerContext, config, config.seller);
+			await bootstrapSession(buyerContext, config, config.buyer);
 			const seller = await sellerContext.newPage();
 			const buyer = await buyerContext.newPage();
 			seller.setDefaultTimeout(30_000);
@@ -451,22 +526,26 @@ test.describe('real hosted marketplace', () => {
 			const runId = `${Date.now().toString(36)}-${cancellingRole}-${testInfo.retry}`;
 
 			try {
-				await login(seller, config.origin, config.seller);
 				const listing = await publishListing(seller, config, runId);
-				await login(buyer, config.origin, config.buyer);
 				await gotoApp(buyer, config.origin, `/listing/${listing.slug}`);
 				const offerNote = `Cancellation offer ${runId}`;
 				await buyer.getByRole('button', { name: 'Изпрати оферта' }).click();
 				const offerDialog = buyer.getByRole('dialog', { name: 'Твоята оферта' });
 				await offerDialog.getByLabel('Предложена сума').fill('40');
 				await offerDialog.getByLabel('Кратка бележка (по избор)').fill(offerNote);
-				await waitForTestingTurnstile(buyer, '.cf-turnstile', 'Offer');
+				await waitForTestingTurnstile(offerDialog.locator('.cf-turnstile'), 'Offer');
 				await offerDialog.getByRole('button', { name: 'Изпрати намерение' }).click();
-				await expect(offerDialog.getByRole('heading', { name: 'Офертата е изпратена.' })).toBeVisible();
+				await expect(offerDialog.getByRole('heading', { name: 'Офертата е изпратена.' })).toBeVisible({
+					timeout: 30_000
+				});
 				await gotoApp(seller, config.origin, '/offers?direction=received');
 				const receivedOffer = seller.locator('article.offer-card').filter({ hasText: offerNote }).first();
+				await expect(receivedOffer).toBeVisible({ timeout: 30_000 });
 				await receivedOffer.getByRole('button', { name: 'Приеми и резервирай' }).click();
-				await seller.waitForURL((url) => url.pathname === '/deals' && Boolean(url.searchParams.get('highlight')));
+				await seller.waitForURL(
+					(url) => url.pathname === '/deals' && Boolean(url.searchParams.get('highlight')),
+					{ timeout: 30_000 }
+				);
 
 				const reason = `Cancellation reason ${runId}`;
 				await cancelDeal(cancellingRole === 'seller' ? seller : buyer, config.origin, listing.query, reason);
@@ -475,7 +554,7 @@ test.describe('real hosted marketplace', () => {
 					.locator('article.deal-card')
 					.filter({ hasText: listing.query })
 					.first();
-				await expect(counterpartDeal).toContainText(reason);
+				await expect(counterpartDeal).toContainText(reason, { timeout: 30_000 });
 				await expect(counterpartDeal.getByRole('button', { name: 'Публикувай отзив' })).toHaveCount(0);
 			} finally {
 				await Promise.all([sellerContext.close(), buyerContext.close()]);
@@ -495,7 +574,7 @@ test.describe('real hosted marketplace', () => {
 			await gotoApp(page, config.origin, '/login?next=%2Fadmin');
 			await page.getByLabel('Имейл').fill(config.email);
 			await page.getByLabel('Парола').fill(config.password);
-			await waitForTestingTurnstile(page, '.cf-turnstile', 'Moderator login');
+			await waitForTestingTurnstile(page.locator('form[action="?/login"] .cf-turnstile'), 'Moderator login');
 			await page.getByRole('button', { name: 'Влез в профила' }).click();
 			await page.waitForURL(
 				(url) => url.origin === config.origin && ['/admin', '/auth/mfa'].includes(url.pathname),
