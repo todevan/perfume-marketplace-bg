@@ -419,6 +419,7 @@ declare
   transaction_waiter_count integer := 0;
 begin
   for attempt in 1..200 loop
+    perform pg_stat_clear_snapshot();
     select count(*)::integer into waiting_count
     from pg_stat_activity a
     join issue25_sessions s on s.pid = a.pid
@@ -1215,6 +1216,7 @@ declare
   moderation_is_waiting boolean := false;
 begin
   for attempt in 1..400 loop
+    perform pg_stat_clear_snapshot();
     select exists (
       select 1
       from pg_stat_activity activity
@@ -1253,6 +1255,7 @@ declare
   waiter_count integer := 0;
 begin
   for attempt in 1..400 loop
+    perform pg_stat_clear_snapshot();
     select count(*)::integer into waiter_count
     from pg_stat_activity activity
     join issue25_sessions session on session.pid = activity.pid
