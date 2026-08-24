@@ -8,7 +8,6 @@ declare
   retired_count integer;
 begin
   lock table public.beta_legal_documents in share row exclusive mode;
-  activation_timestamp := statement_timestamp();
 
   select count(*)::integer
   into expected_current_count
@@ -42,6 +41,7 @@ begin
       using errcode = '23514';
   end if;
 
+  activation_timestamp := clock_timestamp();
   update public.beta_legal_documents
   set retired_at = activation_timestamp
   where document_code in ('beta_terms', 'marketplace_rules')
