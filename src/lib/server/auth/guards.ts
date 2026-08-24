@@ -4,6 +4,8 @@ import { loginRedirect, safeRedirectPath } from './redirect';
 import type {
 	AuthenticatedBetaContext,
 	AuthenticatorAssuranceLevel,
+	AuthProfile,
+	BetaAccess,
 	PlatformRole,
 	RequestAuthContext
 } from './types';
@@ -105,6 +107,35 @@ export function requireAuthenticated(context: RequestAuthContext, url: URL): Use
 	return context.user;
 }
 
+type ConsentRenewalProfile = Pick<AuthProfile, 'emailVerifiedAt' | 'isSuspended'>;
+type ConsentRenewalAccess = Pick<
+	BetaAccess,
+	'status' | 'onboardingCompletedAt' | 'expiresAt' | 'hasCurrentConsents'
+>;
+
+/** True only when current consent is the sole remaining beta-access requirement. */
+export function requiresConsentRenewal(
+	profile: ConsentRenewalProfile | null,
+	betaAccess: ConsentRenewalAccess | null,
+	now = Date.now()
+): boolean {
+	if (
+		!profile ||
+		profile.isSuspended ||
+		!profile.emailVerifiedAt ||
+		!betaAccess ||
+		betaAccess.status !== 'active' ||
+		!betaAccess.onboardingCompletedAt ||
+		betaAccess.hasCurrentConsents
+	) {
+		return false;
+	}
+
+	if (!betaAccess.expiresAt) return true;
+	const expiresAt = new Date(betaAccess.expiresAt).getTime();
+	return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
 export function requireBetaAccess(
 	context: RequestAuthContext,
 	url: URL
@@ -118,8 +149,17 @@ export function requireBetaAccess(
 	if (betaAccess?.status === 'revoked') {
 		error(403, 'Нямате активен достъп до затворената beta.');
 	}
+	if (betaAccess?.status === 'expired') {
+		error(403, 'Достъпът до затворената beta е изтекъл.');
+	}
 	if (!profile || !betaAccess || !betaAccess.onboardingCompletedAt) {
 		redirect(303, `/onboarding?next=${encodeURIComponent(safeRedirectPath(`${url.pathname}${url.search}`, '/'))}`);
+	}
+	if (requiresConsentRenewal(profile, betaAccess)) {
+		redirect(303, `/onboarding?next=${encodeURIComponent(safeRedirectPath(`${url.pathname}${url.search}`, '/'))}`);
+	}
+	if (betaAccess.status === 'active' && !profile.emailVerifiedAt) {
+		error(403, 'Имейл адресът трябва да бъде потвърден.');
 	}
 	if (!betaAccess.isActive || betaAccess.status !== 'active') {
 		error(403, 'Нямате активен достъп до затворената beta.');

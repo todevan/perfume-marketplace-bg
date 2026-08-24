@@ -2,6 +2,7 @@
 	let { data, form } = $props();
 	let submittedUsername = $derived(form && 'username' in form ? form.username : null);
 	let submittedCity = $derived(form && 'city' in form ? form.city : null);
+	let reconsent = $derived(data.mode === 'reconsent');
 	const documentLabels: Record<string, string> = {
 		beta_terms: 'Условията за ползване',
 		privacy_notice: 'Политиката за поверителност',
@@ -11,23 +12,29 @@
 </script>
 
 <svelte:head>
-	<title>Завърши профила · Marketplace beta</title>
+	<title>{reconsent ? 'Потвърди условията' : 'Завърши профила'} · Marketplace beta</title>
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
 <section class="section">
 	<div class="container onboarding surface">
-		<span class="eyebrow">Завършване на регистрацията</span>
-		<h1>Завърши профила си.</h1>
-		<p>Публично се вижда потребителското име. Имейлът остава скрит.</p>
+		<span class="eyebrow">{reconsent ? 'Актуални условия' : 'Завършване на регистрацията'}</span>
+		<h1>{reconsent ? 'Потвърди актуалните условия.' : 'Завърши профила си.'}</h1>
+		<p>
+			{reconsent
+				? 'За да продължиш да използваш marketplace, приеми актуалните версии на задължителните документи.'
+				: 'Публично се вижда потребителското име. Имейлът остава скрит.'}
+		</p>
 		{#if form?.message}<p class="form-error" role="alert">{form.message}</p>{/if}
 
 		<form method="POST">
 			<input type="hidden" name="next" value={data.next} />
-			<label for="onboarding-username">Потребителско име</label>
-			<input id="onboarding-username" class="input" name="username" value={submittedUsername ?? data.profile?.username ?? ''} minlength="3" maxlength="40" autocomplete="username" required />
-			<label for="onboarding-city">Град <span>(незадължително)</span></label>
-			<input id="onboarding-city" class="input" name="city" value={submittedCity ?? data.profile?.city ?? ''} maxlength="100" autocomplete="address-level2" />
+			{#if !reconsent}
+				<label for="onboarding-username">Потребителско име</label>
+				<input id="onboarding-username" class="input" name="username" value={submittedUsername ?? data.profile?.username ?? ''} minlength="3" maxlength="40" autocomplete="username" required />
+				<label for="onboarding-city">Град <span>(незадължително)</span></label>
+				<input id="onboarding-city" class="input" name="city" value={submittedCity ?? data.profile?.city ?? ''} maxlength="100" autocomplete="address-level2" />
+			{/if}
 
 			{#if data.documents.length > 0}
 				<fieldset>
@@ -40,7 +47,7 @@
 					{/each}
 				</fieldset>
 			{/if}
-			<button class="button primary" type="submit">Активирай достъпа</button>
+			<button class="button primary" type="submit">{reconsent ? 'Приеми и продължи' : 'Активирай достъпа'}</button>
 		</form>
 	</div>
 </section>

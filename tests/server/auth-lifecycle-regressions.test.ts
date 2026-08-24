@@ -51,6 +51,7 @@ function createClient({
 		onboarding_completed_at: onboardingCompletedAt,
 		is_active: isActive,
 		has_current_consents: true,
+		email_verified_at: '2026-08-01T11:00:00Z',
 		role,
 		username: 'scent_archive',
 		account_kind: 'private',

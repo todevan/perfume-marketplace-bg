@@ -4,16 +4,16 @@
 
 <svelte:head>
   <title>Правни документи · Beta</title>
-  <meta name="description" content="Работни чернови на условията и политиката за поверителност на marketplace beta." />
+  <meta name="description" content="Текущи продуктови чернови и правна информация за marketplace beta." />
   <meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
 <section class="legal-hero">
   <div class="container hero-grid">
     <div class="hero-copy reveal">
-      <span class="draft-pill"><TriangleAlert size={16} /> Работна чернова · не е правен документ</span>
+      <span class="draft-pill"><TriangleAlert size={16} /> Временни продуктови чернови</span>
       <h1>Правната рамка е <em>част от продукта.</em></h1>
-      <p>Тези страници показват планираната структура на документите за затворената beta. Те не са одобрени за публичен launch и не следва да се приемат от реални потребители.</p>
+      <p>Одобрени от собственика временни продуктови чернови. Условията за използване и Правилата на marketplace се използват за текущото версирано съгласие: версия 2026-08-24-provisional.1 от 24.08.2026. Не са прегледани или одобрени от адвокат. Преди публичното или търговското стартиране е задължителен преглед от квалифициран български адвокат.</p>
     </div>
     <div class="legal-mark reveal" style="animation-delay: 120ms" aria-hidden="true"><span>LEGAL</span><Scale size={66} strokeWidth={1.1} /><strong>DRAFT / 01</strong><i>за преглед от адвокат</i></div>
   </div>
@@ -21,7 +21,7 @@
 
 <section class="section documents">
   <div class="container">
-    <div class="section-heading"><div><span class="eyebrow">Работни документи</span><h2>Структура за преглед, не финален текст.</h2></div><p>Полетата за фирма, контакт, срокове и доставчици остават отворени до фирмено и правно решение.</p></div>
+    <div class="section-heading"><div><span class="eyebrow">Текущи документи</span><h2>Продуктови версии, не правно финален текст.</h2></div><p>Полетата за фирма, контакт, срокове и доставчици остават отворени до фирмено и правно решение.</p></div>
     <div class="document-grid">
       <a class="document-card terms" href="/legal/terms"><div class="doc-index">01 / TERMS</div><div class="doc-icon"><Gavel size={30} /></div><h2>Условия за използване</h2><p>Роля на платформата, профили, обяви, оферти, модерация, такси и обжалване.</p><span>Отвори черновата <ArrowRight size={17} /></span></a>
       <a class="document-card privacy" href="/legal/privacy"><div class="doc-index">02 / PRIVACY</div><div class="doc-icon"><LockKeyhole size={30} /></div><h2>Политика за поверителност</h2><p>Категории данни, цели, правни основания, срокове, получатели, права и канали за контакт.</p><span>Отвори черновата <ArrowRight size={17} /></span></a>
@@ -42,7 +42,7 @@
   </div>
 </section>
 
-<section class="draft-footer"><div class="container"><FileText size={23} /><div><strong>Статус: неодобрена чернова</strong><p>Текстовете са продуктова основа и изискват преглед от квалифициран български адвокат.</p></div></div></section>
+<section class="draft-footer"><div class="container"><FileText size={23} /><div><strong>Статус: одобрени от собственика временни продуктови чернови</strong><p>Текстовете не са правно финални; правният преглед и активирането на финалните версии остават задължителни преди публичното или търговското стартиране.</p></div></div></section>
 
 <style>
   .legal-hero { overflow: hidden; border-bottom: 1px solid var(--line); }

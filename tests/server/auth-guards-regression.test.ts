@@ -51,7 +51,7 @@ describe('routeAccessPolicy and guards regression matrix', () => {
 
     const nonStaff: RequestAuthContext = {
       user: { id: 'u1' } as User,
-      profile: { id: 'u1', username: 'u', city: null, bio: null, avatarPath: null, accountKind: 'private', role: 'user', emailVerifiedAt: null, phoneVerifiedAt: null, merchantVerifiedAt: null, isSuspended: false },
+      profile: { id: 'u1', username: 'u', city: null, bio: null, avatarPath: null, accountKind: 'private', role: 'user', emailVerifiedAt: '2026-07-22T09:00:00Z', phoneVerifiedAt: null, merchantVerifiedAt: null, isSuspended: false },
       betaAccess: { profileId: 'u1', status: 'active', onboardingCompletedAt: '2026-07-22T10:00:00Z', activatedAt: null, expiresAt: null, hasCurrentConsents: true, isActive: true },
       currentAal: null,
       nextAal: null
@@ -65,7 +65,7 @@ describe('routeAccessPolicy and guards regression matrix', () => {
   it('staff requires role and aal2', () => {
     const nonStaff: RequestAuthContext = {
       user: { id: 'u1' } as User,
-      profile: { id: 'u1', username: 'u', city: null, bio: null, avatarPath: null, accountKind: 'private', role: 'user', emailVerifiedAt: null, phoneVerifiedAt: null, merchantVerifiedAt: null, isSuspended: false },
+      profile: { id: 'u1', username: 'u', city: null, bio: null, avatarPath: null, accountKind: 'private', role: 'user', emailVerifiedAt: '2026-07-22T09:00:00Z', phoneVerifiedAt: null, merchantVerifiedAt: null, isSuspended: false },
       betaAccess: { profileId: 'u1', status: 'active', onboardingCompletedAt: '2026-07-22T10:00:00Z', activatedAt: null, expiresAt: null, hasCurrentConsents: true, isActive: true },
       currentAal: null,
       nextAal: null

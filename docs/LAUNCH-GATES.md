@@ -45,7 +45,13 @@ A gate is `PASS`, `BLOCKED`, or `NOT FRESHLY VERIFIED`. Never infer PASS from me
 - Incident response is usable.
 
 ## Business and legal
-- Terms, Privacy, and Safety content is launch-ready.
+- Terms, Privacy, Marketplace Rules, and Safety content is launch-ready.
+- Qualified Bulgarian legal review is complete and the final lawyer-reviewed Terms
+  and Marketplace Rules versions are activated before public or commercial launch.
+- Materially changed active legal versions require affirmative re-consent before
+  authenticated marketplace actions, preserve each historical acceptance as
+  separate evidence, keep public and legal access available, and fail closed when
+  consent state cannot be established.
 - Payment provider is owner-approved.
 - Launch prices are owner-approved.
 - Merchant and business wording is accurate.
@@ -76,3 +82,9 @@ Agents determine technical gate state.
 The owner makes the final real-world business decision to launch.
 
 A failed or unverified required gate blocks launch. Do not invent additional gates merely to keep engineering busy.
+
+During engineering, the current Terms and Marketplace Rules are owner-approved
+provisional product drafts with stable internal version identifiers. They are not
+counsel-approved or legally final. The deferred legal review gate does not block
+ordinary implementation, review, verification, or merge; it remains fail-closed for
+public or commercial launch.

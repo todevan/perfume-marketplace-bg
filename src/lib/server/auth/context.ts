@@ -47,7 +47,7 @@ function normalizeProfile(row: UnknownRow, accessRow: UnknownRow): AuthProfile {
 }
 
 function normalizeStatus(value: unknown): BetaMembershipStatus | null {
-	return ['pending', 'active', 'suspended', 'revoked'].includes(String(value))
+	return ['pending', 'active', 'suspended', 'revoked', 'expired'].includes(String(value))
 		? (value as BetaMembershipStatus)
 		: null;
 }

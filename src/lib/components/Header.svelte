@@ -21,7 +21,7 @@
       role: 'user' | 'moderator' | 'admin';
     } | null;
     betaAccess: {
-      status: 'pending' | 'active' | 'suspended' | 'revoked';
+      status: 'pending' | 'active' | 'suspended' | 'revoked' | 'expired';
       onboardingCompletedAt: string | null;
       isActive: boolean;
     } | null;

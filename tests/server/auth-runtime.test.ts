@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { handleError } from '../../src/hooks.server';
 import { loadRequestAuthContext } from '../../src/lib/server/auth/context';
 import {
+	enforceRoutePolicy,
 	requireBetaAccess,
 	requireMfa,
 	requireRole,
@@ -98,6 +99,118 @@ describe('authorization guards', () => {
 			'admin'
 		);
 		expect(() => requireMfa(admin, new URL('https://market.example/admin'))).not.toThrow();
+	});
+
+	it.each(['/listings?query=rose', '/admin/reports?status=open'])(
+		'routes an otherwise-active member with stale consent from %s to re-consent',
+		(path) => {
+			const staleConsentContext: RequestAuthContext = {
+				...activeContext,
+				betaAccess: {
+					...activeContext.betaAccess!,
+					hasCurrentConsents: false,
+					isActive: false
+				}
+			};
+
+			expect(() => requireBetaAccess(staleConsentContext, new URL(`https://market.example${path}`)))
+				.toThrowError();
+			try {
+				requireBetaAccess(staleConsentContext, new URL(`https://market.example${path}`));
+			} catch (reason) {
+				expect(reason).toMatchObject({
+					status: 303,
+					location: `/onboarding?next=${encodeURIComponent(path.startsWith('/') ? path : `/${path}`)}`
+				});
+			}
+		}
+	);
+
+	it.each([
+		['suspended profile', { profile: { ...activeContext.profile!, isSuspended: true } }],
+		[
+			'suspended membership',
+			{ betaAccess: { ...activeContext.betaAccess!, status: 'suspended' as const } }
+		],
+		[
+			'revoked membership',
+			{ betaAccess: { ...activeContext.betaAccess!, status: 'revoked' as const } }
+		],
+		[
+			'pending membership',
+			{ betaAccess: { ...activeContext.betaAccess!, status: 'pending' as const } }
+		]
+	])('does not route a %s through re-consent', (_label, overrides) => {
+		const context = {
+			...activeContext,
+			...overrides,
+			betaAccess: {
+				...activeContext.betaAccess!,
+				...('betaAccess' in overrides ? overrides.betaAccess : {}),
+				hasCurrentConsents: false,
+				isActive: false
+			}
+		} as RequestAuthContext;
+
+		try {
+			requireBetaAccess(context, new URL('https://market.example/listings'));
+			expect.unreachable('inactive context must be denied');
+		} catch (reason) {
+			expect(reason).toMatchObject({ status: 403 });
+		}
+	});
+
+	it('denies an expired member even when consent is also stale', () => {
+		const expired = {
+			...activeContext,
+			betaAccess: {
+				...activeContext.betaAccess!,
+				expiresAt: '2020-01-01T00:00:00Z',
+				hasCurrentConsents: false,
+				isActive: false
+			}
+		};
+
+		try {
+			requireBetaAccess(expired, new URL('https://market.example/listings'));
+			expect.unreachable('expired membership must be denied');
+		} catch (reason) {
+			expect(reason).toMatchObject({ status: 403 });
+		}
+	});
+
+	it('denies an email-unverified member instead of routing them through re-consent', () => {
+		const emailUnverified: RequestAuthContext = {
+			...activeContext,
+			profile: { ...activeContext.profile!, emailVerifiedAt: null },
+			betaAccess: {
+				...activeContext.betaAccess!,
+				hasCurrentConsents: false,
+				isActive: false
+			}
+		};
+
+		try {
+			requireBetaAccess(emailUnverified, new URL('https://market.example/listings'));
+			expect.unreachable('email-unverified membership must be denied');
+		} catch (reason) {
+			expect(reason).toMatchObject({ status: 403 });
+		}
+	});
+
+	it('keeps public legal routes accessible while an authenticated member consent is stale', () => {
+		const staleConsentContext: RequestAuthContext = {
+			...activeContext,
+			betaAccess: {
+				...activeContext.betaAccess!,
+				hasCurrentConsents: false,
+				isActive: false
+			}
+		};
+
+		expect(() =>
+			enforceRoutePolicy(staleConsentContext, new URL('https://market.example/legal/terms'))
+		).not.toThrow();
 	});
 });
 

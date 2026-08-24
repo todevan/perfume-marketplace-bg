@@ -27,6 +27,16 @@ Current product truth:
 - normal users register with email/password and confirm email;
 - onboarding requires username, meaningful city/location, current Terms, and current
   Marketplace Rules consent;
+- the current Terms and Marketplace Rules are owner-approved provisional product
+  drafts for engineering, use stable internal version identifiers, and are not
+  counsel-approved or legally final;
+- activating a materially changed legal version requires affirmative re-consent
+  before authenticated marketplace actions, while public and legal access remains
+  available; each acceptance preserves separate historical consent evidence and an
+  unknown consent state fails closed;
+- qualified Bulgarian legal review and activation of the final lawyer-reviewed
+  versions remain mandatory before public or commercial launch, but are not an
+  ordinary engineering implementation or merge blocker;
 - normal users do not require an invitation, waitlist, manual approval, phone, or SMS;
 - accepted offers open private chat;
 - sellers complete deals; either party may cancel with a stored reason;

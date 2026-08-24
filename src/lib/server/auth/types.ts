@@ -3,7 +3,7 @@ import type { SupabaseClient, User } from '@supabase/supabase-js';
 export type AccountKind = 'private' | 'merchant';
 export type PlatformRole = 'user' | 'moderator' | 'admin';
 export type AuthenticatorAssuranceLevel = 'aal1' | 'aal2';
-export type BetaMembershipStatus = 'pending' | 'active' | 'suspended' | 'revoked';
+export type BetaMembershipStatus = 'pending' | 'active' | 'suspended' | 'revoked' | 'expired';
 
 export interface AuthProfile {
 	id: string;
