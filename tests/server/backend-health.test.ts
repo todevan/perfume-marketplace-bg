@@ -3,6 +3,7 @@ import {
 	BackendAttestationError,
 	createBackendAttestor,
 	STAGING_BACKEND_BASELINE,
+	VERIFICATION_BACKEND_BASELINE,
 	type BackendHealthClient
 } from '../../src/lib/server/services/backend-health';
 
@@ -50,6 +51,7 @@ describe('hosted backend baseline attestation', () => {
 			successCacheTtlMs: 30_000
 		});
 		const input = {
+			appEnvironment: 'staging' as const,
 			publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
 			supabaseSecretKey: 'server-secret-value'
 		};
@@ -91,12 +93,33 @@ describe('hosted backend baseline attestation', () => {
 		expect(createClient).toHaveBeenCalledTimes(2);
 	});
 
+	it('accepts only the exact disposable verification target for verification deployments', async () => {
+		const createClient = vi.fn(() => mockClient(VERIFICATION_BACKEND_BASELINE.counts));
+		const attest = createBackendAttestor({ createClient });
+
+		await expect(
+			attest({
+				appEnvironment: 'verification',
+				publicSupabaseUrl: VERIFICATION_BACKEND_BASELINE.origin,
+				supabaseSecretKey: 'proof-secret'
+			})
+		).resolves.toBeUndefined();
+		await expect(
+			attest({
+				appEnvironment: 'verification',
+				publicSupabaseUrl: 'https://abcdefghijklmnopqrst.supabase.co',
+				supabaseSecretKey: 'proof-secret'
+			})
+		).rejects.toMatchObject({ reason: 'invalid_target' });
+	});
+
 	it('rejects any non-Frankfurt target or missing server secret before creating a client', async () => {
 		const createClient = vi.fn(() => mockClient(STAGING_BACKEND_BASELINE.counts));
 		const attest = createBackendAttestor({ createClient });
 
 		await expect(
 			attest({
+				appEnvironment: 'staging',
 				publicSupabaseUrl: 'https://zllqwlekadiuyejgbuxc.supabase.co',
 				supabaseSecretKey: 'stockholm-secret'
 			})
@@ -106,6 +129,7 @@ describe('hosted backend baseline attestation', () => {
 		});
 		await expect(
 			attest({
+				appEnvironment: 'staging',
 				publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
 				supabaseSecretKey: ''
 			})
@@ -131,6 +155,7 @@ describe('hosted backend baseline attestation', () => {
 			failureCacheTtlMs: 2_000
 		});
 		const input = {
+			appEnvironment: 'staging' as const,
 			publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
 			supabaseSecretKey: 'rotatable-server-secret'
 		};
@@ -158,6 +183,7 @@ describe('hosted backend baseline attestation', () => {
 		let failure: unknown;
 		try {
 			await attest({
+				appEnvironment: 'staging',
 				publicSupabaseUrl: STAGING_BACKEND_BASELINE.origin,
 				supabaseSecretKey: secret
 			});

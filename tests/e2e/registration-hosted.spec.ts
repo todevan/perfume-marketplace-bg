@@ -48,13 +48,36 @@ function hostedTarget(): HostedTarget {
 	if (!/^[a-z0-9-]{3,12}$/u.test(runId)) {
 		throw new Error('ISSUE22_RUN_ID must be a 3-12 character lowercase cleanup label.');
 	}
-	for (const name of [
-		'ISSUE22_SUPABASE_PARENT_PROJECT_REF',
-		'ISSUE22_SUPABASE_BRANCH_NAME',
+	const targetKind = required('ISSUE22_SUPABASE_TARGET_KIND');
+	if (targetKind !== 'preview' && targetKind !== 'standalone') {
+		throw new Error('ISSUE22_SUPABASE_TARGET_KIND must be preview or standalone.');
+	}
+	const providerVariables = [
 		'ISSUE22_CLOUDFLARE_WORKER_NAME',
 		'ISSUE22_CLOUDFLARE_VERSION_ID',
 		'ISSUE22_PROVENANCE_PATH'
-	]) {
+	];
+	if (targetKind === 'preview') {
+		providerVariables.push(
+			'ISSUE22_SUPABASE_PARENT_PROJECT_REF',
+			'ISSUE22_SUPABASE_BRANCH_NAME'
+		);
+	} else {
+		providerVariables.push(
+			'ISSUE22_STANDALONE_PROJECT_NAME',
+			'ISSUE22_STANDALONE_ORGANIZATION_SLUG',
+			'ISSUE22_STANDALONE_REGION',
+			'ISSUE22_RUNNER_SHA',
+			'ISSUE22_RUNNER_WORKTREE_PATH',
+			'ISSUE22_CANDIDATE_WORKTREE_PATH',
+			'ISSUE22_GATE3_WORKTREE_PATH',
+			'ISSUE22_APPROVED_TARGET_RECEIPT_PATH',
+			'ISSUE22_GATE3_RECEIPT_PATH',
+			'ISSUE22_CONTROLLER_LOCK_PATH',
+			'ISSUE22_CONTROLLER_LEASE_TOKEN'
+		);
+	}
+	for (const name of providerVariables) {
 		required(name);
 	}
 	return {

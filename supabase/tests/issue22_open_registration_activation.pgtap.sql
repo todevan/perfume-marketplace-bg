@@ -94,6 +94,10 @@ values
    'authenticated', 'authenticated', 'expired-legacy@example.test', 'test-password-hash', statement_timestamp(),
    '{"provider":"email","providers":["email"]}', '{"username":"expired_legacy"}', statement_timestamp(), statement_timestamp());
 
+update auth.users
+set confirmation_sent_at = email_confirmed_at - interval '1 minute'
+where id = '31aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
 insert into public.beta_memberships (profile_id, invite_id, status)
 select id, null, 'pending'::public.beta_membership_status
 from auth.users

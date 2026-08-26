@@ -5,7 +5,16 @@ export interface RuntimeEnvironmentSource {
 	[key: string]: string | undefined;
 }
 
-export type AppEnvironment = 'development' | 'staging' | 'production';
+export type AppEnvironment = 'development' | 'verification' | 'staging' | 'production';
+
+export const ISSUE22_VERIFICATION_RUNTIME_BOUNDARY = Object.freeze({
+	appOrigin:
+		'https://perfume-marketplace-bg-issue22-proof26.perfume-marketplace-bg.workers.dev',
+	supabaseOrigin: 'https://msxlgyocdbtxmwowduhk.supabase.co',
+	turnstileHostname:
+		'perfume-marketplace-bg-issue22-proof26.perfume-marketplace-bg.workers.dev',
+	turnstileSiteKey: '1x00000000000000000000AA'
+});
 
 export interface DemoRuntimeConfiguration {
 	mode: 'demo';
@@ -116,10 +125,17 @@ function imageProcessorMode(
 
 function appEnvironment(platformEnvironment?: RuntimeEnvironmentSource): AppEnvironment {
 	const value = firstValue('APP_ENV', platformEnvironment) ?? 'development';
-	if (value === 'development' || value === 'staging' || value === 'production') return value;
+	if (
+		value === 'development' ||
+		value === 'verification' ||
+		value === 'staging' ||
+		value === 'production'
+	) {
+		return value;
+	}
 	throw new RuntimeConfigurationError(
 		['APP_ENV'],
-		'Invalid APP_ENV: expected "development", "staging", or "production".'
+		'Invalid APP_ENV: expected "development", "verification", "staging", or "production".'
 	);
 }
 
@@ -185,6 +201,41 @@ export function getRuntimeConfiguration(
 			'PUBLIC_SUPABASE_PUBLISHABLE_KEY or PUBLIC_SUPABASE_ANON_KEY'
 		]);
 	}
+	const supabaseSecretKey = firstValueForKeys(
+		['SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
+		platformEnvironment
+	);
+	const turnstileSecretKey = firstValue('TURNSTILE_SECRET_KEY', platformEnvironment);
+	const turnstileExpectedHostname = firstValue(
+		'TURNSTILE_EXPECTED_HOSTNAME',
+		platformEnvironment
+	);
+
+	if (configuredAppEnvironment === 'verification') {
+		const invalidVariables: string[] = [];
+		if (publicSupabaseUrl !== ISSUE22_VERIFICATION_RUNTIME_BOUNDARY.supabaseOrigin) {
+			invalidVariables.push('PUBLIC_SUPABASE_URL');
+		}
+		if (publicAppUrl !== ISSUE22_VERIFICATION_RUNTIME_BOUNDARY.appOrigin) {
+			invalidVariables.push('PUBLIC_APP_URL');
+		}
+		if (publicTurnstileSiteKey !== ISSUE22_VERIFICATION_RUNTIME_BOUNDARY.turnstileSiteKey) {
+			invalidVariables.push('PUBLIC_TURNSTILE_SITE_KEY');
+		}
+		if (
+			turnstileExpectedHostname !== ISSUE22_VERIFICATION_RUNTIME_BOUNDARY.turnstileHostname
+		) {
+			invalidVariables.push('TURNSTILE_EXPECTED_HOSTNAME');
+		}
+		if (!supabaseSecretKey) invalidVariables.push('SUPABASE_SECRET_KEY');
+		if (!turnstileSecretKey) invalidVariables.push('TURNSTILE_SECRET_KEY');
+		if (invalidVariables.length > 0) {
+			throw new RuntimeConfigurationError(
+				invalidVariables,
+				'Invalid Issue 22 verification runtime boundary.'
+			);
+		}
+	}
 
 	return {
 		mode: 'production',
@@ -193,15 +244,12 @@ export function getRuntimeConfiguration(
 		publicSupabaseUrl,
 		publicSupabaseKey,
 		publicSupabaseAnonKey: publicSupabaseKey,
-		supabaseSecretKey: firstValueForKeys(
-			['SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
-			platformEnvironment
-		),
+		supabaseSecretKey,
 		imageProcessorMode: imageProcessorMode(platformEnvironment),
 		publicAppUrl,
 		publicTurnstileSiteKey,
-		turnstileSecretKey: firstValue('TURNSTILE_SECRET_KEY', platformEnvironment),
-		turnstileExpectedHostname: firstValue('TURNSTILE_EXPECTED_HOSTNAME', platformEnvironment)
+		turnstileSecretKey,
+		turnstileExpectedHostname
 	};
 }
 

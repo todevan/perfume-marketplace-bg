@@ -10,6 +10,10 @@ const workspace = resolve(import.meta.dirname, '../..');
 const configPath = resolve(workspace, 'supabase/config.toml');
 const confirmationTemplatePath = resolve(workspace, 'supabase/templates/confirmation.html');
 const environmentExamplePath = resolve(workspace, '.env.example');
+const confirmationProofMigrationPath = resolve(
+	workspace,
+	'supabase/migrations/20260826062305_require_email_confirmation_proof.sql'
+);
 
 function parseContractToml(source: string): TomlNode {
 	const root: TomlNode = {};
@@ -85,6 +89,15 @@ describe('open registration Supabase configuration', () => {
 		expect(template).toContain('{{ .TokenHash }}');
 		expect(template).toContain('{{ .RedirectTo }}');
 		expect(template).toContain('type=email');
+	});
+
+	it('requires provider evidence that an email confirmation challenge was completed', () => {
+		const migration = readFileSync(confirmationProofMigrationPath, 'utf8');
+
+		expect(migration).toContain('u.confirmation_sent_at is not null');
+		expect(migration).toContain('u.email_confirmed_at is not null');
+		expect(migration).toContain('u.email_confirmed_at >= u.confirmation_sent_at');
+		expect(migration).toContain('open registration requires completed email confirmation');
 	});
 
 	it('documents the local CAPTCHA secret without retaining the obsolete invite switch', () => {

@@ -19,10 +19,12 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 	const next = safeRedirectPath(url.searchParams.get('next'), '/dashboard');
 	if (
 		locals.runtime.mode === 'production' &&
-		locals.runtime.appEnvironment === 'staging'
+		(locals.runtime.appEnvironment === 'staging' ||
+			locals.runtime.appEnvironment === 'verification')
 	) {
 		try {
 			await attestHostedBackendBaseline({
+				appEnvironment: locals.runtime.appEnvironment,
 				publicSupabaseUrl: locals.runtime.publicSupabaseUrl,
 				supabaseSecretKey: locals.runtime.supabaseSecretKey
 			});
@@ -183,16 +185,12 @@ export const actions: Actions = {
 			});
 		}
 		if (data.session) {
-			const { error: admissionError } = await supabase.rpc('claim_open_registration');
-			if (admissionError) {
-				await supabase.auth.signOut();
-				return fail(503, {
-					success: false,
-					email,
-					message: 'Профилът временно не може да бъде активиран. Опитай отново по-късно.'
-				});
-			}
-			redirect(303, `/onboarding?next=${encodeURIComponent(next)}`);
+			await supabase.auth.signOut();
+			return fail(503, {
+				success: false,
+				email,
+				message: 'Регистрацията временно не е достъпна. Опитай отново по-късно.'
+			});
 		}
 
 		return {
