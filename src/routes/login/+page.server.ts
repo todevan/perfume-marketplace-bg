@@ -2,7 +2,6 @@ import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { loadRequestAuthContext } from '$lib/server/auth/context';
 import { safeRedirectPath } from '$lib/server/auth/redirect';
-import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
 import { attestHostedBackendBaseline } from '$lib/server/services/backend-health';
 import {
 	InvalidFormDataError,
@@ -74,27 +73,23 @@ export const actions: Actions = {
 			redirect(303, next);
 		}
 
-		const challenge = await verifyTurnstileForAction(
-			event,
-			formData,
-			event.locals.runtime,
-			'login'
-		);
-		if (!challenge.success) {
-			return fail(challenge.reason === 'not_configured' ? 503 : 400, {
+		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
+		if (!captchaToken || captchaToken.length > 2048) {
+			return fail(400, {
 				success: false,
 				email,
-				message:
-					challenge.reason === 'not_configured'
-						? 'Входът временно не е достъпен.'
-						: 'Потвърди, че не си автоматизиран клиент.'
+				message: 'Потвърди, че не си автоматизиран клиент.'
 			});
 		}
 
 		const supabase = event.locals.supabase;
 		if (!supabase) return fail(503, { success: false, email, message: 'Входът временно не е достъпен.' });
 
-		const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+		const { error: signInError } = await supabase.auth.signInWithPassword({
+			email,
+			password,
+			options: { captchaToken }
+		});
 		if (signInError) {
 			return fail(400, { success: false, email, message: 'Невалиден имейл или парола.' });
 		}
@@ -153,7 +148,7 @@ export const actions: Actions = {
 		}
 
 		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
-		if (!captchaToken) {
+		if (!captchaToken || captchaToken.length > 2048) {
 			return fail(400, {
 				success: false,
 				email,

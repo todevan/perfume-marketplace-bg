@@ -151,12 +151,14 @@ describe('anonymous auth action request-body limits', () => {
 		expect(resetPasswordForEmail).not.toHaveBeenCalled();
 	});
 
-	it('verifies a within-limit login CAPTCHA in the application before provider sign-in', async () => {
-		const turnstileFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ success: true, action: 'login', hostname: 'market.example' }))
-		);
+	it('forwards a within-limit login CAPTCHA once to the provider without pre-consuming it', async () => {
+		const turnstileFetch = vi.fn();
 		const signInWithPassword = vi.fn(
-			async (_credentials: { email: string; password: string }) => ({
+			async (_credentials: {
+				email: string;
+				password: string;
+				options: { captchaToken: string };
+			}) => ({
 				error: new Error('invalid credentials')
 			})
 		);
@@ -173,16 +175,17 @@ describe('anonymous auth action request-body limits', () => {
 		} as never);
 
 		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(turnstileFetch).toHaveBeenCalledOnce();
+		expect(turnstileFetch).not.toHaveBeenCalled();
 		expect(signInWithPassword).toHaveBeenCalledOnce();
-		expect(signInWithPassword.mock.calls[0]?.[0]).toMatchObject({ email: 'member@example.bg' });
-		expect(signInWithPassword.mock.calls[0]?.[0]).not.toHaveProperty('options');
+		expect(signInWithPassword).toHaveBeenCalledWith({
+			email: 'member@example.bg',
+			password: ['correct', 'horse', 'battery', 'staple'].join('-'),
+			options: { captchaToken: 'verified-login-token' }
+		});
 	});
 
-	it('verifies a within-limit password-reset CAPTCHA in the application before provider reset', async () => {
-		const turnstileFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ success: true, action: 'password_reset', hostname: 'market.example' }))
-		);
+	it('forwards a within-limit password-reset CAPTCHA once to the provider without pre-consuming it', async () => {
+		const turnstileFetch = vi.fn();
 		const resetPasswordForEmail = vi.fn(async () => ({ data: {}, error: null }));
 		const formData = new FormData();
 		formData.set('email', 'member@example.bg');
@@ -196,9 +199,10 @@ describe('anonymous auth action request-body limits', () => {
 		} as never);
 
 		expect(result).toMatchObject({ success: true });
-		expect(turnstileFetch).toHaveBeenCalledOnce();
+		expect(turnstileFetch).not.toHaveBeenCalled();
 		expect(resetPasswordForEmail).toHaveBeenCalledWith('member@example.bg', {
-			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password'
+			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password',
+			captchaToken: 'verified-reset-token'
 		});
 	});
 });

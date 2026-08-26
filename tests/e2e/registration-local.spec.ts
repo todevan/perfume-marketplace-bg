@@ -136,6 +136,30 @@ test.describe('open registration against local Supabase', () => {
 		expect(await malformedResponse.text()).toContain('captcha_token');
 	});
 
+	test('Supabase Auth rejects direct login and password recovery without CAPTCHA', async () => {
+		const account = uniqueAccount();
+		const headers = {
+			apikey: anonKey,
+			authorization: `Bearer ${anonKey}`,
+			'content-type': 'application/json'
+		};
+		const loginResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ email: account.email, password: account.password })
+		});
+		expect(loginResponse.status).toBe(400);
+		expect(await loginResponse.text()).toContain('captcha');
+
+		const recoveryResponse = await fetch(`${supabaseUrl}/auth/v1/recover`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ email: account.email })
+		});
+		expect(recoveryResponse.status).toBe(400);
+		expect(await recoveryResponse.text()).toContain('captcha');
+	});
+
 	test('Supabase Auth enforces the 12-character password boundary on direct signup', async () => {
 		const tooShort = uniqueAccount();
 		const tooShortResponse = await directPasswordSignup(tooShort, 'Abcdefgh1!x');
@@ -147,7 +171,7 @@ test.describe('open registration against local Supabase', () => {
 		expect(acceptedResponse.status).toBe(200);
 	});
 
-	test('browser registration, fresh login, and password recovery work through GoTrue CAPTCHA', async ({
+	test('browser registration, fresh login, and password recovery work through enforced CAPTCHA boundaries', async ({
 		page
 	}) => {
 		test.setTimeout(60_000);
