@@ -1,6 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '$lib/server/database.types';
-import { ISSUE22_VERIFICATION_RUNTIME_BOUNDARY } from '$lib/server/env';
 
 const SUCCESS_CACHE_TTL_MS = 30_000;
 const FAILURE_CACHE_TTL_MS = 2_000;
@@ -18,7 +17,7 @@ export const STAGING_BACKEND_BASELINE = Object.freeze({
 });
 
 export const VERIFICATION_BACKEND_BASELINE = Object.freeze({
-	origin: ISSUE22_VERIFICATION_RUNTIME_BOUNDARY.supabaseOrigin,
+	origin: 'https://msxlgyocdbtxmwowduhk.supabase.co',
 	counts: HOSTED_BACKEND_COUNTS
 });
 
