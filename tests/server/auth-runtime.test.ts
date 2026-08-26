@@ -579,6 +579,49 @@ describe('Turnstile verification', () => {
 		expect(fetcher).toHaveBeenCalledOnce();
 	});
 
+	it.each([
+		['action', { expectedAction: undefined, expectedHostname: 'market.example' }],
+		['hostname', { expectedAction: 'login', expectedHostname: undefined }]
+	])(
+		'fails closed before Siteverify when the expected %s is not configured',
+		async (_label, expected) => {
+			const fetcher = siteverifyFetcher({
+				success: true,
+				action: 'login',
+				hostname: 'market.example'
+			});
+
+			await expect(
+				verifyTurnstile({
+					token: ['verified', 'token'].join('-'),
+					secretKey: 'secret',
+					...expected,
+					fetch: fetcher
+				})
+			).resolves.toMatchObject({ success: false, reason: 'not_configured' });
+			expect(fetcher).not.toHaveBeenCalled();
+		}
+	);
+
+	it('rejects a Turnstile token longer than 2048 characters before Siteverify', async () => {
+		const fetcher = siteverifyFetcher({
+			success: true,
+			action: 'login',
+			hostname: 'market.example'
+		});
+
+		await expect(
+			verifyTurnstile({
+				token: 'x'.repeat(2049),
+				secretKey: 'secret',
+				expectedAction: 'login',
+				expectedHostname: 'market.example',
+				fetch: fetcher
+			})
+		).resolves.toMatchObject({ success: false, reason: 'rejected' });
+		expect(fetcher).not.toHaveBeenCalled();
+	});
+
 	it('fails closed for absent configuration and mismatched actions', async () => {
 		await expect(verifyTurnstile({ token: '', secretKey: '' })).resolves.toMatchObject({
 			success: false,
@@ -600,6 +643,7 @@ describe('Turnstile verification', () => {
 				token: 'token',
 				secretKey: 'secret',
 				expectedAction: 'login',
+				expectedHostname: 'market.example',
 				fetch: fetcher
 			})
 		).resolves.toMatchObject({ success: false, reason: 'rejected' });
