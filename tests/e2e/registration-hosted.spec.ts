@@ -195,17 +195,21 @@ async function registerAndOnboard(
 	await expect(page).toHaveURL(/\/onboarding\?next=%2Fdashboard$/u);
 
 	for (const checkbox of await page.locator('fieldset input[type="checkbox"]').all()) await checkbox.check();
-	await page.getByRole('button', { name: 'Активирай достъпа' }).click();
-	await expect(page).toHaveURL(/\/onboarding/u);
-	await page.getByLabel('Град').fill('---');
+	const city = page.getByLabel('Град', { exact: true });
 	await page.getByRole('button', { name: 'Активирай достъпа' }).click();
 	await expect(page).toHaveURL(/\/onboarding/u);
 	await expect(page.getByRole('alert')).toContainText('City must be at least 2 characters');
 
-	await page.getByLabel('Град').fill(label === 'a' ? 'София' : 'Saint-Rémy');
+	for (const checkbox of await page.locator('fieldset input[type="checkbox"]').all()) await checkbox.check();
+	await city.fill('---');
+	await page.getByRole('button', { name: 'Активирай достъпа' }).click();
+	await expect(page).toHaveURL(/\/onboarding/u);
+	await expect(page.getByRole('alert')).toContainText('Enter a valid city or location');
+
 	for (const checkbox of await page.locator('fieldset input[type="checkbox"]').all()) {
 		if (!(await checkbox.isChecked())) await checkbox.check();
 	}
+	await city.fill(label === 'a' ? 'София' : 'Saint-Rémy');
 	await page.getByRole('button', { name: 'Активирай достъпа' }).click();
 	await expect(page).toHaveURL(`${target.origin}/dashboard`);
 	await expect(page.getByRole('heading', { name: `Здравей, ${actor.username}.` })).toBeVisible();
