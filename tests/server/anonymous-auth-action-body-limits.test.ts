@@ -151,11 +151,15 @@ describe('anonymous auth action request-body limits', () => {
 		expect(resetPasswordForEmail).not.toHaveBeenCalled();
 	});
 
-	it('passes a within-limit login CAPTCHA token once to Supabase Auth', async () => {
+	it('verifies a within-limit login CAPTCHA in the application before provider sign-in', async () => {
 		const turnstileFetch = vi.fn(async () =>
 			new Response(JSON.stringify({ success: true, action: 'login', hostname: 'market.example' }))
 		);
-		const signInWithPassword = vi.fn(async () => ({ error: new Error('invalid credentials') }));
+		const signInWithPassword = vi.fn(
+			async (_credentials: { email: string; password: string }) => ({
+				error: new Error('invalid credentials')
+			})
+		);
 		const formData = new FormData();
 		formData.set('email', 'member@example.bg');
 		formData.set('password', 'correct-horse-battery-staple');
@@ -169,14 +173,13 @@ describe('anonymous auth action request-body limits', () => {
 		} as never);
 
 		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(turnstileFetch).not.toHaveBeenCalled();
-		expect(signInWithPassword).toHaveBeenCalledWith(expect.objectContaining({
-			email: 'member@example.bg',
-			options: { captchaToken: 'verified-login-token' }
-		}));
+		expect(turnstileFetch).toHaveBeenCalledOnce();
+		expect(signInWithPassword).toHaveBeenCalledOnce();
+		expect(signInWithPassword.mock.calls[0]?.[0]).toMatchObject({ email: 'member@example.bg' });
+		expect(signInWithPassword.mock.calls[0]?.[0]).not.toHaveProperty('options');
 	});
 
-	it('passes a within-limit password-reset CAPTCHA token once to Supabase Auth', async () => {
+	it('verifies a within-limit password-reset CAPTCHA in the application before provider reset', async () => {
 		const turnstileFetch = vi.fn(async () =>
 			new Response(JSON.stringify({ success: true, action: 'password_reset', hostname: 'market.example' }))
 		);
@@ -193,10 +196,9 @@ describe('anonymous auth action request-body limits', () => {
 		} as never);
 
 		expect(result).toMatchObject({ success: true });
-		expect(turnstileFetch).not.toHaveBeenCalled();
+		expect(turnstileFetch).toHaveBeenCalledOnce();
 		expect(resetPasswordForEmail).toHaveBeenCalledWith('member@example.bg', {
-			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password',
-			captchaToken: 'verified-reset-token'
+			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password'
 		});
 	});
 });

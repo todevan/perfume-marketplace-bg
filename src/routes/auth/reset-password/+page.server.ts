@@ -1,5 +1,6 @@
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
+import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
 import {
 	InvalidFormDataError,
 	parseBoundedFormData,
@@ -38,12 +39,20 @@ export const actions: Actions = {
 			return { success: true, message: 'Демо режимът не изпраща имейли.' };
 		}
 
-		const captchaToken = formData.get('cf-turnstile-response')?.toString().trim() ?? '';
-		if (!captchaToken) {
-			return fail(400, {
+		const challenge = await verifyTurnstileForAction(
+			event,
+			formData,
+			event.locals.runtime,
+			'password_reset'
+		);
+		if (!challenge.success) {
+			return fail(challenge.reason === 'not_configured' ? 503 : 400, {
 				success: false,
 				email,
-				message: 'Потвърди, че не си автоматизиран клиент.'
+				message:
+					challenge.reason === 'not_configured'
+						? 'Възстановяването временно не е достъпно.'
+						: 'Потвърди, че не си автоматизиран клиент.'
 			});
 		}
 
@@ -55,8 +64,7 @@ export const actions: Actions = {
 		const callback = new URL('/auth/callback', appOrigin);
 		callback.searchParams.set('next', '/auth/update-password');
 		await event.locals.supabase.auth.resetPasswordForEmail(email, {
-			redirectTo: callback.toString(),
-			captchaToken
+			redirectTo: callback.toString()
 		});
 
 		// Always return the same response so the endpoint cannot enumerate registered emails.
