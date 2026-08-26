@@ -226,29 +226,26 @@ test('exact-target hosted registration and hostile R2 boundaries', async ({ brow
 	runProofHelper('attest');
 	const contexts: BrowserContext[] = [];
 	try {
-		for (const [label, captchaToken] of [
-			['captcha-missing', undefined],
-			['captcha-invalid', 'invalid']
-		] as const) {
-			const actor = account(target, label);
-			recordIntent(target, label, actor.email);
-			const response = await fetch(`${target.supabaseUrl}/auth/v1/signup`, {
-				method: 'POST',
-				headers: {
-					apikey: target.publishableKey,
-					authorization: `Bearer ${target.publishableKey}`,
-					'content-type': 'application/json'
-				},
-				body: JSON.stringify({
-					email: actor.email,
-					password: actor.password,
-					data: { username: actor.username },
-					...(captchaToken ? { gotrue_meta_security: { captcha_token: captchaToken } } : {})
-				})
-			});
-			expect(response.status).toBe(400);
-			expect((await response.text()).toLowerCase()).toContain('captcha');
-		}
+		// Cloudflare's official always-pass secret deliberately accepts every non-empty receipt.
+		// Invalid provider responses are covered by deterministic Turnstile unit tests; this hosted
+		// boundary proves that GoTrue still rejects a request that omits the receipt entirely.
+		const captchaMissing = account(target, 'captcha-missing');
+		recordIntent(target, 'captcha-missing', captchaMissing.email);
+		const missingCaptchaResponse = await fetch(`${target.supabaseUrl}/auth/v1/signup`, {
+			method: 'POST',
+			headers: {
+				apikey: target.publishableKey,
+				authorization: `Bearer ${target.publishableKey}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				email: captchaMissing.email,
+				password: captchaMissing.password,
+				data: { username: captchaMissing.username }
+			})
+		});
+		expect(missingCaptchaResponse.status).toBe(400);
+		expect((await missingCaptchaResponse.text()).toLowerCase()).toContain('captcha');
 
 		const a = await registerAndOnboard(browser, target, 'a', contexts);
 		const b = await registerAndOnboard(browser, target, 'b', contexts);
