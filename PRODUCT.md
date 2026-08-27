@@ -1,5 +1,10 @@
 # Aromatika Product Constitution
 
+<!-- impeccable:product-schema 1 -->
+
+## Platform
+web
+
 ## Purpose
 Aromatika is a Bulgaria-first vertical marketplace for perfume and fragrance commerce. It models perfume-specific listing, condition, quantity, concentration, evidence, trust, offer, deal, and seller or merchant behavior rather than behaving like a generic classifieds site.
 
