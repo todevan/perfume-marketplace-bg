@@ -70,7 +70,10 @@ jobs:
 
   database:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      # Cloudflare's documented public always-pass test credential; never use outside isolated CI.
+      LOCAL_AUTH_CAPTCHA_TEST_KEY: 1x0000000000000000000000000000000AA
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -87,6 +90,10 @@ jobs:
       - run: pnpm db:reset
       - run: pnpm db:lint
       - run: pnpm db:test
+      - name: Install Chromium for the isolated registration journey
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run local registration, fresh-login, and recovery journey
+        run: pnpm test:e2e:registration
       - name: Run Node database operator contracts
         run: pnpm test:db:contracts
       - if: always()

@@ -228,6 +228,51 @@ describe('safe redirects and runtime mode', () => {
 		).toThrow(RuntimeConfigurationError);
 	});
 
+	it('accepts the explicit production-like verification environment', () => {
+		const runtime = getRuntimeConfiguration({
+			APP_ENV: 'verification',
+			PUBLIC_DEMO_MODE: 'false',
+			PUBLIC_APP_URL:
+				'https://perfume-marketplace-bg-issue22-proof26.perfume-marketplace-bg.workers.dev',
+			PUBLIC_SUPABASE_URL: 'https://msxlgyocdbtxmwowduhk.supabase.co',
+			PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
+			SUPABASE_SECRET_KEY: 'server-secret',
+			PUBLIC_TURNSTILE_SITE_KEY: CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY,
+			TURNSTILE_SECRET_KEY: CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY,
+			TURNSTILE_EXPECTED_HOSTNAME:
+				'perfume-marketplace-bg-issue22-proof26.perfume-marketplace-bg.workers.dev'
+		});
+
+		expect(runtime.appEnvironment).toBe('verification');
+		expect(runtime.mode).toBe('production');
+	});
+
+	it.each([
+		['alternate Supabase target', { PUBLIC_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co' }],
+		['alternate Worker origin', { PUBLIC_APP_URL: 'https://wrong.example' }],
+		['alternate Turnstile hostname', { TURNSTILE_EXPECTED_HOSTNAME: 'wrong.example' }],
+		['non-testing Turnstile site key', { PUBLIC_TURNSTILE_SITE_KEY: 'real-site-key' }],
+		['missing Supabase secret', { SUPABASE_SECRET_KEY: '' }],
+		['missing Turnstile secret', { TURNSTILE_SECRET_KEY: '' }]
+	])('rejects a verification deployment with %s', (_label, overrides) => {
+		expect(() =>
+			getRuntimeConfiguration({
+				APP_ENV: 'verification',
+				PUBLIC_DEMO_MODE: 'false',
+				PUBLIC_APP_URL:
+					'https://perfume-marketplace-bg-issue22-proof26.perfume-marketplace-bg.workers.dev',
+				PUBLIC_SUPABASE_URL: 'https://msxlgyocdbtxmwowduhk.supabase.co',
+				PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
+				SUPABASE_SECRET_KEY: 'server-secret',
+				PUBLIC_TURNSTILE_SITE_KEY: CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY,
+				TURNSTILE_SECRET_KEY: CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY,
+				TURNSTILE_EXPECTED_HOSTNAME:
+					'perfume-marketplace-bg-issue22-proof26.perfume-marketplace-bg.workers.dev',
+				...overrides
+			})
+		).toThrow(RuntimeConfigurationError);
+	});
+
 	it('supports legacy keys only as explicit fallbacks and keeps processing disabled by default', () => {
 		const runtime = getRuntimeConfiguration({
 			PUBLIC_DEMO_MODE: 'false',
@@ -344,6 +389,7 @@ function turnstileFormData(): FormData {
 const invalidTestingRuntimeCases: ReadonlyArray<
 	readonly [string, Partial<ProductionRuntimeConfiguration>]
 > = [
+	['development environment', { appEnvironment: 'development' }],
 	['production environment', { appEnvironment: 'production' }],
 	['non-testing site key', { publicTurnstileSiteKey: 'real-site-key' }],
 	['non-testing secret', { turnstileSecretKey: TURNSTILE_TEST_KEY }]
@@ -359,6 +405,26 @@ function siteverifyFetcher(payload: Record<string, unknown>): typeof fetch {
 }
 
 describe('Turnstile verification', () => {
+	it('accepts the official testing receipt with exact test keys in a verification deployment', async () => {
+		const event = {
+			getClientAddress: () => '127.0.0.1',
+			fetch: siteverifyFetcher({
+				success: true,
+				action: 'test',
+				hostname: 'localhost'
+			})
+		};
+
+		await expect(
+			verifyTurnstileForAction(
+				event,
+				turnstileFormData(),
+				stagingTurnstileRuntime({ appEnvironment: 'verification' }),
+				'login'
+			)
+		).resolves.toEqual({ success: true });
+	});
+
 	it.each(['login', 'register', 'report_submit'])(
 		'accepts the live Cloudflare testing receipt at the exact staging boundary for %s',
 		async (expectedAction) => {

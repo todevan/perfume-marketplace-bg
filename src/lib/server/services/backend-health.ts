@@ -5,16 +5,28 @@ const SUCCESS_CACHE_TTL_MS = 30_000;
 const FAILURE_CACHE_TTL_MS = 2_000;
 const PROBE_TIMEOUT_MS = 4_000;
 
-export const STAGING_BACKEND_BASELINE = Object.freeze({
-	origin: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
-	counts: Object.freeze({
-		brands: 196,
-		brand_aliases: 48,
-		brand_collection_memberships: 335
-	})
+const HOSTED_BACKEND_COUNTS = Object.freeze({
+	brands: 196,
+	brand_aliases: 48,
+	brand_collection_memberships: 335
 });
 
-type BaselineTable = keyof typeof STAGING_BACKEND_BASELINE.counts;
+export const STAGING_BACKEND_BASELINE = Object.freeze({
+	origin: 'https://nuhkpqjjyuygiemrxbdp.supabase.co',
+	counts: HOSTED_BACKEND_COUNTS
+});
+
+export const VERIFICATION_BACKEND_BASELINE = Object.freeze({
+	origin: 'https://msxlgyocdbtxmwowduhk.supabase.co',
+	counts: HOSTED_BACKEND_COUNTS
+});
+
+type HostedBackendEnvironment = 'staging' | 'verification';
+interface HostedBackendBaseline {
+	readonly origin: string;
+	readonly counts: typeof HOSTED_BACKEND_COUNTS;
+}
+type BaselineTable = keyof typeof HOSTED_BACKEND_COUNTS;
 type BaselineCountColumn = 'id' | 'brand_id';
 type AttestationFailureReason =
 	| 'invalid_target'
@@ -44,6 +56,7 @@ export interface BackendHealthClient {
 }
 
 export interface BackendAttestationInput {
+	appEnvironment: HostedBackendEnvironment;
 	publicSupabaseUrl: string;
 	supabaseSecretKey?: string;
 }
@@ -76,11 +89,17 @@ export class BackendAttestationError extends Error {
 	}
 }
 
-function normalizeExpectedOrigin(value: string): string {
+function baselineForEnvironment(appEnvironment: HostedBackendEnvironment): HostedBackendBaseline {
+	if (appEnvironment === 'staging') return STAGING_BACKEND_BASELINE;
+	if (appEnvironment === 'verification') return VERIFICATION_BACKEND_BASELINE;
+	throw new BackendAttestationError('invalid_target');
+}
+
+function normalizeExpectedOrigin(value: string, baseline: HostedBackendBaseline): string {
 	try {
 		const url = new URL(value);
 		if (
-			url.origin !== STAGING_BACKEND_BASELINE.origin ||
+			url.origin !== baseline.origin ||
 			url.pathname !== '/' ||
 			url.search ||
 			url.hash ||
@@ -129,8 +148,11 @@ function withTimeout(probe: Promise<void>, timeoutMs: number): Promise<void> {
 	});
 }
 
-async function probeBaseline(client: BackendHealthClient): Promise<void> {
-	const entries = Object.entries(STAGING_BACKEND_BASELINE.counts) as [
+async function probeBaseline(
+	client: BackendHealthClient,
+	baseline: HostedBackendBaseline
+): Promise<void> {
+	const entries = Object.entries(baseline.counts) as [
 		BaselineTable,
 		number
 	][];
@@ -170,7 +192,8 @@ export function createBackendAttestor(
 	let inFlight: InFlightAttestation | null = null;
 
 	return async (input: BackendAttestationInput): Promise<void> => {
-		const origin = normalizeExpectedOrigin(input.publicSupabaseUrl);
+		const baseline = baselineForEnvironment(input.appEnvironment);
+		const origin = normalizeExpectedOrigin(input.publicSupabaseUrl, baseline);
 		const secretKey = input.supabaseSecretKey?.trim();
 		if (!secretKey) throw new BackendAttestationError('missing_secret');
 
@@ -180,7 +203,7 @@ export function createBackendAttestor(
 		} catch {
 			throw new BackendAttestationError('probe_failed');
 		}
-		const cacheKey = `${origin}|${fingerprint}`;
+		const cacheKey = `${input.appEnvironment}|${origin}|${fingerprint}`;
 		const checkedAt = now();
 
 		if (cache?.key === cacheKey && cache.expiresAt > checkedAt) {
@@ -193,7 +216,7 @@ export function createBackendAttestor(
 		const promise = withTimeout(
 			Promise.resolve()
 				.then(() => createHealthClient(origin, secretKey))
-				.then((client) => probeBaseline(client)),
+				.then((client) => probeBaseline(client, baseline)),
 			probeTimeoutMs
 		)
 			.then(() => {

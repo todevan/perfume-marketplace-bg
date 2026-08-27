@@ -19,9 +19,23 @@ export const publicProfileLookupSchema = z.object({
 	username: z.string().trim().min(3).max(40)
 });
 
+export const cityInputSchema = z
+	.string()
+	.transform((value) => value.replace(/^ +| +$/gu, ''))
+	.pipe(
+		z
+			.string()
+			.min(2, 'City must be at least 2 characters')
+			.max(100, 'City must be at most 100 characters')
+			.refine(
+				(value) => /[\p{L}\p{N}]/u.test(value) && /^[-\p{L}\p{N} ']+$/u.test(value),
+				'Enter a valid city or location'
+			)
+	);
+
 export const updateProfileInputSchema = z.object({
 	username: z.string().trim().min(3).max(40).regex(/^[\p{L}\p{N}_.-]+$/u),
-	city: z.string().trim().min(2).max(100).nullable().optional(),
+	city: cityInputSchema,
 	bio: z.string().trim().max(1000).nullable().optional(),
 	avatarUrl: nullableUrlSchema.optional()
 });

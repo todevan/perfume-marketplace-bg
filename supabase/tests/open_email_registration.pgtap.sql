@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(12);
+select plan(16);
 
 select ok(
   exists (
@@ -43,12 +43,14 @@ select ok(
 );
 
 insert into auth.users (
-  id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+  id, instance_id, aud, role, email, encrypted_password, confirmation_sent_at,
+  email_confirmed_at,
   raw_app_meta_data, raw_user_meta_data, created_at, updated_at
 ) values (
   '88888888-8888-4888-8888-888888888888',
   '00000000-0000-0000-0000-000000000000',
-  'authenticated', 'authenticated', 'open-registration@example.test', 'test-password-hash', null,
+  'authenticated', 'authenticated', 'open-registration@example.test', 'test-password-hash',
+  statement_timestamp() - interval '1 minute', statement_timestamp(),
   '{"provider":"email","providers":["email"]}'::jsonb,
   '{"username":"open_merchant","account_kind":"merchant"}'::jsonb,
   statement_timestamp(), statement_timestamp()
@@ -86,6 +88,70 @@ select ok(
 select ok(
   not private.is_active_beta_user('88888888-8888-4888-8888-888888888888'),
   'email confirmation, onboarding and current consents remain required for activation'
+);
+
+insert into auth.users (
+  id, instance_id, aud, role, email, encrypted_password, confirmation_sent_at,
+  email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values (
+  '77777777-7777-4777-8777-777777777777',
+  '00000000-0000-0000-0000-000000000000',
+  'authenticated', 'authenticated', 'pending-registration@example.test',
+  'test-password-hash', statement_timestamp(), null,
+  '{"provider":"email","providers":["email"]}'::jsonb,
+  '{"username":"pending_registration"}'::jsonb,
+  statement_timestamp(), statement_timestamp()
+);
+
+set local role authenticated;
+set local "request.jwt.claim.sub" = '77777777-7777-4777-8777-777777777777';
+select throws_ok(
+  $sql$select public.claim_open_registration()$sql$,
+  '42501',
+  'open registration requires completed email confirmation',
+  'an unconfirmed direct email signup cannot claim membership'
+);
+reset role;
+set local role postgres;
+
+select ok(
+  not exists (
+    select 1 from public.beta_memberships m
+    where m.profile_id = '77777777-7777-4777-8777-777777777777'
+  ),
+  'an unconfirmed signup leaves no admission record'
+);
+
+insert into auth.users (
+  id, instance_id, aud, role, email, encrypted_password, confirmation_sent_at,
+  email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values (
+  '66666666-6666-4666-8666-666666666666',
+  '00000000-0000-0000-0000-000000000000',
+  'authenticated', 'authenticated', 'autoconfirm-drift@example.test',
+  'test-password-hash', null, statement_timestamp(),
+  '{"provider":"email","providers":["email"]}'::jsonb,
+  '{"username":"autoconfirm_drift"}'::jsonb,
+  statement_timestamp(), statement_timestamp()
+);
+
+set local role authenticated;
+set local "request.jwt.claim.sub" = '66666666-6666-4666-8666-666666666666';
+select throws_ok(
+  $sql$select public.claim_open_registration()$sql$,
+  '42501',
+  'open registration requires completed email confirmation',
+  'an autoconfirm-shaped direct user cannot claim membership'
+);
+reset role;
+set local role postgres;
+
+select ok(
+  not exists (
+    select 1 from public.beta_memberships m
+    where m.profile_id = '66666666-6666-4666-8666-666666666666'
+  ),
+  'autoconfirm drift leaves no admission record'
 );
 
 insert into auth.users (

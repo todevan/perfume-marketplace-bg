@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	createOfferInputSchema,
+	cityInputSchema,
 	listingDraftInputSchema,
 	merchantApplicationInputSchema,
 	updateProfileInputSchema
@@ -66,10 +67,34 @@ describe('production data input contracts', () => {
 	});
 
 	it('normalizes empty optional profile URLs without accepting arbitrary strings', () => {
-		expect(updateProfileInputSchema.parse({ username: 'valid_user', avatarUrl: '' }).avatarUrl).toBeNull();
+		expect(updateProfileInputSchema.parse({ username: 'valid_user', city: 'Sofia', avatarUrl: '' }).avatarUrl).toBeNull();
 		expect(
-			updateProfileInputSchema.safeParse({ username: 'valid_user', avatarUrl: 'javascript:alert(1)' }).success
+			updateProfileInputSchema.safeParse({
+				username: 'valid_user',
+				city: 'Sofia',
+				avatarUrl: 'javascript:alert(1)'
+			}).success
 		).toBe(false);
+	});
+
+	it.each(['', '   ', '\t\n', "---''", 'Sofia@'])('rejects a non-meaningful city: %j', (city) => {
+		expect(cityInputSchema.safeParse(city).success).toBe(false);
+		expect(updateProfileInputSchema.safeParse({ username: 'valid_user', city }).success).toBe(false);
+	});
+
+	it('requires a city when updating an active profile', () => {
+		expect(updateProfileInputSchema.safeParse({ username: 'valid_user', city: null }).success).toBe(false);
+		expect(updateProfileInputSchema.safeParse({ username: 'valid_user' }).success).toBe(false);
+	});
+
+	it.each([
+		[' Sofia ', 'Sofia'],
+		['Стара Загора', 'Стара Загора'],
+		['Stara-Zagora', 'Stara-Zagora'],
+		["O'Neill", "O'Neill"]
+	])('normalizes and accepts a meaningful city: %j', (city, expectedCity) => {
+		expect(cityInputSchema.parse(city)).toBe(expectedCity);
+		expect(updateProfileInputSchema.parse({ username: 'valid_user', city }).city).toBe(expectedCity);
 	});
 });
 

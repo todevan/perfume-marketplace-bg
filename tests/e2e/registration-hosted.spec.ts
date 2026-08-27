@@ -1,0 +1,306 @@
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import type { Database } from '../../src/lib/server/database.types';
+
+interface HostedTarget {
+	origin: string;
+	supabaseUrl: string;
+	publishableKey: string;
+	projectRef: string;
+	candidateSha: string;
+	runId: string;
+}
+
+function runProofHelper(action: 'attest' | 'record-intent' | 'record-actor' | 'cleanup', extra = {}): void {
+	const result = spawnSync(process.execPath, [join(process.cwd(), 'scripts', 'issue22-hosted-proof.mjs'), action], {
+		encoding: 'utf8',
+		env: { ...process.env, ...extra },
+		windowsHide: true
+	});
+	if (result.status !== 0) {
+		throw new Error(`Issue 22 private provenance action failed: ${action}.`);
+	}
+}
+
+function required(name: string): string {
+	const value = process.env[name]?.trim();
+	if (!value) throw new Error(`Missing required hosted-proof environment variable: ${name}`);
+	return value;
+}
+
+function hostedTarget(): HostedTarget {
+	const origin = new URL(required('ISSUE22_HOSTED_ORIGIN'));
+	const supabaseUrl = new URL(required('ISSUE22_SUPABASE_URL'));
+	const projectRef = required('ISSUE22_SUPABASE_PROJECT_REF');
+	const candidateSha = required('ISSUE22_CANDIDATE_SHA');
+	const runId = required('ISSUE22_RUN_ID');
+	if (origin.protocol !== 'https:' || origin.pathname !== '/') {
+		throw new Error('ISSUE22_HOSTED_ORIGIN must be an HTTPS origin without a path.');
+	}
+	if (supabaseUrl.protocol !== 'https:' || supabaseUrl.hostname !== `${projectRef}.supabase.co`) {
+		throw new Error('Supabase URL and project ref do not identify the same hosted target.');
+	}
+	if (!/^[0-9a-f]{40}$/u.test(candidateSha)) {
+		throw new Error('ISSUE22_CANDIDATE_SHA must be an exact 40-character Git SHA.');
+	}
+	if (!/^[a-z0-9-]{3,12}$/u.test(runId)) {
+		throw new Error('ISSUE22_RUN_ID must be a 3-12 character lowercase cleanup label.');
+	}
+	const targetKind = required('ISSUE22_SUPABASE_TARGET_KIND');
+	if (targetKind !== 'preview' && targetKind !== 'standalone') {
+		throw new Error('ISSUE22_SUPABASE_TARGET_KIND must be preview or standalone.');
+	}
+	const providerVariables = [
+		'ISSUE22_CLOUDFLARE_WORKER_NAME',
+		'ISSUE22_CLOUDFLARE_VERSION_ID',
+		'ISSUE22_PROVENANCE_PATH'
+	];
+	if (targetKind === 'preview') {
+		providerVariables.push(
+			'ISSUE22_SUPABASE_PARENT_PROJECT_REF',
+			'ISSUE22_SUPABASE_BRANCH_NAME'
+		);
+	} else {
+		providerVariables.push(
+			'ISSUE22_STANDALONE_PROJECT_NAME',
+			'ISSUE22_STANDALONE_ORGANIZATION_SLUG',
+			'ISSUE22_STANDALONE_REGION',
+			'ISSUE22_RUNNER_SHA',
+			'ISSUE22_RUNNER_WORKTREE_PATH',
+			'ISSUE22_CANDIDATE_WORKTREE_PATH',
+			'ISSUE22_GATE3_WORKTREE_PATH',
+			'ISSUE22_APPROVED_TARGET_RECEIPT_PATH',
+			'ISSUE22_GATE3_RECEIPT_PATH',
+			'ISSUE22_CONTROLLER_LOCK_PATH',
+			'ISSUE22_CONTROLLER_LEASE_TOKEN'
+		);
+	}
+	for (const name of providerVariables) {
+		required(name);
+	}
+	return {
+		origin: origin.origin,
+		supabaseUrl: supabaseUrl.origin,
+		publishableKey: required('ISSUE22_SUPABASE_PUBLISHABLE_KEY'),
+		projectRef,
+		candidateSha,
+		runId
+	};
+}
+
+function account(target: HostedTarget, label: string) {
+	const nonce = `${Date.now().toString(36)}${crypto.randomUUID().slice(0, 6)}`;
+	const cleanupLabel = `issue22-${target.runId}-${target.candidateSha.slice(0, 8)}-${label}`;
+	return {
+		email: `${cleanupLabel}-${nonce}@example.invalid`,
+		password: `Issue22-${nonce}-Safe!`,
+		username: `i22_${target.runId.slice(0, 6)}_${label.slice(0, 6)}_${nonce}`
+	};
+}
+
+function recordIntent(target: HostedTarget, label: string, email: string): void {
+	runProofHelper('record-intent', { ISSUE22_ACTOR_LABEL: label, ISSUE22_ACTOR_EMAIL: email });
+}
+
+function confirmationLink(target: HostedTarget, recipient: string): string {
+	const result = spawnSync('python', [join(process.cwd(), 'scripts', 'issue22-ethereal-link.py')], {
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			ISSUE22_HOSTED_ORIGIN: target.origin,
+			ISSUE22_RECIPIENT: recipient,
+			ETHEREAL_USER: required('ETHEREAL_USER'),
+			ETHEREAL_PASS: required('ETHEREAL_PASS')
+		}
+	});
+	if (result.status !== 0) {
+		throw new Error('Ethereal confirmation retrieval failed without credential disclosure.');
+	}
+	const link = result.stdout.trim();
+	const parsed = new URL(link);
+	if (
+		parsed.origin !== target.origin ||
+		parsed.pathname !== '/auth/confirm' ||
+		parsed.searchParams.get('type') !== 'email' ||
+		!parsed.searchParams.get('token_hash')
+	) {
+		throw new Error('Ethereal returned an unsafe confirmation link.');
+	}
+	return link;
+}
+
+async function waitForTurnstile(page: Page): Promise<void> {
+	await expect
+		.poll(() => page.locator('input[name="cf-turnstile-response"]').inputValue().catch(() => ''), {
+			timeout: 60_000,
+			message: 'hostname-bound Turnstile test token'
+		})
+		.toMatch(/^.{20,}$/u);
+}
+
+async function authenticatedClient(target: HostedTarget, context: BrowserContext) {
+	const cookies = await context.cookies(target.origin);
+	const client = createServerClient<Database>(target.supabaseUrl, target.publishableKey, {
+		cookies: {
+			getAll: () => cookies.map(({ name, value }) => ({ name, value })),
+			setAll: (_cookies: Array<{ name: string; value: string; options: CookieOptions }>) => {
+				throw new Error('Hosted proof must not replace the captured browser session.');
+			}
+		}
+	});
+	const result = await client.auth.getUser();
+	if (result.error || !result.data.user) throw new Error('Confirmed hosted browser session did not validate.');
+	return { client, user: result.data.user };
+}
+
+async function registerAndOnboard(
+	browser: Browser,
+	target: HostedTarget,
+	label: 'a' | 'b',
+	contexts: BrowserContext[]
+) {
+	const actor = account(target, label);
+	recordIntent(target, label, actor.email);
+	const context = await browser.newContext();
+	contexts.push(context);
+	const page = await context.newPage();
+	await page.goto(`${target.origin}/login?next=%2Fdashboard`);
+	await page.getByRole('button', { name: 'Нова регистрация' }).click();
+	await page.getByLabel('Потребителско име').fill(actor.username);
+	await page.getByLabel('Имейл').fill(actor.email);
+	await page.locator('#password').fill(actor.password);
+	await page.getByLabel(/навършил/iu).check();
+	await waitForTurnstile(page);
+	await page.getByRole('button', { name: 'Създай профил' }).click();
+	await expect(page.getByRole('status')).toContainText('Провери имейла си');
+
+	await page.goto(`${target.origin}/dashboard`);
+	await expect(page).toHaveURL(/\/login\?next=%2Fdashboard$/u);
+	await page.goto(confirmationLink(target, actor.email));
+	await expect(page).toHaveURL(/\/onboarding\?next=%2Fdashboard$/u);
+
+	const { client, user } = await authenticatedClient(target, context);
+	runProofHelper('record-actor', { ISSUE22_ACTOR_LABEL: label, ISSUE22_ACTOR_USER_ID: user.id });
+	expect(user.phone ?? '').toBe('');
+	const pending = await client
+		.from('beta_memberships')
+		.select('status,onboarding_completed_at,invite_id')
+		.eq('profile_id', user.id)
+		.single();
+	expect(pending.error).toBeNull();
+	expect(pending.data).toMatchObject({ status: 'pending', onboarding_completed_at: null, invite_id: null });
+	await page.goto(`${target.origin}/dashboard`);
+	await expect(page).toHaveURL(/\/onboarding\?next=%2Fdashboard$/u);
+
+	for (const checkbox of await page.locator('fieldset input[type="checkbox"]').all()) await checkbox.check();
+	const city = page.getByLabel('Град', { exact: true });
+	await page.getByRole('button', { name: 'Активирай достъпа' }).click();
+	await expect(page).toHaveURL(/\/onboarding/u);
+	await expect(page.getByRole('alert')).toContainText('City must be at least 2 characters');
+
+	for (const checkbox of await page.locator('fieldset input[type="checkbox"]').all()) await checkbox.check();
+	await city.fill('---');
+	await page.getByRole('button', { name: 'Активирай достъпа' }).click();
+	await expect(page).toHaveURL(/\/onboarding/u);
+	await expect(page.getByRole('alert')).toContainText('Enter a valid city or location');
+
+	for (const checkbox of await page.locator('fieldset input[type="checkbox"]').all()) {
+		if (!(await checkbox.isChecked())) await checkbox.check();
+	}
+	await city.fill(label === 'a' ? 'София' : 'Saint-Rémy');
+	await page.getByRole('button', { name: 'Активирай достъпа' }).click();
+	await expect(page).toHaveURL(`${target.origin}/dashboard`);
+	await expect(page.getByRole('heading', { name: `Здравей, ${actor.username}.` })).toBeVisible();
+	const consents = await client
+		.from('beta_consent_events')
+		.select('document_code,document_version')
+		.eq('profile_id', user.id)
+		.order('document_code');
+	expect(consents.error).toBeNull();
+	expect(consents.data).toEqual([
+		{ document_code: 'age_18_confirmation', document_version: '2026-07-22' },
+		{ document_code: 'beta_terms', document_version: '2026-07-22' },
+		{ document_code: 'marketplace_rules', document_version: '2026-07-22' },
+		{ document_code: 'privacy_notice', document_version: '2026-07-22' }
+	]);
+	return { actor, context, page, client, userId: user.id };
+}
+
+test('exact-target hosted registration and hostile R2 boundaries', async ({ browser }) => {
+	test.setTimeout(360_000);
+	const target = hostedTarget();
+	runProofHelper('attest');
+	const contexts: BrowserContext[] = [];
+	try {
+		// Cloudflare's official always-pass secret deliberately accepts every non-empty receipt.
+		// Invalid provider responses are covered by deterministic Turnstile unit tests; this hosted
+		// boundary proves that GoTrue still rejects a request that omits the receipt entirely.
+		const captchaMissing = account(target, 'captcha-missing');
+		recordIntent(target, 'captcha-missing', captchaMissing.email);
+		const missingCaptchaResponse = await fetch(`${target.supabaseUrl}/auth/v1/signup`, {
+			method: 'POST',
+			headers: {
+				apikey: target.publishableKey,
+				authorization: `Bearer ${target.publishableKey}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				email: captchaMissing.email,
+				password: captchaMissing.password,
+				data: { username: captchaMissing.username }
+			})
+		});
+		expect(missingCaptchaResponse.status).toBe(400);
+		expect((await missingCaptchaResponse.text()).toLowerCase()).toContain('captcha');
+
+		const a = await registerAndOnboard(browser, target, 'a', contexts);
+		const b = await registerAndOnboard(browser, target, 'b', contexts);
+		const crossProfile = await a.client.from('profiles').update({ city: 'Sofia' }).eq('id', b.userId).select('id');
+		expect(crossProfile.error).toBeNull();
+		expect(crossProfile.data).toEqual([]);
+		const bProfile = await b.client.from('profiles').select('city').eq('id', b.userId).single();
+		expect(bProfile.error).toBeNull();
+		expect(bProfile.data?.city).toBe('Saint-Rémy');
+
+		const crossMembership = await a.client
+			.from('beta_memberships')
+			.update({ status: 'revoked' })
+			.eq('profile_id', b.userId)
+			.select('profile_id');
+		expect(crossMembership.error).toBeNull();
+		expect(crossMembership.data).toEqual([]);
+		const bMembership = await b.client
+			.from('beta_memberships')
+			.select('status')
+			.eq('profile_id', b.userId)
+			.single();
+		expect(bMembership.error).toBeNull();
+		expect(bMembership.data?.status).toBe('active');
+
+		const escalation = await a.client.from('profiles').update({ role: 'admin' }).eq('id', a.userId);
+		expect(escalation.error).not.toBeNull();
+		for (const city of ['\u0085\u0085', '\u2060\u2060', '---']) {
+			const hostile = await a.client.from('profiles').update({ city }).eq('id', a.userId);
+			expect(hostile.error).not.toBeNull();
+		}
+
+		const cleared = await a.client.from('profiles').update({ city: null }).eq('id', a.userId);
+		expect(cleared.error).toBeNull();
+		await a.page.goto(`${target.origin}/dashboard`);
+		await expect(a.page).toHaveURL(/\/onboarding\?next=%2Fdashboard$/u);
+		await a.page.getByLabel('Град').fill("L'Aquila");
+		for (const checkbox of await a.page.locator('fieldset input[type="checkbox"]').all()) {
+			if (!(await checkbox.isChecked())) await checkbox.check();
+		}
+		await a.page.getByRole('button', { name: 'Активирай достъпа' }).click();
+		const repaired = await a.client.from('profiles').select('city').eq('id', a.userId).single();
+		expect(repaired.error).toBeNull();
+		expect(repaired.data?.city).toBe("L'Aquila");
+		await expect(a.page).toHaveURL(`${target.origin}/dashboard`);
+	} finally {
+		await Promise.all(contexts.map((context) => context.close()));
+		runProofHelper('cleanup');
+	}
+});

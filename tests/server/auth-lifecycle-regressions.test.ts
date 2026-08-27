@@ -177,6 +177,73 @@ describe('auth context lifecycle regressions', () => {
 		).rejects.toMatchObject({ status: 303, location: '/dashboard' });
 	});
 
+	it.each([
+		['', 'City must be at least 2 characters'],
+		['   ', 'City must be at least 2 characters'],
+		['\t\n', 'Enter a valid city or location'],
+		["---''", 'Enter a valid city or location'],
+		['Sofia@', 'Enter a valid city or location']
+	])('rejects non-meaningful onboarding city %j before recording consent or onboarding', async (city, message) => {
+			currentClient = createClient({ status: 'pending', isActive: false, onboardingCompletedAt: null });
+			const form = new URLSearchParams({
+				next: '/dashboard',
+				username: 'scent_archive',
+				city,
+				consent_terms: 'on'
+			});
+			const url = new URL('https://market.example/onboarding');
+			let actionResult: Awaited<ReturnType<typeof onboardingActions.default>> | undefined;
+
+			await runLifecycle(
+				url,
+				async (event) => {
+					actionResult = await onboardingActions.default(event);
+					return new Response('ok');
+				},
+				new Request(url, {
+					method: 'POST',
+					headers: { 'content-type': 'application/x-www-form-urlencoded' },
+					body: form
+				})
+			);
+
+			expect(actionResult).toMatchObject({ status: 400, data: { message } });
+			expect(currentClient.rpc).not.toHaveBeenCalledWith('accept_beta_consent', expect.anything());
+			expect(currentClient.rpc).not.toHaveBeenCalledWith('complete_beta_onboarding', expect.anything());
+		}
+	);
+
+	it('normalizes a meaningful city before completing onboarding', async () => {
+		currentClient = createClient({ status: 'pending', isActive: false, onboardingCompletedAt: null });
+		const form = new URLSearchParams({
+			next: '/dashboard',
+			username: 'scent_archive',
+			city: ' Стара Загора ',
+			consent_terms: 'on'
+		});
+		const url = new URL('https://market.example/onboarding');
+
+		await expect(
+			runLifecycle(
+				url,
+				async (event) => {
+					await onboardingActions.default(event);
+					return new Response('unreachable');
+				},
+				new Request(url, {
+					method: 'POST',
+					headers: { 'content-type': 'application/x-www-form-urlencoded' },
+					body: form
+				})
+			)
+		).rejects.toMatchObject({ status: 303, location: '/dashboard' });
+
+		expect(currentClient.rpc).toHaveBeenCalledWith('complete_beta_onboarding', {
+			desired_username: 'scent_archive',
+			home_city: 'Стара Загора'
+		});
+	});
+
 	it('redirects an active user from login to the safe requested route', async () => {
 		currentClient = createClient();
 		await expect(

@@ -15,7 +15,8 @@ export const actions: Actions = {
 		const form = await request.formData();
 		if (locals.runtime.mode === 'demo') return { ok: true };
 		const result = await updateProfile(clientFrom(locals), {
-			username: form.get('username'), city: form.get('city')?.toString().trim() || null,
+			username: form.get('username'),
+			city: form.get('city'),
 			bio: form.get('bio')?.toString().trim() || null
 		});
 		if (!result.ok) return fail(result.error.code === 'VALIDATION' ? 400 : 500, { ok: false, error: result.error });

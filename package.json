@@ -19,6 +19,8 @@
     "test:db:contracts": "node --test supabase/tests/*.contract.test.mjs",
     "test:unit:watch": "vitest",
     "test:e2e": "vite build && playwright test",
+    "test:e2e:registration": "playwright test --config playwright.registration.config.ts",
+    "test:e2e:registration:hosted": "playwright test --config playwright.hosted-registration.config.ts",
     "check:release": "node scripts/check-production-readiness.mjs",
     "backup:storage": "node scripts/backup-finalized-storage.mjs",
     "restore:storage": "node scripts/restore-finalized-storage.mjs --confirm-restore",
