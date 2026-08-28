@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(51);
+select plan(69);
 
 select is(
   has_function_privilege(
@@ -210,6 +210,10 @@ create temp table privacy_conversation on commit drop as
 select id from public.conversations
 where accepted_offer_id = '23533333-3333-4333-8333-333333333333';
 grant select on privacy_conversation to authenticated;
+create temp table privacy_deal on commit drop as
+select id from public.deals
+where accepted_offer_id = '23533333-3333-4333-8333-333333333333';
+grant select on privacy_deal to authenticated;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
@@ -360,6 +364,224 @@ select is(
   0::bigint,
   'the outsider cannot enumerate report-evidence object names or metadata'
 );
+
+reset role;
+set local role postgres;
+create temp view blocked_deal_rpc_state as
+select jsonb_build_object(
+  'confirmations', coalesce((
+    select jsonb_agg(to_jsonb(dc) order by dc.profile_id)
+    from public.deal_confirmations dc
+    join public.deals d on d.id = dc.deal_id
+    where d.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+  ), '[]'::jsonb),
+  'deals', coalesce((
+    select jsonb_agg(to_jsonb(d) order by d.id)
+    from public.deals d
+    where d.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+  ), '[]'::jsonb),
+  'listings', coalesce((
+    select jsonb_agg(to_jsonb(l) order by l.id)
+    from public.listings l
+    where l.id in (
+      select d.listing_id from public.deals d
+      where d.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+      union
+      select d.offered_listing_id from public.deals d
+      where d.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+    )
+  ), '[]'::jsonb),
+  'conversations', coalesce((
+    select jsonb_agg(to_jsonb(c) order by c.id)
+    from public.conversations c
+    where c.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+  ), '[]'::jsonb),
+  'memberships', coalesce((
+    select jsonb_agg(to_jsonb(cm) order by cm.profile_id)
+    from public.conversation_members cm
+    join public.conversations c on c.id = cm.conversation_id
+    where c.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+  ), '[]'::jsonb),
+  'messages', coalesce((
+    select jsonb_agg(to_jsonb(m) order by m.id)
+    from public.messages m
+    join public.conversations c on c.id = m.conversation_id
+    where c.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+  ), '[]'::jsonb),
+  'reports', coalesce((
+    select jsonb_agg(to_jsonb(r) order by r.id)
+    from public.reports r
+    join public.deals d on d.id = r.target_id
+    where r.target_type = 'deal'
+      and d.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+  ), '[]'::jsonb)
+) as state;
+create temp table blocked_deal_rpc_baseline (state jsonb not null) on commit drop;
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+update public.conversation_members set blocked_at = statement_timestamp()
+where profile_id = auth.uid();
+reset role;
+set local role postgres;
+insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
+
+savepoint buyer_blocked_confirm_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select throws_ok(
+  $$ select public.confirm_deal((select id from privacy_deal)) $$,
+  '42501', 'deal is not available to this participant',
+  'buyer-blocked confirm_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+);
+select throws_ok(
+  $$ select public.confirm_deal('23711111-1111-4111-8111-111111111111') $$,
+  '42501', 'deal is not available to this participant',
+  'buyer confirm_deal uses the same canonical denial for a missing deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'buyer-blocked confirm_deal causes zero transaction mutation'
+);
+rollback to savepoint buyer_blocked_confirm_deal;
+
+savepoint buyer_blocked_cancel_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select throws_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), 'blocked cancellation probe') $$,
+  '42501', 'pending deal is not available to this participant',
+  'buyer-blocked cancel_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+);
+select throws_ok(
+  $$ select public.cancel_deal('23711111-1111-4111-8111-111111111111', 'missing cancellation probe') $$,
+  '42501', 'pending deal is not available to this participant',
+  'buyer cancel_deal uses the same canonical denial for a missing deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'buyer-blocked cancel_deal causes zero transaction mutation'
+);
+rollback to savepoint buyer_blocked_cancel_deal;
+
+savepoint buyer_blocked_open_deal_dispute;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select throws_ok(
+  $$ select * from public.open_deal_dispute((select id from privacy_deal), 'blocked dispute details probe') $$,
+  '42501', 'deal is not available to this participant',
+  'buyer-blocked open_deal_dispute returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+);
+select throws_ok(
+  $$ select * from public.open_deal_dispute('23711111-1111-4111-8111-111111111111', 'missing dispute details probe') $$,
+  '42501', 'deal is not available to this participant',
+  'buyer open_deal_dispute uses the same canonical denial for a missing deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'buyer-blocked open_deal_dispute causes zero transaction mutation'
+);
+rollback to savepoint buyer_blocked_open_deal_dispute;
+
+truncate blocked_deal_rpc_baseline;
+update public.conversation_members
+set blocked_at = null
+where profile_id = '23222222-2222-4222-8222-222222222222';
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+update public.conversation_members set blocked_at = statement_timestamp()
+where profile_id = auth.uid();
+reset role;
+set local role postgres;
+insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
+
+savepoint seller_blocked_confirm_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select throws_ok(
+  $$ select public.confirm_deal((select id from privacy_deal)) $$,
+  '42501', 'deal is not available to this participant',
+  'seller-blocked confirm_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+);
+select throws_ok(
+  $$ select public.confirm_deal('23711111-1111-4111-8111-111111111111') $$,
+  '42501', 'deal is not available to this participant',
+  'seller confirm_deal uses the same canonical denial for a missing deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'seller-blocked confirm_deal causes zero transaction mutation'
+);
+rollback to savepoint seller_blocked_confirm_deal;
+
+savepoint seller_blocked_cancel_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select throws_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), 'blocked cancellation probe') $$,
+  '42501', 'pending deal is not available to this participant',
+  'seller-blocked cancel_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+);
+select throws_ok(
+  $$ select public.cancel_deal('23711111-1111-4111-8111-111111111111', 'missing cancellation probe') $$,
+  '42501', 'pending deal is not available to this participant',
+  'seller cancel_deal uses the same canonical denial for a missing deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'seller-blocked cancel_deal causes zero transaction mutation'
+);
+rollback to savepoint seller_blocked_cancel_deal;
+
+savepoint seller_blocked_open_deal_dispute;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select throws_ok(
+  $$ select * from public.open_deal_dispute((select id from privacy_deal), 'blocked dispute details probe') $$,
+  '42501', 'deal is not available to this participant',
+  'seller-blocked open_deal_dispute returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+);
+select throws_ok(
+  $$ select * from public.open_deal_dispute('23711111-1111-4111-8111-111111111111', 'missing dispute details probe') $$,
+  '42501', 'deal is not available to this participant',
+  'seller open_deal_dispute uses the same canonical denial for a missing deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'seller-blocked open_deal_dispute causes zero transaction mutation'
+);
+rollback to savepoint seller_blocked_open_deal_dispute;
+
+truncate blocked_deal_rpc_baseline;
+update public.conversation_members
+set blocked_at = null
+where profile_id = '23111111-1111-4111-8111-111111111111';
 
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
