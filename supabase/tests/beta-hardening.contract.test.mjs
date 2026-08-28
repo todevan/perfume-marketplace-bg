@@ -7,6 +7,41 @@ const migrationsUrl = new URL('../migrations/', import.meta.url);
 const readMigration = (filename) =>
 	readFileSync(new URL(filename, migrationsUrl), 'utf8').replace(/\r\n/g, '\n');
 const compact = (sql) => sql.toLowerCase().replace(/\s+/g, ' ').trim();
+const migrationFiles = () =>
+	readdirSync(fileURLToPath(migrationsUrl))
+		.filter((filename) => filename.endsWith('.sql'))
+		.sort();
+const statements = (source) =>
+	source
+		.split(';')
+		.map(compact)
+		.filter(Boolean);
+const regrantsAuthenticatedInsert = (statement) => {
+	const grant = compact(statement).match(
+		/^grant (.+?) on ((?:table )?(?:public\.)?deal_confirmations|all tables in schema public) to (.+)$/
+	);
+	if (!grant) return false;
+
+	const [, privileges, , grantees] = grant;
+	const grantsInsertOrAll =
+		/(?:^|,\s*)(?:insert(?:\s*\([^)]*\))?|all(?: privileges)?)(?=\s*(?:,|$))/.test(
+			privileges
+		);
+	const grantsToAuthenticated =
+		/(?:^|,\s*)authenticated(?=\s*(?:,|with grant option$|$))/.test(grantees);
+	return grantsInsertOrAll && grantsToAuthenticated;
+};
+const directInsertPolicyName = (statement) => {
+	const policy = compact(statement).match(
+		/^create policy ([a-z0-9_]+) on public\.deal_confirmations\b(.*)$/
+	);
+	if (!policy) return null;
+
+	const policyOptions = policy[2].split(/\b(?:to|using|with check)\b/, 1)[0];
+	const operation =
+		policyOptions.match(/\bfor (all|select|insert|update|delete)\b/)?.[1] ?? 'all';
+	return operation === 'insert' || operation === 'all' ? policy[1] : null;
+};
 
 const filenames = {
 	access: '202607220003_beta_access_privacy.sql',
@@ -57,6 +92,122 @@ test('hosted runtime correction removes the platform direct anon view grant', ()
 		'revoke all on public.public_profiles from public, anon',
 		'grant select on public.public_profiles to authenticated, service_role'
 	]);
+});
+
+test('deal confirmations remain an RPC-only authenticated write contract', () => {
+	assert.equal(
+		regrantsAuthenticatedInsert(
+			'grant select, insert, update on public.deal_confirmations to authenticated'
+		),
+		true
+	);
+	assert.equal(
+		regrantsAuthenticatedInsert(
+			'grant all privileges on all tables in schema public to service_role, authenticated'
+		),
+		true
+	);
+	assert.equal(
+		regrantsAuthenticatedInsert(
+			'grant select, insert (deal_id, profile_id) on table public.deal_confirmations to service_role, authenticated'
+		),
+		true
+	);
+	assert.equal(
+		regrantsAuthenticatedInsert(
+			'grant select, insert on deal_confirmations to authenticated'
+		),
+		true
+	);
+	assert.equal(
+		regrantsAuthenticatedInsert(
+			'grant select, update on public.deal_confirmations to authenticated'
+		),
+		false
+	);
+	assert.equal(
+		directInsertPolicyName(
+			'create policy confirmation_insert on public.deal_confirmations for insert to authenticated with check (profile_id = auth.uid())'
+		),
+		'confirmation_insert'
+	);
+	assert.equal(
+		directInsertPolicyName(
+			'create policy confirmation_all on public.deal_confirmations for all to authenticated using (true) with check (true)'
+		),
+		'confirmation_all'
+	);
+	assert.equal(
+		directInsertPolicyName(
+			'create policy confirmation_default on public.deal_confirmations to authenticated using (true) with check (true)'
+		),
+		'confirmation_default'
+	);
+	for (const operation of ['select', 'update', 'delete']) {
+		assert.equal(
+			directInsertPolicyName(
+				`create policy confirmation_${operation} on public.deal_confirmations for ${operation} to authenticated using (true)`
+			),
+			null
+		);
+	}
+
+	const migrations = migrationFiles().map((filename) => ({
+		filename,
+		sql: readMigration(filename),
+		statements: statements(readMigration(filename))
+	}));
+	const revokePattern =
+		/^revoke insert on (?:table )?public\.deal_confirmations from authenticated$/;
+	const revokeIndexes = migrations.flatMap((migration, index) =>
+		migration.statements.some((statement) => revokePattern.test(statement)) ? [index] : []
+	);
+
+	assert.equal(
+		revokeIndexes.length,
+		1,
+		'expected exactly one forward-only migration revoking authenticated INSERT on public.deal_confirmations'
+	);
+
+	const revokeIndex = revokeIndexes[0];
+	const directInsertPolicies = new Set();
+	const dropPolicyPattern =
+		/^drop policy(?: if exists)? ([a-z0-9_]+) on public\.deal_confirmations$/;
+
+	for (const migration of migrations.slice(0, revokeIndex + 1)) {
+		for (const statement of migration.statements) {
+			const created = directInsertPolicyName(statement);
+			if (created) directInsertPolicies.add(created);
+			const dropped = statement.match(dropPolicyPattern);
+			if (dropped) directInsertPolicies.delete(dropped[1]);
+		}
+	}
+
+	for (const migration of migrations.slice(revokeIndex + 1)) {
+		for (const statement of migration.statements) {
+			assert.equal(
+				regrantsAuthenticatedInsert(statement),
+				false,
+				`${migration.filename} must not regrant authenticated direct INSERT on public.deal_confirmations`
+			);
+
+			const created = directInsertPolicyName(statement);
+			assert.equal(
+				Boolean(created),
+				false,
+				`${migration.filename} must not recreate an authenticated direct INSERT policy on public.deal_confirmations`
+			);
+
+			const altered = statement.match(
+				/^alter policy ([a-z0-9_]+) on public\.deal_confirmations\b/
+			);
+			assert.equal(
+				Boolean(altered && directInsertPolicies.has(altered[1])),
+				false,
+				`${migration.filename} must not alter a direct INSERT policy on public.deal_confirmations`
+			);
+		}
+	}
 });
 
 test('closed-beta access is invite-only, consented, and self-scoped', () => {

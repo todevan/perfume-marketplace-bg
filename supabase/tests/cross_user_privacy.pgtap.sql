@@ -4,7 +4,13 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(69);
+select plan(80);
+
+select is(
+  has_table_privilege('authenticated', 'public.deal_confirmations', 'insert'),
+  false,
+  'authenticated callers cannot insert deal confirmations directly'
+);
 
 select is(
   has_function_privilege(
@@ -391,6 +397,17 @@ select jsonb_build_object(
       where d.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
     )
   ), '[]'::jsonb),
+  'profile_transaction_counters', coalesce((
+    select jsonb_agg(
+      jsonb_build_object('id', p.id, 'completed_deals_count', p.completed_deals_count)
+      order by p.id
+    )
+    from public.profiles p
+    where p.id in (
+      '23111111-1111-4111-8111-111111111111',
+      '23222222-2222-4222-8222-222222222222'
+    )
+  ), '[]'::jsonb),
   'conversations', coalesce((
     select jsonb_agg(to_jsonb(c) order by c.id)
     from public.conversations c
@@ -407,6 +424,14 @@ select jsonb_build_object(
     from public.messages m
     join public.conversations c on c.id = m.conversation_id
     where c.accepted_offer_id = '23533333-3333-4333-8333-333333333333'
+  ), '[]'::jsonb),
+  'notifications', coalesce((
+    select jsonb_agg(to_jsonb(n) order by n.id)
+    from public.notifications n
+    where n.profile_id in (
+      '23111111-1111-4111-8111-111111111111',
+      '23222222-2222-4222-8222-222222222222'
+    )
   ), '[]'::jsonb),
   'reports', coalesce((
     select jsonb_agg(to_jsonb(r) order by r.id)
@@ -426,6 +451,43 @@ where profile_id = auth.uid();
 reset role;
 set local role postgres;
 insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
+
+savepoint buyer_blocked_direct_deal_confirmation;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select public.confirm_deal((select id from privacy_deal));
+reset role;
+set local role postgres;
+truncate blocked_deal_rpc_baseline;
+insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select throws_ok(
+  $$
+    insert into public.deal_confirmations (deal_id, profile_id)
+    select id, auth.uid() from privacy_deal
+  $$,
+  '42501', 'permission denied for table deal_confirmations',
+  'buyer-blocked direct confirmation of an existing deal is denied canonically'
+);
+select throws_ok(
+  $$
+    insert into public.deal_confirmations (deal_id, profile_id)
+    values ('23711111-1111-4111-8111-111111111111', auth.uid())
+  $$,
+  '42501', 'permission denied for table deal_confirmations',
+  'buyer-blocked direct confirmation of a missing deal has the same non-enumerating denial'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'buyer-blocked direct confirmation causes zero transaction mutation'
+);
+rollback to savepoint buyer_blocked_direct_deal_confirmation;
 
 savepoint buyer_blocked_confirm_deal;
 set local role authenticated;
@@ -509,6 +571,43 @@ reset role;
 set local role postgres;
 insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
 
+savepoint seller_blocked_direct_deal_confirmation;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select public.confirm_deal((select id from privacy_deal));
+reset role;
+set local role postgres;
+truncate blocked_deal_rpc_baseline;
+insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select throws_ok(
+  $$
+    insert into public.deal_confirmations (deal_id, profile_id)
+    select id, auth.uid() from privacy_deal
+  $$,
+  '42501', 'permission denied for table deal_confirmations',
+  'seller-blocked direct confirmation of an existing deal is denied canonically'
+);
+select throws_ok(
+  $$
+    insert into public.deal_confirmations (deal_id, profile_id)
+    values ('23711111-1111-4111-8111-111111111111', auth.uid())
+  $$,
+  '42501', 'permission denied for table deal_confirmations',
+  'seller-blocked direct confirmation of a missing deal has the same non-enumerating denial'
+);
+reset role;
+set local role postgres;
+select is(
+  (select state from blocked_deal_rpc_state),
+  (select state from blocked_deal_rpc_baseline),
+  'seller-blocked direct confirmation causes zero transaction mutation'
+);
+rollback to savepoint seller_blocked_direct_deal_confirmation;
+
 savepoint seller_blocked_confirm_deal;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
@@ -582,6 +681,34 @@ truncate blocked_deal_rpc_baseline;
 update public.conversation_members
 set blocked_at = null
 where profile_id = '23111111-1111-4111-8111-111111111111';
+
+savepoint eligible_confirm_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select lives_ok(
+  $$ select public.confirm_deal((select id from privacy_deal)) $$,
+  'the eligible unblocked buyer can confirm through confirm_deal'
+);
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select lives_ok(
+  $$ select public.confirm_deal((select id from privacy_deal)) $$,
+  'the eligible unblocked seller can confirm through confirm_deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select count(*) from public.deal_confirmations dc where dc.deal_id = (select id from privacy_deal)),
+  2::bigint,
+  'confirm_deal records exactly one confirmation for each eligible participant'
+);
+select is(
+  (select status::text from public.deals where id = (select id from privacy_deal)),
+  'completed',
+  'confirm_deal completes the deal after both eligible participants confirm'
+);
+rollback to savepoint eligible_confirm_deal;
 
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
