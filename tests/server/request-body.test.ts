@@ -15,14 +15,63 @@ const limits: BoundedFormDataOptions = {
 	maxHeaderBytes: 512
 };
 
+const multipartBoundary = 'request-body-test-boundary';
+const textEncoder = new TextEncoder();
+
+function multipartBody(entries: Array<[string, string | Blob]>): ReadableStream<Uint8Array> {
+	let chunks: Array<string | Blob> = [];
+	for (const [name, value] of entries) {
+		if (typeof value === 'string') {
+			chunks.push(
+				`--${multipartBoundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n`,
+				value,
+				'\r\n'
+			);
+			continue;
+		}
+		const filename = value instanceof File ? value.name : 'blob';
+		chunks.push(
+			`--${multipartBoundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${value.type || 'application/octet-stream'}\r\n\r\n`,
+			value,
+			'\r\n'
+		);
+	}
+	chunks.push(`--${multipartBoundary}--\r\n`);
+
+	let index = 0;
+	let cancelled = false;
+	return new ReadableStream<Uint8Array>({
+		type: 'bytes',
+		async pull(controller) {
+			const chunk = chunks[index++];
+			if (chunk === undefined) {
+				controller.close();
+				return;
+			}
+			const bytes =
+				typeof chunk === 'string'
+					? textEncoder.encode(chunk)
+					: new Uint8Array(await chunk.arrayBuffer());
+			if (!cancelled) controller.enqueue(bytes);
+		},
+		cancel() {
+			cancelled = true;
+			chunks = [];
+		}
+	});
+}
+
 function multipartRequest(entries: Array<[string, string | Blob]>, headers?: HeadersInit): Request {
-	const form = new FormData();
-	for (const [name, value] of entries) form.append(name, value);
+	const requestHeaders = new Headers(headers);
+	if (!requestHeaders.has('content-type')) {
+		requestHeaders.set('content-type', `multipart/form-data; boundary=${multipartBoundary}`);
+	}
 	return new Request('https://example.test/upload', {
 		method: 'POST',
-		headers,
-		body: form
-	});
+		headers: requestHeaders,
+		body: multipartBody(entries),
+		duplex: 'half'
+	} as RequestInit & { duplex: 'half' });
 }
 
 describe('bounded request-body parsing', () => {
