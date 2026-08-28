@@ -4,7 +4,26 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(45);
+select plan(51);
+
+select is(
+  has_function_privilege(
+    'anon',
+    'public.is_conversation_member(uuid,uuid)',
+    'execute'
+  ),
+  false,
+  'anonymous callers cannot execute the privileged conversation membership predicate'
+);
+select is(
+  has_function_privilege(
+    'authenticated',
+    'public.is_conversation_member(uuid,uuid)',
+    'execute'
+  ),
+  true,
+  'authenticated callers retain the conversation membership predicate required by RLS'
+);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -194,6 +213,11 @@ grant select on privacy_conversation to authenticated;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select is(
+  (select count(*) from public.offers where id = '23533333-3333-4333-8333-333333333333'),
+  1::bigint,
+  'the active seller can read the accepted offer'
+);
 select is((select count(*) from public.conversations), 1::bigint, 'the seller can read the accepted conversation');
 select is((select count(*) from public.conversation_members), 1::bigint, 'the seller sees only their own membership row');
 select is((select count(*) from public.deals), 1::bigint, 'the seller can read the resulting deal');
@@ -216,6 +240,11 @@ select is(
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select is(
+  (select count(*) from public.offers where id = '23533333-3333-4333-8333-333333333333'),
+  1::bigint,
+  'the active buyer can read the accepted offer'
+);
 select is((select count(*) from public.conversations), 1::bigint, 'the buyer can read the accepted conversation');
 select is((select count(*) from public.conversation_members), 1::bigint, 'the buyer sees only their own membership row');
 select is((select count(*) from public.messages), 1::bigint, 'the buyer can read the seller message');
@@ -338,6 +367,16 @@ select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222
 select lives_ok(
   $$ update public.conversation_members set blocked_at = now() where profile_id = auth.uid() $$,
   'a participant can self-block their conversation membership'
+);
+select is(
+  (select count(*) from public.offers where id = '23533333-3333-4333-8333-333333333333'),
+  0::bigint,
+  'a self-blocked participant loses accepted-offer reads'
+);
+select is(
+  (select count(*) from public.deals),
+  0::bigint,
+  'a self-blocked participant loses deal reads'
 );
 select is((select count(*) from public.conversations), 0::bigint, 'a self-blocked member loses conversation reads');
 select is((select count(*) from public.conversation_members), 0::bigint, 'a self-blocked member loses membership reads');

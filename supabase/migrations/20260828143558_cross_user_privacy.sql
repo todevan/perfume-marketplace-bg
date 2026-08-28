@@ -21,6 +21,11 @@ as $$
   and (target_profile_id = auth.uid() or public.is_staff());
 $$;
 
+revoke execute on function public.is_conversation_member(uuid, uuid)
+  from public, anon;
+grant execute on function public.is_conversation_member(uuid, uuid)
+  to authenticated;
+
 alter policy offers_participant_read on public.offers
 using (
   (
@@ -33,6 +38,15 @@ using (
         where l.id = listing_id and l.seller_id = auth.uid()
       )
     )
+    and (
+      offers.status <> 'accepted'
+      or exists (
+        select 1
+        from public.conversations c
+        where c.accepted_offer_id = offers.id
+          and public.is_conversation_member(c.id)
+      )
+    )
   )
   or public.is_staff()
 );
@@ -42,6 +56,12 @@ using (
   (
     public.is_active_beta_user()
     and auth.uid() in (party_a_id, party_b_id)
+    and exists (
+      select 1
+      from public.conversations c
+      where c.accepted_offer_id = deals.accepted_offer_id
+        and public.is_conversation_member(c.id)
+    )
   )
   or public.is_staff()
 );
