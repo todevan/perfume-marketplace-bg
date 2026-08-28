@@ -381,6 +381,28 @@ describe('Turnstile verification', () => {
 			).resolves.toEqual({ success: true });
 		}
 	);
+	it.each(['login', 'register', 'report_submit'])(
+		'accepts the live Cloudflare testing receipt in the explicit development environment for %s',
+		async (expectedAction) => {
+			const event = {
+				getClientAddress: () => '127.0.0.1',
+				fetch: siteverifyFetcher({
+					success: true,
+					hostname: 'example.com',
+					'error-codes': []
+				})
+			};
+
+			await expect(
+				verifyTurnstileForAction(
+					event,
+					turnstileFormData(),
+					stagingTurnstileRuntime({ appEnvironment: 'development' }),
+					expectedAction
+				)
+			).resolves.toEqual({ success: true });
+		}
+	);
 	it.each(invalidTestingRuntimeCases)(
 		'rejects the live testing receipt when the boundary has %s',
 		async (_label, overrides) => {
@@ -600,6 +622,28 @@ describe('Turnstile verification', () => {
 				})
 			).resolves.toMatchObject({ success: false, reason: 'not_configured' });
 			expect(fetcher).not.toHaveBeenCalled();
+		}
+	);
+	it.each(['login', 'register', 'report_submit'])(
+		'accepts the official Cloudflare testing receipt in the explicit development environment for %s',
+		async (expectedAction) => {
+			const event = {
+				getClientAddress: () => '127.0.0.1',
+				fetch: siteverifyFetcher({
+					success: true,
+					action: 'test',
+					hostname: 'localhost'
+				})
+			};
+
+			await expect(
+				verifyTurnstileForAction(
+					event,
+					turnstileFormData(),
+					stagingTurnstileRuntime({ appEnvironment: 'development' }),
+					expectedAction
+				)
+			).resolves.toEqual({ success: true });
 		}
 	);
 
