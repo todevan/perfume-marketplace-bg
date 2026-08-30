@@ -45,10 +45,13 @@ declare
     pg_catalog.current_database()
   );
 begin
-  perform extensions.dblink_connect('fixture', connection_string);
-  perform extensions.dblink_connect('listing_locker', connection_string);
-  perform extensions.dblink_connect('deal_rpc', connection_string);
-  perform extensions.dblink_connect('self_block', connection_string);
+  -- Supabase CLI's local HBA trusts this loopback connection, so ordinary
+  -- dblink_connect rejects it for not having consumed the supplied password.
+  -- dblink_connect_u is extension-owner-only and remains confined to this test.
+  perform extensions.dblink_connect_u('fixture', connection_string);
+  perform extensions.dblink_connect_u('listing_locker', connection_string);
+  perform extensions.dblink_connect_u('deal_rpc', connection_string);
+  perform extensions.dblink_connect_u('self_block', connection_string);
 end;
 $setup_connections$;
 
