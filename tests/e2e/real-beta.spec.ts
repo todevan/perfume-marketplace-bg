@@ -251,9 +251,9 @@ async function login(
 ): Promise<void> {
 	await gotoApp(page, origin, `/login?next=${encodeURIComponent(next)}`);
 	await expect(page.getByRole('heading', { name: 'Влез в профила си.' })).toBeVisible();
+	await waitForTestingTurnstile(page, '.cf-turnstile', 'Login');
 	await page.getByLabel('Имейл').fill(account.email);
 	await page.getByLabel('Парола', { exact: true }).fill(account.password);
-	await waitForTestingTurnstile(page, '.cf-turnstile', 'Login');
 	await page.getByRole('button', { name: 'Влез в профила' }).click();
 	await page.waitForURL(
 		(url) => url.origin === origin && new URL(url).pathname === next,
@@ -625,7 +625,9 @@ test.describe('real hosted marketplace', () => {
 			await offerDialog.getByLabel('Предложена сума').fill('40');
 			await offerDialog.getByLabel('Кратка бележка (по избор)').fill(offerNote);
 			await waitForTestingTurnstile(buyer, '.cf-turnstile', 'Offer');
-			await offerDialog.getByRole('button', { name: 'Изпрати намерение' }).click();
+			const submitOffer = offerDialog.getByRole('button', { name: 'Изпрати намерение' });
+			await submitOffer.scrollIntoViewIfNeeded();
+			await submitOffer.click();
 			await expect(offerDialog.getByRole('heading', { name: 'Офертата е изпратена.' })).toBeVisible();
 
 			await gotoApp(seller, config.origin, '/offers?direction=received');
