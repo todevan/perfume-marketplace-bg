@@ -247,7 +247,7 @@ async function login(
 	await gotoApp(page, origin, `/login?next=${encodeURIComponent(next)}`);
 	await expect(page.getByRole('heading', { name: 'Влез в профила си.' })).toBeVisible();
 	await page.getByLabel('Имейл').fill(account.email);
-	await page.getByLabel('Парола').fill(account.password);
+	await page.getByLabel('Парола', { exact: true }).fill(account.password);
 	await waitForTestingTurnstile(page, '.cf-turnstile', 'Login');
 	await page.getByRole('button', { name: 'Влез в профила' }).click();
 	await page.waitForURL(
@@ -771,7 +771,7 @@ test.describe('real hosted marketplace', () => {
 		try {
 			await gotoApp(page, config.origin, '/login?next=%2Fadmin');
 			await page.getByLabel('Имейл').fill(config.email);
-			await page.getByLabel('Парола').fill(config.password);
+			await page.getByLabel('Парола', { exact: true }).fill(config.password);
 			await waitForTestingTurnstile(page, '.cf-turnstile', 'Moderator login');
 			await page.getByRole('button', { name: 'Влез в профила' }).click();
 			await page.waitForURL(
