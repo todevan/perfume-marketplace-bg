@@ -446,6 +446,12 @@ async function findConversation(page: Page, query: string, counterpart: string):
 	const conversation = page.locator('.conversation-items > button').filter({ hasText: query }).first();
 	await expect(conversation).toContainText(counterpart, { timeout: 30_000 });
 	await conversation.click();
+	await page.waitForURL(
+		(url) =>
+			url.pathname === '/messages' &&
+			UUID_PATTERN.test(url.searchParams.get('conversation') ?? ''),
+		{ timeout: 30_000 }
+	);
 	await expect(page.locator('.chat-head')).toContainText(counterpart);
 }
 
