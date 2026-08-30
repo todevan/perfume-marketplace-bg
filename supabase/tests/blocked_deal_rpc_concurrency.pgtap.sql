@@ -40,18 +40,18 @@ $$;
 do $setup_connections$
 declare
   connection_string text := pg_catalog.format(
-    'host=127.0.0.1 port=%s dbname=%s user=postgres password=postgres sslmode=disable connect_timeout=2',
+    'host=%s port=%s dbname=%s user=postgres password=postgres sslmode=disable connect_timeout=2',
+    pg_catalog.inet_server_addr(),
     pg_catalog.inet_server_port(),
     pg_catalog.current_database()
   );
 begin
-  -- Supabase CLI's local HBA trusts this loopback connection, so ordinary
-  -- dblink_connect rejects it for not having consumed the supplied password.
-  -- dblink_connect_u is extension-owner-only and remains confined to this test.
-  perform extensions.dblink_connect_u('fixture', connection_string);
-  perform extensions.dblink_connect_u('listing_locker', connection_string);
-  perform extensions.dblink_connect_u('deal_rpc', connection_string);
-  perform extensions.dblink_connect_u('self_block', connection_string);
+  -- Use the server address rather than loopback so the local HBA consumes the
+  -- supplied test password; dblink rejects trusted non-password connections.
+  perform extensions.dblink_connect('fixture', connection_string);
+  perform extensions.dblink_connect('listing_locker', connection_string);
+  perform extensions.dblink_connect('deal_rpc', connection_string);
+  perform extensions.dblink_connect('self_block', connection_string);
 end;
 $setup_connections$;
 
