@@ -646,6 +646,7 @@ test.describe('real hosted marketplace', () => {
 
 				const acceptProbe = await outsider.request.post(appUrl(config.origin, '/offers?/accept'), {
 					form: { offerId },
+					headers: { Origin: config.origin },
 					maxRedirects: 0
 				});
 				await expectSanitizedActionResponse(
@@ -701,6 +702,7 @@ test.describe('real hosted marketplace', () => {
 				}
 				const sendProbe = await outsider.request.post(appUrl(config.origin, '/messages?/send'), {
 					form: { conversationId, body: `outsider probe ${runId}`, replyToId: '' },
+					headers: { Origin: config.origin },
 					maxRedirects: 0
 				});
 				await expectSanitizedActionResponse(
@@ -733,6 +735,7 @@ test.describe('real hosted marketplace', () => {
 			if (config.privacy) {
 				const blockResponse = await buyer.request.post(appUrl(config.origin, '/messages?/state'), {
 					form: { conversationId, operation: 'block', enabled: 'true' },
+					headers: { Origin: config.origin },
 					maxRedirects: 0
 				});
 				expect(blockResponse.status()).toBe(200);
@@ -749,6 +752,7 @@ test.describe('real hosted marketplace', () => {
 				}
 				const blockedSend = await buyer.request.post(appUrl(config.origin, '/messages?/send'), {
 					form: { conversationId, body: `blocked probe ${runId}`, replyToId: '' },
+					headers: { Origin: config.origin },
 					maxRedirects: 0
 				});
 				await expectSanitizedActionResponse(
