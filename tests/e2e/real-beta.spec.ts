@@ -518,7 +518,7 @@ async function sendWithRealtimePrivacyProof(
 		await Promise.all([subscribeExactly(buyerChannel), subscribeExactly(outsiderChannel)]);
 		await seller.getByRole('textbox', { name: 'Съобщение' }).fill(message);
 		await seller.getByRole('button', { name: 'Изпрати' }).click();
-		await expect(seller.getByText(message, { exact: true })).toBeVisible();
+		await expect(seller.locator('.message-stream').getByText(message, { exact: true })).toBeVisible();
 		await Promise.race([
 			buyerMessageReceived,
 			new Promise<never>((_, reject) =>
@@ -684,7 +684,9 @@ test.describe('real hosted marketplace', () => {
 			} else {
 				await seller.getByRole('textbox', { name: 'Съобщение' }).fill(sellerMessage);
 				await seller.getByRole('button', { name: 'Изпрати' }).click();
-				await expect(seller.getByText(sellerMessage, { exact: true })).toBeVisible();
+				await expect(
+					seller.locator('.message-stream').getByText(sellerMessage, { exact: true })
+				).toBeVisible();
 			}
 
 			if (config.privacy && outsider) {
@@ -722,10 +724,14 @@ test.describe('real hosted marketplace', () => {
 			const buyerMessage = `Получено, приключваме beta сделката ${runId}.`;
 			await gotoApp(buyer, config.origin, '/messages');
 			await findConversation(buyer, listing.query, config.seller.username);
-			await expect(buyer.getByText(sellerMessage, { exact: true })).toBeVisible({ timeout: 30_000 });
+			await expect(
+				buyer.locator('.message-stream').getByText(sellerMessage, { exact: true })
+			).toBeVisible({ timeout: 30_000 });
 			await buyer.getByRole('textbox', { name: 'Съобщение' }).fill(buyerMessage);
 			await buyer.getByRole('button', { name: 'Изпрати' }).click();
-			await expect(buyer.getByText(buyerMessage, { exact: true })).toBeVisible();
+			await expect(
+				buyer.locator('.message-stream').getByText(buyerMessage, { exact: true })
+			).toBeVisible();
 
 			await confirmDeal(buyer, config.origin, listing.query);
 			await confirmDeal(seller, config.origin, listing.query);
