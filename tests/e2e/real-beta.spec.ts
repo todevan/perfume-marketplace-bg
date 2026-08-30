@@ -77,6 +77,7 @@ interface ModeratorConfig {
 
 const REQUIRED_REAL_FLAG = 'Set E2E_REAL_RUN=true to run the state-changing real-beta suite.';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const TURNSTILE_READINESS_TIMEOUT_MS = 60_000;
 
 function requiredEnvironment(name: string): string {
 	const value = process.env[name]?.trim();
@@ -226,14 +227,18 @@ async function waitForTestingTurnstile(
 	hostSelector: string,
 	context: string
 ): Promise<void> {
+	const deadline = Date.now() + TURNSTILE_READINESS_TIMEOUT_MS;
+	const remaining = (): number => Math.max(1, deadline - Date.now());
 	const host = page.locator(hostSelector);
-	await expect(host, `${context} must render a Turnstile widget`).toHaveCount(1, { timeout: 20_000 });
+	await expect(host, `${context} must render a Turnstile widget`).toHaveCount(1, {
+		timeout: remaining()
+	});
 	const response = page.locator('input[name="cf-turnstile-response"]').last();
-	await response.waitFor({ state: 'attached', timeout: 20_000 });
+	await response.waitFor({ state: 'attached', timeout: remaining() });
 	await expect
 		.poll(() => response.inputValue(), {
 			message: `${context} Turnstile testing token was not issued`,
-			timeout: 20_000
+			timeout: remaining()
 		})
 		.toMatch(/\S/u);
 }
