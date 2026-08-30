@@ -1,6 +1,7 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
+import { expect, test, type APIResponse, type Page, type TestInfo } from '@playwright/test';
 
 /**
  * Destructive staging/production smoke test.
@@ -18,6 +19,16 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
  *   E2E_REAL_TURNSTILE_TESTING=true
  *   E2E_REAL_SELLER_EMAIL / E2E_REAL_SELLER_PASSWORD / E2E_REAL_SELLER_USERNAME
  *   E2E_REAL_BUYER_EMAIL / E2E_REAL_BUYER_PASSWORD / E2E_REAL_BUYER_USERNAME
+ *
+ * Optional hostile cross-user privacy proof (approved disposable fixtures only):
+ *   E2E_REAL_CROSS_USER_PRIVACY_RUN=true
+ *   E2E_REAL_UPLOADS=true
+ *   E2E_REAL_OUTSIDER_EMAIL / E2E_REAL_OUTSIDER_PASSWORD / E2E_REAL_OUTSIDER_USERNAME
+ *   E2E_REAL_SUPABASE_URL / E2E_REAL_SUPABASE_PROJECT_REF
+ *   E2E_REAL_SUPABASE_PUBLISHABLE_KEY or E2E_REAL_SUPABASE_ANON_KEY
+ *
+ * These flags never authorize a hosted run by themselves. The operator must
+ * separately hold the exact owner-approved target, write and cleanup authority.
  *
  * To exercise the real image pipeline and publication wizard, also set:
  *   E2E_REAL_UPLOADS=true
@@ -46,6 +57,14 @@ interface MarketplaceConfig {
 	publication:
 		| { mode: 'uploads'; brand: string }
 		| { mode: 'seeded'; slug: string; query: string };
+	privacy: CrossUserPrivacyConfig | null;
+}
+
+interface CrossUserPrivacyConfig {
+	outsider: Credentials;
+	supabaseUrl: string;
+	publicKey: string;
+	projectRef: string;
 }
 
 interface ModeratorConfig {
@@ -57,6 +76,8 @@ interface ModeratorConfig {
 }
 
 const REQUIRED_REAL_FLAG = 'Set E2E_REAL_RUN=true to run the state-changing real-beta suite.';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const TURNSTILE_READINESS_TIMEOUT_MS = 60_000;
 
 function requiredEnvironment(name: string): string {
 	const value = process.env[name]?.trim();
@@ -85,12 +106,56 @@ function requireTestingTurnstile(): true {
 	return true;
 }
 
-function credentials(prefix: 'SELLER' | 'BUYER'): Credentials {
+function credentials(prefix: 'SELLER' | 'BUYER' | 'OUTSIDER'): Credentials {
 	return {
 		email: requiredEnvironment(`E2E_REAL_${prefix}_EMAIL`),
 		password: requiredEnvironment(`E2E_REAL_${prefix}_PASSWORD`),
 		username: requiredEnvironment(`E2E_REAL_${prefix}_USERNAME`)
 	};
+}
+
+function crossUserPrivacyConfig(
+	seller: Credentials,
+	buyer: Credentials
+): CrossUserPrivacyConfig | null {
+	if (process.env.E2E_REAL_CROSS_USER_PRIVACY_RUN !== 'true') return null;
+
+	const outsider = credentials('OUTSIDER');
+	const actors = [seller, buyer, outsider];
+	const normalizedEmails = new Set(
+		actors.map((actor) => actor.email.toLocaleLowerCase('en'))
+	);
+	const normalizedUsernames = new Set(
+		actors.map((actor) => actor.username.toLocaleLowerCase('en'))
+	);
+	if (normalizedEmails.size !== actors.length || normalizedUsernames.size !== actors.length) {
+		throw new Error('Seller, buyer and outsider must be three distinct disposable identities.');
+	}
+
+	const projectRef = requiredEnvironment('E2E_REAL_SUPABASE_PROJECT_REF').toLocaleLowerCase('en');
+	if (!/^[a-z0-9]{20}$/u.test(projectRef)) {
+		throw new Error('E2E_REAL_SUPABASE_PROJECT_REF must be one exact Supabase project ref.');
+	}
+	const supabase = new URL(requiredEnvironment('E2E_REAL_SUPABASE_URL'));
+	if (
+		supabase.protocol !== 'https:' ||
+		supabase.hostname !== `${projectRef}.supabase.co` ||
+		supabase.pathname !== '/' ||
+		supabase.username ||
+		supabase.password ||
+		supabase.search ||
+		supabase.hash
+	) {
+		throw new Error('The Supabase public URL must exactly match the approved project ref.');
+	}
+	const publicKey =
+		process.env.E2E_REAL_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+		process.env.E2E_REAL_SUPABASE_ANON_KEY?.trim();
+	if (!publicKey) {
+		throw new Error('The explicit Supabase public key is required for the privacy proof.');
+	}
+
+	return { outsider, supabaseUrl: supabase.origin, publicKey, projectRef };
 }
 
 function marketplaceConfig(): MarketplaceConfig {
@@ -111,13 +176,20 @@ function marketplaceConfig(): MarketplaceConfig {
 	if (publication.mode === 'seeded' && publication.slug.includes('/')) {
 		throw new Error('E2E_REAL_LISTING_SLUG must contain only the listing slug, not a path.');
 	}
+	const privacy = crossUserPrivacyConfig(seller, buyer);
+	if (privacy && publication.mode !== 'uploads') {
+		throw new Error(
+			'E2E_REAL_CROSS_USER_PRIVACY_RUN=true requires E2E_REAL_UPLOADS=true so the seller publishes fresh private evidence.'
+		);
+	}
 
 	return {
 		origin: realOrigin(),
 		seller,
 		buyer,
 		turnstileTesting: requireTestingTurnstile(),
-		publication
+		publication,
+		privacy
 	};
 }
 
@@ -155,14 +227,18 @@ async function waitForTestingTurnstile(
 	hostSelector: string,
 	context: string
 ): Promise<void> {
+	const deadline = Date.now() + TURNSTILE_READINESS_TIMEOUT_MS;
+	const remaining = (): number => Math.max(1, deadline - Date.now());
 	const host = page.locator(hostSelector);
-	await expect(host, `${context} must render a Turnstile widget`).toHaveCount(1, { timeout: 20_000 });
+	await expect(host, `${context} must render a Turnstile widget`).toHaveCount(1, {
+		timeout: remaining()
+	});
 	const response = page.locator('input[name="cf-turnstile-response"]').last();
-	await response.waitFor({ state: 'attached', timeout: 20_000 });
+	await response.waitFor({ state: 'attached', timeout: remaining() });
 	await expect
 		.poll(() => response.inputValue(), {
 			message: `${context} Turnstile testing token was not issued`,
-			timeout: 20_000
+			timeout: remaining()
 		})
 		.toMatch(/\S/u);
 }
@@ -175,14 +251,65 @@ async function login(
 ): Promise<void> {
 	await gotoApp(page, origin, `/login?next=${encodeURIComponent(next)}`);
 	await expect(page.getByRole('heading', { name: 'Влез в профила си.' })).toBeVisible();
-	await page.getByLabel('Имейл').fill(account.email);
-	await page.getByLabel('Парола').fill(account.password);
 	await waitForTestingTurnstile(page, '.cf-turnstile', 'Login');
+	await page.getByLabel('Имейл').fill(account.email);
+	await page.getByLabel('Парола', { exact: true }).fill(account.password);
 	await page.getByRole('button', { name: 'Влез в профила' }).click();
 	await page.waitForURL(
 		(url) => url.origin === origin && new URL(url).pathname === next,
 		{ timeout: 30_000 }
 	);
+}
+
+async function expectSanitizedActionResponse(
+	response: APIResponse,
+	status: number,
+	canonicalMessage: string,
+	privateValues: readonly string[]
+): Promise<void> {
+	expect(response.status()).toBe(status);
+	const body = await response.text();
+	expect(body).toContain(canonicalMessage);
+	for (const privateValue of privateValues) {
+		if (privateValue) expect(body).not.toContain(privateValue);
+	}
+}
+
+function ephemeralRealtimeClient(config: CrossUserPrivacyConfig): SupabaseClient {
+	return createClient(config.supabaseUrl, config.publicKey, {
+		auth: {
+			autoRefreshToken: false,
+			detectSessionInUrl: false,
+			persistSession: false
+		},
+		global: { headers: { 'X-Client-Info': 'aromatika-cross-user-privacy-e2e' } }
+	});
+}
+
+async function authenticateEphemeralClient(
+	client: SupabaseClient,
+	account: Pick<Credentials, 'email' | 'password'>
+): Promise<void> {
+	const { error } = await client.auth.signInWithPassword(account);
+	if (error) throw new Error('A disposable privacy actor could not authenticate.');
+}
+
+async function subscribeExactly(channel: RealtimeChannel): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const timeout = setTimeout(
+			() => reject(new Error('A privacy Realtime subscription did not become ready.')),
+			20_000
+		);
+		channel.subscribe((status) => {
+			if (status === 'SUBSCRIBED') {
+				clearTimeout(timeout);
+				resolve();
+			} else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+				clearTimeout(timeout);
+				reject(new Error('A privacy Realtime subscription failed closed.'));
+			}
+		});
+	});
 }
 
 function escapeRegExp(value: string): string {
@@ -319,7 +446,100 @@ async function findConversation(page: Page, query: string, counterpart: string):
 	const conversation = page.locator('.conversation-items > button').filter({ hasText: query }).first();
 	await expect(conversation).toContainText(counterpart, { timeout: 30_000 });
 	await conversation.click();
+	await page.waitForURL(
+		(url) =>
+			url.pathname === '/messages' &&
+			UUID_PATTERN.test(url.searchParams.get('conversation') ?? ''),
+		{ timeout: 30_000 }
+	);
 	await expect(page.locator('.chat-head')).toContainText(counterpart);
+}
+
+async function sendWithRealtimePrivacyProof(
+	seller: Page,
+	privacy: CrossUserPrivacyConfig,
+	buyer: Credentials,
+	conversationId: string,
+	message: string
+): Promise<void> {
+	const buyerClient = ephemeralRealtimeClient(privacy);
+	const outsiderClient = ephemeralRealtimeClient(privacy);
+	let buyerChannel: RealtimeChannel | null = null;
+	let outsiderChannel: RealtimeChannel | null = null;
+	const outsiderPayloads: unknown[] = [];
+	let rejectOutsiderPayload!: (reason: Error) => void;
+	const outsiderPayloadReceived = new Promise<never>((_resolve, reject) => {
+		rejectOutsiderPayload = reject;
+	});
+
+	try {
+		await Promise.all([
+			authenticateEphemeralClient(buyerClient, buyer),
+			authenticateEphemeralClient(outsiderClient, privacy.outsider)
+		]);
+		let receiveBuyerMessage!: () => void;
+		const buyerMessageReceived = new Promise<void>((resolve) => {
+			receiveBuyerMessage = resolve;
+		});
+		buyerChannel = buyerClient
+			.channel(`issue23-buyer-${randomUUID()}`)
+			.on(
+				'postgres_changes',
+				{
+					event: 'INSERT',
+					schema: 'public',
+					table: 'messages',
+					filter: `conversation_id=eq.${conversationId}`
+				},
+				(payload) => {
+					if (payload.new.body === message && payload.new.conversation_id === conversationId) {
+						receiveBuyerMessage();
+					}
+				}
+			);
+		outsiderChannel = outsiderClient
+			.channel(`issue23-outsider-${randomUUID()}`)
+			.on(
+				'postgres_changes',
+				{
+					event: 'INSERT',
+					schema: 'public',
+					table: 'messages',
+					filter: `conversation_id=eq.${conversationId}`
+				},
+				(payload) => {
+					outsiderPayloads.push(payload);
+					rejectOutsiderPayload(
+						new Error('The outsider received a private Realtime payload.')
+					);
+				}
+			);
+
+		await Promise.all([subscribeExactly(buyerChannel), subscribeExactly(outsiderChannel)]);
+		await seller.getByRole('textbox', { name: 'Съобщение' }).fill(message);
+		await seller.getByRole('button', { name: 'Изпрати' }).click();
+		await expect(seller.locator('.message-stream').getByText(message, { exact: true })).toBeVisible();
+		await Promise.race([
+			buyerMessageReceived,
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error('The participant did not receive the exact Realtime message.')), 30_000)
+			)
+		]);
+		await Promise.race([
+			new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+			outsiderPayloadReceived
+		]);
+		expect(outsiderPayloads).toHaveLength(0);
+	} finally {
+		await Promise.all([
+			buyerChannel ? buyerClient.removeChannel(buyerChannel) : Promise.resolve(),
+			outsiderChannel ? outsiderClient.removeChannel(outsiderChannel) : Promise.resolve()
+		]);
+		await Promise.all([
+			buyerClient.auth.signOut({ scope: 'local' }),
+			outsiderClient.auth.signOut({ scope: 'local' })
+		]);
+	}
 }
 
 async function confirmDeal(page: Page, origin: string, query: string): Promise<void> {
@@ -371,13 +591,23 @@ test.describe('real hosted marketplace', () => {
 					? 'Real publication with Cloudflare Images, private Storage and four PNG evidence roles.'
 					: 'Disposable pre-seeded active listing; publication providers are outside this run.'
 		});
+		if (config.privacy) {
+			testInfo.annotations.push({
+				type: 'privacy',
+				description:
+					'Optional three-user offer/chat/Realtime proof. Private report-evidence browser denial remains in hosted-report-evidence.spec.ts; the unified local pgTAP covers listing quarantine and report metadata.'
+			});
+		}
 
 		const sellerContext = await browser.newContext();
 		const buyerContext = await browser.newContext();
+		const outsiderContext = config.privacy ? await browser.newContext() : null;
 		const seller = await sellerContext.newPage();
 		const buyer = await buyerContext.newPage();
+		const outsider = outsiderContext ? await outsiderContext.newPage() : null;
 		seller.setDefaultTimeout(30_000);
 		buyer.setDefaultTimeout(30_000);
+		outsider?.setDefaultTimeout(30_000);
 		const runId = `${Date.now().toString(36)}${testInfo.retry}`;
 
 		try {
@@ -401,29 +631,107 @@ test.describe('real hosted marketplace', () => {
 			await offerDialog.getByLabel('Предложена сума').fill('40');
 			await offerDialog.getByLabel('Кратка бележка (по избор)').fill(offerNote);
 			await waitForTestingTurnstile(buyer, '.cf-turnstile', 'Offer');
-			await offerDialog.getByRole('button', { name: 'Изпрати намерение' }).click();
+			const submitOffer = offerDialog.getByRole('button', { name: 'Изпрати намерение' });
+			await submitOffer.scrollIntoViewIfNeeded();
+			await submitOffer.click();
 			await expect(offerDialog.getByRole('heading', { name: 'Офертата е изпратена.' })).toBeVisible();
 
 			await gotoApp(seller, config.origin, '/offers?direction=received');
 			const receivedOffer = seller.locator('article.offer-card').filter({ hasText: offerNote }).first();
 			await expect(receivedOffer).toContainText(config.buyer.username, { timeout: 30_000 });
+			const offerId = await receivedOffer.locator('input[name="offerId"]').first().inputValue();
+			if (!UUID_PATTERN.test(offerId)) throw new Error('The received offer did not expose its exact UUID.');
+
+			if (config.privacy && outsider) {
+				await login(outsider, config.origin, config.privacy.outsider);
+				await gotoApp(outsider, config.origin, '/offers?direction=received');
+				await expect(outsider.locator('article.offer-card').filter({ hasText: offerNote })).toHaveCount(0);
+				const outsiderOffersBody = await outsider.locator('body').innerText();
+				expect(outsiderOffersBody).not.toContain(offerNote);
+				expect(outsiderOffersBody).not.toContain(offerId);
+
+				const acceptProbe = await outsider.request.post(appUrl(config.origin, '/offers?/accept'), {
+					form: { offerId },
+					headers: { Accept: 'text/html', Origin: config.origin },
+					maxRedirects: 0
+				});
+				await expectSanitizedActionResponse(
+					acceptProbe,
+					404,
+					'The requested record was not found.',
+					[offerId, offerNote, config.buyer.username, listing.query]
+				);
+			}
+
 			await receivedOffer.getByRole('button', { name: 'Приеми и резервирай' }).click();
 			await seller.waitForURL((url) => url.pathname === '/deals' && Boolean(url.searchParams.get('highlight')));
 
 			const sellerMessage = `Потвърждавам тестовата оферта ${runId}.`;
 			await gotoApp(seller, config.origin, '/messages');
 			await findConversation(seller, listing.query, config.buyer.username);
-			await seller.getByRole('textbox', { name: 'Съобщение' }).fill(sellerMessage);
-			await seller.getByRole('button', { name: 'Изпрати' }).click();
-			await expect(seller.getByText(sellerMessage, { exact: true })).toBeVisible();
+			const conversationId = new URL(seller.url()).searchParams.get('conversation') ?? '';
+			if (!UUID_PATTERN.test(conversationId)) {
+				throw new Error('The accepted chat did not expose its exact conversation UUID.');
+			}
+			if (config.privacy) {
+				await sendWithRealtimePrivacyProof(
+					seller,
+					config.privacy,
+					config.buyer,
+					conversationId,
+					sellerMessage
+				);
+			} else {
+				await seller.getByRole('textbox', { name: 'Съобщение' }).fill(sellerMessage);
+				await seller.getByRole('button', { name: 'Изпрати' }).click();
+				await expect(
+					seller.locator('.message-stream').getByText(sellerMessage, { exact: true })
+				).toBeVisible();
+			}
+
+			if (config.privacy && outsider) {
+				await gotoApp(
+					outsider,
+					config.origin,
+					`/messages?conversation=${encodeURIComponent(conversationId)}`
+				);
+				await expect(outsider.locator('.conversation-items > button').filter({ hasText: listing.query })).toHaveCount(0);
+				await expect(outsider.locator('.message-stream')).toHaveCount(0);
+				const outsiderMessagesBody = await outsider.locator('body').innerText();
+				for (const privateValue of [
+					conversationId,
+					offerId,
+					offerNote,
+					sellerMessage,
+					config.seller.username,
+					config.buyer.username
+				]) {
+					expect(outsiderMessagesBody).not.toContain(privateValue);
+				}
+				const sendProbe = await outsider.request.post(appUrl(config.origin, '/messages?/send'), {
+					form: { conversationId, body: `outsider probe ${runId}`, replyToId: '' },
+					headers: { Accept: 'text/html', Origin: config.origin },
+					maxRedirects: 0
+				});
+				await expectSanitizedActionResponse(
+					sendProbe,
+					403,
+					'You are not allowed to perform this action.',
+					[conversationId, offerId, offerNote, sellerMessage, listing.query]
+				);
+			}
 
 			const buyerMessage = `Получено, приключваме beta сделката ${runId}.`;
 			await gotoApp(buyer, config.origin, '/messages');
 			await findConversation(buyer, listing.query, config.seller.username);
-			await expect(buyer.getByText(sellerMessage, { exact: true })).toBeVisible({ timeout: 30_000 });
+			await expect(
+				buyer.locator('.message-stream').getByText(sellerMessage, { exact: true })
+			).toBeVisible({ timeout: 30_000 });
 			await buyer.getByRole('textbox', { name: 'Съобщение' }).fill(buyerMessage);
 			await buyer.getByRole('button', { name: 'Изпрати' }).click();
-			await expect(buyer.getByText(buyerMessage, { exact: true })).toBeVisible();
+			await expect(
+				buyer.locator('.message-stream').getByText(buyerMessage, { exact: true })
+			).toBeVisible();
 
 			await confirmDeal(buyer, config.origin, listing.query);
 			await confirmDeal(seller, config.origin, listing.query);
@@ -435,8 +743,43 @@ test.describe('real hosted marketplace', () => {
 			await completedDeal.getByLabel('Отзив').fill(`Коректна beta сделка ${runId}.`);
 			await completedDeal.getByRole('button', { name: 'Публикувай отзив' }).click();
 			await expect(buyer.getByRole('status')).toHaveText('Действието е записано.');
+
+			if (config.privacy) {
+				const blockResponse = await buyer.request.post(appUrl(config.origin, '/messages?/state'), {
+					form: { conversationId, operation: 'block', enabled: 'true' },
+					headers: { Accept: 'text/html', Origin: config.origin },
+					maxRedirects: 0
+				});
+				expect(blockResponse.status()).toBe(200);
+				await gotoApp(
+					buyer,
+					config.origin,
+					`/messages?conversation=${encodeURIComponent(conversationId)}`
+				);
+				await expect(buyer.locator('.conversation-items > button').filter({ hasText: listing.query })).toHaveCount(0);
+				await expect(buyer.locator('.message-stream')).toHaveCount(0);
+				const blockedBody = await buyer.locator('body').innerText();
+				for (const privateValue of [conversationId, offerId, offerNote, sellerMessage, buyerMessage]) {
+					expect(blockedBody).not.toContain(privateValue);
+				}
+				const blockedSend = await buyer.request.post(appUrl(config.origin, '/messages?/send'), {
+					form: { conversationId, body: `blocked probe ${runId}`, replyToId: '' },
+					headers: { Accept: 'text/html', Origin: config.origin },
+					maxRedirects: 0
+				});
+				await expectSanitizedActionResponse(
+					blockedSend,
+					403,
+					'You are not allowed to perform this action.',
+					[conversationId, offerId, offerNote, sellerMessage, buyerMessage, listing.query]
+				);
+			}
 		} finally {
-			await Promise.all([sellerContext.close(), buyerContext.close()]);
+			await Promise.all([
+				sellerContext.close(),
+				buyerContext.close(),
+				outsiderContext?.close() ?? Promise.resolve()
+			]);
 		}
 	});
 
@@ -451,7 +794,7 @@ test.describe('real hosted marketplace', () => {
 		try {
 			await gotoApp(page, config.origin, '/login?next=%2Fadmin');
 			await page.getByLabel('Имейл').fill(config.email);
-			await page.getByLabel('Парола').fill(config.password);
+			await page.getByLabel('Парола', { exact: true }).fill(config.password);
 			await waitForTestingTurnstile(page, '.cf-turnstile', 'Moderator login');
 			await page.getByRole('button', { name: 'Влез в профила' }).click();
 			await page.waitForURL(

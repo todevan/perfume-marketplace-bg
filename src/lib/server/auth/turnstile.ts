@@ -25,7 +25,7 @@ function acceptsCloudflareTestingReceipt(
 	runtime: ProductionRuntimeConfiguration
 ): boolean {
 	return (
-		runtime.appEnvironment === 'staging' &&
+		runtime.appEnvironment !== 'production' &&
 		runtime.publicTurnstileSiteKey === CLOUDFLARE_ALWAYS_PASS_TEST_SITE_KEY &&
 		runtime.turnstileSecretKey === CLOUDFLARE_ALWAYS_PASS_TEST_SECRET_KEY
 	);
