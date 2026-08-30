@@ -14,16 +14,15 @@ export const reportTargetTypeSchema = z.enum([
 	'profile_comment'
 ]);
 export const reportStatusSchema = z.enum(['open', 'investigating', 'resolved', 'dismissed']);
+export const reportOutcomeSchema = z.enum(['pending', 'action_taken', 'no_action', 'completed']);
 
 export interface ReportDto {
 	readonly id: string;
 	readonly targetType: z.infer<typeof reportTargetTypeSchema>;
-	readonly targetId: string;
 	readonly reasonCode: string;
-	readonly details: string | null;
 	readonly evidenceCount: number;
 	readonly status: z.infer<typeof reportStatusSchema>;
-	readonly resolutionCode: string | null;
+	readonly outcome: z.infer<typeof reportOutcomeSchema>;
 	readonly resolvedAt: string | null;
 	readonly createdAt: string;
 	readonly updatedAt: string;

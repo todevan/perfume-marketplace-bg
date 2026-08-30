@@ -26,8 +26,10 @@ import {
 	registerHostedQueueRow,
 	registerHostedReport,
 	registerHostedUpload,
+	registerIssue24Checkpoint,
 	validateHostedA10Environment,
-	validateHostedCleanupEnvironment
+	validateHostedCleanupEnvironment,
+	validateIssue24HostedEnvironment
 } from '../../scripts/hosted-report-evidence-operator.mjs';
 
 const REQUIRED_ENVIRONMENT = [
@@ -69,7 +71,26 @@ const HOSTED_CLEANUP_ENABLED =
 	process.env.E2E_REAL_REPORT_EVIDENCE_CLEANUP_RUN === 'true' &&
 	process.env.E2E_REAL_REPORT_EVIDENCE_CLEANUP_APPROVAL === 'A11';
 const HOSTED_SCENARIO_ENABLED =
-	HOSTED_RUN_ENABLED && isHostedA10ScenarioApproved(process.env);
+	HOSTED_RUN_ENABLED && !process.env.E2E_REAL_ISSUE_24_RUN && isHostedA10ScenarioApproved(process.env);
+const ISSUE_24_REQUIRED_ENVIRONMENT = [
+	...REQUIRED_ENVIRONMENT,
+	'E2E_REAL_ISSUE_24_ORGANIZATION_ID',
+	'E2E_REAL_ISSUE_24_REGION',
+	'E2E_REAL_ISSUE_24_WORKER_NAME',
+	'E2E_REAL_ISSUE_24_CANDIDATE_SHA',
+	'E2E_REAL_ISSUE_24_CONVERSATION_ID',
+	'E2E_REAL_AAL1_STAFF_EMAIL',
+	'E2E_REAL_AAL1_STAFF_PASSWORD',
+	'E2E_REAL_AAL1_STAFF_USERNAME',
+	'E2E_REAL_UNASSIGNED_ADMIN_EMAIL',
+	'E2E_REAL_UNASSIGNED_ADMIN_PASSWORD',
+	'E2E_REAL_UNASSIGNED_ADMIN_USERNAME'
+] as const;
+const ISSUE_24_SCENARIO_ENABLED =
+	process.env.E2E_REAL_ISSUE_24_RUN === 'true' &&
+	process.env.E2E_REAL_ISSUE_24_APPROVAL === 'ISSUE-24' &&
+	isHostedA10ScenarioApproved(process.env) &&
+	ISSUE_24_REQUIRED_ENVIRONMENT.every((name) => Boolean(process.env[name]?.trim()));
 const HOSTED_SKIP_REASON =
 	'Hosted report-evidence verification requires both explicit real-run flags and every approved secure input.';
 const MAX_EVIDENCE_BYTES = 10 * 1024 * 1024;
@@ -83,12 +104,20 @@ interface ActorCredentials {
 }
 
 interface HostedConfiguration {
-	target: typeof HOSTED_STAGING;
+	target: {
+		projectRef: string;
+		organizationId: string;
+		region: string;
+		supabaseUrl: string;
+		workerOrigin: string;
+		workerName?: string;
+	};
 	runId: string;
 	actorRoles: Record<string, ActorCredentials>;
 	serviceKey: string;
 	provisioningNonce: string;
 	provisionedAfter: string;
+	candidateSha?: string;
 }
 
 interface ScopedCounts {
@@ -170,6 +199,32 @@ async function persistManifest(
 		manifest,
 		requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH')
 	);
+}
+
+async function persistIssue24Checkpoint(
+	configuration: HostedConfiguration,
+	manifest: RunManifest,
+	stage:
+		| 'deployment-attested'
+		| 'actors-attested'
+		| 'reporter-safety'
+		| 'block-enforced'
+		| 'privacy-denials'
+		| 'queue-privacy'
+		| 'claim-race'
+		| 'decision-committed'
+		| 'reporter-outcome'
+		| 'mutation-denials'
+): Promise<RunManifest> {
+	if (!configuration.candidateSha) throw new Error('Issue #24 candidate binding is missing.');
+	const next = registerIssue24Checkpoint(
+		manifest,
+		stage,
+		configuration.candidateSha,
+		new Date().toISOString()
+	);
+	await persistManifest(configuration, next);
+	return next;
 }
 
 function recordScenario(
@@ -320,8 +375,11 @@ function workerReceipt(response: APIResponse): WorkerReceipt {
 	return workerReceiptFromHeaders(response.status(), response.headers());
 }
 
-function actorClient(publishableKey: string): SupabaseClient {
-	return createClient(HOSTED_STAGING.supabaseUrl, publishableKey, {
+function actorClient(
+	publishableKey: string,
+	supabaseUrl: string = HOSTED_STAGING.supabaseUrl
+): SupabaseClient {
+	return createClient(supabaseUrl, publishableKey, {
 		auth: { autoRefreshToken: false, persistSession: false }
 	});
 }
@@ -335,7 +393,7 @@ async function signInActor(client: SupabaseClient, actor: ActorCredentials): Pro
 	return data.user.id;
 }
 
-type ModeratorRole = 'assigned-moderator' | 'unassigned-moderator';
+type ModeratorRole = 'assigned-moderator' | 'unassigned-moderator' | 'unassigned-admin';
 type ModeratorCredentialStore = ReturnType<typeof createEncryptedModeratorCredentialStore>;
 
 async function moderatorTotpCode(
@@ -525,6 +583,7 @@ async function postMultipart(
 
 test.describe('hosted report-evidence security matrix', () => {
 	test('executes all ten target-locked scenarios', async ({ browser }, testInfo) => {
+		test.skip(testInfo.project.name !== 'chromium', 'Hosted mutations run once in the desktop project.');
 		test.skip(!HOSTED_SCENARIO_ENABLED, HOSTED_SKIP_REASON);
 		test.setTimeout(12 * 60_000);
 		if (requiredEnvironment('E2E_REAL_TURNSTILE_TESTING') !== 'true') {
@@ -1165,7 +1224,388 @@ test.describe('hosted report-evidence security matrix', () => {
 		}
 	});
 
+	test('executes the checkpointed Issue #24 moderation-safety proof', async ({ browser }, testInfo) => {
+		test.skip(testInfo.project.name !== 'chromium', 'Hosted mutations run once in the desktop project.');
+		test.skip(!ISSUE_24_SCENARIO_ENABLED, HOSTED_SKIP_REASON);
+		test.setTimeout(15 * 60_000);
+		if (requiredEnvironment('E2E_REAL_TURNSTILE_TESTING') !== 'true') {
+			throw new Error('Issue #24 fixtures are not approved fresh testing actors.');
+		}
+
+		const configuration = validateIssue24HostedEnvironment(process.env) as HostedConfiguration;
+		if (configuration.candidateSha !== requiredEnvironment('RELEASE_COMMIT_SHA')) {
+			throw new Error('Issue #24 proof candidate does not match the deployed release SHA.');
+		}
+		const publishableKey = requiredEnvironment('PUBLIC_SUPABASE_PUBLISHABLE_KEY');
+		const conversationId = requiredEnvironment('E2E_REAL_ISSUE_24_CONVERSATION_ID');
+		if (!UUID_PATTERN.test(conversationId)) throw new Error('Issue #24 conversation fixture is invalid.');
+		const credentialStore = createEncryptedModeratorCredentialStore({
+			filePath: requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_TOTP_CREDENTIAL_PATH'),
+			encryptionKey: requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_TOTP_ENCRYPTION_KEY'),
+			projectRef: configuration.target.projectRef,
+			runId: configuration.runId
+		});
+		const serviceClient = createClient(configuration.target.supabaseUrl, configuration.serviceKey, {
+			auth: { autoRefreshToken: false, persistSession: false }
+		});
+		const operator = createHostedEvidenceOperator({
+			config: configuration,
+			adapters: createSupabaseHostedEvidenceAdapters({
+				config: configuration,
+				serviceClient,
+				managementAccessToken: requiredEnvironment('SUPABASE_ACCESS_TOKEN'),
+				cleanupSecret: requiredEnvironment('UPLOAD_CLEANUP_SECRET')
+			})
+		});
+		const clients = Object.fromEntries(
+			Object.keys(configuration.actorRoles).map((role) => [
+				role,
+				actorClient(publishableKey, configuration.target.supabaseUrl)
+			])
+		) as Record<string, SupabaseClient>;
+		const actorIds = Object.fromEntries(
+			await Promise.all(
+				Object.entries(configuration.actorRoles).map(async ([role, credentials]) => [
+					role,
+					await signInActor(clients[role], credentials)
+				])
+			)
+		) as Record<string, string>;
+		if (new Set(Object.values(actorIds)).size !== 6) {
+			throw new Error('Issue #24 synthetic actors are not distinct.');
+		}
+
+		let manifest = (await loadHostedRunManifest(
+			configuration,
+			requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH')
+		)) as RunManifest;
+		const reporterPage = await browser.newPage();
+		let reportId = '';
+		let uploadPath = '';
+		let winnerRole: 'assigned-moderator' | 'unassigned-moderator' = 'assigned-moderator';
+		let loserRole: 'assigned-moderator' | 'unassigned-moderator' = 'unassigned-moderator';
+		try {
+			await test.step('attest exact deployment and six fresh actors', async () => {
+				const response = await reporterPage.request.get('/');
+				workerReceipt(response);
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'deployment-attested');
+				const attestations = await Promise.all(
+					Object.entries(actorIds).map(([role, userId]) =>
+						operator.attestFreshActor(manifest, role, userId)
+					)
+				);
+				if (
+					manifest.actors.length !== 6 ||
+					attestations.some(
+						(receipt) =>
+							!manifest.actors.some(
+								(actor) => actor.role === receipt.role && actor.userId === receipt.userId
+							)
+					)
+				) {
+					throw new Error('Issue #24 actor provenance is invalid.');
+				}
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'actors-attested');
+			});
+
+			await test.step('reporter submits private evidence and sees only the safe projection', async () => {
+				await loginForApp(reporterPage, configuration.actorRoles.reporter, '/dashboard');
+				await reporterPage.waitForURL((url) => url.pathname === '/dashboard', { timeout: 30_000 });
+				const submission = await submitEvidenceReport(
+					reporterPage,
+					actorIds['cross-user'],
+					configuration.runId,
+					syntheticPng()
+				);
+				reportId = submission.reportId;
+				manifest = registerHostedReport(manifest, reportId, 'reporter');
+				await persistManifest(configuration, manifest);
+				const discovered = (await operator.discoverUploadForReport(manifest, reportId)) as {
+					id: string;
+					storage_path: string;
+				};
+				manifest = registerHostedUpload(manifest, discovered.id, 'reporter', discovered.storage_path);
+				await persistManifest(configuration, manifest);
+				uploadPath = discovered.storage_path;
+				const projection = await clients.reporter.rpc('list_my_reports', {
+					p_page_size: 10,
+					p_page_offset: 0
+				});
+				const row = Array.isArray(projection.data)
+					? projection.data.find((entry) => entry.report_id === reportId)
+					: null;
+				expect(projection.error).toBeNull();
+				expect(Object.keys(row ?? {}).sort()).toEqual(
+					[
+						'created_at',
+						'evidence_count',
+						'outcome',
+						'reason_code',
+						'report_id',
+						'resolved_at',
+						'status',
+						'target_type',
+						'updated_at'
+					].sort()
+				);
+				expect(row).toEqual(expect.objectContaining({ report_id: reportId, status: 'open' }));
+				await reporterPage.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+				await expect(reporterPage.getByRole('heading', { name: 'Моите сигнали' })).toBeVisible();
+				await expect(reporterPage.locator('body')).not.toContainText(actorIds['assigned-moderator']);
+				await expect(reporterPage.locator('body')).not.toContainText(uploadPath);
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'reporter-safety');
+			});
+
+			await test.step('visible block action denies new contact and preserves history', async () => {
+				const before = await clients.reporter
+					.from('messages')
+					.select('id', { count: 'exact', head: true })
+					.eq('conversation_id', conversationId);
+				expect(before.error).toBeNull();
+				expect(before.count).toBeGreaterThan(0);
+				await reporterPage.goto(`/messages?conversation=${encodeURIComponent(conversationId)}`, {
+					waitUntil: 'domcontentloaded'
+				});
+				await expect(reporterPage.getByRole('button', { name: 'Блокирай контакт' })).toBeVisible();
+				reporterPage.once('dialog', (dialog) => dialog.accept());
+				await reporterPage.getByRole('button', { name: 'Блокирай контакт' }).click();
+				await expect(
+					reporterPage.getByText('Контактът е блокиран. Нови съобщения не могат да бъдат изпращани.')
+				).toBeVisible();
+				await expect(reporterPage.locator('textarea[name="body"]')).toBeDisabled();
+				const deniedSend = await clients['cross-user'].from('messages').insert({
+					conversation_id: conversationId,
+					sender_id: actorIds['cross-user'],
+					body: `Issue 24 blocked contact ${configuration.runId}`
+				});
+				expect(deniedSend.error).not.toBeNull();
+				const after = await clients.reporter
+					.from('messages')
+					.select('id', { count: 'exact', head: true })
+					.eq('conversation_id', conversationId);
+				expect(after.error).toBeNull();
+				expect(after.count).toBe(before.count);
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'block-enforced');
+			});
+
+			await test.step('counterparty and AAL1 staff remain denied from every private boundary', async () => {
+				const crossReport = await clients['cross-user'].from('reports').select('*').eq('id', reportId);
+				const crossAudit = await clients['cross-user']
+					.from('moderation_audit')
+					.select('*')
+					.eq('report_id', reportId);
+				const crossEvidence = await storageDownload(clients['cross-user'], uploadPath);
+				expect(crossReport.error).not.toBeNull();
+				expect(crossAudit.error).not.toBeNull();
+				expect(crossEvidence.status).not.toBe(200);
+
+				const aal1 = clients['aal1-staff'];
+				const deniedOperations = await Promise.all([
+					aal1.rpc('list_moderation_report_queue', { p_page_size: 10, p_page_offset: 0 }),
+					aal1.rpc('claim_moderation_report', { p_report_id: reportId }),
+					aal1.rpc('get_assigned_moderation_case', { p_report_id: reportId }),
+					aal1.rpc('moderate_profile', {
+						report_case_id: reportId,
+						target_profile_id: actorIds['cross-user'],
+						suspend_profile: true,
+						moderation_rationale: 'Issue 24 AAL1 denial proof'
+					}),
+					aal1.storage.from('report-evidence').createSignedUrl(uploadPath, 60)
+				]);
+				expect(deniedOperations.every((result) => Boolean(result.error))).toBe(true);
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'privacy-denials');
+			});
+
+			await test.step('AAL2 staff see only safe summaries before exact assignment', async () => {
+				await Promise.all([
+					elevateToAal2(clients['assigned-moderator'], 'assigned-moderator', credentialStore),
+					elevateToAal2(clients['unassigned-moderator'], 'unassigned-moderator', credentialStore),
+					elevateToAal2(clients['unassigned-admin'], 'unassigned-admin', credentialStore)
+				]);
+				for (const role of ['assigned-moderator', 'unassigned-moderator', 'unassigned-admin']) {
+					const queue = await clients[role].rpc('list_moderation_report_queue', {
+						p_page_size: 20,
+						p_page_offset: 0
+					});
+					const row = Array.isArray(queue.data)
+						? queue.data.find((entry) => entry.report_id === reportId)
+						: null;
+					expect(queue.error).toBeNull();
+					expect(Object.keys(row ?? {}).sort()).toEqual(
+						[
+							'assignment_state',
+							'created_at',
+							'reason_code',
+							'report_id',
+							'status',
+							'target_type'
+						].sort()
+					);
+					const detail = await clients[role].rpc('get_assigned_moderation_case', {
+						p_report_id: reportId
+					});
+					expect(detail.error).not.toBeNull();
+					expect((await storageDownload(clients[role], uploadPath)).status).not.toBe(200);
+					expect(
+						(await clients[role].storage.from('report-evidence').createSignedUrl(uploadPath, 60)).error
+					).not.toBeNull();
+					expect(
+						(
+							await clients[role].rpc('moderate_profile', {
+								report_case_id: reportId,
+								target_profile_id: actorIds['cross-user'],
+								suspend_profile: true,
+								moderation_rationale: 'Issue 24 unassigned AAL2 denial proof'
+							})
+						).error
+					).not.toBeNull();
+				}
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'queue-privacy');
+			});
+
+			await test.step('two moderators race atomically and only the winner gains the case', async () => {
+				const racerRoles = ['assigned-moderator', 'unassigned-moderator'] as const;
+				const claims = await Promise.all(
+					racerRoles.map((role) =>
+						clients[role].rpc('claim_moderation_report', { p_report_id: reportId })
+					)
+				);
+				const winnerIndex = claims.findIndex(
+					(result) => !result.error && result.data === 'claimed'
+				);
+				expect(winnerIndex).toBeGreaterThanOrEqual(0);
+				expect(claims.every((result) => !result.error)).toBe(true);
+				expect(claims.filter((result) => result.data === 'claimed')).toHaveLength(1);
+				expect(claims.filter((result) => result.data === 'unavailable')).toHaveLength(1);
+				winnerRole = racerRoles[winnerIndex];
+				loserRole = racerRoles[1 - winnerIndex];
+				const retry = await clients[winnerRole].rpc('claim_moderation_report', {
+					p_report_id: reportId
+				});
+				expect(retry).toEqual(
+					expect.objectContaining({ data: 'already_claimed_by_you', error: null })
+				);
+				expect(
+					await operator.inspectAssignmentAudit(manifest, reportId, actorIds[winnerRole])
+				).toBe(1);
+				for (const role of [loserRole, 'unassigned-admin']) {
+					const denied = await clients[role].rpc('get_assigned_moderation_case', {
+						p_report_id: reportId
+					});
+					expect(denied.error).not.toBeNull();
+					expect(
+						(
+							await clients[role].rpc('moderate_profile', {
+								report_case_id: reportId,
+								target_profile_id: actorIds['cross-user'],
+								suspend_profile: true,
+								moderation_rationale: 'Issue 24 post-claim denial proof'
+							})
+						).error
+					).not.toBeNull();
+				}
+				const detail = await clients[winnerRole].rpc('get_assigned_moderation_case', {
+					p_report_id: reportId
+				});
+				expect(detail.error).toBeNull();
+				expect(detail.data).toEqual([
+					expect.objectContaining({
+						report_id: reportId,
+						reporter_id: actorIds.reporter,
+						target_id: actorIds['cross-user'],
+						assigned_to: actorIds[winnerRole]
+					})
+				]);
+				expect((await storageDownload(clients[winnerRole], uploadPath)).status).toBe(200);
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'claim-race');
+			});
+
+			await test.step('assigned decision commits target, report, actor, and audit atomically', async () => {
+				const decision = await clients[winnerRole].rpc('moderate_profile', {
+					report_case_id: reportId,
+					target_profile_id: actorIds['cross-user'],
+					suspend_profile: true,
+					moderation_rationale: 'Issue 24 exact assigned hosted decision'
+				});
+				expect(decision.error).toBeNull();
+				const [report, target, audit] = await Promise.all([
+					serviceClient
+						.from('reports')
+						.select('id,status,assigned_to,resolution_code,resolved_at')
+						.eq('id', reportId)
+						.single(),
+					serviceClient.from('profiles').select('id,is_suspended').eq('id', actorIds['cross-user']).single(),
+					serviceClient
+						.from('moderation_audit')
+						.select('id,action,actor_id,report_id,target_id,rationale')
+						.eq('report_id', reportId)
+						.order('id', { ascending: true })
+				]);
+				expect(report.error).toBeNull();
+				expect(target.error).toBeNull();
+				expect(audit.error).toBeNull();
+				expect(report.data).toEqual(
+					expect.objectContaining({
+						id: reportId,
+						status: 'resolved',
+						assigned_to: actorIds[winnerRole],
+						resolution_code: 'user_suspended'
+					})
+				);
+				expect(target.data).toEqual(
+					expect.objectContaining({ id: actorIds['cross-user'], is_suspended: true })
+				);
+				expect(audit.data?.filter((entry) => entry.action === 'report_assigned')).toHaveLength(1);
+				expect(audit.data?.some((entry) => entry.actor_id === actorIds[winnerRole])).toBe(true);
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'decision-committed');
+			});
+
+			await test.step('reporter sees only the safe outcome and direct mutations stay denied', async () => {
+				const projection = await clients.reporter.rpc('list_my_reports', {
+					p_page_size: 10,
+					p_page_offset: 0
+				});
+				const row = Array.isArray(projection.data)
+					? projection.data.find((entry) => entry.report_id === reportId)
+					: null;
+				expect(row).toEqual(
+					expect.objectContaining({
+						report_id: reportId,
+						status: 'resolved',
+						outcome: 'action_taken'
+					})
+				);
+				expect(JSON.stringify(row)).not.toContain(actorIds[winnerRole]);
+				expect(JSON.stringify(row)).not.toContain(uploadPath);
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'reporter-outcome');
+
+				const directAssignment = await clients[winnerRole]
+					.from('reports')
+					.update({ assigned_to: actorIds[loserRole], status: 'investigating' })
+					.eq('id', reportId);
+				const auditUpdate = await clients[winnerRole]
+					.from('moderation_audit')
+					.update({ rationale: 'forbidden hosted mutation' })
+					.eq('report_id', reportId);
+				const auditDelete = await clients[winnerRole]
+					.from('moderation_audit')
+					.delete()
+					.eq('report_id', reportId);
+				expect(directAssignment.error).not.toBeNull();
+				expect(auditUpdate.error).not.toBeNull();
+				expect(auditDelete.error).not.toBeNull();
+				manifest = await persistIssue24Checkpoint(configuration, manifest, 'mutation-denials');
+			});
+		} finally {
+			await Promise.all([
+				...Object.values(clients).map((client) => client.auth.signOut()),
+				reporterPage.close()
+			]);
+		}
+	});
+
 	test('cleans only the persisted A10 manifest under A11', async ({}, testInfo) => {
+		test.skip(testInfo.project.name !== 'chromium', 'Hosted mutations run once in the desktop project.');
 		test.skip(!HOSTED_CLEANUP_ENABLED, HOSTED_SKIP_REASON);
 		const configuration = validateHostedCleanupEnvironment(process.env) as HostedConfiguration;
 		const credentialStore = createEncryptedModeratorCredentialStore({

@@ -53,6 +53,49 @@ const prerequisiteReceipt = {
 	emailAutoconfirmEnabled: false,
 	anonymousUsersEnabled: false
 };
+const issue24Roles = [
+	'reporter',
+	'cross-user',
+	'aal1-staff',
+	'assigned-moderator',
+	'unassigned-moderator',
+	'unassigned-admin'
+] as const;
+const issue24Ids = Object.fromEntries(
+	issue24Roles.map((role, index) => [
+		role,
+		`${String(index + 1).padStart(8, '0')}-0000-4000-8000-000000000000`
+	])
+) as Record<(typeof issue24Roles)[number], string>;
+const issue24Environment = {
+	...environment,
+	E2E_REAL_REPORT_EVIDENCE_RUN_ID: 'issue24-20260831-abcdef0',
+	E2E_REAL_BASE_URL:
+		'https://aromatika-issue-24-20260831-abcdef0-aaaaaaa.perfume-marketplace-bg.workers.dev',
+	PUBLIC_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+	EXPECTED_SUPABASE_PROJECT_REF: 'abcdefghijklmnopqrst',
+	E2E_REAL_ISSUE_24_RUN: 'true',
+	E2E_REAL_ISSUE_24_APPROVAL: 'ISSUE-24',
+	E2E_REAL_ISSUE_24_ORGANIZATION_ID: hostedOperator.HOSTED_STAGING.organizationId,
+	E2E_REAL_ISSUE_24_REGION: 'eu-central-1',
+	E2E_REAL_ISSUE_24_WORKER_NAME: 'aromatika-issue-24-20260831-abcdef0-aaaaaaa',
+	E2E_REAL_ISSUE_24_CANDIDATE_SHA: 'a'.repeat(40),
+	RELEASE_COMMIT_SHA: 'a'.repeat(40),
+	E2E_REAL_AAL1_STAFF_EMAIL: 'aal1-staff@example.invalid',
+	E2E_REAL_AAL1_STAFF_PASSWORD: 'aal1-staff-password',
+	E2E_REAL_AAL1_STAFF_USERNAME: 'issue24-aal1',
+	E2E_REAL_UNASSIGNED_ADMIN_EMAIL: 'unassigned-admin@example.invalid',
+	E2E_REAL_UNASSIGNED_ADMIN_PASSWORD: 'unassigned-admin-password',
+	E2E_REAL_UNASSIGNED_ADMIN_USERNAME: 'issue24-admin'
+};
+const issue24PrerequisiteReceipt = {
+	...prerequisiteReceipt,
+	target: {
+		...prerequisiteReceipt.target,
+		projectRef: issue24Environment.EXPECTED_SUPABASE_PROJECT_REF,
+		region: issue24Environment.E2E_REAL_ISSUE_24_REGION
+	}
+};
 const requiredConsents = [
 	{ documentCode: 'age_18_confirmation', documentVersion: '2026-07-22' },
 	{ documentCode: 'beta_terms', documentVersion: '2026-07-22' },
@@ -127,6 +170,62 @@ function fakeAdapters(events: string[], failFinalInspection = false) {
 		deleteFreshUser: vi.fn(async ({ role }: { role: string }) => {
 			events.push(`rollback-user:${role}`);
 		})
+	};
+}
+
+function issue24FakeAdapters(events: string[]) {
+	return {
+		inspectRequiredAccessDocuments: vi.fn(async () => requiredConsents),
+		assertFreshActorAbsent: vi.fn(async ({ role }: { role: string }) => ({ role, absent: true })),
+		createConfirmedUser: vi.fn(async ({ role }: { role: (typeof issue24Roles)[number] }) => ({
+			role,
+			userId: issue24Ids[role],
+			createdAt,
+			emailConfirmed: true
+		})),
+		createActorSession: vi.fn(async ({ role }: { role: (typeof issue24Roles)[number] }) => ({
+			claimOpenRegistration: vi.fn(),
+			acceptBetaConsent: vi.fn(),
+			completeBetaOnboarding: vi.fn(),
+			getMyBetaAccess: vi.fn(),
+			mfa: {
+				enrollAndVerify: vi.fn(async () => {
+					events.push(`mfa:${role}`);
+					return {
+						factorId: `factor-${role}`,
+						factorType: 'totp',
+						factorStatus: 'verified',
+						initialAal: 'aal1',
+						finalAal: 'aal2'
+					};
+				}),
+				rollbackEnrollment: vi.fn()
+			}
+		})),
+		elevateFreshActorRole: vi.fn(async ({ role, toRole }: { role: string; toRole: string }) => {
+			events.push(`elevate:${role}:${toRole}`);
+		}),
+		inspectFreshActor: vi.fn(async ({ role }: { role: (typeof issue24Roles)[number] }) => ({
+			role,
+			userId: issue24Ids[role],
+			emailConfirmed: true,
+			profileRole:
+				role === 'unassigned-admin'
+					? 'admin'
+					: role === 'reporter' || role === 'cross-user'
+						? 'user'
+						: 'moderator',
+			isSuspended: false,
+			membershipStatus: 'active',
+			onboardingComplete: true
+		})),
+		inspectZeroA9Artifacts: vi.fn(async () => ({
+			reports: 0,
+			uploads: 0,
+			objects: 0,
+			queueRows: 0
+		})),
+		deleteFreshUser: vi.fn()
 	};
 }
 
@@ -226,6 +325,72 @@ describe('executable A9-only provisioning transaction', () => {
 			expect.objectContaining({ initialAal: 'aal1', finalAal: 'aal2' })
 		]);
 		expect(JSON.stringify(receipt)).not.toMatch(/@|password|secret|totp/i);
+	});
+
+	it('re-verifies the disposable Issue #24 project through the management API before provisioning', async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: async () => ({
+					id: issue24Environment.EXPECTED_SUPABASE_PROJECT_REF,
+					organization_id: hostedOperator.HOSTED_STAGING.organizationId,
+					region: 'eu-central-1',
+					status: 'ACTIVE_HEALTHY',
+					database: { postgres_engine: '17' }
+				})
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: async () => ({
+					disable_signup: false,
+					mailer_autoconfirm: false,
+					external: { anonymous_users: false }
+				})
+			});
+
+		const receipt = await provisioningApi().verifyHostedA9Prerequisites({
+			environment: { ...issue24Environment, SUPABASE_ACCESS_TOKEN: 'management-token' },
+			dependencies: { fetchImpl }
+		});
+
+		expect(receipt).toEqual(issue24PrerequisiteReceipt);
+		expect(fetchImpl).toHaveBeenNthCalledWith(
+			1,
+			`https://api.supabase.com/v1/projects/${issue24Environment.EXPECTED_SUPABASE_PROJECT_REF}`,
+			expect.objectContaining({ cache: 'no-store' })
+		);
+	});
+
+	it('provisions the six Issue #24 actors with one AAL1 staff actor and three real AAL2 staff sessions', async () => {
+		const events: string[] = [];
+		const adapters = issue24FakeAdapters(events);
+
+		const receipt = await provisioningApi().executeHostedA9Provisioning({
+			environment: issue24Environment,
+			adapters,
+			clock: vi.fn(() => 59_000),
+			verifyPrerequisites: vi.fn(async () => issue24PrerequisiteReceipt),
+			persistManifest: vi.fn()
+		});
+
+		expect(adapters.createConfirmedUser.mock.calls.map(([input]) => input.role)).toEqual(
+			issue24Roles
+		);
+		expect(events.filter((event) => event.startsWith('elevate:'))).toEqual([
+			'elevate:aal1-staff:moderator',
+			'elevate:assigned-moderator:moderator',
+			'elevate:unassigned-moderator:moderator',
+			'elevate:unassigned-admin:admin'
+		]);
+		expect(events.filter((event) => event.startsWith('mfa:'))).toEqual([
+			'mfa:assigned-moderator',
+			'mfa:unassigned-moderator',
+			'mfa:unassigned-admin'
+		]);
+		expect((receipt as { actors: unknown[] }).actors).toHaveLength(6);
 	});
 
 	it('stops before the first create when any configured actor is already present', async () => {

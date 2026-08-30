@@ -74,6 +74,14 @@ function report(
 	};
 }
 
+function assignedCase(
+	targetType: string = 'listing',
+	overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+	const { id, ...row } = report(targetType, overrides);
+	return { report_id: id, ...row, audit_entries: [] };
+}
+
 function productionLocals(role: 'user' | 'moderator' | 'admin', aal: 'aal1' | 'aal2') {
 	const client = {} as SupabaseClient;
 	return {
@@ -176,26 +184,35 @@ describe('admin request boundary', () => {
 
 describe('report workflow', () => {
 	it('claims an unassigned case through the protected report transition', async () => {
-		const assigned = query({
-			data: { id: caseId, status: 'investigating', assigned_to: actorId },
-			error: null
-		});
-		const from = vi.fn(() => assigned);
-		const client = { from } as unknown as SupabaseClient;
+		const rpc = vi.fn(async () => ({ data: 'claimed', error: null }));
+		const from = vi.fn();
+		const client = { from, rpc } as unknown as SupabaseClient;
 
 		await expect(assignReportCase(client, actorId, { caseId })).resolves.toEqual({
 			caseId,
 			status: 'investigating'
 		});
-		expect(from).toHaveBeenCalledWith('reports');
-		expect(assigned.update).toHaveBeenCalledWith({ assigned_to: actorId, status: 'investigating' });
-		expect(assigned.is).toHaveBeenCalledWith('assigned_to', null);
+		expect(rpc).toHaveBeenCalledWith('claim_moderation_report', { p_report_id: caseId });
+		expect(from).not.toHaveBeenCalled();
+	});
+
+	it('maps a generic unavailable claim result without a direct report lookup', async () => {
+		const rpc = vi.fn(async () => ({ data: 'unavailable', error: null }));
+		const from = vi.fn();
+
+		await expect(
+			assignReportCase({ rpc, from } as unknown as SupabaseClient, actorId, { caseId })
+		).rejects.toMatchObject({ code: 'CONFLICT' });
+		expect(from).not.toHaveBeenCalled();
 	});
 
 	it('runs listing decisions through the report-bound atomic moderation RPC', async () => {
-		const fetched = query({ data: report('listing'), error: null });
-		const from = vi.fn(() => fetched);
-		const rpc = vi.fn(async () => ({ data: null, error: null }));
+		const from = vi.fn();
+		const rpc = vi.fn(async (name: string) =>
+			name === 'get_assigned_moderation_case'
+				? { data: [assignedCase('listing')], error: null }
+				: { data: null, error: null }
+		);
 		const client = { from, rpc } as unknown as SupabaseClient;
 
 		await decideModerationReport(client, { id: actorId, role: 'moderator' }, {
@@ -212,7 +229,10 @@ describe('report workflow', () => {
 			corrected_segments: null,
 			moderated_status: 'removed'
 		});
-		expect(from).toHaveBeenCalledTimes(1);
+		expect(rpc).toHaveBeenNthCalledWith(1, 'get_assigned_moderation_case', {
+			p_report_id: caseId
+		});
+		expect(from).not.toHaveBeenCalled();
 	});
 
 	it.each([
@@ -235,11 +255,13 @@ describe('report workflow', () => {
 			expected: { target_comment_id: targetId, moderated_status: 'published' }
 		}
 	])('uses the report-bound $rpcName RPC', async ({ targetType, decision, rpcName, expected }) => {
-		const fetched = query({ data: report(targetType), error: null });
-		const closed = query({ data: { id: caseId, status: 'resolved' }, error: null });
-		const rpc = vi.fn(async () => ({ data: null, error: null }));
+		const rpc = vi.fn(async (name: string) =>
+			name === 'get_assigned_moderation_case'
+				? { data: [assignedCase(targetType)], error: null }
+				: { data: null, error: null }
+		);
 		const client = {
-			from: vi.fn().mockReturnValueOnce(fetched).mockReturnValueOnce(closed),
+			from: vi.fn(),
 			rpc
 		} as unknown as SupabaseClient;
 
@@ -259,9 +281,12 @@ describe('report workflow', () => {
 	});
 
 	it('resolves a deal atomically through resolve_deal_dispute without a second report update', async () => {
-		const fetched = query({ data: report('deal'), error: null });
-		const from = vi.fn(() => fetched);
-		const rpc = vi.fn(async () => ({ data: { id: targetId, status: 'cancelled' }, error: null }));
+		const from = vi.fn();
+		const rpc = vi.fn(async (name: string) =>
+			name === 'get_assigned_moderation_case'
+				? { data: [assignedCase('deal')], error: null }
+				: { data: { id: targetId, status: 'cancelled' }, error: null }
+		);
 		const client = { from, rpc } as unknown as SupabaseClient;
 
 		await decideModerationReport(client, { id: actorId, role: 'moderator' }, {
@@ -275,7 +300,7 @@ describe('report workflow', () => {
 			resolution_status: 'cancelled',
 			rationale: 'Спорът е проверен и сделката следва да бъде отменена.'
 		});
-		expect(from).toHaveBeenCalledTimes(1);
+		expect(from).not.toHaveBeenCalled();
 	});
 
 	it('loads only report-bound conversation messages and redacts deleted bodies', async () => {
@@ -322,10 +347,13 @@ describe('report workflow', () => {
 	])(
 		'resolves inspected $targetType reports through the atomic conversation RPC',
 		async ({ targetType, decision, expectedDecision }) => {
-			const fetched = query({ data: report(targetType), error: null });
-			const rpc = vi.fn(async () => ({ data: {}, error: null }));
+			const rpc = vi.fn(async (name: string) =>
+				name === 'get_assigned_moderation_case'
+					? { data: [assignedCase(targetType)], error: null }
+					: { data: {}, error: null }
+			);
 			const client = {
-				from: vi.fn(() => fetched),
+				from: vi.fn(),
 				rpc
 			} as unknown as SupabaseClient;
 
@@ -343,9 +371,12 @@ describe('report workflow', () => {
 	);
 
 	it('leaves targets without an exact decision RPC untouched', async () => {
-		const fetched = query({ data: report('offer'), error: null });
-		const rpc = vi.fn();
-		const client = { from: vi.fn(() => fetched), rpc } as unknown as SupabaseClient;
+		const rpc = vi.fn(async (name: string) =>
+			name === 'get_assigned_moderation_case'
+				? { data: [assignedCase('offer')], error: null }
+				: { data: null, error: null }
+		);
+		const client = { from: vi.fn(), rpc } as unknown as SupabaseClient;
 
 		await expect(
 			decideModerationReport(client, { id: actorId, role: 'moderator' }, {
@@ -354,20 +385,42 @@ describe('report workflow', () => {
 				rationale: 'Конкретни проверени факти и приложено правило.'
 			})
 		).rejects.toMatchObject({ code: 'UNSUPPORTED' });
-		expect(rpc).not.toHaveBeenCalled();
+		expect(rpc).toHaveBeenCalledTimes(1);
+		expect(rpc).toHaveBeenCalledWith('get_assigned_moderation_case', { p_report_id: caseId });
 	});
 });
 
 describe('moderation dashboard projection', () => {
-	it('loads all active report target types, audit entries, and merchant reviews without raw paths', async () => {
-		const reports = [
-			report('listing', { evidence_paths: [`${reporterId}/evidence.jpg`] }),
-			report('deal', {
-				id: '77777777-7777-4777-8777-777777777777',
-				target_id: '88888888-8888-4888-8888-888888888888',
+	it('loads a safe queue and exposes private detail only through the exact-assignee RPC', async () => {
+		const queueRows = [
+			{
+				report_id: caseId,
+				target_type: 'listing',
+				reason_code: 'counterfeit',
+				status: 'investigating',
+				assignment_state: 'assigned_to_you',
+				created_at: '2026-07-22T10:00:00.000Z'
+			},
+			{
+				report_id: '77777777-7777-4777-8777-777777777777',
+				target_type: 'deal',
 				reason_code: 'deal_dispute',
-				evidence_paths: []
-			})
+				status: 'open',
+				assignment_state: 'unassigned',
+				created_at: '2026-07-22T10:01:00.000Z'
+			}
+		];
+		const privateCase = assignedCase('listing', {
+			evidence_paths: [`${reporterId}/evidence.jpg`]
+		});
+		privateCase.audit_entries = [
+			{
+				id: 1,
+				actor_id: actorId,
+				action: 'report_assigned',
+				rationale: 'Случаят е присвоен.',
+				created_at: '2026-07-22T10:05:00.000Z'
+			}
 		];
 		const profiles = [
 			{ id: reporterId, username: 'reporter' },
@@ -375,18 +428,8 @@ describe('moderation dashboard projection', () => {
 			{ id: applicantId, username: 'merchant_candidate' }
 		];
 		const tableData: Record<string, unknown> = {
-			reports,
 			profiles,
 			listings: [{ id: targetId, title: 'Защитена обява', status: 'active' }],
-			moderation_audit: [
-				{
-					id: 1,
-					actor_id: actorId,
-					action: 'report_assigned',
-					rationale: 'Случаят е присвоен.',
-					created_at: '2026-07-22T10:05:00.000Z'
-				}
-			],
 			merchant_applications: [
 				{
 					id: applicationId,
@@ -407,18 +450,23 @@ describe('moderation dashboard projection', () => {
 			]
 		};
 		const from = vi.fn((table: string) => query({ data: tableData[table] ?? [], error: null }));
+		const rpc = vi.fn(async (name: string) => {
+			if (name === 'list_moderation_report_queue') return { data: queueRows, error: null };
+			if (name === 'get_assigned_moderation_case') return { data: [privateCase], error: null };
+			throw new Error(`unexpected RPC: ${name}`);
+		});
 		const storageFrom = vi.fn((bucket: string) => ({
 			createSignedUrls: vi.fn(async (paths: string[]) => ({
 				data: paths.map((path) => ({ path, signedUrl: `https://signed.example/${bucket}/${path}` })),
 				error: null
 			}))
 		}));
-		const client = { from, storage: { from: storageFrom } } as unknown as SupabaseClient;
+		const client = { from, rpc, storage: { from: storageFrom } } as unknown as SupabaseClient;
 
 		const dashboard = await loadModerationDashboard(
 			client,
 			{ id: actorId, role: 'moderator' },
-			null
+			caseId
 		);
 		expect(dashboard.cases.map((item) => item.targetType)).toEqual(['listing', 'deal']);
 		expect(dashboard.selected?.evidence[0].url).toContain('https://signed.example/report-evidence/');
@@ -430,6 +478,47 @@ describe('moderation dashboard projection', () => {
 			canClaim: true
 		});
 		expect(dashboard.merchantApplications[0]).not.toHaveProperty('documentPaths');
+		expect(rpc).toHaveBeenCalledWith('list_moderation_report_queue', {
+			p_page_size: 50,
+			p_page_offset: 0
+		});
+		expect(rpc).toHaveBeenCalledWith('get_assigned_moderation_case', { p_report_id: caseId });
+		expect(from).not.toHaveBeenCalledWith('reports');
+		expect(from).not.toHaveBeenCalledWith('moderation_audit');
+	});
+
+	it('does not fetch or sign private data for an unassigned queue case', async () => {
+		const rpc = vi.fn(async (name: string) => {
+			if (name === 'list_moderation_report_queue') {
+				return {
+					data: [{
+						report_id: caseId,
+						target_type: 'listing',
+						reason_code: 'counterfeit',
+						status: 'open',
+						assignment_state: 'unassigned',
+						created_at: '2026-07-22T10:00:00.000Z'
+					}],
+					error: null
+				};
+			}
+			throw new Error(`private RPC must not run before claim: ${name}`);
+		});
+		const from = vi.fn((table: string) =>
+			query({ data: table === 'merchant_applications' ? [] : [], error: null })
+		);
+		const storageFrom = vi.fn();
+		const dashboard = await loadModerationDashboard(
+			{ from, rpc, storage: { from: storageFrom } } as unknown as SupabaseClient,
+			{ id: actorId, role: 'admin' },
+			caseId
+		);
+
+		expect(dashboard.selected).toBeNull();
+		expect(dashboard.cases[0]).toMatchObject({ canClaim: true, canDecide: false });
+		expect(storageFrom).not.toHaveBeenCalled();
+		expect(from).not.toHaveBeenCalledWith('reports');
+		expect(from).not.toHaveBeenCalledWith('moderation_audit');
 	});
 });
 

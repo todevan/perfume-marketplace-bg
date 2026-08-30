@@ -14,7 +14,11 @@ const FORMAT = 'perfume-marketplace-hosted-moderator-credentials';
 const FORMAT_VERSION = 1;
 const CIPHER = 'aes-256-gcm';
 const KDF = 'scrypt-N32768-r8-p1';
-const MODERATOR_ROLES = new Set(['assigned-moderator', 'unassigned-moderator']);
+const MODERATOR_ROLES = new Set([
+	'assigned-moderator',
+	'unassigned-moderator',
+	'unassigned-admin'
+]);
 
 export class HostedA9CredentialStoreError extends Error {
 	/** @param {string} message */
@@ -70,10 +74,13 @@ function exactTotpSecret(secret) {
 
 /** @param {string} projectRef @param {string} runId */
 function validateScope(projectRef, runId) {
-	if (
-		projectRef !== 'nuhkpqjjyuygiemrxbdp' ||
-		!/^gate3-[a-z0-9-]{8,64}$/u.test(runId)
-	) {
+	const canonicalGate3 =
+		projectRef === 'nuhkpqjjyuygiemrxbdp' && /^gate3-[a-z0-9-]{8,64}$/u.test(runId);
+	const disposableIssue24 =
+		projectRef !== 'nuhkpqjjyuygiemrxbdp' &&
+		/^[a-z]{20}$/u.test(projectRef) &&
+		/^issue24-[a-z0-9-]{8,64}$/u.test(runId);
+	if (!canonicalGate3 && !disposableIssue24) {
 		throw new HostedA9CredentialStoreError('moderator credential store scope is invalid');
 	}
 }

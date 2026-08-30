@@ -152,13 +152,17 @@ test.describe('responsive private area', () => {
 		}
 
 		if (testInfo.project.name === 'mobile') {
-			await expect(page.getByRole('button', { name: 'Информация за разговора' })).toBeVisible();
+			await expect(page.getByRole('button', { name: 'Блокирай контакт' })).toBeVisible();
 		} else {
 			await expect(page.getByRole('link', { name: 'Докладвай' })).toBeVisible();
 		}
 		await page.getByRole('textbox', { name: 'Съобщение' }).fill('Тестово локално съобщение');
 		await page.getByRole('button', { name: 'Изпрати' }).click();
 		await expect(page.getByText('Тестово локално съобщение')).toBeVisible();
+		page.once('dialog', (dialog) => dialog.accept());
+		await page.getByRole('button', { name: 'Блокирай контакт' }).click();
+		await expect(page.getByText('Контактът е блокиран. Нови съобщения не могат да бъдат изпращани.')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Изпрати' })).toBeDisabled();
 		expect(
 			await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)
 		).toBe(true);

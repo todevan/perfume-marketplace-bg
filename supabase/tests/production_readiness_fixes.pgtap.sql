@@ -406,7 +406,7 @@ select throws_ok(
     )
   $sql$,
   '42501',
-  'active staff access required',
+  'assigned moderation case required',
   'an AAL1 administrator cannot invoke a privileged moderation RPC directly'
   );
 select throws_ok(
@@ -416,7 +416,7 @@ select throws_ok(
 		where id = '81111111-1111-4111-8111-111111111111'
 	$sql$,
 	'42501',
-	'staff access required for report workflow changes',
+	'permission denied for table reports',
 	'an AAL1 administrator cannot mutate a staff workflow through the table API'
 );
 select set_config(
@@ -462,6 +462,8 @@ select public.moderate_listing(
   null,
   'removed'
 );
+reset role;
+set local role postgres;
 select is(
   (
     select status::text
@@ -481,7 +483,6 @@ select is(
   'the atomic report resolution records the moderation outcome'
 );
 
-reset role;
 set local role postgres;
 alter table public.reports disable trigger user;
 insert into public.reports (

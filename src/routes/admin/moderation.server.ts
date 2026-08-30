@@ -55,8 +55,16 @@ const reportTargetSchema = z.enum([
 	'review',
 	'profile_comment'
 ]);
-const reportRowSchema = z.object({
-	id: uuidSchema,
+const queueReportRowSchema = z.object({
+	report_id: uuidSchema,
+	target_type: reportTargetSchema,
+	reason_code: z.string().min(2).max(80),
+	status: z.enum(['open', 'investigating']),
+	assignment_state: z.enum(['unassigned', 'assigned_to_you']),
+	created_at: z.string()
+});
+const assignedReportRowSchema = z.object({
+	report_id: uuidSchema,
 	reporter_id: uuidSchema,
 	target_type: reportTargetSchema,
 	target_id: uuidSchema,
@@ -69,7 +77,8 @@ const reportRowSchema = z.object({
 	resolution_notes: z.string().nullable(),
 	resolved_at: z.string().nullable(),
 	created_at: z.string(),
-	updated_at: z.string()
+	updated_at: z.string(),
+	audit_entries: z.unknown()
 });
 const profileRowSchema = z.object({ id: uuidSchema, username: z.string().min(1).max(80) });
 const listingRowSchema = z.object({
@@ -142,7 +151,8 @@ const inviteResultSchema = z.object({
 	invite_expires_at: z.string()
 });
 
-type ReportRow = z.infer<typeof reportRowSchema>;
+type QueueReportRow = z.infer<typeof queueReportRowSchema>;
+type AssignedReportRow = z.infer<typeof assignedReportRowSchema>;
 
 export interface ModerationCaseDto {
 	id: string;
@@ -193,6 +203,7 @@ export interface MerchantApplicationDto {
 
 export interface ModerationDashboardDto {
 	cases: readonly ModerationCaseDto[];
+	preview: ModerationCaseDto | null;
 	selected: ModerationCaseDetailDto | null;
 	audit: readonly ModerationAuditDto[];
 	merchantApplications: readonly MerchantApplicationDto[];
@@ -219,19 +230,6 @@ function workflowErrorFromDatabase(error: { code?: string } | null): ModerationW
 		return new ModerationWorkflowError('VALIDATION', 'Данните не отговарят на workflow правилата.');
 	}
 	return new ModerationWorkflowError('UNAVAILABLE', 'Модерационната услуга временно не е достъпна.');
-}
-
-function databaseResult<T>(
-	data: T | null,
-	error: { code?: string } | null,
-	schema: z.ZodType<T>
-): T {
-	if (error) throw workflowErrorFromDatabase(error);
-	const parsed = schema.safeParse(data);
-	if (!parsed.success) {
-		throw new ModerationWorkflowError('UNAVAILABLE', 'Получен е невалиден отговор от модерационната услуга.');
-	}
-	return parsed.data;
 }
 
 function parseRows<T>(data: unknown, schema: z.ZodType<T>): T[] {
@@ -304,7 +302,7 @@ function supportsDecision(targetType: ReportTargetType): boolean {
 	].includes(targetType);
 }
 
-function genericTargetTitle(report: ReportRow): string {
+function targetTypeLabel(targetType: ReportTargetType): string {
 	const labels: Record<ReportTargetType, string> = {
 		profile: 'Профил',
 		brand: 'Марка',
@@ -316,7 +314,11 @@ function genericTargetTitle(report: ReportRow): string {
 		review: 'Отзив',
 		profile_comment: 'Коментар към профил'
 	};
-	return `${labels[report.target_type]} ${report.target_id.slice(0, 8)}`;
+	return labels[targetType];
+}
+
+function genericTargetTitle(report: Pick<AssignedReportRow, 'target_type' | 'target_id'>): string {
+	return `${targetTypeLabel(report.target_type)} ${report.target_id.slice(0, 8)}`;
 }
 
 async function queryProfiles(client: SupabaseClient, ids: readonly string[]): Promise<Map<string, string>> {
@@ -417,160 +419,155 @@ export async function loadModerationDashboard(
 	requestedCaseId: string | null
 ): Promise<ModerationDashboardDto> {
 	const merchantApplicationsPromise = loadMerchantApplications(client, viewer);
-	const { data: reportData, error: reportError } = await client
-		.from('reports')
-		.select(
-			'id, reporter_id, target_type, target_id, reason_code, details, evidence_paths, status, assigned_to, resolution_code, resolution_notes, resolved_at, created_at, updated_at'
-		)
-		.in('status', ['open', 'investigating'])
-		.order('created_at', { ascending: true })
-		.limit(50);
-	if (reportError) throw workflowErrorFromDatabase(reportError);
-	const reports = parseRows(reportData, reportRowSchema);
-
-	const listingIds = reports
-		.filter((report) => report.target_type === 'listing')
-		.map((report) => report.target_id);
-	const profileIds = [
-		...reports.map((report) => report.reporter_id),
-		...reports
-			.filter((report) => report.target_type === 'profile')
-			.map((report) => report.target_id)
-	];
-	const [reporters, listingResult] = await Promise.all([
-		queryProfiles(client, profileIds),
-		listingIds.length
-			? client.from('listings').select('id, title, status').in('id', [...new Set(listingIds)])
-			: Promise.resolve({ data: [], error: null })
-	]);
-	if (listingResult.error) throw workflowErrorFromDatabase(listingResult.error);
-	const listings = new Map(
-		parseRows(listingResult.data, listingRowSchema).map((listing) => [listing.id, listing])
+	const { data: queueData, error: queueError } = await client.rpc(
+		'list_moderation_report_queue',
+		{ p_page_size: 50, p_page_offset: 0 }
 	);
+	if (queueError) throw workflowErrorFromDatabase(queueError);
+	const reports = parseRows(queueData, queueReportRowSchema);
 
-	const summary = (report: ReportRow): ModerationCaseDto => {
-		const assignedToViewer = report.assigned_to === viewer.id;
+	const summary = (report: QueueReportRow): ModerationCaseDto => {
+		const assignedToViewer = report.assignment_state === 'assigned_to_you';
 		const supported = supportsDecision(report.target_type);
-		const targetTitle =
-			report.target_type === 'listing'
-				? (listings.get(report.target_id)?.title ?? genericTargetTitle(report))
-				: report.target_type === 'profile'
-					? `@${reporters.get(report.target_id) ?? report.target_id.slice(0, 8)}`
-					: genericTargetTitle(report);
 		return {
-			id: report.id,
-			reference: shortReference(report.id),
+			id: report.report_id,
+			reference: shortReference(report.report_id),
 			reason: reasonLabel(report.reason_code),
 			targetType: report.target_type,
-			targetTitle,
-			reporter: reporters.get(report.reporter_id) ?? 'неизвестен профил',
+			targetTitle: targetTypeLabel(report.target_type),
+			reporter: 'Скрит до поемане',
 			risk: reportRisk(report.reason_code),
 			createdAt: report.created_at,
-			evidenceCount: evidencePaths(report.evidence_paths).length,
-			status: report.status as 'open' | 'investigating',
-			assignedTo: report.assigned_to,
+			evidenceCount: 0,
+			status: report.status,
+			assignedTo: assignedToViewer ? viewer.id : null,
 			isAssignedToViewer: assignedToViewer,
-			canClaim: report.status === 'open' && report.assigned_to === null,
-			canDecide:
-				supported &&
-				report.status === 'investigating' &&
-				(assignedToViewer || (viewer.role === 'admin' && report.target_type !== 'deal')),
+			canClaim: report.status === 'open' && report.assignment_state === 'unassigned',
+			canDecide: supported && report.status === 'investigating' && assignedToViewer,
 			supported
 		};
 	};
 
 	const cases = reports.map(summary);
-	const selectedRow =
-		reports.find((report) => report.id === requestedCaseId) ?? reports[0] ?? null;
-	if (!selectedRow) {
+	const previewQueue = requestedCaseId
+		? reports.find((report) => report.report_id === requestedCaseId) ?? null
+		: reports[0] ?? null;
+	const preview = previewQueue ? summary(previewQueue) : null;
+	const selectedQueue =
+		previewQueue?.assignment_state === 'assigned_to_you' ? previewQueue : null;
+	if (!selectedQueue) {
 		const merchantApplications = await merchantApplicationsPromise;
 		return {
 			cases,
+			preview,
 			selected: null,
 			audit: [],
 			merchantApplications,
 			stats: {
-				open: 0,
-				investigating: 0,
-				highRisk: 0,
-				total: 0,
+				open: reports.filter((report) => report.status === 'open').length,
+				investigating: reports.filter((report) => report.status === 'investigating').length,
+				highRisk: reports.filter((report) => reportRisk(report.reason_code) === 'high').length,
+				total: reports.length,
 				merchantPending: merchantApplications.length
 			}
 		};
 	}
 
-	const paths = evidencePaths(selectedRow.evidence_paths);
-	const [{ data: auditData, error: auditError }, evidence, merchantApplications] = await Promise.all([
-		client
-			.from('moderation_audit')
-			.select('id, actor_id, action, rationale, created_at')
-			.eq('report_id', selectedRow.id)
-			.order('created_at', { ascending: true }),
-		signedEvidence(client, paths),
+	const { data: privateData, error: privateError } = await client.rpc(
+		'get_assigned_moderation_case',
+		{ p_report_id: selectedQueue.report_id }
+	);
+	if (privateError) throw workflowErrorFromDatabase(privateError);
+	const privateRows = parseRows(privateData, assignedReportRowSchema);
+	if (privateRows.length !== 1) {
+		throw new ModerationWorkflowError('UNAVAILABLE', 'Модерационният случай не беше зареден безопасно.');
+	}
+	const report = privateRows[0];
+	if (
+		report.report_id !== selectedQueue.report_id ||
+		report.assigned_to !== viewer.id ||
+		report.status !== 'investigating'
+	) {
+		throw new ModerationWorkflowError('FORBIDDEN', 'Операцията не е разрешена.');
+	}
+
+	const auditRows = parseRows(report.audit_entries, auditRowSchema);
+	const profileIds = [
+		report.reporter_id,
+		...(report.target_type === 'profile' ? [report.target_id] : []),
+		...auditRows.map((entry) => entry.actor_id)
+	];
+	const [profiles, listingResult, evidence, merchantApplications] = await Promise.all([
+		queryProfiles(client, profileIds),
+		report.target_type === 'listing'
+			? client.from('listings').select('id, title, status').eq('id', report.target_id).limit(1)
+			: Promise.resolve({ data: [], error: null }),
+		signedEvidence(client, evidencePaths(report.evidence_paths)),
 		merchantApplicationsPromise
 	]);
-	if (auditError) throw workflowErrorFromDatabase(auditError);
-	const auditRows = parseRows(auditData, auditRowSchema);
-	const actors = await queryProfiles(client, auditRows.map((entry) => entry.actor_id));
+	if (listingResult.error) throw workflowErrorFromDatabase(listingResult.error);
+	const listing = parseRows(listingResult.data, listingRowSchema)[0];
+	const selectedSummary = summary(selectedQueue);
+	const targetTitle =
+		report.target_type === 'listing'
+			? (listing?.title ?? genericTargetTitle(report))
+			: report.target_type === 'profile'
+				? `@${profiles.get(report.target_id) ?? report.target_id.slice(0, 8)}`
+				: genericTargetTitle(report);
 
-	const selectedSummary = summary(selectedRow);
 	return {
 		cases,
+		preview: selectedSummary,
 		selected: {
 			...selectedSummary,
-			details: selectedRow.details,
-			targetStatus:
-				selectedRow.target_type === 'listing'
-					? (listings.get(selectedRow.target_id)?.status ?? 'unknown')
-					: selectedRow.target_type,
+			targetTitle,
+			reporter: profiles.get(report.reporter_id) ?? 'неизвестен профил',
+			evidenceCount: evidencePaths(report.evidence_paths).length,
+			assignedTo: report.assigned_to,
+			isAssignedToViewer: true,
+			canClaim: false,
+			canDecide: supportsDecision(report.target_type),
+			details: report.details,
+			targetStatus: report.target_type === 'listing' ? (listing?.status ?? 'unknown') : report.target_type,
 			evidence
 		},
 		audit: auditRows.map((entry) => ({
 			id: String(entry.id),
 			action: auditLabel(entry.action),
 			rationale: entry.rationale,
-			actor: actors.get(entry.actor_id) ?? 'staff',
+			actor: profiles.get(entry.actor_id) ?? 'staff',
 			createdAt: entry.created_at
 		})),
 		merchantApplications,
 		stats: {
-			open: reports.filter((report) => report.status === 'open').length,
-			investigating: reports.filter((report) => report.status === 'investigating').length,
-			highRisk: reports.filter((report) => reportRisk(report.reason_code) === 'high').length,
+			open: reports.filter((item) => item.status === 'open').length,
+			investigating: reports.filter((item) => item.status === 'investigating').length,
+			highRisk: reports.filter((item) => reportRisk(item.reason_code) === 'high').length,
 			total: reports.length,
 			merchantPending: merchantApplications.length
 		}
 	};
 }
-
 export async function assignReportCase(
 	client: SupabaseClient,
-	actorId: string,
+	_actorId: string,
 	rawInput: unknown
 ): Promise<{ caseId: string; status: 'investigating' }> {
 	const parsed = assignInputSchema.safeParse(rawInput);
 	if (!parsed.success) throw new ModerationWorkflowError('VALIDATION', 'Невалиден номер на сигнал.');
 
-	const { data, error } = await client
-		.from('reports')
-		.update({ assigned_to: actorId, status: 'investigating' })
-		.eq('id', parsed.data.caseId)
-		.eq('status', 'open')
-		.is('assigned_to', null)
-		.select('id, status, assigned_to')
-		.maybeSingle();
+	const { data, error } = await client.rpc('claim_moderation_report', {
+		p_report_id: parsed.data.caseId
+	});
 	if (error) throw workflowErrorFromDatabase(error);
-	if (!data) {
-		throw new ModerationWorkflowError('CONFLICT', 'Сигналът вече е поет или е променен.');
-	}
-
-	const result = z
-		.object({ id: uuidSchema, status: z.literal('investigating'), assigned_to: uuidSchema })
-		.safeParse(data);
-	if (!result.success || result.data.assigned_to !== actorId) {
+	const result = z.enum(['claimed', 'already_claimed_by_you', 'unavailable']).safeParse(data);
+	if (!result.success) {
 		throw new ModerationWorkflowError('UNAVAILABLE', 'Сигналът не беше присвоен безопасно.');
 	}
-	return { caseId: result.data.id, status: result.data.status };
+	if (result.data === 'unavailable') {
+		throw new ModerationWorkflowError('CONFLICT', 'Сигналът вече е поет или е променен.');
+	}
+	return { caseId: parsed.data.caseId, status: 'investigating' };
 }
 
 const listingDecisionMapping: Record<
@@ -628,23 +625,18 @@ export async function decideModerationReport(
 		);
 	}
 
-	const { data: caseData, error: caseError } = await client
-		.from('reports')
-		.select(
-			'id, reporter_id, target_type, target_id, reason_code, details, evidence_paths, status, assigned_to, resolution_code, resolution_notes, resolved_at, created_at, updated_at'
-		)
-		.eq('id', parsed.data.caseId)
-		.maybeSingle();
+	const { data: caseData, error: caseError } = await client.rpc(
+		'get_assigned_moderation_case',
+		{ p_report_id: parsed.data.caseId }
+	);
 	if (caseError) throw workflowErrorFromDatabase(caseError);
-	if (!caseData) throw new ModerationWorkflowError('NOT_FOUND', 'Сигналът не е намерен.');
-	const report = databaseResult(caseData, null, reportRowSchema);
+	const caseRows = parseRows(caseData, assignedReportRowSchema);
+	if (caseRows.length !== 1) throw new ModerationWorkflowError('NOT_FOUND', 'Сигналът не е намерен.');
+	const report = caseRows[0];
 	if (report.status !== 'investigating') {
 		throw new ModerationWorkflowError('CONFLICT', 'Сигналът не е в активно разследване.');
 	}
-	if (
-		report.assigned_to !== actor.id &&
-		(actor.role !== 'admin' || report.target_type === 'deal')
-	) {
+	if (report.assigned_to !== actor.id) {
 		throw new ModerationWorkflowError('FORBIDDEN', 'Сигналът е присвоен на друг модератор.');
 	}
 
@@ -661,7 +653,7 @@ export async function decideModerationReport(
 			];
 			rpcName = 'moderate_listing';
 			rpcArguments = {
-				report_case_id: report.id,
+				report_case_id: report.report_id,
 				target_listing_id: report.target_id,
 				moderation_rationale: parsed.data.rationale,
 				corrected_audience: null,
@@ -676,7 +668,7 @@ export async function decideModerationReport(
 			}
 			rpcName = 'moderate_profile';
 			rpcArguments = {
-				report_case_id: report.id,
+				report_case_id: report.report_id,
 				target_profile_id: report.target_id,
 				suspend_profile: parsed.data.decision === 'suspend',
 				moderation_rationale: parsed.data.rationale
@@ -696,7 +688,7 @@ export async function decideModerationReport(
 						: 'removed';
 			rpcName = report.target_type === 'review' ? 'moderate_review' : 'moderate_profile_comment';
 			rpcArguments = {
-				report_case_id: report.id,
+				report_case_id: report.report_id,
 				[report.target_type === 'review' ? 'target_review_id' : 'target_comment_id']:
 					report.target_id,
 				moderated_status: status,
@@ -710,7 +702,7 @@ export async function decideModerationReport(
 			}
 			rpcName = 'resolve_deal_dispute';
 			rpcArguments = {
-				report_case_id: report.id,
+				report_case_id: report.report_id,
 				target_deal_id: report.target_id,
 				resolution_status:
 					parsed.data.decision === 'resume' ? 'pending_confirmation' : 'cancelled',
@@ -725,7 +717,7 @@ export async function decideModerationReport(
 			}
 			rpcName = 'resolve_conversation_report';
 			rpcArguments = {
-				report_case_id: report.id,
+				report_case_id: report.report_id,
 				decision:
 					report.target_type === 'message'
 						? parsed.data.decision === 'keep' ? 'keep' : 'remove'
@@ -744,7 +736,7 @@ export async function decideModerationReport(
 	const { error: moderationError } = await client.rpc(rpcName, rpcArguments);
 	if (moderationError) throw workflowErrorFromDatabase(moderationError);
 
-	return { caseId: report.id, status: 'resolved', decision: parsed.data.decision };
+	return { caseId: report.report_id, status: 'resolved', decision: parsed.data.decision };
 }
 
 export async function createBetaInviteAndSendEmail(

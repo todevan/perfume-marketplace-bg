@@ -1,22 +1,48 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import type { MarketplaceSupabaseClient } from '$lib/server/repositories';
-import { getOwnListings } from '$lib/server/services';
+import { getOwnListings, getOwnReports } from '$lib/server/services';
 import { demoOwnListings } from '../listings/demo.server';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.runtime.mode === 'demo') {
 		return {
 			listings: demoOwnListings(),
+			reports: {
+				items: [
+					{
+						id: '00000000-0000-4000-8000-000000000024',
+						targetType: 'listing' as const,
+						reasonCode: 'counterfeit_suspected',
+						evidenceCount: 1,
+						status: 'investigating' as const,
+						outcome: 'pending' as const,
+						resolvedAt: null,
+						createdAt: '2026-08-24T10:00:00.000Z',
+						updatedAt: '2026-08-24T11:00:00.000Z'
+					}
+				],
+				total: 1,
+				limit: 10,
+				offset: 0,
+				hasMore: false
+			},
 			profile: { username: 'north_notes', city: 'София', accountKind: 'private' as const },
 			demoMode: true
 		};
 	}
 	if (!locals.supabase || !locals.profile) error(503, 'Личният панел временно не е достъпен.');
-	const result = await getOwnListings(locals.supabase as MarketplaceSupabaseClient, { limit: 10, offset: 0 });
-	if (!result.ok) error(503, result.error.message);
+	const client = locals.supabase as MarketplaceSupabaseClient;
+	const [listingsResult, reportsResult] = await Promise.all([
+		getOwnListings(client, { limit: 10, offset: 0 }),
+		getOwnReports(client, { limit: 10, offset: 0 })
+	]);
+	if (!listingsResult.ok) error(503, listingsResult.error.message);
 	return {
-		listings: result.data,
+		listings: listingsResult.data,
+		reports: reportsResult.ok
+			? reportsResult.data
+			: { items: [], error: 'Сигналите временно не са достъпни.' },
 		profile: {
 			username: locals.profile.username,
 			city: locals.profile.city,

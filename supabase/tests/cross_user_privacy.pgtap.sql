@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(80);
+select plan(82);
 
 select is(
   has_table_privilege('authenticated', 'public.deal_confirmations', 'insert'),
@@ -743,6 +743,26 @@ select throws_ok(
   '42501',
   'sender is not an active conversation member',
   'a self-blocked member cannot send messages'
+);
+
+reset role;
+set local role postgres;
+select ok(
+  (select count(*) from public.messages where conversation_id = (select id from privacy_conversation)) > 0,
+  'blocking contact preserves the existing conversation history rows'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select throws_ok(
+  $$
+    insert into public.messages (conversation_id, sender_id, body)
+    values ((select id from privacy_conversation), auth.uid(), 'counterparty contact after block')
+  $$,
+  '42501',
+  'conversation contact is blocked',
+  'blocking contact prevents the counterparty from sending another message'
 );
 
 reset role;

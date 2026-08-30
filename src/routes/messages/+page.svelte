@@ -2,7 +2,7 @@
   import { goto, invalidateAll } from '$app/navigation';
   import { enhance } from '$app/forms';
   import type { SubmitFunction } from '@sveltejs/kit';
-  import { ArrowLeft, CheckCheck, Flag, ImagePlus, Info, MessageCircle, MoreHorizontal, Paperclip, Search, Send, ShieldCheck } from '@lucide/svelte';
+  import { ArrowLeft, Ban, CheckCheck, Flag, ImagePlus, MessageCircle, MoreHorizontal, Paperclip, Search, Send, ShieldCheck } from '@lucide/svelte';
   import { getSupabaseBrowserClient } from '$lib/client/supabase';
   import type { MessageDto } from '$lib/contracts';
   import type { PageData } from './$types';
@@ -11,10 +11,14 @@
   let text = $state('');
   let mobileChat = $state(false);
   let optimisticMessages = $state<MessageDto[]>([]);
+  let blockedConversationId = $state<string | null>(null);
   let localMessages = $derived([...data.messages, ...optimisticMessages]);
   let activeConversation = $derived(
     data.conversations.find((conversation) => conversation.id === data.activeConversationId) ?? null
   );
+  let conversationBlocked = $derived(Boolean(
+    activeConversation?.blocked || activeConversation?.id === blockedConversationId
+  ));
 
   $effect(() => {
     if (data.demoMode || !data.activeConversationId) return;
@@ -71,6 +75,30 @@
     }
     return async ({ update }) => { text = ''; await update({ reset: true, invalidateAll: true }); };
   };
+
+  const enhanceBlock: SubmitFunction = ({ formData, cancel }) => {
+    if (!confirm('Блокирането спира новите съобщения и за двамата участници. Продължаване?')) {
+      cancel();
+      return;
+    }
+    const conversationId = formData.get('conversationId')?.toString() ?? null;
+    if (data.demoMode) {
+      cancel();
+      blockedConversationId = conversationId;
+      text = '';
+      return;
+    }
+    return async ({ result, update }) => {
+      const response = result.type === 'success'
+        ? result.data as { ok?: boolean; blocked?: boolean }
+        : null;
+      if (response?.ok && response.blocked) {
+        blockedConversationId = conversationId;
+        text = '';
+      }
+      await update({ reset: false, invalidateAll: true });
+    };
+  };
 </script>
 
 <svelte:head><title>Съобщения · Marketplace beta</title><meta name="robots" content="noindex,nofollow" /></svelte:head>
@@ -98,7 +126,16 @@
       <button class="back" aria-label="Назад към разговорите" onclick={() => (mobileChat = false)}><ArrowLeft size={21} /></button>
       <span class="avatar">{initial(activeConversation.counterpart.username)}</span>
       <div><strong>{activeConversation.counterpart.username}</strong><span>за {activeConversation.listingTitle}</span></div>
-      <button aria-label="Информация за разговора"><Info size={20} /></button>
+      {#if !conversationBlocked}
+        <form method="POST" action="?/state" use:enhance={enhanceBlock}>
+          <input type="hidden" name="conversationId" value={activeConversation.id} />
+          <input type="hidden" name="operation" value="block" />
+          <input type="hidden" name="enabled" value="true" />
+          <button type="submit" aria-label="Блокирай контакт" title="Блокирай контакт"><Ban size={19} /></button>
+        </form>
+      {:else}
+        <span class="blocked-chip"><Ban size={17} /> Блокиран</span>
+      {/if}
       <a href={`/report?targetType=conversation&targetId=${activeConversation.id}`} aria-label="Докладвай"><Flag size={18} /></a>
     </header>
 
@@ -111,12 +148,16 @@
       {/each}
     </div>
 
+    {#if conversationBlocked}
+      <p class="blocked-notice" role="status">Контактът е блокиран. Нови съобщения не могат да бъдат изпращани.</p>
+    {/if}
+
     <form class="composer" method="POST" action="?/send" use:enhance={enhanceSend}>
       <input type="hidden" name="conversationId" value={activeConversation.id} />
       <button type="button" aria-label="Снимките в чат предстоят" disabled><ImagePlus size={20} /></button>
       <button type="button" aria-label="Файловете в чат предстоят" disabled><Paperclip size={19} /></button>
-      <label><span class="sr-only">Съобщение</span><textarea name="body" bind:value={text} rows="1" maxlength="4000" required placeholder="Напиши съобщение..."></textarea></label>
-      <button class="send" type="submit" aria-label="Изпрати" disabled={activeConversation.status !== 'open' || activeConversation.blocked}><Send size={19} /></button>
+      <label><span class="sr-only">Съобщение</span><textarea name="body" bind:value={text} rows="1" maxlength="4000" required disabled={conversationBlocked} placeholder={conversationBlocked ? 'Контактът е блокиран' : 'Напиши съобщение...'}></textarea></label>
+      <button class="send" type="submit" aria-label="Изпрати" disabled={activeConversation.status !== 'open' || conversationBlocked}><Send size={19} /></button>
     </form>
     <p class="chat-disclaimer">Не изпращай картови данни или кодове за потвърждение. Плащането е извън платформата.</p>
   </div>
@@ -170,6 +211,7 @@
   .list-head > button,
   .chat-head > button,
   .chat-head > a,
+  .chat-head > form > button,
   .composer > button {
     display: grid;
     width: 44px;
@@ -185,6 +227,7 @@
   .list-head > button:hover,
   .chat-head > button:hover,
   .chat-head > a:hover,
+  .chat-head > form > button:hover,
   .composer > button:hover {
     background: var(--brand-tertiary);
   }
@@ -323,7 +366,7 @@
     display: grid;
     min-height: 72px;
     align-items: center;
-    grid-template-columns: 44px 1fr 44px 44px;
+    grid-template-columns: 44px 1fr auto 44px;
     gap: 9px;
     padding: 10px 14px;
     border-bottom: 1px solid var(--line);
@@ -340,6 +383,23 @@
   .chat-head > div span {
     color: var(--ink-faint);
     font-size: 0.63rem;
+  }
+
+  .chat-head > form {
+    margin: 0;
+  }
+
+  .blocked-chip {
+    display: inline-flex;
+    min-height: 36px;
+    align-items: center;
+    gap: 5px;
+    padding-inline: 9px;
+    border-radius: 999px;
+    color: var(--danger);
+    background: var(--danger-soft);
+    font-size: .64rem;
+    font-weight: 700;
   }
 
   .listing-context {
@@ -451,6 +511,16 @@
     background: var(--paper-strong);
   }
 
+  .blocked-notice {
+    margin: 0;
+    padding: 9px 15px;
+    border-top: 1px solid var(--line);
+    color: var(--danger);
+    background: var(--danger-soft);
+    font-size: .7rem;
+    text-align: center;
+  }
+
   .composer label {
     min-width: 0;
   }
@@ -542,7 +612,7 @@
     }
 
     .chat-head {
-      grid-template-columns: 44px 44px 1fr 44px;
+      grid-template-columns: 44px 44px 1fr auto 44px;
     }
 
     .chat-head .back {
