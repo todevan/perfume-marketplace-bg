@@ -1403,7 +1403,7 @@ test.describe('hosted report-evidence security matrix', () => {
 				expect(crossEvidence.status).not.toBe(200);
 
 				const aal1 = clients['aal1-staff'];
-				const deniedOperations = await Promise.all([
+				const [aal1Queue, aal1Claim, aal1Case, aal1Moderation, aal1Evidence] = await Promise.all([
 					aal1.rpc('list_moderation_report_queue', { p_page_size: 10, p_page_offset: 0 }),
 					aal1.rpc('claim_moderation_report', { p_report_id: reportId }),
 					aal1.rpc('get_assigned_moderation_case', { p_report_id: reportId }),
@@ -1415,7 +1415,12 @@ test.describe('hosted report-evidence security matrix', () => {
 					}),
 					aal1.storage.from('report-evidence').createSignedUrl(uploadPath, 60)
 				]);
-				expect(deniedOperations.every((result) => Boolean(result.error))).toBe(true);
+				expect(aal1Queue.error).not.toBeNull();
+				expect(aal1Claim.error).toBeNull();
+				expect(aal1Claim.data).toBe('unavailable');
+				expect(aal1Case.error).not.toBeNull();
+				expect(aal1Moderation.error).not.toBeNull();
+				expect(aal1Evidence.error).not.toBeNull();
 				manifest = await persistIssue24Checkpoint(configuration, manifest, 'privacy-denials');
 			});
 

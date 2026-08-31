@@ -682,6 +682,16 @@ describe('A9 foundation environment and TOTP safety', () => {
 
 		expect(hostedSpec).toMatch(/const after = await serviceClient\s*\.from\('messages'\)/u);
 	});
+
+	it('asserts the canonical non-enumerating AAL1 claim denial separately', async () => {
+		const hostedSpec = await readFile(
+			new URL('../e2e/hosted-report-evidence.spec.ts', import.meta.url),
+			'utf8'
+		);
+
+		expect(hostedSpec).toContain("expect(aal1Claim.error).toBeNull();");
+		expect(hostedSpec).toContain("expect(aal1Claim.data).toBe('unavailable');");
+	});
 });
 
 describe('A9-only Supabase adapter foundations', () => {
