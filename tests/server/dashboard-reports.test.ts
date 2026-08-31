@@ -70,6 +70,10 @@ describe('dashboard My reports section', () => {
 		expect(result.profile).toMatchObject({ username: 'reporter' });
 		expect(result.reports).toEqual({
 			items: [],
+			total: 0,
+			limit: 10,
+			offset: 0,
+			hasMore: false,
 			error: 'Сигналите временно не са достъпни.'
 		});
 		expect(JSON.stringify(result)).not.toContain('private database detail');
