@@ -7,7 +7,7 @@ set local search_path = public, extensions, pg_catalog;
 select plan(13);
 
 select ok(
-  to_regprocedure('public.list_my_reports(integer,integer)') is not null,
+  to_regprocedure('public.list_my_reports(integer,integer,public.report_status)') is not null,
   'reporters have one safe paginated report-history RPC'
 );
 select ok(
@@ -24,8 +24,8 @@ select ok(
 );
 
 select ok(
-  coalesce(has_function_privilege('authenticated', to_regprocedure('public.list_my_reports(integer,integer)'), 'execute'), false)
-    and coalesce(not has_function_privilege('anon', to_regprocedure('public.list_my_reports(integer,integer)'), 'execute'), false),
+  coalesce(has_function_privilege('authenticated', to_regprocedure('public.list_my_reports(integer,integer,public.report_status)'), 'execute'), false)
+    and coalesce(not has_function_privilege('anon', to_regprocedure('public.list_my_reports(integer,integer,public.report_status)'), 'execute'), false),
   'report history is authenticated-only'
 );
 select ok(
