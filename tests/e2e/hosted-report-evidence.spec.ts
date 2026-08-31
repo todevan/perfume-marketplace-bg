@@ -1382,7 +1382,7 @@ test.describe('hosted report-evidence security matrix', () => {
 					body: `Issue 24 blocked contact ${configuration.runId}`
 				});
 				expect(deniedSend.error).not.toBeNull();
-				const after = await clients.reporter
+				const after = await serviceClient
 					.from('messages')
 					.select('id', { count: 'exact', head: true })
 					.eq('conversation_id', conversationId);
