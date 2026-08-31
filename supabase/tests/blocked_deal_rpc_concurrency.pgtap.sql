@@ -5,7 +5,7 @@ create extension if not exists pgtap with schema extensions;
 create extension if not exists dblink with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(2);
+select plan(22);
 
 create or replace function pg_temp.wait_for_backend_lock(
   target_pid integer,
@@ -63,6 +63,19 @@ begin
       begin;
 
       set local session_replication_role = replica;
+      delete from public.notification_email_deliveries
+      where notification_id in (
+        select id from public.notifications
+        where profile_id in (
+          '24111111-1111-4111-8111-111111111111',
+          '24222222-2222-4222-8222-222222222222'
+        )
+      );
+      delete from public.notifications
+      where profile_id in (
+        '24111111-1111-4111-8111-111111111111',
+        '24222222-2222-4222-8222-222222222222'
+      );
       delete from public.deals
       where id = '24544444-4444-4444-8444-444444444444';
       delete from public.conversations
@@ -73,8 +86,11 @@ begin
       where id = '24511111-1111-4111-8111-111111111111';
       delete from public.brands
       where id = '24411111-1111-4111-8111-111111111111';
-      set local session_replication_role = origin;
-
+      delete from public.beta_consent_events
+      where profile_id in (
+        '24111111-1111-4111-8111-111111111111',
+        '24222222-2222-4222-8222-222222222222'
+      );
       delete from public.beta_memberships
       where profile_id in (
         '24111111-1111-4111-8111-111111111111',
@@ -85,6 +101,7 @@ begin
         '24311111-1111-4111-8111-111111111111',
         '24322222-2222-4222-8222-222222222222'
       );
+      set local session_replication_role = origin;
       delete from auth.users
       where id in (
         '24111111-1111-4111-8111-111111111111',
@@ -375,11 +392,323 @@ begin
 
   select result into ignored
   from extensions.dblink_get_result('deal_rpc') as completed(result text);
+  perform * from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
 
   select result into ignored
   from extensions.dblink_get_result('self_block') as completed(result text);
+  perform * from extensions.dblink_get_result('self_block', false) as completed(result text);
 end;
 $release_and_drain$;
+
+-- Reuse the same isolated fixture for deterministic terminal-transition races.
+-- A postgres-held deal lock makes both lifecycle calls wait before either can
+-- observe or mutate state; releasing it then proves the row lock serializes the
+-- competing outcomes.
+do $reset_for_complete_cancel$
+begin
+  perform extensions.dblink_exec(
+    'fixture',
+    $reset$
+      begin;
+      set local session_replication_role = replica;
+      delete from public.notification_email_deliveries
+      where notification_id in (
+        select id from public.notifications
+        where profile_id in (
+          '24111111-1111-4111-8111-111111111111',
+          '24222222-2222-4222-8222-222222222222'
+        )
+      );
+      delete from public.notifications
+      where profile_id in (
+        '24111111-1111-4111-8111-111111111111',
+        '24222222-2222-4222-8222-222222222222'
+      );
+      update public.deals
+      set status = 'pending_confirmation', completed_at = null,
+          cancelled_at = null, cancelled_by = null, cancellation_reason = null
+      where id = '24544444-4444-4444-8444-444444444444';
+      update public.listings set status = 'reserved', completed_at = null
+      where id = '24511111-1111-4111-8111-111111111111';
+      update public.conversations set status = 'open'
+      where id = '24533333-3333-4333-8333-333333333333';
+      update public.conversation_members set blocked_at = null
+      where conversation_id = '24533333-3333-4333-8333-333333333333';
+      set local session_replication_role = origin;
+      commit;
+    $reset$
+  );
+  perform extensions.dblink_exec('listing_locker', 'begin');
+  perform extensions.dblink_exec(
+    'listing_locker',
+    $lock_deal$
+      do $body$
+      begin
+        perform 1 from public.deals
+        where id = '24544444-4444-4444-8444-444444444444'
+        for update;
+      end;
+      $body$;
+    $lock_deal$
+  );
+  perform extensions.dblink_exec('deal_rpc', 'reset role');
+  perform extensions.dblink_exec('deal_rpc', 'set role authenticated');
+  perform extensions.dblink_exec(
+    'deal_rpc',
+    $seller_claims$
+      set request.jwt.claims =
+        '{"sub":"24111111-1111-4111-8111-111111111111","role":"authenticated"}';
+      set request.jwt.claim.sub =
+        '24111111-1111-4111-8111-111111111111';
+    $seller_claims$
+  );
+  perform extensions.dblink_exec('self_block', 'reset role');
+  perform extensions.dblink_exec('self_block', 'set role authenticated');
+  perform extensions.dblink_exec(
+    'self_block',
+    $buyer_claims$
+      set request.jwt.claims =
+        '{"sub":"24222222-2222-4222-8222-222222222222","role":"authenticated"}';
+      set request.jwt.claim.sub =
+        '24222222-2222-4222-8222-222222222222';
+    $buyer_claims$
+  );
+end;
+$reset_for_complete_cancel$;
+
+select extensions.dblink_send_query(
+  'deal_rpc',
+  $$ select public.complete_deal('24544444-4444-4444-8444-444444444444')::text $$
+);
+select extensions.dblink_send_query(
+  'self_block',
+  $$ select public.cancel_deal('24544444-4444-4444-8444-444444444444', 'race cancellation') $$
+);
+select ok(
+  pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'deal_rpc')),
+  'complete_deal waits on the canonical deal lock in a complete-vs-cancel race'
+);
+select ok(
+  pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'self_block')),
+  'cancel_deal waits on the canonical deal lock in a complete-vs-cancel race'
+);
+do $drain_complete_cancel$
+declare ignored text;
+begin
+  perform extensions.dblink_exec('listing_locker', 'commit');
+  select result into ignored from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  perform * from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  select result into ignored from extensions.dblink_get_result('self_block', false) as completed(result text);
+  perform * from extensions.dblink_get_result('self_block', false) as completed(result text);
+end;
+$drain_complete_cancel$;
+select ok(
+  (select status in ('completed', 'cancelled') from public.deals where id = '24544444-4444-4444-8444-444444444444'),
+  'complete-vs-cancel produces one valid terminal outcome'
+);
+select is(
+  (
+    select count(*) from public.notifications
+    where kind in ('deal_completed', 'deal_cancelled')
+      and data ->> 'dealId' = '24544444-4444-4444-8444-444444444444'
+  ),
+  case
+    when (select status = 'completed' from public.deals where id = '24544444-4444-4444-8444-444444444444') then 2::bigint
+    else 1::bigint
+  end,
+  'complete-vs-cancel emits side effects for only the serialized winner'
+);
+
+do $reset_for_duplicate_complete$
+begin
+  perform extensions.dblink_exec(
+    'fixture',
+    $reset$
+      begin;
+      set local session_replication_role = replica;
+      delete from public.notification_email_deliveries where notification_id in
+        (select id from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444');
+      delete from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444';
+      update public.deals set status = 'pending_confirmation', completed_at = null,
+        cancelled_at = null, cancelled_by = null, cancellation_reason = null
+      where id = '24544444-4444-4444-8444-444444444444';
+      update public.listings set status = 'reserved', completed_at = null
+      where id = '24511111-1111-4111-8111-111111111111';
+      update public.conversations set status = 'open'
+      where id = '24533333-3333-4333-8333-333333333333';
+      set local session_replication_role = origin;
+      commit;
+    $reset$
+  );
+  perform extensions.dblink_exec('listing_locker', 'begin');
+  perform extensions.dblink_exec(
+    'listing_locker',
+    $$ do $body$ begin perform 1 from public.deals where id = '24544444-4444-4444-8444-444444444444' for update; end; $body$; $$
+  );
+  perform extensions.dblink_exec('self_block', 'reset role');
+  perform extensions.dblink_exec('self_block', 'set role authenticated');
+  perform extensions.dblink_exec(
+    'self_block',
+    $$ set request.jwt.claims = '{"sub":"24111111-1111-4111-8111-111111111111","role":"authenticated"}'; set request.jwt.claim.sub = '24111111-1111-4111-8111-111111111111'; $$
+  );
+end;
+$reset_for_duplicate_complete$;
+select extensions.dblink_send_query('deal_rpc', $$ select public.complete_deal('24544444-4444-4444-8444-444444444444')::text $$);
+select extensions.dblink_send_query('self_block', $$ select public.complete_deal('24544444-4444-4444-8444-444444444444')::text $$);
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'deal_rpc')), 'the first concurrent completion waits on the deal lock');
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'self_block')), 'the second concurrent completion waits on the deal lock');
+do $drain_duplicate_complete$
+declare ignored text;
+begin
+  perform extensions.dblink_exec('listing_locker', 'commit');
+  select result into ignored from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  perform * from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  select result into ignored from extensions.dblink_get_result('self_block', false) as completed(result text);
+  perform * from extensions.dblink_get_result('self_block', false) as completed(result text);
+end;
+$drain_duplicate_complete$;
+select is((select status::text from public.deals where id = '24544444-4444-4444-8444-444444444444'), 'completed', 'complete-vs-complete completes exactly once');
+select is((select count(*) from public.notifications where kind = 'deal_completed' and data ->> 'dealId' = '24544444-4444-4444-8444-444444444444'), 2::bigint, 'complete-vs-complete emits one notification per participant');
+
+do $reset_for_duplicate_cancel$
+begin
+  perform extensions.dblink_exec(
+    'fixture',
+    $reset$
+      begin;
+      set local session_replication_role = replica;
+      delete from public.notification_email_deliveries where notification_id in
+        (select id from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444');
+      delete from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444';
+      update public.deals set status = 'pending_confirmation', completed_at = null,
+        cancelled_at = null, cancelled_by = null, cancellation_reason = null
+      where id = '24544444-4444-4444-8444-444444444444';
+      update public.listings set status = 'reserved', completed_at = null
+      where id = '24511111-1111-4111-8111-111111111111';
+      update public.conversations set status = 'open'
+      where id = '24533333-3333-4333-8333-333333333333';
+      set local session_replication_role = origin;
+      commit;
+    $reset$
+  );
+  perform extensions.dblink_exec('listing_locker', 'begin');
+  perform extensions.dblink_exec('listing_locker', $$ do $body$ begin perform 1 from public.deals where id = '24544444-4444-4444-8444-444444444444' for update; end; $body$; $$);
+  perform extensions.dblink_exec('self_block', 'reset role');
+  perform extensions.dblink_exec('self_block', 'set role authenticated');
+  perform extensions.dblink_exec(
+    'self_block',
+    $$ set request.jwt.claims = '{"sub":"24222222-2222-4222-8222-222222222222","role":"authenticated"}'; set request.jwt.claim.sub = '24222222-2222-4222-8222-222222222222'; $$
+  );
+end;
+$reset_for_duplicate_cancel$;
+select extensions.dblink_send_query('deal_rpc', $$ select public.cancel_deal('24544444-4444-4444-8444-444444444444', 'seller race cancellation') $$);
+select extensions.dblink_send_query('self_block', $$ select public.cancel_deal('24544444-4444-4444-8444-444444444444', 'buyer race cancellation') $$);
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'deal_rpc')), 'the first concurrent cancellation waits on the deal lock');
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'self_block')), 'the second concurrent cancellation waits on the deal lock');
+do $drain_duplicate_cancel$
+declare ignored text;
+begin
+  perform extensions.dblink_exec('listing_locker', 'commit');
+  select result into ignored from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  perform * from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  select result into ignored from extensions.dblink_get_result('self_block', false) as completed(result text);
+  perform * from extensions.dblink_get_result('self_block', false) as completed(result text);
+end;
+$drain_duplicate_cancel$;
+select is((select status::text from public.deals where id = '24544444-4444-4444-8444-444444444444'), 'cancelled', 'cancel-vs-cancel cancels exactly once');
+select is((select count(*) from public.notifications where kind = 'deal_cancelled' and data ->> 'dealId' = '24544444-4444-4444-8444-444444444444'), 1::bigint, 'cancel-vs-cancel emits exactly one counterparty notification');
+
+do $reset_for_completion_moderation$
+begin
+  perform extensions.dblink_exec(
+    'fixture',
+    $$
+      begin;
+      set local session_replication_role = replica;
+      delete from public.notification_email_deliveries where notification_id in
+        (select id from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444');
+      delete from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444';
+      update public.deals set status = 'pending_confirmation', completed_at = null,
+        cancelled_at = null, cancelled_by = null, cancellation_reason = null
+      where id = '24544444-4444-4444-8444-444444444444';
+      update public.listings set status = 'reserved', completed_at = null
+      where id = '24511111-1111-4111-8111-111111111111';
+      update public.conversations set status = 'open'
+      where id = '24533333-3333-4333-8333-333333333333';
+      set local session_replication_role = origin;
+      commit;
+    $$
+  );
+  perform extensions.dblink_exec('listing_locker', 'begin');
+  perform extensions.dblink_exec('listing_locker', $$ do $body$ begin perform 1 from public.listings where id = '24511111-1111-4111-8111-111111111111' for update; end; $body$; $$);
+  perform extensions.dblink_exec('deal_rpc', 'reset role');
+  perform extensions.dblink_exec('deal_rpc', 'set role authenticated');
+  perform extensions.dblink_exec('deal_rpc', $$ set request.jwt.claims = '{"sub":"24111111-1111-4111-8111-111111111111","role":"authenticated"}'; set request.jwt.claim.sub = '24111111-1111-4111-8111-111111111111'; $$);
+  perform extensions.dblink_exec('self_block', 'reset role');
+end;
+$reset_for_completion_moderation$;
+select extensions.dblink_send_query('deal_rpc', $$ select public.complete_deal('24544444-4444-4444-8444-444444444444')::text $$);
+select extensions.dblink_send_query('self_block', $$ update public.listings set status = 'removed' where id = '24511111-1111-4111-8111-111111111111' $$);
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'deal_rpc')), 'completion reaches the listing lock in a lifecycle-vs-moderation race');
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'self_block')), 'moderation waits on the same listing lock as completion');
+do $drain_completion_moderation$
+declare ignored text;
+begin
+  perform extensions.dblink_exec('listing_locker', 'commit');
+  select result into ignored from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  perform * from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  select result into ignored from extensions.dblink_get_result('self_block', false) as completed(result text);
+  perform * from extensions.dblink_get_result('self_block', false) as completed(result text);
+end;
+$drain_completion_moderation$;
+select is((select status::text from public.deals where id = '24544444-4444-4444-8444-444444444444'), 'completed', 'completion remains atomic when moderation races it');
+select is((select status::text from public.listings where id = '24511111-1111-4111-8111-111111111111'), 'removed', 'moderation wins over completion listing restoration regardless of lock winner');
+
+do $reset_for_cancellation_moderation$
+begin
+  perform extensions.dblink_exec(
+    'fixture',
+    $$
+      begin;
+      set local session_replication_role = replica;
+      delete from public.notification_email_deliveries where notification_id in
+        (select id from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444');
+      delete from public.notifications where data ->> 'dealId' = '24544444-4444-4444-8444-444444444444';
+      update public.deals set status = 'pending_confirmation', completed_at = null,
+        cancelled_at = null, cancelled_by = null, cancellation_reason = null
+      where id = '24544444-4444-4444-8444-444444444444';
+      update public.listings set status = 'reserved', completed_at = null
+      where id = '24511111-1111-4111-8111-111111111111';
+      update public.conversations set status = 'open'
+      where id = '24533333-3333-4333-8333-333333333333';
+      set local session_replication_role = origin;
+      commit;
+    $$
+  );
+  perform extensions.dblink_exec('listing_locker', 'begin');
+  perform extensions.dblink_exec('listing_locker', $$ do $body$ begin perform 1 from public.listings where id = '24511111-1111-4111-8111-111111111111' for update; end; $body$; $$);
+  perform extensions.dblink_exec('deal_rpc', 'reset role');
+  perform extensions.dblink_exec('deal_rpc', 'set role authenticated');
+  perform extensions.dblink_exec('deal_rpc', $$ set request.jwt.claims = '{"sub":"24222222-2222-4222-8222-222222222222","role":"authenticated"}'; set request.jwt.claim.sub = '24222222-2222-4222-8222-222222222222'; $$);
+  perform extensions.dblink_exec('self_block', 'reset role');
+end;
+$reset_for_cancellation_moderation$;
+select extensions.dblink_send_query('deal_rpc', $$ select public.cancel_deal('24544444-4444-4444-8444-444444444444', 'moderation race cancellation') $$);
+select extensions.dblink_send_query('self_block', $$ update public.listings set status = 'removed' where id = '24511111-1111-4111-8111-111111111111' $$);
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'deal_rpc')), 'cancellation reaches the listing lock in a lifecycle-vs-moderation race');
+select ok(pg_temp.wait_for_backend_lock((select backend_pid from concurrency_backend_pids where connection_name = 'self_block')), 'moderation waits on the same listing lock as cancellation');
+do $drain_cancellation_moderation$
+declare ignored text;
+begin
+  perform extensions.dblink_exec('listing_locker', 'commit');
+  select result into ignored from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  perform * from extensions.dblink_get_result('deal_rpc', false) as completed(result text);
+  select result into ignored from extensions.dblink_get_result('self_block', false) as completed(result text);
+  perform * from extensions.dblink_get_result('self_block', false) as completed(result text);
+end;
+$drain_cancellation_moderation$;
+select is((select status::text from public.deals where id = '24544444-4444-4444-8444-444444444444'), 'cancelled', 'cancellation remains atomic when moderation races it');
+select is((select status::text from public.listings where id = '24511111-1111-4111-8111-111111111111'), 'removed', 'moderation wins over cancellation listing restoration regardless of lock winner');
 
 do $cleanup$
 begin
@@ -388,6 +717,19 @@ begin
     $cleanup_sql$
       begin;
       set local session_replication_role = replica;
+      delete from public.notification_email_deliveries
+      where notification_id in (
+        select id from public.notifications
+        where profile_id in (
+          '24111111-1111-4111-8111-111111111111',
+          '24222222-2222-4222-8222-222222222222'
+        )
+      );
+      delete from public.notifications
+      where profile_id in (
+        '24111111-1111-4111-8111-111111111111',
+        '24222222-2222-4222-8222-222222222222'
+      );
       delete from public.deals
       where id = '24544444-4444-4444-8444-444444444444';
       delete from public.conversations
@@ -398,8 +740,11 @@ begin
       where id = '24511111-1111-4111-8111-111111111111';
       delete from public.brands
       where id = '24411111-1111-4111-8111-111111111111';
-      set local session_replication_role = origin;
-
+      delete from public.beta_consent_events
+      where profile_id in (
+        '24111111-1111-4111-8111-111111111111',
+        '24222222-2222-4222-8222-222222222222'
+      );
       delete from public.beta_memberships
       where profile_id in (
         '24111111-1111-4111-8111-111111111111',
@@ -410,6 +755,7 @@ begin
         '24311111-1111-4111-8111-111111111111',
         '24322222-2222-4222-8222-222222222222'
       );
+      set local session_replication_role = origin;
       delete from auth.users
       where id in (
         '24111111-1111-4111-8111-111111111111',

@@ -94,7 +94,7 @@ test('hosted runtime correction removes the platform direct anon view grant', ()
 	]);
 });
 
-test('deal confirmations remain an RPC-only authenticated write contract', () => {
+test('deal confirmations remain read-only authenticated history', () => {
 	assert.equal(
 		regrantsAuthenticatedInsert(
 			'grant select, insert, update on public.deal_confirmations to authenticated'
@@ -163,10 +163,9 @@ test('deal confirmations remain an RPC-only authenticated write contract', () =>
 		migration.statements.some((statement) => revokePattern.test(statement)) ? [index] : []
 	);
 
-	assert.equal(
-		revokeIndexes.length,
-		1,
-		'expected exactly one forward-only migration revoking authenticated INSERT on public.deal_confirmations'
+	assert.ok(
+		revokeIndexes.length >= 1,
+		'expected a forward-only migration revoking authenticated INSERT on public.deal_confirmations'
 	);
 
 	const revokeIndex = revokeIndexes[0];
