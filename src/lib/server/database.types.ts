@@ -2443,6 +2443,10 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      claim_moderation_report: {
+        Args: { p_report_id: string }
+        Returns: string
+      }
       claim_notification_email_delivery: {
         Args: { target_notification_id: string; worker_request_id: string }
         Returns: {
@@ -2618,6 +2622,26 @@ export type Database = {
         }
         Returns: undefined
       }
+      get_assigned_moderation_case: {
+        Args: { p_report_id: string }
+        Returns: {
+          assigned_to: string
+          audit_entries: Json
+          created_at: string
+          details: string
+          evidence_paths: Json
+          reason_code: string
+          report_id: string
+          reporter_id: string
+          resolution_code: string
+          resolution_notes: string
+          resolved_at: string
+          status: Database["public"]["Enums"]["report_status"]
+          target_id: string
+          target_type: Database["public"]["Enums"]["report_target_type"]
+          updated_at: string
+        }[]
+      }
       get_hosted_runtime_inventory: { Args: never; Returns: Json }
       get_my_beta_access: {
         Args: never
@@ -2656,6 +2680,36 @@ export type Database = {
           id: string
           reply_to_id: string
           sender_id: string
+        }[]
+      }
+      list_moderation_report_queue: {
+        Args: { p_page_offset?: number; p_page_size?: number }
+        Returns: {
+          assignment_state: string
+          created_at: string
+          reason_code: string
+          report_id: string
+          status: Database["public"]["Enums"]["report_status"]
+          target_type: Database["public"]["Enums"]["report_target_type"]
+        }[]
+      }
+      list_my_reports: {
+        Args: {
+          p_page_offset?: number
+          p_page_size?: number
+          p_status?: Database["public"]["Enums"]["report_status"] | null
+        }
+        Returns: {
+          created_at: string
+          evidence_count: number
+          outcome: string
+          reason_code: string
+          report_id: string
+          resolved_at: string
+          status: Database["public"]["Enums"]["report_status"]
+          target_type: Database["public"]["Enums"]["report_target_type"]
+          total_count: number
+          updated_at: string
         }[]
       }
       list_received_offers: {
@@ -2858,6 +2912,10 @@ export type Database = {
           report_case_id: string
         }
         Returns: Json
+      }
+      resolve_unsupported_report: {
+        Args: { moderation_rationale: string; report_case_id: string }
+        Returns: undefined
       }
       resolve_deal_dispute: {
         Args: {

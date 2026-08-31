@@ -77,6 +77,26 @@ describe('hosted A9 encrypted moderator credential store', () => {
 		);
 	});
 
+	it('binds an Issue #24 disposable store and recovers the unassigned administrator seed', async () => {
+		const filePath = await temporaryStorePath();
+		const store = createEncryptedModeratorCredentialStore({
+			filePath,
+			encryptionKey,
+			projectRef: 'abcdefghijklmnopqrst',
+			runId: 'issue24-20260831-abcdef0'
+		});
+
+		await store.storeModeratorTotpSecret({
+			role: 'unassigned-admin',
+			secret: assignedSecret
+		});
+
+		await expect(
+			store.getModeratorTotpSecret({ role: 'unassigned-admin' })
+		).resolves.toBe(assignedSecret);
+		expect(await readFile(filePath, 'utf8')).not.toContain(assignedSecret);
+	});
+
 	it('recovers the same seed in a separate process without printing it', async () => {
 		const filePath = await temporaryStorePath();
 		await createStore(filePath).storeModeratorTotpSecret({

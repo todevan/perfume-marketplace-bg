@@ -55,6 +55,14 @@ insert into auth.users (
   crypt('EvidenceTarget123!', gen_salt('bf')), now(), now(), now(),
   '{"provider":"email","providers":["email"]}'::jsonb,
   '{"display_name":"Evidence Target"}'::jsonb
+),
+(
+  '00000000-0000-0000-0000-000000000000',
+  '12555555-5555-4555-8555-555555555555',
+  'authenticated', 'authenticated', 'evidence-assignee@example.test',
+  crypt('EvidenceAssignee123!', gen_salt('bf')), now(), now(), now(),
+  '{"provider":"email","providers":["email"]}'::jsonb,
+  '{"display_name":"Evidence Assignee"}'::jsonb
 );
 update public.profiles
 set email_verified_at = statement_timestamp(),
@@ -101,12 +109,16 @@ where id = '12222222-2222-4222-8222-222222222222';
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 update public.profiles
 set role = case
-  when id = '12111111-1111-4111-8111-111111111111' then 'admin'::public.platform_role
+  when id in (
+    '12111111-1111-4111-8111-111111111111',
+    '12555555-5555-4555-8555-555555555555'
+  ) then 'admin'::public.platform_role
   else 'moderator'::public.platform_role
 end
 where id in (
   '12111111-1111-4111-8111-111111111111',
-  '12222222-2222-4222-8222-222222222222'
+  '12222222-2222-4222-8222-222222222222',
+  '12555555-5555-4555-8555-555555555555'
 );
 insert into public.beta_invites (
   id, email, token_hash, status, expires_at
@@ -136,6 +148,42 @@ insert into public.beta_consent_events (
 )
 select
   '12222222-2222-4222-8222-222222222222',
+  d.document_code, d.document_version, 'web'
+from public.beta_legal_documents d
+where d.required_for_access and d.retired_at is null;
+
+update public.profiles
+set email_verified_at = statement_timestamp(),
+    phone_verified_at = statement_timestamp()
+where id = '12555555-5555-4555-8555-555555555555';
+insert into public.beta_invites (
+  id, email, token_hash, status, expires_at
+) values (
+  '12666666-6666-4666-8666-666666666666',
+  'evidence-assignee@example.test', repeat('d', 64), 'pending',
+  statement_timestamp() + interval '7 days'
+);
+update public.beta_invites
+set status = 'accepted',
+    accepted_by = '12555555-5555-4555-8555-555555555555'
+where id = '12666666-6666-4666-8666-666666666666';
+insert into public.beta_memberships (profile_id, invite_id, status)
+values (
+  '12555555-5555-4555-8555-555555555555',
+  '12666666-6666-4666-8666-666666666666',
+  'pending'
+);
+update public.beta_memberships
+set status = 'active'
+where profile_id = '12555555-5555-4555-8555-555555555555';
+update public.beta_memberships
+set activated_at = statement_timestamp() - interval '1 second'
+where profile_id = '12555555-5555-4555-8555-555555555555';
+insert into public.beta_consent_events (
+  profile_id, document_code, document_version, source
+)
+select
+  '12555555-5555-4555-8555-555555555555',
   d.document_code, d.document_version, 'web'
 from public.beta_legal_documents d
 where d.required_for_access and d.retired_at is null;
@@ -309,33 +357,29 @@ select is(
 set local role authenticated;
 select set_config(
   'request.jwt.claims',
-  '{"sub":"12111111-1111-4111-8111-111111111111","role":"authenticated","aal":"aal2"}',
+  '{"sub":"12555555-5555-4555-8555-555555555555","role":"authenticated","aal":"aal2"}',
   true
 );
 select set_config(
   'request.jwt.claim.sub',
-  '12111111-1111-4111-8111-111111111111',
+  '12555555-5555-4555-8555-555555555555',
   true
 );
-select lives_ok(
-  $$
-    update public.reports
-    set status = 'investigating',
-        assigned_to = '12222222-2222-4222-8222-222222222222'
-    where id = 'a2111111-1111-4111-8111-111111111111'
-  $$,
-  'an AAL2 admin can assign an investigating report to a different active moderator'
+select is(
+  public.claim_moderation_report('a2111111-1111-4111-8111-111111111111'),
+  'claimed',
+  'an eligible AAL2 administrator can claim an unassigned staff-target report'
 );
 
 set local role authenticated;
 select set_config(
   'request.jwt.claims',
-  '{"sub":"12222222-2222-4222-8222-222222222222","role":"authenticated","aal":"aal1"}',
+  '{"sub":"12555555-5555-4555-8555-555555555555","role":"authenticated","aal":"aal1"}',
   true
 );
 select set_config(
   'request.jwt.claim.sub',
-  '12222222-2222-4222-8222-222222222222',
+  '12555555-5555-4555-8555-555555555555',
   true
 );
 select is(
@@ -350,7 +394,7 @@ select is(
 );
 select set_config(
   'request.jwt.claims',
-  '{"sub":"12222222-2222-4222-8222-222222222222","role":"authenticated","aal":"aal2"}',
+  '{"sub":"12555555-5555-4555-8555-555555555555","role":"authenticated","aal":"aal2"}',
   true
 );
 select is(

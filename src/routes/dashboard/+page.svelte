@@ -4,6 +4,7 @@
 
     ChartNoAxesColumnIncreasing,
     Clock3,
+    Flag,
     Heart,
     ListPlus,
     MoreHorizontal,
@@ -24,6 +25,30 @@
   let reservedCount = $derived(data.listings.items.filter((listing) => listing.status === 'reserved').length);
   let draftCount = $derived(data.listings.items.filter((listing) => listing.status === 'draft').length);
   let profileScore = $derived(data.profile.city ? 100 : 0);
+  const reportStatusLabels = {
+    open: 'Получен',
+    investigating: 'В проверка',
+    resolved: 'Приключен',
+    dismissed: 'Приключен'
+  } as const;
+  const reportOutcomeLabels = {
+    pending: 'Очаква решение',
+    action_taken: 'Предприето е действие',
+    no_action: 'Не е предприето действие',
+    completed: 'Проверката е приключена'
+  } as const;
+  const reportTargetLabels = {
+    profile: 'Профил',
+    brand: 'Марка',
+    listing: 'Обява',
+    offer: 'Оферта',
+    conversation: 'Разговор',
+    message: 'Съобщение',
+    deal: 'Сделка',
+    review: 'Отзив',
+    profile_comment: 'Коментар'
+  } as const;
+  const reportDate = new Intl.DateTimeFormat('bg-BG', { dateStyle: 'medium' });
 </script>
 
 <svelte:head><title>Моят dashboard · Marketplace beta</title><meta name="robots" content="noindex,nofollow" /></svelte:head>
@@ -55,6 +80,37 @@
         {/each}
         {#if !data.listings.items.length}<div class="empty-listings"><strong>Все още нямаш обяви.</strong><a href="/publish">Създай първата</a></div>{/if}
       </div>
+    </section>
+
+    <section class="dashboard-section reports-section">
+      <div class="section-title"><div><h2>Моите сигнали</h2><span>Виждаш само безопасен статус и общ резултат</span></div></div>
+      {#if 'error' in data.reports}
+        <div class="reports-message" role="status">{data.reports.error}</div>
+      {:else if data.reports.items.length}
+        <div class="reports-list">
+          {#each data.reports.items as report (report.id)}
+            <article>
+              <div class="report-icon"><Flag size={18} /></div>
+              <div class="report-summary">
+                <strong>{reportTargetLabels[report.targetType]}</strong>
+                <span>Подаден на {reportDate.format(new Date(report.createdAt))} · {report.evidenceCount} доказателства</span>
+              </div>
+              <div class="report-state">
+                <span>{reportStatusLabels[report.status]}</span>
+                <strong>{reportOutcomeLabels[report.outcome]}</strong>
+              </div>
+            </article>
+          {/each}
+        </div>
+      {:else}
+        <div class="reports-message">Все още нямаш подадени сигнали.</div>
+      {/if}
+      {#if data.reportContinuation.previousHref || data.reportContinuation.nextHref}
+        <nav class="report-pagination" aria-label="Страници на сигналите">
+          {#if data.reportContinuation.previousHref}<a href={data.reportContinuation.previousHref}>Предишни сигнали</a>{/if}
+          {#if data.reportContinuation.nextHref}<a href={data.reportContinuation.nextHref}>Следващи сигнали</a>{/if}
+        </nav>
+      {/if}
     </section>
 
     <div class="lower-grid">
@@ -272,6 +328,68 @@
     gap: 18px;
   }
 
+  .reports-list article {
+    display: grid;
+    min-height: 78px;
+    align-items: center;
+    grid-template-columns: 42px minmax(0, 1fr) minmax(150px, auto);
+    gap: 12px;
+    border-top: 1px solid var(--line);
+  }
+
+  .report-icon {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    border-radius: 50%;
+    color: var(--warning);
+    background: var(--warning-soft);
+  }
+
+  .report-summary,
+  .report-state {
+    display: grid;
+    gap: 3px;
+  }
+
+  .report-summary span,
+  .report-state span {
+    color: var(--ink-faint);
+    font-size: 0.64rem;
+  }
+
+  .report-state {
+    justify-items: end;
+    text-align: right;
+  }
+
+  .report-state strong {
+    color: var(--ink-soft);
+    font-size: 0.76rem;
+  }
+
+  .reports-message {
+    min-height: 74px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-soft);
+    font-size: 0.76rem;
+  }
+
+  .report-pagination {
+    display: flex;
+    justify-content: flex-end;
+    gap: 16px;
+    padding-top: 16px;
+  }
+
+  .report-pagination a {
+    color: var(--action);
+    font-size: 0.76rem;
+    font-weight: 800;
+  }
+
   .offer-avatar {
     display: grid;
     width: 42px;
@@ -372,6 +490,17 @@
 
     .lower-grid {
       grid-template-columns: 1fr;
+    }
+
+    .reports-list article {
+      grid-template-columns: 38px 1fr;
+      padding-block: 10px;
+    }
+
+    .report-state {
+      grid-column: 2;
+      justify-items: start;
+      text-align: left;
     }
   }
 

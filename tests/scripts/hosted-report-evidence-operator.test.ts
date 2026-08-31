@@ -24,8 +24,11 @@ import {
 	registerHostedActorIntent,
 	registerHostedReport,
 	registerHostedUpload,
+	registerIssue24Checkpoint,
 	validateHostedA9Environment,
+	validateHostedA10Environment,
 	validateHostedCleanupEnvironment,
+	validateIssue24HostedEnvironment,
 	validateHostedProvisionEnvironment,
 	validateHostedOperatorEnvironment
 } from '../../scripts/hosted-report-evidence-operator.mjs';
@@ -77,6 +80,27 @@ const approvedProvisionEnvironment = {
 	E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL: 'A9'
 };
 const a9Environment = approvedProvisionEnvironment;
+const issue24Environment = {
+	...baseEnvironment,
+	E2E_REAL_REPORT_EVIDENCE_RUN_ID: 'issue24-20260831-abcdef0',
+	E2E_REAL_BASE_URL:
+		'https://aromatika-issue-24-20260831-abcdef0-aaaaaaa.teodorpavlov.workers.dev',
+	PUBLIC_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+	EXPECTED_SUPABASE_PROJECT_REF: 'abcdefghijklmnopqrst',
+	E2E_REAL_ISSUE_24_RUN: 'true',
+	E2E_REAL_ISSUE_24_APPROVAL: 'ISSUE-24',
+	E2E_REAL_ISSUE_24_ORGANIZATION_ID: HOSTED_STAGING.organizationId,
+	E2E_REAL_ISSUE_24_REGION: 'eu-central-1',
+	E2E_REAL_ISSUE_24_WORKER_NAME: 'aromatika-issue-24-20260831-abcdef0-aaaaaaa',
+	E2E_REAL_ISSUE_24_CANDIDATE_SHA: 'a'.repeat(40),
+	RELEASE_COMMIT_SHA: 'a'.repeat(40),
+	E2E_REAL_AAL1_STAFF_EMAIL: 'aal1-staff@example.invalid',
+	E2E_REAL_AAL1_STAFF_PASSWORD: 'aal1-staff-password',
+	E2E_REAL_AAL1_STAFF_USERNAME: 'issue24-aal1',
+	E2E_REAL_UNASSIGNED_ADMIN_EMAIL: 'unassigned-admin@example.invalid',
+	E2E_REAL_UNASSIGNED_ADMIN_PASSWORD: 'unassigned-admin-password',
+	E2E_REAL_UNASSIGNED_ADMIN_USERNAME: 'issue24-admin'
+};
 const syntheticTotpSecret = Array.from(
 	{ length: 32 },
 	(_, index) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'[index % 32]
@@ -202,6 +226,129 @@ describe('hosted report-evidence target lock', () => {
 				HostedEvidenceOperatorError
 			);
 		}
+	});
+
+	it('accepts an exact disposable Issue #24 target and six-role actor matrix', () => {
+		const config = validateIssue24HostedEnvironment(issue24Environment);
+
+		expect(config.target).toEqual({
+			projectRef: 'abcdefghijklmnopqrst',
+			organizationId: HOSTED_STAGING.organizationId,
+			region: 'eu-central-1',
+			supabaseUrl: 'https://abcdefghijklmnopqrst.supabase.co',
+			workerName: 'aromatika-issue-24-20260831-abcdef0-aaaaaaa',
+			workerOrigin:
+				'https://aromatika-issue-24-20260831-abcdef0-aaaaaaa.teodorpavlov.workers.dev'
+		});
+		expect(config.runId).toBe('issue24-20260831-abcdef0');
+		expect(config.candidateSha).toBe('a'.repeat(40));
+		expect(Object.keys(config.actorRoles)).toEqual([
+			'reporter',
+			'cross-user',
+			'aal1-staff',
+			'assigned-moderator',
+			'unassigned-moderator',
+			'unassigned-admin'
+		]);
+
+		const manifest = Object.keys(config.actorRoles).reduce(
+			(current, role, index) =>
+				registerHostedActor(
+					current,
+					role,
+					`${String(index + 1).padStart(8, '0')}-0000-4000-8000-000000000000`,
+					actorCreatedAt
+				),
+			createHostedRunManifest(config)
+		);
+		expect(manifest.actors.map((actor) => actor.role)).toEqual(Object.keys(config.actorRoles));
+		expect(manifest.candidateSha).toBe(config.candidateSha);
+		expect(manifest.workerName).toBe(config.target.workerName);
+		const checkpointed = registerIssue24Checkpoint(
+			manifest,
+			'actors-attested',
+			config.candidateSha!,
+			'2026-08-31T00:00:00.000Z'
+		);
+		expect(checkpointed.checkpoints).toEqual([
+			{
+				stage: 'actors-attested',
+				candidateSha: config.candidateSha,
+				completedAt: '2026-08-31T00:00:00.000Z'
+			}
+		]);
+		expect(
+			registerIssue24Checkpoint(
+				checkpointed,
+				'actors-attested',
+				config.candidateSha!,
+				'2026-08-31T00:01:00.000Z'
+			)
+		).toBe(checkpointed);
+		expect(() =>
+			registerIssue24Checkpoint(
+				checkpointed,
+				'actors-attested',
+				'b'.repeat(40),
+				'2026-08-31T00:01:00.000Z'
+			)
+		).toThrow(/candidate/u);
+
+		expect(
+			validateHostedA9Environment({
+				...issue24Environment,
+				E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_RUN: 'true',
+				E2E_REAL_REPORT_EVIDENCE_ACCOUNT_PROVISIONING_APPROVAL: 'A9'
+			}).target
+		).toEqual(config.target);
+		expect(
+			validateHostedA10Environment({
+				...issue24Environment,
+				E2E_REAL_REPORT_EVIDENCE_SCENARIO_RUN: 'true',
+				E2E_REAL_REPORT_EVIDENCE_SCENARIO_APPROVAL: 'A10'
+			}).target
+		).toEqual(config.target);
+	});
+
+	it.each([
+		['canonical project', { EXPECTED_SUPABASE_PROJECT_REF: HOSTED_STAGING.projectRef }],
+		['wrong organization', { E2E_REAL_ISSUE_24_ORGANIZATION_ID: 'wrong-organization' }],
+		['wrong region', { E2E_REAL_ISSUE_24_REGION: 'us-east-1' }],
+		['unbound worker', { E2E_REAL_ISSUE_24_WORKER_NAME: 'some-other-worker' }],
+		['invalid candidate', { E2E_REAL_ISSUE_24_CANDIDATE_SHA: 'abc123' }],
+		['deployment mismatch', { RELEASE_COMMIT_SHA: 'b'.repeat(40) }]
+	])('rejects an Issue #24 %s', (_label, overrides) => {
+		expect(() =>
+			validateIssue24HostedEnvironment({ ...issue24Environment, ...overrides })
+		).toThrow(HostedEvidenceOperatorError);
+	});
+
+	it('binds A9 adapters to the exact disposable Issue #24 project', () => {
+		const config = validateIssue24HostedEnvironment(issue24Environment);
+		const serviceClient = {
+			supabaseUrl: config.target.supabaseUrl,
+			auth: { admin: {} },
+			from: vi.fn(),
+			storage: { from: vi.fn() }
+		};
+
+		expect(() =>
+			createSupabaseHostedA9Adapters({
+				config,
+				serviceClient: serviceClient as never,
+				createActorClient: vi.fn() as never,
+				credentialSink: noopModeratorCredentialSink()
+			})
+		).not.toThrow();
+		expect(() =>
+			createSupabaseHostedEvidenceAdapters({
+				config,
+				serviceClient: serviceClient as never,
+				managementAccessToken: 'management-token',
+				cleanupSecret: 'x'.repeat(32),
+				fetchImpl: vi.fn() as never
+			})
+		).not.toThrow();
 	});
 
 	it.each([
@@ -512,6 +659,38 @@ describe('A9 foundation environment and TOTP safety', () => {
 		expect(hostedSpec).not.toContain('function decodeBase32');
 		expect(hostedSpec).not.toContain('function currentTotp');
 		expect(hostedSpec).not.toContain('createHmac');
+	});
+
+	it('binds the Issue #24 browser context to the exact hosted Worker origin', async () => {
+		const hostedSpec = await readFile(
+			new URL('../e2e/hosted-report-evidence.spec.ts', import.meta.url),
+			'utf8'
+		);
+
+		expect(hostedSpec).toMatch(
+			/browser\.newContext\(\{\s*baseURL: configuration\.target\.workerOrigin\s*\}\)/u
+		);
+		expect(hostedSpec).not.toContain('const reporterPage = await browser.newPage();');
+		expect(hostedSpec).toContain('reporterContext.close()');
+	});
+
+	it('uses administrative readback to prove blocking preserves message rows', async () => {
+		const hostedSpec = await readFile(
+			new URL('../e2e/hosted-report-evidence.spec.ts', import.meta.url),
+			'utf8'
+		);
+
+		expect(hostedSpec).toMatch(/const after = await serviceClient\s*\.from\('messages'\)/u);
+	});
+
+	it('asserts the canonical non-enumerating AAL1 claim denial separately', async () => {
+		const hostedSpec = await readFile(
+			new URL('../e2e/hosted-report-evidence.spec.ts', import.meta.url),
+			'utf8'
+		);
+
+		expect(hostedSpec).toContain("expect(aal1Claim.error).toBeNull();");
+		expect(hostedSpec).toContain("expect(aal1Claim.data).toBe('unavailable');");
 	});
 });
 

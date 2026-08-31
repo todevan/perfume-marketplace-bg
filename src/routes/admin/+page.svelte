@@ -151,7 +151,7 @@
       <div class="case-list">
         <div class="panel-head"><div><Flag size={18} /><strong>Активни сигнали</strong></div><a class="panel-control" href="/admin" aria-label="Обнови опашката"><Clock3 size={18} /></a></div>
         {#each data.cases as item}
-          <a class:active={data.selected?.id === item.id} href={`/admin?case=${encodeURIComponent(item.id)}`}><span class:risk-high={item.risk === 'high'} class="risk-dot"></span><div><small>{item.reference} · {elapsed(item.createdAt)}</small><strong>{item.reason}</strong><span>{item.targetTitle}</span></div><ChevronRight size={17} /></a>
+          <a class:active={data.preview?.id === item.id} href={`/admin?case=${encodeURIComponent(item.id)}`}><span class:risk-high={item.risk === 'high'} class="risk-dot"></span><div><small>{item.reference} · {elapsed(item.createdAt)}</small><strong>{item.reason}</strong><span>{item.targetTitle}</span></div><ChevronRight size={17} /></a>
         {:else}
           <p class="empty-list">Няма активни сигнали за обяви.</p>
         {/each}
@@ -217,13 +217,25 @@
                 {:else if data.selected.targetType === 'conversation'}
                   <button class="approve" type="submit" name="decision" value="keep"><Check size={17} /> Без нарушение</button>
                   <button class="remove" type="submit" name="decision" value="hide"><X size={17} /> Блокирай разговора</button>
+                {:else if data.selected.targetType === 'brand' || data.selected.targetType === 'offer'}
+                  <button class="approve" type="submit" name="decision" value="dismiss"><Check size={17} /> Затвори без действие по целта</button>
                 {/if}
               </div>
             </form>
           {:else if !data.selected.supported}
             <div class="moderation-note"><AlertTriangle size={19} /><p>Този тип сигнал няма безопасен report-bound decision RPC. Случаят остава отворен без директна промяна на целевата таблица.</p></div>
           {:else}
-            <div class="moderation-note"><AlertTriangle size={19} /><p>Случаят е присвоен на друг модератор. Само назначеният модератор или администратор може да приложи report-bound решение.</p></div>
+            <div class="moderation-note"><AlertTriangle size={19} /><p>Случаят е присвоен на друг модератор. Само назначеният модератор може да приложи report-bound решение.</p></div>
+          {/if}
+        {:else if data.preview}
+          <div class="case-head"><div><span>{data.preview.reference}</span><h2>{data.preview.reason}</h2><p>{data.preview.targetTitle}</p></div><span class:risk-high={data.preview.risk === 'high'} class="risk-pill">{data.preview.risk === 'high' ? 'Висок' : 'Среден'} риск</span></div>
+          <div class="moderation-note"><AlertTriangle size={19} /><p>Подателят, конкретната цел, подробностите, доказателствата и audit trail се отключват само след успешно поемане на случая.</p></div>
+          <dl><div><dt>Тип цел</dt><dd>{data.preview.targetType}</dd></div><div><dt>Workflow</dt><dd>Чака поемане</dd></div><div><dt>Подаден</dt><dd>{timestamp(data.preview.createdAt)}</dd></div></dl>
+          {#if data.preview.canClaim}
+            <form method="POST" action="?/assign">
+              <input type="hidden" name="caseId" value={data.preview.id} />
+              <button class="button primary claim-button" type="submit"><Check size={17} /> Поеми случая</button>
+            </form>
           {/if}
         {:else}
           <div class="resolved"><div><Check size={30} /></div><h2>Опашката е празна.</h2><p>Няма отворени или разследвани сигнали за обяви.</p><a class="button primary" href="/admin">Обнови</a></div>

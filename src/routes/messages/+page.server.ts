@@ -100,9 +100,11 @@ export const actions: Actions = {
     return { ok: true, message: result.data };
   },
   state: async ({ request, locals }) => {
-    if (locals.runtime.mode === 'demo') return { ok: true, demo: true };
     const formData = await request.formData();
     const operation = formData.get('operation');
+    if (locals.runtime.mode === 'demo') {
+      return { ok: true, demo: true, operation, blocked: operation === 'block' };
+    }
     const result = await setConversationState(clientFrom(locals), {
       conversationId: formData.get('conversationId'),
       ...(operation === 'read' ? { lastReadAt: null } : {}),
@@ -110,6 +112,10 @@ export const actions: Actions = {
       ...(operation === 'block' ? { blocked: formData.get('enabled') === 'true' } : {})
     });
     if (!result.ok) return fail(statusFor(result.error.code), { ok: false, error: result.error });
-    return { ok: true };
+    return {
+      ok: true,
+      operation,
+      blocked: operation === 'block' && formData.get('enabled') === 'true'
+    };
   }
 };

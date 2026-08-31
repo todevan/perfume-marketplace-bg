@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
 import type { Tables, Views } from '../../src/lib/server/database.types';
 import {
+	createReport as createReportRepository,
+	listOwnReports,
 	RepositoryError,
 	toListingCardDto,
 	toPublicProfileDto,
@@ -80,27 +82,151 @@ describe('DTO repository boundary', () => {
 		});
 	});
 
-	it('projects reports without evidence paths, assignment, or moderator notes', () => {
+	it('projects only the reporter-safe RPC fields and generic outcome', () => {
 		const dto = toReportDto({
-			id: 'report-id',
-			reporter_id: profileRow.id,
+			report_id: '22222222-2222-4222-8222-222222222222',
 			target_type: 'listing',
-			target_id: '22222222-2222-4222-8222-222222222222',
 			reason_code: 'counterfeit',
-			details: null,
-			evidence_paths: ['private/evidence.jpg'],
+			evidence_count: 1,
 			status: 'investigating',
-			assigned_to: '33333333-3333-4333-8333-333333333333',
-			resolution_code: null,
-			resolution_notes: 'internal note',
+			outcome: 'pending',
 			resolved_at: null,
 			created_at: '2026-07-20T00:00:00.000Z',
 			updated_at: '2026-07-20T00:00:00.000Z'
-		});
+		} as never);
 		expect(dto.evidenceCount).toBe(1);
-		expect(dto).not.toHaveProperty('evidencePaths');
+		expect(dto).toMatchObject({ outcome: 'pending' });
+		expect(dto).not.toHaveProperty('targetId');
+		expect(dto).not.toHaveProperty('details');
 		expect(dto).not.toHaveProperty('assignedTo');
+		expect(dto).not.toHaveProperty('resolutionCode');
 		expect(dto).not.toHaveProperty('resolutionNotes');
+	});
+
+	it('lists own reports through the safe RPC without a reports table read', async () => {
+		const rpc = vi.fn(async () => ({
+			data: [{
+				report_id: '22222222-2222-4222-8222-222222222222',
+				target_type: 'listing',
+				reason_code: 'counterfeit_suspected',
+				evidence_count: 1,
+				status: 'open',
+				outcome: 'pending',
+				resolved_at: null,
+				created_at: '2026-07-20T00:00:00.000Z',
+				updated_at: '2026-07-20T00:00:00.000Z',
+				total_count: 1
+			}],
+			error: null
+		}));
+		const from = vi.fn();
+		const result = await listOwnReports(
+			{ rpc, from } as unknown as MarketplaceSupabaseClient,
+			profileRow.id,
+			{ limit: 10, offset: 0 }
+		);
+
+		expect(result.items).toHaveLength(1);
+		expect(rpc).toHaveBeenCalledWith('list_my_reports', {
+			p_page_size: 10,
+			p_page_offset: 0,
+			p_status: null
+		});
+		expect(from).not.toHaveBeenCalled();
+	});
+
+	it('paginates the complete status-filtered report history without duplicates or gaps', async () => {
+		const mixedRows = [
+			['30000000-0000-4000-8000-000000000001', 'open'],
+			['30000000-0000-4000-8000-000000000002', 'resolved'],
+			['30000000-0000-4000-8000-000000000003', 'open'],
+			['30000000-0000-4000-8000-000000000004', 'resolved'],
+			['30000000-0000-4000-8000-000000000005', 'open'],
+			['30000000-0000-4000-8000-000000000006', 'resolved']
+		] as const;
+		const row = ([report_id, status]: (typeof mixedRows)[number]) => ({
+			report_id,
+			target_type: 'listing' as const,
+			reason_code: 'counterfeit_suspected',
+			evidence_count: 0,
+			status,
+			outcome: status === 'resolved' ? 'completed' : 'pending',
+			resolved_at: status === 'resolved' ? '2026-07-20T01:00:00.000Z' : null,
+			created_at: '2026-07-20T00:00:00.000Z',
+			updated_at: '2026-07-20T01:00:00.000Z',
+			total_count: 3
+		});
+		const rpc = vi.fn(async (_name: string, args: { p_page_offset: number; p_page_size: number; p_status?: string }) => {
+			const source = args.p_status === 'resolved'
+				? mixedRows.filter(([, status]) => status === 'resolved')
+				: mixedRows;
+			return {
+				data: source.slice(args.p_page_offset, args.p_page_offset + args.p_page_size).map(row),
+				error: null
+			};
+		});
+		const client = { rpc, from: vi.fn() } as unknown as MarketplaceSupabaseClient;
+
+		const first = await listOwnReports(client, profileRow.id, {
+			limit: 2,
+			offset: 0,
+			status: 'resolved'
+		});
+		const second = await listOwnReports(client, profileRow.id, {
+			limit: 2,
+			offset: 2,
+			status: 'resolved'
+		});
+
+		expect(first).toMatchObject({ total: 3, hasMore: true, limit: 2, offset: 0 });
+		expect(second).toMatchObject({ total: 3, hasMore: false, limit: 2, offset: 2 });
+		expect([...first.items, ...second.items].map((report) => report.id)).toEqual([
+			'30000000-0000-4000-8000-000000000002',
+			'30000000-0000-4000-8000-000000000004',
+			'30000000-0000-4000-8000-000000000006'
+		]);
+		expect([...first.items, ...second.items].every((report) => report.status === 'resolved')).toBe(true);
+		expect(rpc).toHaveBeenNthCalledWith(1, 'list_my_reports', {
+			p_page_size: 2,
+			p_page_offset: 0,
+			p_status: 'resolved'
+		});
+		expect(rpc).toHaveBeenNthCalledWith(2, 'list_my_reports', {
+			p_page_size: 2,
+			p_page_offset: 2,
+			p_status: 'resolved'
+		});
+	});
+
+	it('creates a report receipt without INSERT RETURNING or a direct report SELECT', async () => {
+		const select = vi.fn();
+		const insert = vi.fn(async () => ({ data: null, error: null }));
+		const from = vi.fn(() => ({ insert, select }));
+		const result = await createReportRepository(
+			{ from } as unknown as MarketplaceSupabaseClient,
+			profileRow.id,
+			{
+				targetType: 'listing',
+				targetId: '22222222-2222-4222-8222-222222222222',
+				reasonCode: 'counterfeit_suspected',
+				details: 'Visible evidence supports this report.',
+				evidencePaths: ['private/evidence.jpg']
+			}
+		);
+
+		expect(result).toMatchObject({
+			targetType: 'listing',
+			reasonCode: 'counterfeit_suspected',
+			evidenceCount: 1,
+			status: 'open',
+			outcome: 'pending'
+		});
+		expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+			id: expect.any(String),
+			reporter_id: profileRow.id,
+			status: 'open'
+		}));
+		expect(select).not.toHaveBeenCalled();
 	});
 
 	it('projects the immutable persisted listing slug instead of regenerating it from title', () => {

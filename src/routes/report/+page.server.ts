@@ -2,6 +2,7 @@ import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import {
   REPORT_REASON_TARGETS,
+  isReportTargetSubmittable,
   reportReasonSchema,
   reportTargetTypeSchema,
   uuidSchema
@@ -60,7 +61,9 @@ interface ReportEvidenceRpcClient {
 export const load: PageServerLoad = ({ locals, url }) => {
   const targetType = reportTargetTypeSchema.safeParse(url.searchParams.get('targetType'));
   const targetId = uuidSchema.safeParse(url.searchParams.get('targetId'));
-  const acceptedTarget = targetType.success ? targetType.data : null;
+  const acceptedTarget = targetType.success && isReportTargetSubmittable(targetType.data)
+    ? targetType.data
+    : null;
   return {
     targetType: acceptedTarget,
     targetId: targetId.success ? targetId.data : null,

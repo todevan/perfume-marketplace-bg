@@ -773,6 +773,17 @@ test.describe('real hosted marketplace', () => {
 					'You are not allowed to perform this action.',
 					[conversationId, offerId, offerNote, sellerMessage, buyerMessage, listing.query]
 				);
+				const counterpartySend = await seller.request.post(appUrl(config.origin, '/messages?/send'), {
+					form: { conversationId, body: `counterparty blocked probe ${runId}`, replyToId: '' },
+					headers: { Accept: 'text/html', Origin: config.origin },
+					maxRedirects: 0
+				});
+				await expectSanitizedActionResponse(
+					counterpartySend,
+					403,
+					'You are not allowed to perform this action.',
+					[conversationId, offerId, offerNote, sellerMessage, buyerMessage, listing.query]
+				);
 			}
 		} finally {
 			await Promise.all([

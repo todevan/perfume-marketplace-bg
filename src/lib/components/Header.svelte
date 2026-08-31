@@ -1,17 +1,15 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import {
-    Bell,
-    ClipboardCheck,
-    LogIn,
-    LogOut,
-    Menu,
-    MessageCircle,
-    Plus,
-    Search,
-    UserRound,
-    X
-  } from '@lucide/svelte';
+  import Bell from '@lucide/svelte/icons/bell';
+  import ClipboardCheck from '@lucide/svelte/icons/clipboard-check';
+  import LogIn from '@lucide/svelte/icons/log-in';
+  import LogOut from '@lucide/svelte/icons/log-out';
+  import Menu from '@lucide/svelte/icons/menu';
+  import MessageCircle from '@lucide/svelte/icons/message-circle';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Search from '@lucide/svelte/icons/search';
+  import UserRound from '@lucide/svelte/icons/user-round';
+  import X from '@lucide/svelte/icons/x';
   import ScentMark from './ScentMark.svelte';
 
   interface HeaderAuth {
