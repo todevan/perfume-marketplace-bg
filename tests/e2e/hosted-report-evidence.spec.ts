@@ -354,9 +354,9 @@ async function freshReportToken(page: Page, targetId: string): Promise<string> {
 
 async function loginForApp(page: Page, actor: ActorCredentials, next: string): Promise<void> {
 	await page.goto(`/login?next=${encodeURIComponent(next)}`, { waitUntil: 'domcontentloaded' });
+	await waitForTestingTurnstile(page);
 	await page.locator('#email').fill(actor.email);
 	await page.locator('#password').fill(actor.password);
-	await waitForTestingTurnstile(page);
 	await page.locator('button[type="submit"]').click();
 }
 
