@@ -109,3 +109,29 @@ test('review writes remain database-gated on completed deals only', () => {
 	assert.match(review, /reviews require a completed deal/u);
 	assert.match(review, /revoke execute on function public\.validate_review_write\(\)/u);
 });
+
+test('review repairs preserve canonical moderation lock order and one post-lock timestamp', () => {
+	const { sql } = lifecycleMigration();
+	const normalized = compact(sql);
+
+	for (const functionName of ['complete_deal', 'cancel_deal']) {
+		const start = sql.indexOf(`create or replace function public.${functionName}`);
+		const next = sql.indexOf('create or replace function public.', start + 1);
+		const body = sql.slice(start, next);
+		const listingLock = body.indexOf('from public.listings l');
+		const transitionClock = body.indexOf('transition_time := clock_timestamp()');
+		assert.ok(transitionClock > listingLock, `${functionName} must capture time after canonical locks`);
+		assert.match(body, /created_at[\s\S]*transition_time/u);
+	}
+
+	const disputeStart = sql.indexOf('create or replace function public.resolve_deal_dispute');
+	const profileStart = sql.indexOf('create or replace function public.moderate_profile');
+	const reviewStart = sql.indexOf('create or replace function public.validate_review_write');
+	const dispute = sql.slice(disputeStart, profileStart);
+	const profile = sql.slice(profileStart, reviewStart);
+	assert.ok(dispute.indexOf('from public.deals d') < dispute.indexOf('from public.reports r'));
+	assert.match(dispute, /deal_record\.status\s*=\s*'cancelled'[\s\S]*resolution_status\s*<>\s*'cancelled'/u);
+	assert.match(dispute, /updated_deal\s*:=\s*deal_record/u);
+	assert.ok(profile.indexOf('from public.deals d') < profile.indexOf('from public.profiles p'));
+	assert.ok(normalized.includes('order by d.id for update'));
+});

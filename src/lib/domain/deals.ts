@@ -12,6 +12,17 @@ export function canCompleteDeal(
 	return status === 'pending_confirmation' && listingSellerId === viewerId;
 }
 
+export function canCancelDeal(
+	status: DealStatus,
+	participants: DealParticipantSet,
+	viewerId: string
+): boolean {
+	return (
+		(status === 'pending_confirmation' || status === 'disputed') &&
+		isDealParticipant(participants, viewerId)
+	);
+}
+
 export function canReviewDeal(status: DealStatus): boolean {
 	return status === 'completed';
 }

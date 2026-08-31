@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	canCancelDeal,
 	canCompleteDeal,
 	canReviewDeal,
 	isDealParticipant,
@@ -32,6 +33,18 @@ describe('seller completion eligibility', () => {
 });
 
 describe('participant deal presentation', () => {
+	it('allows either participant, but not an outsider, to cancel every nonterminal eligible deal', () => {
+		for (const status of ['pending_confirmation', 'disputed'] as const) {
+			expect(canCancelDeal(status, participants, 'seller')).toBe(true);
+			expect(canCancelDeal(status, participants, 'buyer')).toBe(true);
+			expect(canCancelDeal(status, participants, 'outsider')).toBe(false);
+		}
+		for (const status of ['completed', 'cancelled'] as const) {
+			expect(canCancelDeal(status, participants, 'seller')).toBe(false);
+			expect(canCancelDeal(status, participants, 'buyer')).toBe(false);
+		}
+	});
+
 	it('unlocks review actions only for completed deals', () => {
 		expect(canReviewDeal('completed')).toBe(true);
 		for (const status of ['pending_confirmation', 'cancelled', 'disputed'] as const) {

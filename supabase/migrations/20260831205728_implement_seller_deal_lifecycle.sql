@@ -32,6 +32,7 @@ declare
   completed_deal public.deals%rowtype;
   requesting_user uuid := auth.uid();
   target_listing_found boolean := false;
+  transition_time timestamptz;
 begin
   perform public.assert_active_beta_user();
 
@@ -84,17 +85,18 @@ begin
   if deal_record.status <> 'pending_confirmation' then
     raise exception 'deal is not eligible for completion' using errcode = '23514';
   end if;
+  transition_time := clock_timestamp();
 
   update public.deals
   set status = 'completed',
-      completed_at = statement_timestamp()
+      completed_at = transition_time
   where id = target_deal_id
   returning * into completed_deal;
 
   -- A moderation-owned state is stronger than an ordinary lifecycle state.
   update public.listings
   set status = 'completed',
-      completed_at = statement_timestamp()
+      completed_at = transition_time
   where id in (deal_record.listing_id, deal_record.offered_listing_id)
     and status = 'reserved';
 
@@ -103,7 +105,7 @@ begin
   where id in (deal_record.party_a_id, deal_record.party_b_id);
 
   insert into public.notifications (
-    profile_id, kind, title, body, action_url, data, dedupe_key
+    profile_id, kind, title, body, action_url, data, dedupe_key, created_at
   )
   values
     (
@@ -113,7 +115,8 @@ begin
       'Вече можете да оставите отзив.',
       '/deals?highlight=' || target_deal_id::text,
       jsonb_build_object('dealId', target_deal_id),
-      'deal_completed:' || target_deal_id::text || ':' || deal_record.party_a_id::text
+      'deal_completed:' || target_deal_id::text || ':' || deal_record.party_a_id::text,
+      transition_time
     ),
     (
       deal_record.party_b_id,
@@ -122,7 +125,8 @@ begin
       'Вече можете да оставите отзив.',
       '/deals?highlight=' || target_deal_id::text,
       jsonb_build_object('dealId', target_deal_id),
-      'deal_completed:' || target_deal_id::text || ':' || deal_record.party_b_id::text
+      'deal_completed:' || target_deal_id::text || ':' || deal_record.party_b_id::text,
+      transition_time
     )
   on conflict (dedupe_key) where dedupe_key is not null do nothing;
 
@@ -146,6 +150,7 @@ declare
     'g'
   );
   notification_recipient uuid;
+  transition_time timestamptz;
 begin
   perform public.assert_active_beta_user();
   if char_length(normalized_reason) not between 2 and 1000 then
@@ -186,10 +191,11 @@ begin
   if deal_record.status not in ('pending_confirmation', 'disputed') then
     raise exception 'deal is not eligible for cancellation' using errcode = '23514';
   end if;
+  transition_time := clock_timestamp();
 
   update public.deals
   set status = 'cancelled',
-      cancelled_at = statement_timestamp(),
+      cancelled_at = transition_time,
       cancelled_by = requesting_user,
       cancellation_reason = normalized_reason
   where id = target_deal_id;
@@ -208,7 +214,7 @@ begin
     else deal_record.party_a_id
   end;
   insert into public.notifications (
-    profile_id, kind, title, body, action_url, data, dedupe_key
+    profile_id, kind, title, body, action_url, data, dedupe_key, created_at
   )
   values (
     notification_recipient,
@@ -217,7 +223,8 @@ begin
     'Другият участник отмени сделката.',
     '/deals?highlight=' || target_deal_id::text,
     jsonb_build_object('dealId', target_deal_id),
-    'deal_cancelled:' || target_deal_id::text || ':' || notification_recipient::text
+    'deal_cancelled:' || target_deal_id::text || ':' || notification_recipient::text,
+    transition_time
   )
   on conflict (dedupe_key) where dedupe_key is not null do nothing;
 end;
@@ -244,6 +251,7 @@ declare
   updated_deal public.deals%rowtype;
   normalized_rationale text := btrim(coalesce(rationale, ''));
   report_resolution_code text;
+  transition_time timestamptz;
 begin
   if not public.is_staff() then
     raise exception 'active staff role required' using errcode = '42501';
@@ -262,6 +270,18 @@ begin
       using errcode = '22023';
   end if;
 
+  -- Deal-first ordering matches participant lifecycle operations. The report
+  -- is locked second so moderation cannot form a report -> deal deadlock cycle.
+  select * into deal_record
+  from public.deals d
+  where d.id = target_deal_id
+  for update;
+  if not found
+     or deal_record.status not in ('disputed', 'cancelled')
+  then
+    raise exception 'the reported deal is not disputable' using errcode = '23514';
+  end if;
+
   select * into target_report
   from public.reports r
   where r.id = report_case_id
@@ -276,15 +296,16 @@ begin
       using errcode = '42501';
   end if;
 
-  select * into deal_record
-  from public.deals d
-  where d.id = target_deal_id
-  for update;
-  if not found or deal_record.status <> 'disputed' then
-    raise exception 'the reported deal is not disputed' using errcode = '23514';
-  end if;
-
-  if resolution_status = 'pending_confirmation' then
+  if deal_record.status = 'cancelled' then
+    if resolution_status <> 'cancelled' then
+      raise exception 'a cancelled deal cannot resume seller completion'
+        using errcode = '23514';
+    end if;
+    -- Participant cancellation is terminal evidence. Moderation dispositions
+    -- the report without rewriting who cancelled, why, or when.
+    updated_deal := deal_record;
+    report_resolution_code := 'deal_cancelled_after_dispute';
+  elsif resolution_status = 'pending_confirmation' then
     update public.deals
     set status = 'pending_confirmation'
     where id = target_deal_id
@@ -296,10 +317,11 @@ begin
     where l.id in (deal_record.listing_id, deal_record.offered_listing_id)
     order by l.id
     for update;
+    transition_time := clock_timestamp();
 
     update public.deals
     set status = 'cancelled',
-        cancelled_at = statement_timestamp(),
+        cancelled_at = transition_time,
         cancelled_by = requesting_staff,
         cancellation_reason = normalized_rationale
     where id = target_deal_id
@@ -323,6 +345,126 @@ begin
   where id = target_report.id;
 
   return updated_deal;
+end;
+$$;
+
+create or replace function public.moderate_profile(
+  report_case_id uuid,
+  target_profile_id uuid,
+  suspend_profile boolean,
+  moderation_rationale text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_report public.reports%rowtype;
+  previous_profile public.profiles%rowtype;
+  updated_profile public.profiles%rowtype;
+  audit_action public.moderation_action;
+begin
+  if not public.is_staff() then
+    raise exception 'staff role required' using errcode = '42501';
+  end if;
+  if char_length(btrim(coalesce(moderation_rationale, ''))) < 10 then
+    raise exception 'a concrete moderation rationale is required'
+      using errcode = '23514';
+  end if;
+  if target_profile_id = auth.uid() then
+    raise exception 'moderators cannot act on their own profile'
+      using errcode = '42501';
+  end if;
+
+  select * into target_report
+  from public.reports r
+  where r.id = report_case_id
+  for update;
+  if not found then
+    raise exception 'assigned moderation case required' using errcode = '42501';
+  end if;
+  perform private.require_assigned_moderation_case(
+    target_report.id,
+    'profile',
+    target_profile_id
+  );
+
+  -- Lock every deal that suspension may dispute before touching the profile.
+  -- Lifecycle RPCs already lock the deal first, so this removes the former
+  -- profile -> deal inversion while retaining deterministic UUID order.
+  perform d.id
+  from public.deals d
+  where d.status = 'pending_confirmation'
+    and target_profile_id in (d.party_a_id, d.party_b_id)
+  order by d.id
+  for update;
+
+  select * into previous_profile
+  from public.profiles p
+  where p.id = target_profile_id
+  for update;
+  if not found then
+    raise exception 'profile not found' using errcode = 'P0002';
+  end if;
+  if previous_profile.role in ('moderator', 'admin') and not public.is_admin() then
+    raise exception 'only an administrator may moderate staff accounts'
+      using errcode = '42501';
+  end if;
+
+  update public.profiles
+  set is_suspended = suspend_profile
+  where id = target_profile_id
+  returning * into updated_profile;
+
+  if suspend_profile then
+    update public.listings
+    set status = 'paused'
+    where seller_id = target_profile_id and status = 'active';
+
+    update public.offers o
+    set status = 'expired', responded_at = now()
+    where o.status = 'pending'
+      and (
+        o.offerer_id = target_profile_id
+        or o.listing_id in (
+          select l.id from public.listings l where l.seller_id = target_profile_id
+        )
+        or o.offered_listing_id in (
+          select l.id from public.listings l where l.seller_id = target_profile_id
+        )
+      );
+
+    update public.deals
+    set status = 'disputed'
+    where status = 'pending_confirmation'
+      and target_profile_id in (party_a_id, party_b_id);
+
+    update public.conversations c
+    set status = 'blocked'
+    where exists (
+      select 1 from public.deals d
+      where d.accepted_offer_id = c.accepted_offer_id
+        and target_profile_id in (d.party_a_id, d.party_b_id)
+    );
+
+    update public.conversation_members
+    set blocked_at = coalesce(blocked_at, now())
+    where profile_id = target_profile_id;
+  end if;
+
+  audit_action := case
+    when suspend_profile then 'user_suspended'::public.moderation_action
+    else 'user_restored'::public.moderation_action
+  end;
+
+  insert into public.moderation_audit (
+    actor_id, report_id, action, target_type, target_id, rationale,
+    before_data, after_data
+  ) values (
+    auth.uid(), target_report.id, audit_action, 'profile', target_profile_id,
+    btrim(moderation_rationale), to_jsonb(previous_profile), to_jsonb(updated_profile)
+  );
 end;
 $$;
 

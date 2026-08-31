@@ -1,6 +1,6 @@
 <script lang="ts">
   import { AlertTriangle, CheckCheck, MessageCircle, PackageCheck, Star, X } from '@lucide/svelte';
-  import { canCompleteDeal, canReviewDeal, visibleCancellationReason } from '$lib/domain/deals';
+  import { canCancelDeal, canCompleteDeal, canReviewDeal, visibleCancellationReason } from '$lib/domain/deals';
   import type { ActionData, PageData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -19,17 +19,16 @@
     {#each data.deals as deal}
       <article class:highlighted={data.highlight === deal.id} class="deal-card surface">
         <div class="deal-head"><div><span>{labels[deal.status]}</span><h2>{deal.listing.title}</h2><p>С {counterpart(deal).username}</p></div><PackageCheck size={34} /></div>
-        {#if deal.status === 'pending_confirmation'}
+        {#if deal.status === 'pending_confirmation' || deal.status === 'disputed'}
           <div class="deal-actions">
             <a href={`/messages?conversation=${encodeURIComponent(deal.conversationId)}`}><MessageCircle size={16} /> Към чата</a>
-            <details class="dispute-details"><summary><AlertTriangle size={16} /> Отвори спор</summary><form method="POST" action="?/dispute"><input type="hidden" name="dealId" value={deal.id} /><label>Какъв е проблемът?<textarea name="details" minlength="20" maxlength="4000" required placeholder="Опиши конкретно какво се случи…"></textarea></label><p>Това едновременно маркира сделката като спорна и отваря модераторски случай.</p><button type="submit">Изпрати към модератор</button></form></details>
-            <details><summary><X size={16} /> Отказ</summary><form method="POST" action="?/cancel"><input type="hidden" name="dealId" value={deal.id} /><label>Причина<textarea name="reason" minlength="2" maxlength="1000" required></textarea></label><button type="submit">Потвърди отказа</button></form></details>
+            {#if deal.status === 'pending_confirmation'}<details class="dispute-details"><summary><AlertTriangle size={16} /> Отвори спор</summary><form method="POST" action="?/dispute"><input type="hidden" name="dealId" value={deal.id} /><label>Какъв е проблемът?<textarea name="details" minlength="20" maxlength="4000" required placeholder="Опиши конкретно какво се случи…"></textarea></label><p>Това едновременно маркира сделката като спорна и отваря модераторски случай.</p><button type="submit">Изпрати към модератор</button></form></details>{/if}
+            {#if canCancelDeal(deal.status, { partyAId: deal.partyA.id, partyBId: deal.partyB.id }, data.viewerId)}<details><summary><X size={16} /> Отказ</summary><form method="POST" action="?/cancel"><input type="hidden" name="dealId" value={deal.id} /><label>Причина<textarea name="reason" minlength="2" maxlength="1000" required></textarea></label><button type="submit">Потвърди отказа</button></form></details>{/if}
             {#if canCompleteDeal(deal.status, deal.listing.seller.id, data.viewerId)}<form method="POST" action="?/complete"><input type="hidden" name="dealId" value={deal.id} /><button class="complete" type="submit"><CheckCheck size={17} /> Сделката приключи</button></form>{/if}
           </div>
         {:else if canReviewDeal(deal.status)}
           <form class="review" method="POST" action="?/review"><input type="hidden" name="dealId" value={deal.id} /><input type="hidden" name="revieweeId" value={counterpart(deal).id} /><div><Star size={20} /><strong>Оцени {counterpart(deal).username}</strong></div><label>Оценка<select name="rating" required><option value="5">5 — Отлично</option><option value="4">4 — Много добре</option><option value="3">3 — Добре</option><option value="2">2 — Незадоволително</option><option value="1">1 — Лошо</option></select></label><label>Отзив<textarea name="body" maxlength="2000"></textarea></label><button type="submit">Публикувай отзив</button></form>
-        {:else if deal.status === 'cancelled'}<p class="closed-note">{visibleCancellationReason(deal.status, deal.cancellationReason) ?? 'Сделката е отказана.'}</p>
-        {:else}<p class="closed-note">Тази сделка е в спор и не приема нови действия.</p>{/if}
+        {:else if deal.status === 'cancelled'}<p class="closed-note">{visibleCancellationReason(deal.status, deal.cancellationReason) ?? 'Сделката е отказана.'}</p>{/if}
       </article>
     {/each}
   </div>

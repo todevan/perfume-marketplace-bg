@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(116);
+select plan(123);
 
 select is(
   has_table_privilege('authenticated', 'public.deal_confirmations', 'insert'),
@@ -92,6 +92,13 @@ insert into auth.users (
   'authenticated', 'authenticated', 'privacy-outsider@example.test', '', now(),
   '{"provider":"email","providers":["email"]}'::jsonb,
   '{"username":"privacy_outsider"}'::jsonb, now(), now()
+),
+(
+  '23888888-8888-4888-8888-888888888888',
+  '00000000-0000-0000-0000-000000000000',
+  'authenticated', 'authenticated', 'privacy-moderator@example.test', '', now(),
+  '{"provider":"email","providers":["email"]}'::jsonb,
+  '{"username":"privacy_moderator"}'::jsonb, now(), now()
 );
 
 update public.profiles
@@ -99,46 +106,56 @@ set email_verified_at = now(), phone_verified_at = now()
 where id in (
   '23111111-1111-4111-8111-111111111111',
   '23222222-2222-4222-8222-222222222222',
-  '23333333-3333-4333-8333-333333333333'
+  '23333333-3333-4333-8333-333333333333',
+  '23888888-8888-4888-8888-888888888888'
 );
+update public.profiles
+set role = 'moderator'
+where id = '23888888-8888-4888-8888-888888888888';
 
 insert into public.beta_invites (id, email, token_hash, status, expires_at)
 values
   ('23411111-1111-4111-8111-111111111111', 'privacy-seller@example.test', repeat('1', 64), 'pending', now() + interval '7 days'),
   ('23422222-2222-4222-8222-222222222222', 'privacy-buyer@example.test', repeat('2', 64), 'pending', now() + interval '7 days'),
-  ('23433333-3333-4333-8333-333333333333', 'privacy-outsider@example.test', repeat('3', 64), 'pending', now() + interval '7 days');
+  ('23433333-3333-4333-8333-333333333333', 'privacy-outsider@example.test', repeat('3', 64), 'pending', now() + interval '7 days'),
+  ('23488888-8888-4888-8888-888888888888', 'privacy-moderator@example.test', repeat('8', 64), 'pending', now() + interval '7 days');
 
 update public.beta_invites
 set status = 'accepted',
     accepted_by = case id
       when '23411111-1111-4111-8111-111111111111' then '23111111-1111-4111-8111-111111111111'::uuid
       when '23422222-2222-4222-8222-222222222222' then '23222222-2222-4222-8222-222222222222'::uuid
-      else '23333333-3333-4333-8333-333333333333'::uuid
+      when '23433333-3333-4333-8333-333333333333' then '23333333-3333-4333-8333-333333333333'::uuid
+      else '23888888-8888-4888-8888-888888888888'::uuid
     end
 where id in (
   '23411111-1111-4111-8111-111111111111',
   '23422222-2222-4222-8222-222222222222',
-  '23433333-3333-4333-8333-333333333333'
+  '23433333-3333-4333-8333-333333333333',
+  '23488888-8888-4888-8888-888888888888'
 );
 
 insert into public.beta_memberships (profile_id, invite_id, status)
 values
   ('23111111-1111-4111-8111-111111111111', '23411111-1111-4111-8111-111111111111', 'pending'),
   ('23222222-2222-4222-8222-222222222222', '23422222-2222-4222-8222-222222222222', 'pending'),
-  ('23333333-3333-4333-8333-333333333333', '23433333-3333-4333-8333-333333333333', 'pending');
+  ('23333333-3333-4333-8333-333333333333', '23433333-3333-4333-8333-333333333333', 'pending'),
+  ('23888888-8888-4888-8888-888888888888', '23488888-8888-4888-8888-888888888888', 'pending');
 update public.beta_memberships
 set status = 'active'
 where profile_id in (
   '23111111-1111-4111-8111-111111111111',
   '23222222-2222-4222-8222-222222222222',
-  '23333333-3333-4333-8333-333333333333'
+  '23333333-3333-4333-8333-333333333333',
+  '23888888-8888-4888-8888-888888888888'
 );
 update public.beta_memberships
 set activated_at = now() - interval '1 second'
 where profile_id in (
   '23111111-1111-4111-8111-111111111111',
   '23222222-2222-4222-8222-222222222222',
-  '23333333-3333-4333-8333-333333333333'
+  '23333333-3333-4333-8333-333333333333',
+  '23888888-8888-4888-8888-888888888888'
 );
 
 insert into public.beta_consent_events (
@@ -149,7 +166,8 @@ from (
   values
     ('23111111-1111-4111-8111-111111111111'::uuid),
     ('23222222-2222-4222-8222-222222222222'::uuid),
-    ('23333333-3333-4333-8333-333333333333'::uuid)
+    ('23333333-3333-4333-8333-333333333333'::uuid),
+    ('23888888-8888-4888-8888-888888888888'::uuid)
 ) as fixture(profile_id)
 cross join public.beta_legal_documents document
 where document.required_for_access and document.retired_at is null;
@@ -888,23 +906,98 @@ select is(
 rollback to savepoint seller_cancel_deal;
 
 savepoint disputed_cancel_deal;
-set local role postgres;
-update public.deals
-set status = 'disputed', disputed_at = statement_timestamp()
-where id = (select id from privacy_deal);
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select lives_ok(
+  $$ select * from public.open_deal_dispute((select id from privacy_deal), 'real participant dispute details') $$,
+  'a participant opens a real report-bound deal dispute'
+);
 select lives_ok(
   $$ select public.cancel_deal((select id from privacy_deal), 'cancel disputed deal') $$,
   'a participant can cancel an eligible disputed deal'
 );
 reset role;
 set local role postgres;
+create temp table cancelled_dispute_evidence on commit drop as
+select jsonb_build_object(
+  'status', status,
+  'cancelled_at', cancelled_at,
+  'cancelled_by', cancelled_by,
+  'cancellation_reason', cancellation_reason
+) as evidence
+from public.deals
+where id = (select id from privacy_deal);
+grant select on cancelled_dispute_evidence to authenticated;
+create temp table privacy_dispute_report on commit drop as
+select r.id
+from public.reports r
+where r.target_type = 'deal'
+  and r.target_id = (select id from privacy_deal);
+grant select on privacy_dispute_report to authenticated;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23888888-8888-4888-8888-888888888888","role":"authenticated","aal":"aal2"}', true);
+select set_config('request.jwt.claim.sub', '23888888-8888-4888-8888-888888888888', true);
 select is(
-  (select status::text from public.deals where id = (select id from privacy_deal)),
-  'cancelled',
-  'disputed cancellation reaches the same terminal cancelled state'
+  public.claim_moderation_report((select id from privacy_dispute_report)),
+  'claimed',
+  'an AAL2 moderator claims the participant-created deal report'
+);
+select throws_ok(
+  $$
+    select public.resolve_deal_dispute(
+      (select id from privacy_dispute_report),
+      (select id from privacy_deal),
+      'pending_confirmation',
+      'attempt to resume cancelled deal'
+    )
+  $$,
+  '23514', 'a cancelled deal cannot resume seller completion',
+  'moderation cannot resurrect a participant-cancelled deal'
+);
+select lives_ok(
+  $$
+    select public.resolve_deal_dispute(
+      (select id from privacy_dispute_report),
+      (select id from privacy_deal),
+      'cancelled',
+      'close report without rewriting participant cancellation'
+    )
+  $$,
+  'assigned staff can disposition the report after participant cancellation'
+);
+reset role;
+set local role postgres;
+select is(
+  (
+    select status::text from public.reports
+    where target_type = 'deal' and target_id = (select id from privacy_deal)
+  ),
+  'resolved',
+  'staff disposition closes the investigating misconduct report'
+);
+select is(
+  (
+    select jsonb_build_object(
+      'status', status,
+      'cancelled_at', cancelled_at,
+      'cancelled_by', cancelled_by,
+      'cancellation_reason', cancellation_reason
+    )
+    from public.deals where id = (select id from privacy_deal)
+  ),
+  (select evidence from cancelled_dispute_evidence),
+  'staff report disposition preserves participant cancellation evidence exactly'
+);
+select is(
+  (select cancelled_by from public.deals where id = (select id from privacy_deal)),
+  '23222222-2222-4222-8222-222222222222'::uuid,
+  'participant identity remains the cancellation actor after moderation disposition'
+);
+select is(
+  (select cancellation_reason from public.deals where id = (select id from privacy_deal)),
+  'cancel disputed deal',
+  'participant cancellation reason remains immutable after moderation disposition'
 );
 rollback to savepoint disputed_cancel_deal;
 
