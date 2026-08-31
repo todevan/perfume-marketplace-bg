@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(47);
+select plan(53);
 
 create function pg_temp.filtered_report_page(
   page_size integer,
@@ -142,8 +142,10 @@ where m.profile_id in (
   and d.required_for_access
   and d.retired_at is null;
 
-insert into public.brands (id, canonical_name, slug, status, normalized_key)
-values ('24300000-0000-4000-8000-000000000001', 'Issue 24 Brand', 'issue-24-brand', 'canonical', 'issue 24 brand');
+insert into public.brands (id, canonical_name, slug, status, normalized_key, submitted_display_name, created_by)
+values
+  ('24300000-0000-4000-8000-000000000001', 'Issue 24 Pending Brand', 'issue-24-pending-brand', 'pending_canonicalization', 'issue 24 pending brand', 'Issue 24 Pending Brand', '24100000-0000-4000-8000-000000000002'),
+  ('24300000-0000-4000-8000-000000000002', 'Issue 24 Canonical Brand', 'issue-24-canonical-brand', 'canonical', 'issue 24 canonical brand', null, null);
 
 set local session_replication_role = replica;
 insert into public.listings (
@@ -159,6 +161,25 @@ insert into public.listings (
   'Issue 24 Fragrance', 'EDP', 'Issue 24 listing', 'Moderation fixture', 'Sofia',
   100, 90, false, 10000, 'active', 'issue-24-listing', now(), now() + interval '30 days'
 );
+
+insert into public.upload_quarantine (
+  id, uploader_id, listing_id, requested_role, quarantine_path,
+  declared_mime_type, declared_byte_size, status, processor_request_id,
+  final_storage_path, claimed_at, finalized_at
+) values
+  ('24800000-0000-4000-8000-000000000001', '24100000-0000-4000-8000-000000000002', '24400000-0000-4000-8000-000000000001', 'product_full', '24100000-0000-4000-8000-000000000002/24400000-0000-4000-8000-000000000001/24800000-0000-4000-8000-000000000001/source.jpg', 'image/jpeg', 100, 'finalized', 'issue-24-photo-1', 'issue-24/final-1.webp', now(), now()),
+  ('24800000-0000-4000-8000-000000000002', '24100000-0000-4000-8000-000000000002', '24400000-0000-4000-8000-000000000001', 'bottle_bottom', '24100000-0000-4000-8000-000000000002/24400000-0000-4000-8000-000000000001/24800000-0000-4000-8000-000000000002/source.jpg', 'image/jpeg', 100, 'finalized', 'issue-24-photo-2', 'issue-24/final-2.webp', now(), now()),
+  ('24800000-0000-4000-8000-000000000003', '24100000-0000-4000-8000-000000000002', '24400000-0000-4000-8000-000000000001', 'batch_code', '24100000-0000-4000-8000-000000000002/24400000-0000-4000-8000-000000000001/24800000-0000-4000-8000-000000000003/source.jpg', 'image/jpeg', 100, 'finalized', 'issue-24-photo-3', 'issue-24/final-3.webp', now(), now()),
+  ('24800000-0000-4000-8000-000000000004', '24100000-0000-4000-8000-000000000002', '24400000-0000-4000-8000-000000000001', 'fill_level', '24100000-0000-4000-8000-000000000002/24400000-0000-4000-8000-000000000001/24800000-0000-4000-8000-000000000004/source.jpg', 'image/jpeg', 100, 'finalized', 'issue-24-photo-4', 'issue-24/final-4.webp', now(), now());
+
+insert into public.listing_photos (
+  id, listing_id, storage_path, role, content_hash, mime_type,
+  byte_size, width_px, height_px, sanitized_at, source_upload_id
+) values
+  ('24900000-0000-4000-8000-000000000001', '24400000-0000-4000-8000-000000000001', 'issue-24/final-1.webp', 'product_full', repeat('1', 64), 'image/webp', 100, 10, 10, now(), '24800000-0000-4000-8000-000000000001'),
+  ('24900000-0000-4000-8000-000000000002', '24400000-0000-4000-8000-000000000001', 'issue-24/final-2.webp', 'bottle_bottom', repeat('2', 64), 'image/webp', 100, 10, 10, now(), '24800000-0000-4000-8000-000000000002'),
+  ('24900000-0000-4000-8000-000000000003', '24400000-0000-4000-8000-000000000001', 'issue-24/final-3.webp', 'batch_code', repeat('3', 64), 'image/webp', 100, 10, 10, now(), '24800000-0000-4000-8000-000000000003'),
+  ('24900000-0000-4000-8000-000000000004', '24400000-0000-4000-8000-000000000001', 'issue-24/final-4.webp', 'fill_level', repeat('4', 64), 'image/webp', 100, 10, 10, now(), '24800000-0000-4000-8000-000000000004');
 
 insert into public.offers (
   id, listing_id, offerer_id, kind, cash_amount_minor, status, expires_at
@@ -264,6 +285,27 @@ select throws_ok(
 
 select set_config('request.jwt.claims', '{"sub":"24100000-0000-4000-8000-000000000003","role":"authenticated","aal":"aal2"}', true);
 select ok(public.is_staff(), 'the current AAL2 moderator fixture is target-queue eligible');
+select is(public.claim_moderation_report('24500000-0000-4000-8000-000000000004'), 'claimed', 'an AAL2 moderator can claim a legacy brand report for safe disposition');
+select throws_ok(
+  $$select public.canonicalize_brand(
+    '24500000-0000-4000-8000-000000000004',
+    '24300000-0000-4000-8000-000000000001',
+    '24300000-0000-4000-8000-000000000002',
+    'Direct legacy brand mutation must remain unavailable.'
+  )$$,
+  '42501', 'permission denied for function canonicalize_brand',
+  'authenticated moderators cannot bypass safe disposition with direct legacy brand canonicalization'
+);
+reset role;
+set local role postgres;
+select is((select status::text from public.reports where id = '24500000-0000-4000-8000-000000000004'), 'investigating', 'denied legacy brand canonicalization leaves the report investigating');
+select is((select brand_id from public.listings where id = '24400000-0000-4000-8000-000000000001'), '24300000-0000-4000-8000-000000000001'::uuid, 'denied legacy brand canonicalization leaves the listing on the pending brand');
+select is((select status::text from public.brands where id = '24300000-0000-4000-8000-000000000001'), 'pending_canonicalization', 'denied legacy brand canonicalization leaves the pending brand unchanged');
+select is((select count(*) from public.moderation_audit where report_id = '24500000-0000-4000-8000-000000000004' and action = 'brand_merged'), 0::bigint, 'denied legacy brand canonicalization writes no brand-merged audit');
+
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '24100000-0000-4000-8000-000000000003', true);
+select set_config('request.jwt.claims', '{"sub":"24100000-0000-4000-8000-000000000003","role":"authenticated","aal":"aal2"}', true);
 select throws_ok(
   $$select * from public.list_moderation_report_queue(50, -1)$$,
   '22023', 'page offset must be non-negative',

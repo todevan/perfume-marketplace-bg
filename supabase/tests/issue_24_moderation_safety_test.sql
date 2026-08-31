@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(13);
+select plan(14);
 
 select ok(
   to_regprocedure('public.list_my_reports(integer,integer,public.report_status)') is not null,
@@ -47,6 +47,10 @@ select ok(
   coalesce(has_function_privilege('authenticated', to_regprocedure('public.can_read_report_evidence(text)'), 'execute'), false)
     and coalesce(not has_function_privilege('anon', to_regprocedure('public.can_read_report_evidence(text)'), 'execute'), false),
   'authenticated storage RLS can execute the exact-assignment evidence predicate while anonymous callers cannot'
+);
+select ok(
+  not has_function_privilege('authenticated', to_regprocedure('public.canonicalize_brand(uuid,uuid,uuid,text)'), 'execute'),
+  'authenticated clients cannot execute legacy brand canonicalization directly'
 );
 
 select ok(

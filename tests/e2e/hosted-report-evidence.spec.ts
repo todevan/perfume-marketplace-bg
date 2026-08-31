@@ -1348,6 +1348,7 @@ test.describe('hosted report-evidence security matrix', () => {
 						'resolved_at',
 						'status',
 						'target_type',
+						'total_count',
 						'updated_at'
 					].sort()
 				);
