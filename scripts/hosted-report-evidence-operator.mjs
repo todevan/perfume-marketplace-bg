@@ -658,7 +658,7 @@ export function registerIssue24Checkpoint(manifest, stage, candidateSha, complet
 	requireIsoTimestamp(completedAt);
 	const existing = manifest.checkpoints.find((checkpoint) => checkpoint.stage === stage);
 	if (existing) {
-		if (existing.candidateSha === candidateSha && existing.completedAt === completedAt) return manifest;
+		if (existing.candidateSha === candidateSha) return manifest;
 		throw new HostedEvidenceOperatorError('Issue #24 checkpoint candidate is invalid');
 	}
 	return cloneManifest(manifest, {

@@ -277,6 +277,14 @@ describe('hosted report-evidence target lock', () => {
 				completedAt: '2026-08-31T00:00:00.000Z'
 			}
 		]);
+		expect(
+			registerIssue24Checkpoint(
+				checkpointed,
+				'actors-attested',
+				config.candidateSha!,
+				'2026-08-31T00:01:00.000Z'
+			)
+		).toBe(checkpointed);
 		expect(() =>
 			registerIssue24Checkpoint(
 				checkpointed,
