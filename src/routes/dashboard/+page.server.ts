@@ -42,7 +42,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!listingsResult.ok) error(503, listingsResult.error.message);
 	const reports = reportsResult.ok
 		? reportsResult.data
-		: { items: [], error: 'Сигналите временно не са достъпни.' };
+		: {
+			items: [],
+			total: 0,
+			limit: 10,
+			offset: reportOffset,
+			hasMore: false,
+			error: 'Сигналите временно не са достъпни.'
+		};
 	const reportContinuation = reportsResult.ok
 		? {
 				previousHref: reports.offset > 0
