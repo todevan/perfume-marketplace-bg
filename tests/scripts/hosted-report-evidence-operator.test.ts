@@ -84,7 +84,7 @@ const issue24Environment = {
 	...baseEnvironment,
 	E2E_REAL_REPORT_EVIDENCE_RUN_ID: 'issue24-20260831-abcdef0',
 	E2E_REAL_BASE_URL:
-		'https://aromatika-issue-24-20260831-abcdef0-aaaaaaa.perfume-marketplace-bg.workers.dev',
+		'https://aromatika-issue-24-20260831-abcdef0-aaaaaaa.teodorpavlov.workers.dev',
 	PUBLIC_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
 	EXPECTED_SUPABASE_PROJECT_REF: 'abcdefghijklmnopqrst',
 	E2E_REAL_ISSUE_24_RUN: 'true',
@@ -238,7 +238,7 @@ describe('hosted report-evidence target lock', () => {
 			supabaseUrl: 'https://abcdefghijklmnopqrst.supabase.co',
 			workerName: 'aromatika-issue-24-20260831-abcdef0-aaaaaaa',
 			workerOrigin:
-				'https://aromatika-issue-24-20260831-abcdef0-aaaaaaa.perfume-marketplace-bg.workers.dev'
+				'https://aromatika-issue-24-20260831-abcdef0-aaaaaaa.teodorpavlov.workers.dev'
 		});
 		expect(config.runId).toBe('issue24-20260831-abcdef0');
 		expect(config.candidateSha).toBe('a'.repeat(40));

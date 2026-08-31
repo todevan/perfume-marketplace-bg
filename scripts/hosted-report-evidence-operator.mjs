@@ -131,6 +131,7 @@ const SAFE_RESULTS = new Set([
 	'verified'
 ]);
 const SAFE_CLEANUP_STATES = new Set(['none', 'pending-A11', 'verified']);
+const ISSUE_24_WORKERS_DEV_SUBDOMAIN = 'teodorpavlov';
 const PRIVATE_RESPONSE_PATTERN =
 	/(?:supabase|cloudflare\s+images|storage[_ -]?path|report-evidence\/|bearer|authorization|service[_ -]?role|password|credential|stack|exception|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|(?:gate3|issue24)-[a-z0-9-]{8,64}|[a-z0-9._-]+\.(?:png|jpe?g|webp|avif)|(?:sb_(?:publishable|secret)|eyJ)[a-z0-9._-]{16,})/iu;
 
@@ -161,7 +162,7 @@ function assertApprovedHostedTarget(config) {
 		config.target.supabaseUrl === `https://${config.target.projectRef}.supabase.co` &&
 		typeof config.target.workerName === 'string' &&
 		config.target.workerOrigin ===
-			`https://${config.target.workerName}.perfume-marketplace-bg.workers.dev` &&
+			`https://${config.target.workerName}.${ISSUE_24_WORKERS_DEV_SUBDOMAIN}.workers.dev` &&
 		typeof config.candidateSha === 'string' &&
 		/^[a-f0-9]{40}$/u.test(config.candidateSha) &&
 		config.target.workerName.includes('issue-24') &&
@@ -462,7 +463,7 @@ export function validateIssue24HostedEnvironment(environment = process.env) {
 		throw new HostedEvidenceOperatorError('Issue #24 hosted target is invalid');
 	}
 	const supabaseUrl = `https://${projectRef}.supabase.co`;
-	const workerOrigin = `https://${workerName}.perfume-marketplace-bg.workers.dev`;
+	const workerOrigin = `https://${workerName}.${ISSUE_24_WORKERS_DEV_SUBDOMAIN}.workers.dev`;
 	if (
 		normalizeOrigin(requirePrivateValue(environment, 'PUBLIC_SUPABASE_URL')) !== supabaseUrl ||
 		normalizeOrigin(requirePrivateValue(environment, 'E2E_REAL_BASE_URL')) !== workerOrigin
