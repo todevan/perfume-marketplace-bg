@@ -10,7 +10,7 @@ import {
 } from '../../contracts';
 import {
 	cancelDeal as repoCancelDeal,
-	confirmDeal as repoConfirmDeal,
+	completeDeal as repoCompleteDeal,
 	findDealById,
 	listDeals as repoListDeals,
 	openDealDispute as repoOpenDealDispute,
@@ -36,12 +36,12 @@ export function getDeal(
 	);
 }
 
-export function confirmDeal(
+export function completeDeal(
 	client: MarketplaceSupabaseClient,
 	rawInput: unknown
 ): Promise<ActionResult<void>> {
-	return runAuthenticatedAction(client, dealIdInputSchema, rawInput, (profileId, { dealId }) =>
-		repoConfirmDeal(client, profileId, dealId)
+	return runAuthenticatedAction(client, dealIdInputSchema, rawInput, (_profileId, { dealId }) =>
+		repoCompleteDeal(client, dealId)
 	);
 }
 

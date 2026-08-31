@@ -2503,7 +2503,7 @@ export type Database = {
         Args: { target_queue_id: number; worker_request_id: string }
         Returns: undefined
       }
-      confirm_deal: {
+      complete_deal: {
         Args: { target_deal_id: string }
         Returns: {
           accepted_offer_id: string
@@ -3167,6 +3167,7 @@ export type Database = {
         | "message_received"
         | "deal_confirmation_needed"
         | "deal_completed"
+        | "deal_cancelled"
         | "review_received"
         | "listing_expiring"
         | "listing_expired"
@@ -3461,6 +3462,7 @@ export const Constants = {
         "message_received",
         "deal_confirmation_needed",
         "deal_completed",
+        "deal_cancelled",
         "review_received",
         "listing_expiring",
         "listing_expired",

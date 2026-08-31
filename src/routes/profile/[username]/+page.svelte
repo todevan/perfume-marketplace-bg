@@ -28,7 +28,7 @@
 
 <svelte:head>
   <title>{profile.username} · Профил</title>
-  <meta name="description" content={`Обяви, потвърдени сделки и отзиви за ${profile.username}.`} />
+  <meta name="description" content={`Обяви, приключени сделки и отзиви за ${profile.username}.`} />
 </svelte:head>
 
 <section class="profile-hero" style={`--profile-tone:${tone}`}>
@@ -46,8 +46,8 @@
 
     <aside class="profile-score surface reveal" style="animation-delay: 120ms">
       <div class="score-top"><span>Рейтинг от сделки</span><strong>{rating}</strong><div class="stars" aria-label={profile.ratingCount > 0 ? `${rating} от 5` : 'Все още няма оценки'}>{#each Array(5) as _, index}<Star size={16} fill={index < ratingRounded ? 'currentColor' : 'none'} />{/each}</div></div>
-      <div class="score-stats"><div><PackageCheck size={20} /><strong>{profile.completedDealsCount}</strong><span>потвърдени сделки</span></div><div><ShieldCheck size={20} /><strong>{profile.merchantVerified ? 'Проверен' : 'Активен'}</strong><span>{displayKind}</span></div></div>
-      <p><Check size={16} /> Звездите са само от взаимно потвърдени сделки.</p>
+      <div class="score-stats"><div><PackageCheck size={20} /><strong>{profile.completedDealsCount}</strong><span>приключени сделки</span></div><div><ShieldCheck size={20} /><strong>{profile.merchantVerified ? 'Проверен' : 'Активен'}</strong><span>{displayKind}</span></div></div>
+      <p><Check size={16} /> Звездите са само от приключени сделки.</p>
     </aside>
   </div>
 </section>
@@ -65,9 +65,9 @@
       <div class="content-heading"><div><span class="eyebrow">Активна колекция</span><h2>Обяви от {profile.username}</h2></div></div>
       {#if profileListings.length}<div class="listing-grid">{#each profileListings as listing}<ListingCard {listing} variant="catalog" />{/each}</div>{:else}<div class="empty-state"><div><Store size={34} /><h2>Няма активни обяви.</h2><p class="muted">Публикуваните обяви на този профил ще се появят тук.</p></div></div>{/if}
     {:else}
-      <div class="content-heading"><div><span class="eyebrow">Потвърдени сделки</span><h2>Отзиви, които изграждат рейтинга.</h2></div><p>Само двамата участници в приключена и взаимно потвърдена сделка могат да дадат звезди.</p></div>
+      <div class="content-heading"><div><span class="eyebrow">Приключени сделки</span><h2>Отзиви, които изграждат рейтинга.</h2></div><p>Само двамата участници в приключена сделка могат да дадат звезди.</p></div>
       <div class="review-list">
-        {#each reviews as review, index}<article><div class="review-number">{String(index + 1).padStart(2, '0')}</div><div class="reviewer"><div class="mini-avatar"><UserRound size={18} /></div><div><strong>{review.reviewer.username}</strong><span>{new Date(review.createdAt).toLocaleDateString('bg-BG')}</span></div></div><div class="review-body"><div class="review-stars" aria-label={`${review.rating} от 5`}>{#each Array(review.rating) as _}<Star size={15} fill="currentColor" />{/each}</div><span class="deal-label"><PackageCheck size={14} /> Потвърдена сделка</span><p>{review.body ?? 'Оценка без допълнителен коментар.'}</p></div></article>{/each}
+        {#each reviews as review, index}<article><div class="review-number">{String(index + 1).padStart(2, '0')}</div><div class="reviewer"><div class="mini-avatar"><UserRound size={18} /></div><div><strong>{review.reviewer.username}</strong><span>{new Date(review.createdAt).toLocaleDateString('bg-BG')}</span></div></div><div class="review-body"><div class="review-stars" aria-label={`${review.rating} от 5`}>{#each Array(review.rating) as _}<Star size={15} fill="currentColor" />{/each}</div><span class="deal-label"><PackageCheck size={14} /> Приключена сделка</span><p>{review.body ?? 'Оценка без допълнителен коментар.'}</p></div></article>{/each}
       </div>
     {/if}
   </div>
