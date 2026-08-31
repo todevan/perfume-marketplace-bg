@@ -13,6 +13,32 @@ export const reportTargetTypeSchema = z.enum([
 	'review',
 	'profile_comment'
 ]);
+export type ReportTargetType = z.infer<typeof reportTargetTypeSchema>;
+
+export const REPORT_TARGET_CAPABILITIES = {
+	profile: { submission: 'accepted', queue: 'standard', claim: 'standard', decision: 'target_action' },
+	brand: { submission: 'rejected', queue: 'legacy', claim: 'legacy', decision: 'safe_disposition' },
+	listing: { submission: 'accepted', queue: 'standard', claim: 'standard', decision: 'target_action' },
+	offer: { submission: 'rejected', queue: 'legacy', claim: 'legacy', decision: 'safe_disposition' },
+	conversation: { submission: 'accepted', queue: 'standard', claim: 'standard', decision: 'target_action' },
+	message: { submission: 'accepted', queue: 'standard', claim: 'standard', decision: 'target_action' },
+	deal: { submission: 'accepted', queue: 'standard', claim: 'standard', decision: 'target_action' },
+	review: { submission: 'accepted', queue: 'standard', claim: 'standard', decision: 'target_action' },
+	profile_comment: { submission: 'accepted', queue: 'standard', claim: 'standard', decision: 'target_action' }
+} as const satisfies Readonly<Record<ReportTargetType, {
+	readonly submission: 'accepted' | 'rejected';
+	readonly queue: 'standard' | 'legacy';
+	readonly claim: 'standard' | 'legacy';
+	readonly decision: 'target_action' | 'safe_disposition';
+}>>;
+
+export function isReportTargetSubmittable(targetType: ReportTargetType): boolean {
+	return REPORT_TARGET_CAPABILITIES[targetType].submission === 'accepted';
+}
+
+export const SUBMITTABLE_REPORT_TARGET_TYPES = Object.freeze(
+	reportTargetTypeSchema.options.filter(isReportTargetSubmittable)
+);
 export const reportStatusSchema = z.enum(['open', 'investigating', 'resolved', 'dismissed']);
 export const reportOutcomeSchema = z.enum(['pending', 'action_taken', 'no_action', 'completed']);
 
@@ -40,10 +66,10 @@ export const reportReasonSchema = z.enum([
 
 export const REPORT_REASON_TARGETS: Readonly<Record<z.infer<typeof reportReasonSchema>, readonly z.infer<typeof reportTargetTypeSchema>[]>> = {
 	counterfeit_suspected: ['listing'],
-	misleading_content: ['brand', 'listing', 'review', 'profile_comment'],
+	misleading_content: ['listing', 'review', 'profile_comment'],
 	harassment: ['profile', 'conversation', 'message', 'review', 'profile_comment'],
-	spam_fraud: ['profile', 'listing', 'offer', 'conversation', 'message'],
-	other_violation: reportTargetTypeSchema.options
+	spam_fraud: ['profile', 'listing', 'conversation', 'message'],
+	other_violation: SUBMITTABLE_REPORT_TARGET_TYPES
 };
 
 export const createReportInputSchema = z.object({
@@ -53,6 +79,14 @@ export const createReportInputSchema = z.object({
 	details: z.string().trim().max(4000).nullable().optional(),
 	evidencePaths: z.array(z.string().trim().min(1).max(500)).max(12).default([])
 }).superRefine((value, context) => {
+	if (!isReportTargetSubmittable(value.targetType)) {
+		context.addIssue({
+			code: 'custom',
+			path: ['targetType'],
+			message: 'This report target is not supported for submission.'
+		});
+		return;
+	}
 	if (!REPORT_REASON_TARGETS[value.reasonCode].includes(value.targetType)) {
 		context.addIssue({
 			code: 'custom',

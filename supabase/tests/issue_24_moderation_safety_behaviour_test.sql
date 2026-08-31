@@ -4,7 +4,53 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(35);
+select plan(47);
+
+create function pg_temp.filtered_report_page(
+  page_size integer,
+  page_offset integer,
+  filter_status public.report_status
+)
+returns table (
+  report_id uuid,
+  status public.report_status,
+  total_count bigint,
+  created_at timestamptz
+)
+language plpgsql
+as $$
+begin
+  if to_regprocedure('public.list_my_reports(integer,integer,public.report_status)') is null then
+    return;
+  end if;
+
+  return query execute
+    'select report_id, status, total_count, created_at from public.list_my_reports($1, $2, $3)'
+    using page_size, page_offset, filter_status;
+end;
+$$;
+
+select is(
+  (
+    select jsonb_object_agg(
+      target_type::text,
+      private.report_target_capability(target_type)
+    )
+    from unnest(enum_range(null::public.report_target_type)) target_type
+  ),
+  '{
+    "profile":"target_action",
+    "brand":"safe_disposition",
+    "listing":"target_action",
+    "offer":"safe_disposition",
+    "conversation":"target_action",
+    "message":"target_action",
+    "deal":"target_action",
+    "review":"target_action",
+    "profile_comment":"target_action"
+  }'::jsonb,
+  'the database capability matrix covers every report target type'
+);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -114,6 +160,15 @@ insert into public.listings (
   100, 90, false, 10000, 'active', 'issue-24-listing', now(), now() + interval '30 days'
 );
 
+insert into public.offers (
+  id, listing_id, offerer_id, kind, cash_amount_minor, status, expires_at
+) values (
+  '24400000-0000-4000-8000-000000000002',
+  '24400000-0000-4000-8000-000000000001',
+  '24100000-0000-4000-8000-000000000001',
+  'cash', 5000, 'pending', now() + interval '7 days'
+);
+
 insert into public.reports (
   id, reporter_id, target_type, target_id, reason_code, details, evidence_paths,
   status, assigned_to, resolution_code, resolution_notes, resolved_at, created_at, updated_at
@@ -121,11 +176,78 @@ insert into public.reports (
   ('24500000-0000-4000-8000-000000000001', '24100000-0000-4000-8000-000000000001', 'listing', '24400000-0000-4000-8000-000000000001', 'counterfeit', 'Private report details', '["reports/private-evidence.jpg"]', 'open', null, null, null, null, now() - interval '3 hours', now() - interval '3 hours'),
   ('24500000-0000-4000-8000-000000000002', '24100000-0000-4000-8000-000000000001', 'listing', '24400000-0000-4000-8000-000000000001', 'misleading', 'Resolved private details', '[]', 'resolved', '24100000-0000-4000-8000-000000000003', 'internal_future_code', 'Private staff rationale', now() - interval '1 hour', now() - interval '2 hours', now() - interval '1 hour'),
   ('24500000-0000-4000-8000-000000000003', '24100000-0000-4000-8000-000000000001', 'profile', '24100000-0000-4000-8000-000000000003', 'harassment', 'Self-target must be ineligible', '[]', 'open', null, null, null, null, now() - interval '90 minutes', now() - interval '90 minutes'),
-  ('24500000-0000-4000-8000-000000000004', '24100000-0000-4000-8000-000000000001', 'brand', '24300000-0000-4000-8000-000000000001', 'incorrect_brand', 'Unsupported target type', '[]', 'open', null, null, null, null, now() - interval '60 minutes', now() - interval '60 minutes'),
-  ('24500000-0000-4000-8000-000000000005', '24100000-0000-4000-8000-000000000001', 'listing', '24400000-0000-4000-8000-000000000001', 'duplicate', 'Second claimable report', '[]', 'open', null, null, null, null, now() - interval '30 minutes', now() - interval '30 minutes');
+  ('24500000-0000-4000-8000-000000000004', '24100000-0000-4000-8000-000000000001', 'brand', '24300000-0000-4000-8000-000000000001', 'incorrect_brand', 'Legacy brand report requiring safe disposition', '[]', 'open', null, null, null, null, now() - interval '60 minutes', now() - interval '60 minutes'),
+  ('24500000-0000-4000-8000-000000000005', '24100000-0000-4000-8000-000000000001', 'listing', '24400000-0000-4000-8000-000000000001', 'duplicate', 'Second claimable report', '[]', 'open', null, null, null, null, now() - interval '30 minutes', now() - interval '30 minutes'),
+  ('24500000-0000-4000-8000-000000000006', '24100000-0000-4000-8000-000000000001', 'offer', '24400000-0000-4000-8000-000000000002', 'spam_fraud', 'Legacy offer report requiring safe disposition', '[]', 'open', null, null, null, null, now() - interval '45 minutes', now() - interval '45 minutes');
+
+insert into public.reports (
+  id, reporter_id, target_type, target_id, reason_code, details, evidence_paths,
+  status, assigned_to, resolution_code, resolution_notes, resolved_at, created_at, updated_at
+)
+select
+  ('24600000-0000-4000-8000-' || lpad(fixture_number::text, 12, '0'))::uuid,
+  '24100000-0000-4000-8000-000000000002',
+  'listing',
+  '24400000-0000-4000-8000-000000000001',
+  'counterfeit',
+  'Queue aging regression fixture',
+  '[]',
+  'open',
+  null,
+  null,
+  null,
+  null,
+  case
+    when fixture_number in (1, 2) then timestamptz '2000-01-01 00:00:00+00'
+    else timestamptz '2000-01-02 00:00:00+00' + fixture_number * interval '1 minute'
+  end,
+  case
+    when fixture_number in (1, 2) then timestamptz '2000-01-01 00:00:00+00'
+    else timestamptz '2000-01-02 00:00:00+00' + fixture_number * interval '1 minute'
+  end
+from generate_series(1, 52) fixture_number;
+
+insert into public.reports (
+  id, reporter_id, target_type, target_id, reason_code, details, evidence_paths,
+  status, assigned_to, resolution_code, resolution_notes, resolved_at, created_at, updated_at
+)
+select
+  ('24700000-0000-4000-8000-' || lpad(fixture_number::text, 12, '0'))::uuid,
+  '24100000-0000-4000-8000-000000000002',
+  'listing',
+  '24400000-0000-4000-8000-000000000001',
+  'counterfeit',
+  'Reporter pagination regression fixture',
+  '[]',
+  case
+    when fixture_number in (1, 2, 4, 6, 8) then 'resolved'::public.report_status
+    else 'open'::public.report_status
+  end,
+  case when fixture_number in (1, 2, 4, 6, 8) then '24100000-0000-4000-8000-000000000003'::uuid else null end,
+  case when fixture_number in (1, 2, 4, 6, 8) then 'no_violation' else null end,
+  case when fixture_number in (1, 2, 4, 6, 8) then 'Reporter-safe resolved fixture' else null end,
+  case when fixture_number in (1, 2, 4, 6, 8) then timestamptz '2002-01-01 00:00:00+00' + fixture_number * interval '1 day' else null end,
+  timestamptz '2002-01-01 00:00:00+00' + fixture_number * interval '1 day',
+  timestamptz '2002-01-01 00:00:00+00' + fixture_number * interval '1 day'
+from generate_series(1, 9) fixture_number;
 set local session_replication_role = origin;
 
 set local role authenticated;
+select set_config('request.jwt.claim.sub', '24100000-0000-4000-8000-000000000001', true);
+select set_config('request.jwt.claims', '{"sub":"24100000-0000-4000-8000-000000000001","role":"authenticated","aal":"aal1"}', true);
+select throws_ok(
+  $$insert into public.reports (reporter_id, target_type, target_id, reason_code)
+    values ('24100000-0000-4000-8000-000000000001', 'brand', '24300000-0000-4000-8000-000000000001', 'other_violation')$$,
+  '22023', 'report target is not supported for submission',
+  'brand reports are rejected before insertion'
+);
+select throws_ok(
+  $$insert into public.reports (reporter_id, target_type, target_id, reason_code)
+    values ('24100000-0000-4000-8000-000000000001', 'offer', '24400000-0000-4000-8000-000000000002', 'other_violation')$$,
+  '22023', 'report target is not supported for submission',
+  'offer reports are rejected before insertion'
+);
+
 select set_config('request.jwt.claim.sub', '24100000-0000-4000-8000-000000000003', true);
 select set_config('request.jwt.claims', '{"sub":"24100000-0000-4000-8000-000000000003","role":"authenticated","aal":"aal1"}', true);
 
@@ -149,6 +271,24 @@ select throws_ok(
 );
 select is((select count(*) from public.list_moderation_report_queue(0, 0)), 1::bigint, 'the staff queue clamps page size to at least one');
 select is(
+  (select report_id from public.list_moderation_report_queue(50, 0) limit 1),
+  '24600000-0000-4000-8000-000000000001'::uuid,
+  'the oldest eligible unassigned report remains visible on the 50-case queue page'
+);
+select results_eq(
+  $$
+    select report_id
+    from public.list_moderation_report_queue(100, 0)
+    where created_at = timestamptz '2000-01-01 00:00:00+00'
+  $$,
+  $$
+    values
+      ('24600000-0000-4000-8000-000000000001'::uuid),
+      ('24600000-0000-4000-8000-000000000002'::uuid)
+  $$,
+  'equal queue timestamps use report id as a stable ascending tie-breaker'
+);
+select is(
   (
     select array_agg(report_id order by report_id)
     from public.list_moderation_report_queue(1000, 0)
@@ -157,14 +297,17 @@ select is(
       '24500000-0000-4000-8000-000000000002',
       '24500000-0000-4000-8000-000000000003',
       '24500000-0000-4000-8000-000000000004',
-      '24500000-0000-4000-8000-000000000005'
+      '24500000-0000-4000-8000-000000000005',
+      '24500000-0000-4000-8000-000000000006'
     )
   ),
   array[
     '24500000-0000-4000-8000-000000000001'::uuid,
-    '24500000-0000-4000-8000-000000000005'::uuid
+    '24500000-0000-4000-8000-000000000004'::uuid,
+    '24500000-0000-4000-8000-000000000005'::uuid,
+    '24500000-0000-4000-8000-000000000006'::uuid
   ],
-  'the staff queue clamps page size and excludes resolved, unsupported, and self-target cases'
+  'the staff queue clamps page size, excludes resolved and self-target cases, and retains legacy reports with a safe disposition path'
 );
 select is(
   (
@@ -191,6 +334,17 @@ select is(public.claim_moderation_report('24500000-0000-4000-8000-000000000001')
 reset role;
 set local role postgres;
 select is((select count(*) from public.moderation_audit where report_id = '24500000-0000-4000-8000-000000000001' and action = 'report_assigned'), 1::bigint, 'an idempotent retry does not duplicate assignment audit');
+
+set local role authenticated;
+select is(public.claim_moderation_report('24500000-0000-4000-8000-000000000006'), 'claimed', 'a legacy offer report remains claimable for safe disposition');
+select lives_ok(
+  $$select public.resolve_unsupported_report('24500000-0000-4000-8000-000000000006', 'The legacy target has no safe target mutation and is closed without action.')$$,
+  'the exact assignee can safely dispose a legacy unsupported report'
+);
+reset role;
+set local role postgres;
+select is((select status::text from public.reports where id = '24500000-0000-4000-8000-000000000006'), 'dismissed', 'safe legacy disposition closes the report without mutating its target');
+select is((select count(*) from public.moderation_audit where report_id = '24500000-0000-4000-8000-000000000006' and action = 'report_resolved'), 1::bigint, 'safe legacy disposition appends exactly one resolution audit');
 
 set local role authenticated;
 select is((select count(*) from public.get_assigned_moderation_case('24500000-0000-4000-8000-000000000001')), 1::bigint, 'the exact assignee can load private case detail');
@@ -280,15 +434,65 @@ select is(
     from (select * from public.list_my_reports(1, 0) limit 1) r
     cross join lateral jsonb_object_keys(to_jsonb(r)) key
   ),
-  array['created_at','evidence_count','outcome','reason_code','report_id','resolved_at','status','target_type','updated_at']::text[],
+  array['created_at','evidence_count','outcome','reason_code','report_id','resolved_at','status','target_type','total_count','updated_at']::text[],
   'report history exposes only approved reporter-safe fields'
 );
 select is((select outcome from public.list_my_reports(100, 0) where report_id = '24500000-0000-4000-8000-000000000002'), 'completed', 'an unknown internal resolution maps to a generic reporter outcome');
-select is((select count(*) from public.list_my_reports(100, 0)), 5::bigint, 'a reporter can list only their own report receipts');
+select is((select count(*) from public.list_my_reports(100, 0)), 6::bigint, 'a reporter can list only their own report receipts');
 select throws_ok(
   $$select details from public.reports where reporter_id = '24100000-0000-4000-8000-000000000001'$$,
   '42501', 'permission denied for table reports',
   'a reporter cannot bypass the safe projection with a direct table read'
+);
+
+select set_config('request.jwt.claim.sub', '24100000-0000-4000-8000-000000000002', true);
+select set_config('request.jwt.claims', '{"sub":"24100000-0000-4000-8000-000000000002","role":"authenticated","aal":"aal1"}', true);
+select results_eq(
+  $$
+    select report_id, status, total_count
+    from pg_temp.filtered_report_page(3, 0, 'resolved'::public.report_status)
+  $$,
+  $$
+    values
+      ('24700000-0000-4000-8000-000000000008'::uuid, 'resolved'::public.report_status, 5::bigint),
+      ('24700000-0000-4000-8000-000000000006'::uuid, 'resolved'::public.report_status, 5::bigint),
+      ('24700000-0000-4000-8000-000000000004'::uuid, 'resolved'::public.report_status, 5::bigint)
+  $$,
+  'report status filtering happens before the first page and reports the full filtered total'
+);
+select results_eq(
+  $$
+    select report_id, status, total_count
+    from pg_temp.filtered_report_page(3, 3, 'resolved'::public.report_status)
+  $$,
+  $$
+    values
+      ('24700000-0000-4000-8000-000000000002'::uuid, 'resolved'::public.report_status, 5::bigint),
+      ('24700000-0000-4000-8000-000000000001'::uuid, 'resolved'::public.report_status, 5::bigint)
+  $$,
+  'the continuation page contains only the remaining filtered reports'
+);
+select results_eq(
+  $$
+    select report_id
+    from (
+      select 1 as page_number, report_id, created_at
+      from pg_temp.filtered_report_page(3, 0, 'resolved'::public.report_status)
+      union all
+      select 2 as page_number, report_id, created_at
+      from pg_temp.filtered_report_page(3, 3, 'resolved'::public.report_status)
+    ) filtered_pages
+    order by page_number, created_at desc, report_id desc
+  $$,
+  $$
+    values
+      ('24700000-0000-4000-8000-000000000008'::uuid),
+      ('24700000-0000-4000-8000-000000000006'::uuid),
+      ('24700000-0000-4000-8000-000000000004'::uuid),
+      ('24700000-0000-4000-8000-000000000002'::uuid),
+      ('24700000-0000-4000-8000-000000000001'::uuid)
+  $$,
+  'filtered continuation pages contain every matching report exactly once without gaps'
 );
 
 select * from finish();

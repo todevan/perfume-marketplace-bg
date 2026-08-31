@@ -25,11 +25,13 @@ export async function listOwnReports(
 ): Promise<ReportPageDto> {
 	const { data, error } = await client.rpc('list_my_reports', {
 		p_page_size: input.limit,
-		p_page_offset: input.offset
+		p_page_offset: input.offset,
+		p_status: input.status ?? null
 	});
 	throwIfError('reports.listOwn', error);
-	const rows = (data ?? []).filter((row) => !input.status || row.status === input.status);
-	return pageDto(rows.map((row) => toReportDto(row)), null, input.limit, input.offset);
+	const rows = data ?? [];
+	const total = Number(rows[0]?.total_count ?? 0);
+	return pageDto(rows.map((row) => toReportDto(row)), total, input.limit, input.offset);
 }
 
 export async function createReport(

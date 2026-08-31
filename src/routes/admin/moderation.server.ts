@@ -1,18 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
+import {
+	REPORT_TARGET_CAPABILITIES,
+	reportTargetTypeSchema,
+	type ReportTargetType
+} from '$lib/contracts/reports';
 
 type StaffRole = 'moderator' | 'admin';
 type ReportStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
-type ReportTargetType =
-	| 'profile'
-	| 'brand'
-	| 'listing'
-	| 'offer'
-	| 'conversation'
-	| 'message'
-	| 'deal'
-	| 'review'
-	| 'profile_comment';
 type ModerationDecision =
 	| 'keep'
 	| 'hide'
@@ -21,7 +16,8 @@ type ModerationDecision =
 	| 'restore'
 	| 'publish'
 	| 'resume'
-	| 'cancel';
+	| 'cancel'
+	| 'dismiss';
 
 type WorkflowErrorCode =
 	| 'VALIDATION'
@@ -44,17 +40,7 @@ export class ModerationWorkflowError extends Error {
 }
 
 const uuidSchema = z.string().uuid();
-const reportTargetSchema = z.enum([
-	'profile',
-	'brand',
-	'listing',
-	'offer',
-	'conversation',
-	'message',
-	'deal',
-	'review',
-	'profile_comment'
-]);
+const reportTargetSchema = reportTargetTypeSchema;
 const queueReportRowSchema = z.object({
 	report_id: uuidSchema,
 	target_type: reportTargetSchema,
@@ -122,7 +108,7 @@ const moderatorMessageRowSchema = z.object({
 const assignInputSchema = z.object({ caseId: uuidSchema });
 const decisionInputSchema = z.object({
 	caseId: uuidSchema,
-	decision: z.enum(['keep', 'hide', 'remove', 'suspend', 'restore', 'publish', 'resume', 'cancel']),
+	decision: z.enum(['keep', 'hide', 'remove', 'suspend', 'restore', 'publish', 'resume', 'cancel', 'dismiss']),
 	rationale: z.string().trim().min(10).max(4000)
 });
 const inviteInputSchema = z.object({
@@ -291,15 +277,8 @@ function safeExternalUrl(value: string | null): string | null {
 }
 
 function supportsDecision(targetType: ReportTargetType): boolean {
-	return [
-		'listing',
-		'profile',
-		'review',
-		'profile_comment',
-		'deal',
-		'conversation',
-		'message'
-	].includes(targetType);
+	return REPORT_TARGET_CAPABILITIES[targetType].decision === 'target_action'
+		|| REPORT_TARGET_CAPABILITIES[targetType].decision === 'safe_disposition';
 }
 
 function targetTypeLabel(targetType: ReportTargetType): string {
@@ -455,7 +434,27 @@ export async function loadModerationDashboard(
 	const preview = previewQueue ? summary(previewQueue) : null;
 	const selectedQueue =
 		previewQueue?.assignment_state === 'assigned_to_you' ? previewQueue : null;
-	if (!selectedQueue) {
+	let privateReport: z.infer<typeof assignedReportRowSchema> | null = null;
+	if (
+		!selectedQueue &&
+		!previewQueue &&
+		requestedCaseId &&
+		uuidSchema.safeParse(requestedCaseId).success
+	) {
+		const { data: directData, error: directError } = await client.rpc(
+			'get_assigned_moderation_case',
+			{ p_report_id: requestedCaseId }
+		);
+		if (directError?.code !== '42501') {
+			if (directError) throw workflowErrorFromDatabase(directError);
+			const directRows = parseRows(directData, assignedReportRowSchema);
+			if (directRows.length > 1) {
+				throw new ModerationWorkflowError('UNAVAILABLE', 'Модерационният случай не беше зареден безопасно.');
+			}
+			privateReport = directRows[0] ?? null;
+		}
+	}
+	if (!selectedQueue && !privateReport) {
 		const merchantApplications = await merchantApplicationsPromise;
 		return {
 			cases,
@@ -473,18 +472,23 @@ export async function loadModerationDashboard(
 		};
 	}
 
-	const { data: privateData, error: privateError } = await client.rpc(
-		'get_assigned_moderation_case',
-		{ p_report_id: selectedQueue.report_id }
-	);
-	if (privateError) throw workflowErrorFromDatabase(privateError);
-	const privateRows = parseRows(privateData, assignedReportRowSchema);
-	if (privateRows.length !== 1) {
-		throw new ModerationWorkflowError('UNAVAILABLE', 'Модерационният случай не беше зареден безопасно.');
+	if (!privateReport) {
+		const { data: privateData, error: privateError } = await client.rpc(
+			'get_assigned_moderation_case',
+			{ p_report_id: selectedQueue!.report_id }
+		);
+		if (privateError) throw workflowErrorFromDatabase(privateError);
+		const privateRows = parseRows(privateData, assignedReportRowSchema);
+		if (privateRows.length !== 1) {
+			throw new ModerationWorkflowError('UNAVAILABLE', 'Модерационният случай не беше зареден безопасно.');
+		}
+		privateReport = privateRows[0];
 	}
-	const report = privateRows[0];
+	const report = privateReport;
+	const selectedReportId = selectedQueue?.report_id ?? requestedCaseId;
 	if (
-		report.report_id !== selectedQueue.report_id ||
+		!selectedReportId ||
+		report.report_id !== selectedReportId ||
 		report.assigned_to !== viewer.id ||
 		report.status !== 'investigating'
 	) {
@@ -507,7 +511,16 @@ export async function loadModerationDashboard(
 	]);
 	if (listingResult.error) throw workflowErrorFromDatabase(listingResult.error);
 	const listing = parseRows(listingResult.data, listingRowSchema)[0];
-	const selectedSummary = summary(selectedQueue);
+	const selectedSummary = selectedQueue
+		? summary(selectedQueue)
+		: summary({
+			report_id: report.report_id,
+			target_type: report.target_type,
+			reason_code: report.reason_code,
+			status: 'investigating',
+			assignment_state: 'assigned_to_you',
+			created_at: report.created_at
+		});
 	const targetTitle =
 		report.target_type === 'listing'
 			? (listing?.title ?? genericTargetTitle(report))
@@ -722,6 +735,18 @@ export async function decideModerationReport(
 					report.target_type === 'message'
 						? parsed.data.decision === 'keep' ? 'keep' : 'remove'
 						: parsed.data.decision === 'keep' ? 'keep' : 'block',
+				moderation_rationale: parsed.data.rationale
+			};
+			break;
+		}
+		case 'brand':
+		case 'offer': {
+			if (parsed.data.decision !== 'dismiss') {
+				throw new ModerationWorkflowError('VALIDATION', 'Невалидно решение за наследен сигнал.');
+			}
+			rpcName = 'resolve_unsupported_report';
+			rpcArguments = {
+				report_case_id: report.report_id,
 				moderation_rationale: parsed.data.rationale
 			};
 			break;

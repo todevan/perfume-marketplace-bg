@@ -2694,7 +2694,11 @@ export type Database = {
         }[]
       }
       list_my_reports: {
-        Args: { p_page_offset?: number; p_page_size?: number }
+        Args: {
+          p_page_offset?: number
+          p_page_size?: number
+          p_status?: Database["public"]["Enums"]["report_status"] | null
+        }
         Returns: {
           created_at: string
           evidence_count: number
@@ -2704,6 +2708,7 @@ export type Database = {
           resolved_at: string
           status: Database["public"]["Enums"]["report_status"]
           target_type: Database["public"]["Enums"]["report_target_type"]
+          total_count: number
           updated_at: string
         }[]
       }
@@ -2907,6 +2912,10 @@ export type Database = {
           report_case_id: string
         }
         Returns: Json
+      }
+      resolve_unsupported_report: {
+        Args: { moderation_rationale: string; report_case_id: string }
+        Returns: undefined
       }
       resolve_deal_dispute: {
         Args: {

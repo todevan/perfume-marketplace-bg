@@ -1,5 +1,26 @@
 begin;
 
+create or replace function private.report_target_capability(
+  target_type public.report_target_type
+)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select case target_type
+    when 'profile' then 'target_action'
+    when 'brand' then 'safe_disposition'
+    when 'listing' then 'target_action'
+    when 'offer' then 'safe_disposition'
+    when 'conversation' then 'target_action'
+    when 'message' then 'target_action'
+    when 'deal' then 'target_action'
+    when 'review' then 'target_action'
+    when 'profile_comment' then 'target_action'
+  end;
+$$;
+
 create or replace function private.is_moderation_target_eligible(
   actor_id uuid,
   target_type public.report_target_type,
@@ -14,12 +35,16 @@ as $$
   select actor_id is not null
     and actor_id = auth.uid()
     and public.is_staff(actor_id)
+    and private.report_target_capability(target_type) is not null
     and case target_type
       when 'listing' then exists (
         select 1 from public.listings l where l.id = target_id
       )
       when 'brand' then exists (
         select 1 from public.brands b where b.id = target_id
+      )
+      when 'offer' then exists (
+        select 1 from public.offers o where o.id = target_id
       )
       when 'profile' then actor_id <> target_id and exists (
         select 1
@@ -48,6 +73,26 @@ as $$
       else false
     end;
 $$;
+
+create or replace function private.enforce_report_target_capability()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if private.report_target_capability(new.target_type) <> 'target_action' then
+    raise exception 'report target is not supported for submission'
+      using errcode = '22023';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_report_target_capability on public.reports;
+create trigger enforce_report_target_capability
+before insert on public.reports
+for each row execute function private.enforce_report_target_capability();
 
 create or replace function private.require_assigned_moderation_case(
   report_case_id uuid,
@@ -87,12 +132,17 @@ $$;
 
 revoke execute on function private.is_moderation_target_eligible(uuid, public.report_target_type, uuid)
   from public, anon, authenticated, service_role;
+revoke execute on function private.report_target_capability(public.report_target_type)
+  from public, anon, authenticated, service_role;
+revoke execute on function private.enforce_report_target_capability()
+  from public, anon, authenticated, service_role;
 revoke execute on function private.require_assigned_moderation_case(uuid, public.report_target_type, uuid)
   from public, anon, authenticated, service_role;
 
 create or replace function public.list_my_reports(
   p_page_size integer default 50,
-  p_page_offset integer default 0
+  p_page_offset integer default 0,
+  p_status public.report_status default null
 )
 returns table (
   report_id uuid,
@@ -103,7 +153,8 @@ returns table (
   outcome text,
   resolved_at timestamptz,
   created_at timestamptz,
-  updated_at timestamptz
+  updated_at timestamptz,
+  total_count bigint
 )
 language plpgsql
 stable
@@ -158,9 +209,11 @@ begin
     end,
     r.resolved_at,
     r.created_at,
-    r.updated_at
+    r.updated_at,
+    count(*) over ()
   from public.reports r
   where r.reporter_id = caller_id
+    and (p_status is null or r.status = p_status)
   order by r.created_at desc, r.id desc
   limit safe_page_size
   offset coalesce(p_page_offset, 0);
@@ -221,14 +274,7 @@ begin
       or (r.status = 'investigating' and r.assigned_to = caller_id)
     )
     and private.is_moderation_target_eligible(caller_id, r.target_type, r.target_id)
-    and (
-      r.target_type <> 'brand'
-      or exists (
-        select 1 from public.brands b
-        where b.id = r.target_id and b.status = 'pending_canonicalization'
-      )
-    )
-  order by r.created_at desc, r.id desc
+  order by r.created_at asc, r.id asc
   limit safe_page_size
   offset coalesce(p_page_offset, 0);
 end;
@@ -262,16 +308,6 @@ begin
   then
     return 'unavailable';
   end if;
-  if target_report.target_type = 'brand'
-     and not exists (
-       select 1 from public.brands b
-       where b.id = target_report.target_id
-         and b.status = 'pending_canonicalization'
-     )
-  then
-    return 'unavailable';
-  end if;
-
   if target_report.status = 'investigating'
      and target_report.assigned_to = caller_id
   then
@@ -353,6 +389,51 @@ begin
       from public.moderation_audit a
       where a.report_id = target_report.id
     ), '[]'::jsonb);
+end;
+$$;
+
+create function public.resolve_unsupported_report(
+  report_case_id uuid,
+  moderation_rationale text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_report public.reports%rowtype;
+  normalized_rationale text := btrim(coalesce(moderation_rationale, ''));
+begin
+  if char_length(normalized_rationale) < 10 then
+    raise exception 'moderation rationale must contain at least 10 characters'
+      using errcode = '22023';
+  end if;
+
+  select * into target_report
+  from public.reports r
+  where r.id = report_case_id
+  for update;
+
+  if not found
+     or private.report_target_capability(target_report.target_type) <> 'safe_disposition'
+  then
+    raise exception 'assigned moderation case required' using errcode = '42501';
+  end if;
+
+  perform private.require_assigned_moderation_case(
+    target_report.id,
+    target_report.target_type,
+    target_report.target_id
+  );
+
+  update public.reports
+  set status = 'dismissed',
+      resolution_code = 'unsupported_target',
+      resolution_notes = normalized_rationale,
+      resolved_at = statement_timestamp(),
+      updated_at = statement_timestamp()
+  where id = target_report.id;
 end;
 $$;
 
@@ -760,14 +841,16 @@ revoke select, update, delete, truncate on public.reports from authenticated;
 grant insert on public.reports to authenticated;
 revoke select, insert, update, delete, truncate on public.moderation_audit from authenticated;
 
-revoke execute on function public.list_my_reports(integer, integer) from public, anon, service_role;
+revoke execute on function public.list_my_reports(integer, integer, public.report_status) from public, anon, service_role;
 revoke execute on function public.list_moderation_report_queue(integer, integer) from public, anon, service_role;
 revoke execute on function public.claim_moderation_report(uuid) from public, anon, service_role;
 revoke execute on function public.get_assigned_moderation_case(uuid) from public, anon, service_role;
-grant execute on function public.list_my_reports(integer, integer) to authenticated;
+revoke execute on function public.resolve_unsupported_report(uuid, text) from public, anon, service_role;
+grant execute on function public.list_my_reports(integer, integer, public.report_status) to authenticated;
 grant execute on function public.list_moderation_report_queue(integer, integer) to authenticated;
 grant execute on function public.claim_moderation_report(uuid) to authenticated;
 grant execute on function public.get_assigned_moderation_case(uuid) to authenticated;
+grant execute on function public.resolve_unsupported_report(uuid, text) to authenticated;
 
 revoke execute on function public.moderator_read_messages(uuid, timestamptz, integer) from public, anon, service_role;
 revoke execute on function public.moderate_listing(uuid, uuid, text, public.audience, public.segment[], public.listing_status) from public, anon, service_role;

@@ -370,24 +370,27 @@ describe('report workflow', () => {
 		}
 	);
 
-	it('leaves targets without an exact decision RPC untouched', async () => {
+	it.each(['brand', 'offer'] as const)(
+		'provides a report-bound safe disposition for legacy %s reports',
+		async (targetType) => {
 		const rpc = vi.fn(async (name: string) =>
 			name === 'get_assigned_moderation_case'
-				? { data: [assignedCase('offer')], error: null }
+				? { data: [assignedCase(targetType)], error: null }
 				: { data: null, error: null }
 		);
 		const client = { from: vi.fn(), rpc } as unknown as SupabaseClient;
 
-		await expect(
-			decideModerationReport(client, { id: actorId, role: 'moderator' }, {
+		await expect(decideModerationReport(client, { id: actorId, role: 'moderator' }, {
 				caseId,
-				decision: 'remove',
+				decision: 'dismiss',
 				rationale: 'Конкретни проверени факти и приложено правило.'
-			})
-		).rejects.toMatchObject({ code: 'UNSUPPORTED' });
-		expect(rpc).toHaveBeenCalledTimes(1);
-		expect(rpc).toHaveBeenCalledWith('get_assigned_moderation_case', { p_report_id: caseId });
-	});
+			})).resolves.toEqual({ caseId, status: 'resolved', decision: 'dismiss' });
+		expect(rpc).toHaveBeenCalledWith('resolve_unsupported_report', {
+			report_case_id: caseId,
+			moderation_rationale: 'Конкретни проверени факти и приложено правило.'
+		});
+		}
+	);
 });
 
 describe('moderation dashboard projection', () => {
@@ -519,6 +522,41 @@ describe('moderation dashboard projection', () => {
 		expect(storageFrom).not.toHaveBeenCalled();
 		expect(from).not.toHaveBeenCalledWith('reports');
 		expect(from).not.toHaveBeenCalledWith('moderation_audit');
+	});
+
+	it('directly loads an assigned case outside the 50-case unassigned queue page', async () => {
+		const queueRows = Array.from({ length: 50 }, (_, index) => ({
+			report_id: `77777777-7777-4777-8777-${String(index + 1).padStart(12, '0')}`,
+			target_type: 'listing',
+			reason_code: 'counterfeit',
+			status: 'open',
+			assignment_state: 'unassigned',
+			created_at: new Date(Date.UTC(2026, 6, 22, 10, index)).toISOString()
+		}));
+		const privateCase = assignedCase('listing', {
+			created_at: '2026-07-23T10:00:00.000Z'
+		});
+		const rpc = vi.fn(async (name: string) => {
+			if (name === 'list_moderation_report_queue') return { data: queueRows, error: null };
+			if (name === 'get_assigned_moderation_case') return { data: [privateCase], error: null };
+			throw new Error(`unexpected RPC: ${name}`);
+		});
+		const from = vi.fn(() => query({ data: [], error: null }));
+
+		const dashboard = await loadModerationDashboard(
+			{ from, rpc, storage: { from: vi.fn() } } as unknown as SupabaseClient,
+			{ id: actorId, role: 'moderator' },
+			caseId
+		);
+
+		expect(dashboard.cases).toHaveLength(50);
+		expect(dashboard.selected).toMatchObject({
+			id: caseId,
+			assignedTo: actorId,
+			isAssignedToViewer: true,
+			canDecide: true
+		});
+		expect(rpc).toHaveBeenCalledWith('get_assigned_moderation_case', { p_report_id: caseId });
 	});
 });
 

@@ -4,7 +4,7 @@ import type { MarketplaceSupabaseClient } from '$lib/server/repositories';
 import { getOwnListings, getOwnReports } from '$lib/server/services';
 import { demoOwnListings } from '../listings/demo.server';
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
 	if (locals.runtime.mode === 'demo') {
 		return {
 			listings: demoOwnListings(),
@@ -25,24 +25,40 @@ export const load: PageServerLoad = async ({ locals }) => {
 				total: 1,
 				limit: 10,
 				offset: 0,
-				hasMore: false
-			},
-			profile: { username: 'north_notes', city: 'София', accountKind: 'private' as const },
+					hasMore: false
+				},
+				reportContinuation: { previousHref: null, nextHref: null },
+				profile: { username: 'north_notes', city: 'София', accountKind: 'private' as const },
 			demoMode: true
 		};
 	}
 	if (!locals.supabase || !locals.profile) error(503, 'Личният панел временно не е достъпен.');
 	const client = locals.supabase as MarketplaceSupabaseClient;
+	const reportOffset = Number(url.searchParams.get('reportOffset') ?? 0);
 	const [listingsResult, reportsResult] = await Promise.all([
 		getOwnListings(client, { limit: 10, offset: 0 }),
-		getOwnReports(client, { limit: 10, offset: 0 })
+		getOwnReports(client, { limit: 10, offset: reportOffset })
 	]);
 	if (!listingsResult.ok) error(503, listingsResult.error.message);
+	const reports = reportsResult.ok
+		? reportsResult.data
+		: { items: [], error: 'Сигналите временно не са достъпни.' };
+	const reportContinuation = reportsResult.ok
+		? {
+				previousHref: reports.offset > 0
+					? reports.offset <= reports.limit
+						? '/dashboard'
+						: `/dashboard?reportOffset=${reports.offset - reports.limit}`
+					: null,
+				nextHref: reports.hasMore
+					? `/dashboard?reportOffset=${reports.offset + reports.limit}`
+					: null
+			}
+		: { previousHref: null, nextHref: null };
 	return {
 		listings: listingsResult.data,
-		reports: reportsResult.ok
-			? reportsResult.data
-			: { items: [], error: 'Сигналите временно не са достъпни.' },
+		reports,
+		reportContinuation,
 		profile: {
 			username: locals.profile.username,
 			city: locals.profile.city,

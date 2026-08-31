@@ -217,6 +217,8 @@
                 {:else if data.selected.targetType === 'conversation'}
                   <button class="approve" type="submit" name="decision" value="keep"><Check size={17} /> Без нарушение</button>
                   <button class="remove" type="submit" name="decision" value="hide"><X size={17} /> Блокирай разговора</button>
+                {:else if data.selected.targetType === 'brand' || data.selected.targetType === 'offer'}
+                  <button class="approve" type="submit" name="decision" value="dismiss"><Check size={17} /> Затвори без действие по целта</button>
                 {/if}
               </div>
             </form>

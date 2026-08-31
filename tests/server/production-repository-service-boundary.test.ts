@@ -114,7 +114,8 @@ describe('DTO repository boundary', () => {
 				outcome: 'pending',
 				resolved_at: null,
 				created_at: '2026-07-20T00:00:00.000Z',
-				updated_at: '2026-07-20T00:00:00.000Z'
+				updated_at: '2026-07-20T00:00:00.000Z',
+				total_count: 1
 			}],
 			error: null
 		}));
@@ -128,9 +129,73 @@ describe('DTO repository boundary', () => {
 		expect(result.items).toHaveLength(1);
 		expect(rpc).toHaveBeenCalledWith('list_my_reports', {
 			p_page_size: 10,
-			p_page_offset: 0
+			p_page_offset: 0,
+			p_status: null
 		});
 		expect(from).not.toHaveBeenCalled();
+	});
+
+	it('paginates the complete status-filtered report history without duplicates or gaps', async () => {
+		const mixedRows = [
+			['30000000-0000-4000-8000-000000000001', 'open'],
+			['30000000-0000-4000-8000-000000000002', 'resolved'],
+			['30000000-0000-4000-8000-000000000003', 'open'],
+			['30000000-0000-4000-8000-000000000004', 'resolved'],
+			['30000000-0000-4000-8000-000000000005', 'open'],
+			['30000000-0000-4000-8000-000000000006', 'resolved']
+		] as const;
+		const row = ([report_id, status]: (typeof mixedRows)[number]) => ({
+			report_id,
+			target_type: 'listing' as const,
+			reason_code: 'counterfeit_suspected',
+			evidence_count: 0,
+			status,
+			outcome: status === 'resolved' ? 'completed' : 'pending',
+			resolved_at: status === 'resolved' ? '2026-07-20T01:00:00.000Z' : null,
+			created_at: '2026-07-20T00:00:00.000Z',
+			updated_at: '2026-07-20T01:00:00.000Z',
+			total_count: 3
+		});
+		const rpc = vi.fn(async (_name: string, args: { p_page_offset: number; p_page_size: number; p_status?: string }) => {
+			const source = args.p_status === 'resolved'
+				? mixedRows.filter(([, status]) => status === 'resolved')
+				: mixedRows;
+			return {
+				data: source.slice(args.p_page_offset, args.p_page_offset + args.p_page_size).map(row),
+				error: null
+			};
+		});
+		const client = { rpc, from: vi.fn() } as unknown as MarketplaceSupabaseClient;
+
+		const first = await listOwnReports(client, profileRow.id, {
+			limit: 2,
+			offset: 0,
+			status: 'resolved'
+		});
+		const second = await listOwnReports(client, profileRow.id, {
+			limit: 2,
+			offset: 2,
+			status: 'resolved'
+		});
+
+		expect(first).toMatchObject({ total: 3, hasMore: true, limit: 2, offset: 0 });
+		expect(second).toMatchObject({ total: 3, hasMore: false, limit: 2, offset: 2 });
+		expect([...first.items, ...second.items].map((report) => report.id)).toEqual([
+			'30000000-0000-4000-8000-000000000002',
+			'30000000-0000-4000-8000-000000000004',
+			'30000000-0000-4000-8000-000000000006'
+		]);
+		expect([...first.items, ...second.items].every((report) => report.status === 'resolved')).toBe(true);
+		expect(rpc).toHaveBeenNthCalledWith(1, 'list_my_reports', {
+			p_page_size: 2,
+			p_page_offset: 0,
+			p_status: 'resolved'
+		});
+		expect(rpc).toHaveBeenNthCalledWith(2, 'list_my_reports', {
+			p_page_size: 2,
+			p_page_offset: 2,
+			p_status: 'resolved'
+		});
 	});
 
 	it('creates a report receipt without INSERT RETURNING or a direct report SELECT', async () => {

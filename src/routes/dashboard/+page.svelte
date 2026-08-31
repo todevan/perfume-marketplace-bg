@@ -105,6 +105,12 @@
       {:else}
         <div class="reports-message">Все още нямаш подадени сигнали.</div>
       {/if}
+      {#if data.reportContinuation.previousHref || data.reportContinuation.nextHref}
+        <nav class="report-pagination" aria-label="Страници на сигналите">
+          {#if data.reportContinuation.previousHref}<a href={data.reportContinuation.previousHref}>Предишни сигнали</a>{/if}
+          {#if data.reportContinuation.nextHref}<a href={data.reportContinuation.nextHref}>Следващи сигнали</a>{/if}
+        </nav>
+      {/if}
     </section>
 
     <div class="lower-grid">
@@ -369,6 +375,19 @@
     border-top: 1px solid var(--line);
     color: var(--ink-soft);
     font-size: 0.76rem;
+  }
+
+  .report-pagination {
+    display: flex;
+    justify-content: flex-end;
+    gap: 16px;
+    padding-top: 16px;
+  }
+
+  .report-pagination a {
+    color: var(--action);
+    font-size: 0.76rem;
+    font-weight: 800;
   }
 
   .offer-avatar {

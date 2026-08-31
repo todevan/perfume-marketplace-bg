@@ -52,7 +52,7 @@ describe('dashboard My reports section', () => {
 			}
 		});
 
-		const result = await load({ locals: locals() } as never);
+		const result = await load({ locals: locals(), url: new URL('https://market.example/dashboard') } as never);
 		if (!result) throw new Error('dashboard load returned no data');
 		expect(result.reports).toMatchObject({ items: [expect.objectContaining({ outcome: 'pending' })] });
 		expect(services.getOwnReports).toHaveBeenCalledWith(expect.anything(), { limit: 10, offset: 0 });
@@ -64,7 +64,7 @@ describe('dashboard My reports section', () => {
 			error: { code: 'UNAVAILABLE', message: 'private database detail' }
 		});
 
-		const result = await load({ locals: locals() } as never);
+		const result = await load({ locals: locals(), url: new URL('https://market.example/dashboard') } as never);
 		if (!result) throw new Error('dashboard load returned no data');
 		expect(result.listings).toEqual(listings);
 		expect(result.profile).toMatchObject({ username: 'reporter' });
@@ -74,4 +74,40 @@ describe('dashboard My reports section', () => {
 		});
 		expect(JSON.stringify(result)).not.toContain('private database detail');
 	});
+
+	it('uses the report continuation offset on the next dashboard request', async () => {
+		services.getOwnReports.mockResolvedValue({
+			ok: true,
+			data: { items: [], total: 11, limit: 10, offset: 10, hasMore: false }
+		});
+
+		await load({
+			locals: locals(),
+			url: new URL('https://market.example/dashboard?reportOffset=10')
+		} as never);
+
+		expect(services.getOwnReports).toHaveBeenCalledWith(expect.anything(), {
+			limit: 10,
+			offset: 10
+		});
+	});
+
+	it('exposes the next report continuation path when another page exists', async () => {
+		services.getOwnReports.mockResolvedValue({
+			ok: true,
+			data: { items: [], total: 11, limit: 10, offset: 0, hasMore: true }
+		});
+
+		const result = await load({
+			locals: locals(),
+			url: new URL('https://market.example/dashboard')
+		} as never);
+		if (!result) throw new Error('dashboard load returned no data');
+
+		expect(result.reportContinuation).toEqual({
+			previousHref: null,
+			nextHref: '/dashboard?reportOffset=10'
+		});
+	});
+
 });
