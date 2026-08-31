@@ -660,6 +660,19 @@ describe('A9 foundation environment and TOTP safety', () => {
 		expect(hostedSpec).not.toContain('function currentTotp');
 		expect(hostedSpec).not.toContain('createHmac');
 	});
+
+	it('binds the Issue #24 browser context to the exact hosted Worker origin', async () => {
+		const hostedSpec = await readFile(
+			new URL('../e2e/hosted-report-evidence.spec.ts', import.meta.url),
+			'utf8'
+		);
+
+		expect(hostedSpec).toMatch(
+			/browser\.newContext\(\{\s*baseURL: configuration\.target\.workerOrigin\s*\}\)/u
+		);
+		expect(hostedSpec).not.toContain('const reporterPage = await browser.newPage();');
+		expect(hostedSpec).toContain('reporterContext.close()');
+	});
 });
 
 describe('A9-only Supabase adapter foundations', () => {

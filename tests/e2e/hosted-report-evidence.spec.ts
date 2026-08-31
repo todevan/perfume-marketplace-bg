@@ -1279,7 +1279,10 @@ test.describe('hosted report-evidence security matrix', () => {
 			configuration,
 			requiredEnvironment('E2E_REAL_REPORT_EVIDENCE_MANIFEST_PATH')
 		)) as RunManifest;
-		const reporterPage = await browser.newPage();
+		const reporterContext = await browser.newContext({
+			baseURL: configuration.target.workerOrigin
+		});
+		const reporterPage = await reporterContext.newPage();
 		let reportId = '';
 		let uploadPath = '';
 		let winnerRole: 'assigned-moderator' | 'unassigned-moderator' = 'assigned-moderator';
@@ -1599,7 +1602,7 @@ test.describe('hosted report-evidence security matrix', () => {
 		} finally {
 			await Promise.all([
 				...Object.values(clients).map((client) => client.auth.signOut()),
-				reporterPage.close()
+				reporterContext.close()
 			]);
 		}
 	});
