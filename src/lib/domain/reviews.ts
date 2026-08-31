@@ -20,7 +20,7 @@ export function validateReview(
 ): ValidationResult {
 	const issues: DomainIssue[] = [];
 	if (context.dealStatus !== 'completed') {
-		issues.push({ code: 'deal_not_completed', message: 'Отзив се оставя само след потвърдена сделка.' });
+		issues.push({ code: 'deal_not_completed', message: 'Отзив се оставя само след приключена сделка.' });
 	}
 	if (
 		!isDealParticipant(context.participants, review.reviewerId) ||

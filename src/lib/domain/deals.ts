@@ -1,22 +1,35 @@
-import type { DealConfirmation, DealParticipantSet, DealStatus } from './types';
+import type { DealParticipantSet, DealStatus } from './types';
 
 export function isDealParticipant(participants: DealParticipantSet, profileId: string): boolean {
 	return profileId === participants.partyAId || profileId === participants.partyBId;
 }
 
-export function hasMutualConfirmation(
-	participants: DealParticipantSet,
-	confirmations: readonly DealConfirmation[]
+export function canCompleteDeal(
+	status: DealStatus,
+	listingSellerId: string,
+	viewerId: string
 ): boolean {
-	const confirmed = new Set(confirmations.map((confirmation) => confirmation.profileId));
-	return confirmed.has(participants.partyAId) && confirmed.has(participants.partyBId);
+	return status === 'pending_confirmation' && listingSellerId === viewerId;
 }
 
-export function statusAfterConfirmation(
+export function canCancelDeal(
+	status: DealStatus,
 	participants: DealParticipantSet,
-	confirmations: readonly DealConfirmation[],
-	currentStatus: DealStatus
-): DealStatus {
-	if (currentStatus !== 'pending_confirmation') return currentStatus;
-	return hasMutualConfirmation(participants, confirmations) ? 'completed' : currentStatus;
+	viewerId: string
+): boolean {
+	return (
+		(status === 'pending_confirmation' || status === 'disputed') &&
+		isDealParticipant(participants, viewerId)
+	);
+}
+
+export function canReviewDeal(status: DealStatus): boolean {
+	return status === 'completed';
+}
+
+export function visibleCancellationReason(
+	status: DealStatus,
+	cancellationReason: string | null
+): string | null {
+	return status === 'cancelled' ? cancellationReason : null;
 }

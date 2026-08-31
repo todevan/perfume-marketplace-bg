@@ -9,6 +9,7 @@ export const notificationKindSchema = z.enum([
 	'message_received',
 	'deal_confirmation_needed',
 	'deal_completed',
+	'deal_cancelled',
 	'review_received',
 	'listing_expiring',
 	'listing_expired',

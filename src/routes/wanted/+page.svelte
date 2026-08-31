@@ -16,7 +16,7 @@
     <div class="reveal">
       <span class="eyebrow">Активни заявки</span>
       <h1>Точно този <em>аромат.</em></h1>
-      <p>Виж какво търси общността. Бюджетът е ориентир, а всяко предложение остава неподвързващо до взаимно потвърдена сделка.</p>
+      <p>Виж какво търси общността. Бюджетът е ориентир, а всяко предложение остава неподвързващо до приключена сделка.</p>
       <div class="hero-actions"><a class="button primary" href="/publish?kind=wanted"><Plus size={18} /> Създай заявка</a><a class="button secondary" href="#requests"><Search size={18} /> Разгледай</a></div>
     </div>
     <aside class="request-note" aria-label="Как работи заявката"><BellRing size={28} /><span>WANTED / BETA</span><strong>Опиши марка, аромат и максимален бюджет.</strong><p>Контактът започва със структурирана оферта; чатът се отключва след приемане.</p></aside>

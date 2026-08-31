@@ -542,7 +542,7 @@ async function sendWithRealtimePrivacyProof(
 	}
 }
 
-async function confirmDeal(page: Page, origin: string, query: string): Promise<void> {
+async function completeDeal(page: Page, origin: string, query: string): Promise<void> {
 	await gotoApp(page, origin, '/deals');
 	const deal = page.locator('article.deal-card').filter({ hasText: query }).first();
 	await expect(deal).toBeVisible({ timeout: 30_000 });
@@ -733,8 +733,7 @@ test.describe('real hosted marketplace', () => {
 				buyer.locator('.message-stream').getByText(buyerMessage, { exact: true })
 			).toBeVisible();
 
-			await confirmDeal(buyer, config.origin, listing.query);
-			await confirmDeal(seller, config.origin, listing.query);
+			await completeDeal(seller, config.origin, listing.query);
 
 			await gotoApp(buyer, config.origin, '/deals');
 			const completedDeal = buyer.locator('article.deal-card').filter({ hasText: listing.query }).first();

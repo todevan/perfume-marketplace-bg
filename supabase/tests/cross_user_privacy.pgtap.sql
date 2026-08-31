@@ -4,12 +4,49 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(82);
+select plan(123);
 
 select is(
   has_table_privilege('authenticated', 'public.deal_confirmations', 'insert'),
   false,
   'authenticated callers cannot insert deal confirmations directly'
+);
+select is(
+  has_table_privilege(
+    'authenticated',
+    'public.deal_confirmations',
+    'update, delete, truncate'
+  ),
+  false,
+  'authenticated callers cannot alter or erase historical deal confirmations'
+);
+select is(
+  has_table_privilege(
+    'anon',
+    'public.deal_confirmations',
+    'insert, update, delete, truncate'
+  ),
+  false,
+  'anonymous callers cannot mutate historical deal confirmations'
+);
+select is(
+  has_table_privilege(
+    'service_role',
+    'public.deal_confirmations',
+    'insert, update, delete, truncate'
+  ),
+  false,
+  'service paths cannot bypass immutable deal-confirmation history'
+);
+select ok(
+  exists (
+    select 1 from pg_policies p
+    where p.schemaname = 'public'
+      and p.tablename = 'deals'
+      and p.policyname = 'deals_participant_read'
+      and p.qual like '%is_staff%'
+  ),
+  'authorized staff retain deal-history visibility, including cancellation reason'
 );
 
 select is(
@@ -55,6 +92,13 @@ insert into auth.users (
   'authenticated', 'authenticated', 'privacy-outsider@example.test', '', now(),
   '{"provider":"email","providers":["email"]}'::jsonb,
   '{"username":"privacy_outsider"}'::jsonb, now(), now()
+),
+(
+  '23888888-8888-4888-8888-888888888888',
+  '00000000-0000-0000-0000-000000000000',
+  'authenticated', 'authenticated', 'privacy-moderator@example.test', '', now(),
+  '{"provider":"email","providers":["email"]}'::jsonb,
+  '{"username":"privacy_moderator"}'::jsonb, now(), now()
 );
 
 update public.profiles
@@ -62,46 +106,56 @@ set email_verified_at = now(), phone_verified_at = now()
 where id in (
   '23111111-1111-4111-8111-111111111111',
   '23222222-2222-4222-8222-222222222222',
-  '23333333-3333-4333-8333-333333333333'
+  '23333333-3333-4333-8333-333333333333',
+  '23888888-8888-4888-8888-888888888888'
 );
+update public.profiles
+set role = 'moderator'
+where id = '23888888-8888-4888-8888-888888888888';
 
 insert into public.beta_invites (id, email, token_hash, status, expires_at)
 values
   ('23411111-1111-4111-8111-111111111111', 'privacy-seller@example.test', repeat('1', 64), 'pending', now() + interval '7 days'),
   ('23422222-2222-4222-8222-222222222222', 'privacy-buyer@example.test', repeat('2', 64), 'pending', now() + interval '7 days'),
-  ('23433333-3333-4333-8333-333333333333', 'privacy-outsider@example.test', repeat('3', 64), 'pending', now() + interval '7 days');
+  ('23433333-3333-4333-8333-333333333333', 'privacy-outsider@example.test', repeat('3', 64), 'pending', now() + interval '7 days'),
+  ('23488888-8888-4888-8888-888888888888', 'privacy-moderator@example.test', repeat('8', 64), 'pending', now() + interval '7 days');
 
 update public.beta_invites
 set status = 'accepted',
     accepted_by = case id
       when '23411111-1111-4111-8111-111111111111' then '23111111-1111-4111-8111-111111111111'::uuid
       when '23422222-2222-4222-8222-222222222222' then '23222222-2222-4222-8222-222222222222'::uuid
-      else '23333333-3333-4333-8333-333333333333'::uuid
+      when '23433333-3333-4333-8333-333333333333' then '23333333-3333-4333-8333-333333333333'::uuid
+      else '23888888-8888-4888-8888-888888888888'::uuid
     end
 where id in (
   '23411111-1111-4111-8111-111111111111',
   '23422222-2222-4222-8222-222222222222',
-  '23433333-3333-4333-8333-333333333333'
+  '23433333-3333-4333-8333-333333333333',
+  '23488888-8888-4888-8888-888888888888'
 );
 
 insert into public.beta_memberships (profile_id, invite_id, status)
 values
   ('23111111-1111-4111-8111-111111111111', '23411111-1111-4111-8111-111111111111', 'pending'),
   ('23222222-2222-4222-8222-222222222222', '23422222-2222-4222-8222-222222222222', 'pending'),
-  ('23333333-3333-4333-8333-333333333333', '23433333-3333-4333-8333-333333333333', 'pending');
+  ('23333333-3333-4333-8333-333333333333', '23433333-3333-4333-8333-333333333333', 'pending'),
+  ('23888888-8888-4888-8888-888888888888', '23488888-8888-4888-8888-888888888888', 'pending');
 update public.beta_memberships
 set status = 'active'
 where profile_id in (
   '23111111-1111-4111-8111-111111111111',
   '23222222-2222-4222-8222-222222222222',
-  '23333333-3333-4333-8333-333333333333'
+  '23333333-3333-4333-8333-333333333333',
+  '23888888-8888-4888-8888-888888888888'
 );
 update public.beta_memberships
 set activated_at = now() - interval '1 second'
 where profile_id in (
   '23111111-1111-4111-8111-111111111111',
   '23222222-2222-4222-8222-222222222222',
-  '23333333-3333-4333-8333-333333333333'
+  '23333333-3333-4333-8333-333333333333',
+  '23888888-8888-4888-8888-888888888888'
 );
 
 insert into public.beta_consent_events (
@@ -112,7 +166,8 @@ from (
   values
     ('23111111-1111-4111-8111-111111111111'::uuid),
     ('23222222-2222-4222-8222-222222222222'::uuid),
-    ('23333333-3333-4333-8333-333333333333'::uuid)
+    ('23333333-3333-4333-8333-333333333333'::uuid),
+    ('23888888-8888-4888-8888-888888888888'::uuid)
 ) as fixture(profile_id)
 cross join public.beta_legal_documents document
 where document.required_for_access and document.retired_at is null;
@@ -456,11 +511,8 @@ savepoint buyer_blocked_direct_deal_confirmation;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
-select public.confirm_deal((select id from privacy_deal));
 reset role;
 set local role postgres;
-truncate blocked_deal_rpc_baseline;
-insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
@@ -489,28 +541,28 @@ select is(
 );
 rollback to savepoint buyer_blocked_direct_deal_confirmation;
 
-savepoint buyer_blocked_confirm_deal;
+savepoint buyer_blocked_complete_deal;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
 select throws_ok(
-  $$ select public.confirm_deal((select id from privacy_deal)) $$,
+  $$ select public.complete_deal((select id from privacy_deal)) $$,
   '42501', 'deal is not available to this participant',
-  'buyer-blocked confirm_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+  'buyer-blocked complete_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
 );
 select throws_ok(
-  $$ select public.confirm_deal('23711111-1111-4111-8111-111111111111') $$,
+  $$ select public.complete_deal('23711111-1111-4111-8111-111111111111') $$,
   '42501', 'deal is not available to this participant',
-  'buyer confirm_deal uses the same canonical denial for a missing deal'
+  'buyer complete_deal uses the same canonical denial for a missing deal'
 );
 reset role;
 set local role postgres;
 select is(
   (select state from blocked_deal_rpc_state),
   (select state from blocked_deal_rpc_baseline),
-  'buyer-blocked confirm_deal causes zero transaction mutation'
+  'buyer-blocked complete_deal causes zero transaction mutation'
 );
-rollback to savepoint buyer_blocked_confirm_deal;
+rollback to savepoint buyer_blocked_complete_deal;
 
 savepoint buyer_blocked_cancel_deal;
 set local role authenticated;
@@ -518,12 +570,12 @@ select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-2222222
 select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
 select throws_ok(
   $$ select public.cancel_deal((select id from privacy_deal), 'blocked cancellation probe') $$,
-  '42501', 'pending deal is not available to this participant',
+  '42501', 'deal is not available to this participant',
   'buyer-blocked cancel_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
 );
 select throws_ok(
   $$ select public.cancel_deal('23711111-1111-4111-8111-111111111111', 'missing cancellation probe') $$,
-  '42501', 'pending deal is not available to this participant',
+  '42501', 'deal is not available to this participant',
   'buyer cancel_deal uses the same canonical denial for a missing deal'
 );
 reset role;
@@ -575,11 +627,8 @@ savepoint seller_blocked_direct_deal_confirmation;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
-select public.confirm_deal((select id from privacy_deal));
 reset role;
 set local role postgres;
-truncate blocked_deal_rpc_baseline;
-insert into blocked_deal_rpc_baseline select state from blocked_deal_rpc_state;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
@@ -608,28 +657,28 @@ select is(
 );
 rollback to savepoint seller_blocked_direct_deal_confirmation;
 
-savepoint seller_blocked_confirm_deal;
+savepoint seller_blocked_complete_deal;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
 select throws_ok(
-  $$ select public.confirm_deal((select id from privacy_deal)) $$,
+  $$ select public.complete_deal((select id from privacy_deal)) $$,
   '42501', 'deal is not available to this participant',
-  'seller-blocked confirm_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
+  'seller-blocked complete_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
 );
 select throws_ok(
-  $$ select public.confirm_deal('23711111-1111-4111-8111-111111111111') $$,
+  $$ select public.complete_deal('23711111-1111-4111-8111-111111111111') $$,
   '42501', 'deal is not available to this participant',
-  'seller confirm_deal uses the same canonical denial for a missing deal'
+  'seller complete_deal uses the same canonical denial for a missing deal'
 );
 reset role;
 set local role postgres;
 select is(
   (select state from blocked_deal_rpc_state),
   (select state from blocked_deal_rpc_baseline),
-  'seller-blocked confirm_deal causes zero transaction mutation'
+  'seller-blocked complete_deal causes zero transaction mutation'
 );
-rollback to savepoint seller_blocked_confirm_deal;
+rollback to savepoint seller_blocked_complete_deal;
 
 savepoint seller_blocked_cancel_deal;
 set local role authenticated;
@@ -637,12 +686,12 @@ select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-1111111
 select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
 select throws_ok(
   $$ select public.cancel_deal((select id from privacy_deal), 'blocked cancellation probe') $$,
-  '42501', 'pending deal is not available to this participant',
+  '42501', 'deal is not available to this participant',
   'seller-blocked cancel_deal returns the canonical denial without private values, identifiers, metadata, row-existence, or enumeration signals'
 );
 select throws_ok(
   $$ select public.cancel_deal('23711111-1111-4111-8111-111111111111', 'missing cancellation probe') $$,
-  '42501', 'pending deal is not available to this participant',
+  '42501', 'deal is not available to this participant',
   'seller cancel_deal uses the same canonical denial for a missing deal'
 );
 reset role;
@@ -682,33 +731,366 @@ update public.conversation_members
 set blocked_at = null
 where profile_id = '23111111-1111-4111-8111-111111111111';
 
-savepoint eligible_confirm_deal;
+savepoint eligible_complete_deal;
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
-select lives_ok(
-  $$ select public.confirm_deal((select id from privacy_deal)) $$,
-  'the eligible unblocked buyer can confirm through confirm_deal'
+select throws_ok(
+  $$ select public.complete_deal((select id from privacy_deal)) $$,
+  '42501', 'only the seller can complete this deal',
+  'the eligible unblocked buyer cannot complete the deal'
 );
 select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
 select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
 select lives_ok(
-  $$ select public.confirm_deal((select id from privacy_deal)) $$,
-  'the eligible unblocked seller can confirm through confirm_deal'
+  $$ select public.complete_deal((select id from privacy_deal)) $$,
+  'the eligible unblocked seller can complete through complete_deal'
 );
 reset role;
 set local role postgres;
 select is(
   (select count(*) from public.deal_confirmations dc where dc.deal_id = (select id from privacy_deal)),
-  2::bigint,
-  'confirm_deal records exactly one confirmation for each eligible participant'
+  0::bigint,
+  'complete_deal does not create historical mutual-confirmation rows'
 );
 select is(
   (select status::text from public.deals where id = (select id from privacy_deal)),
   'completed',
-  'confirm_deal completes the deal after both eligible participants confirm'
+  'complete_deal completes the deal directly for the seller'
 );
-rollback to savepoint eligible_confirm_deal;
+rollback to savepoint eligible_complete_deal;
+
+savepoint outsider_lifecycle_denial;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23333333-3333-4333-8333-333333333333","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23333333-3333-4333-8333-333333333333', true);
+select throws_ok(
+  $$ select public.complete_deal((select id from privacy_deal)) $$,
+  '42501', 'deal is not available to this participant',
+  'an outsider cannot complete a deal'
+);
+select throws_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), 'outsider cancellation') $$,
+  '42501', 'deal is not available to this participant',
+  'an outsider cannot cancel a deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select status::text from public.deals where id = (select id from privacy_deal)),
+  'pending_confirmation',
+  'outsider lifecycle denials leave the deal unchanged'
+);
+rollback to savepoint outsider_lifecycle_denial;
+
+savepoint buyer_cancel_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select lives_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), E'\u00a0 buyer cancellation \u00a0') $$,
+  'the buyer can cancel an eligible deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (select status::text from public.deals where id = (select id from privacy_deal)),
+  'cancelled',
+  'buyer cancellation is terminal'
+);
+select is(
+  (select cancellation_reason from public.deals where id = (select id from privacy_deal)),
+  'buyer cancellation',
+  'cancellation persists a Unicode-trimmed reason'
+);
+select is(
+  (
+    select count(*) from public.notifications
+    where kind = 'deal_cancelled'
+      and profile_id = '23111111-1111-4111-8111-111111111111'
+      and data ->> 'dealId' = (select id::text from privacy_deal)
+  ),
+  1::bigint,
+  'buyer cancellation notifies the seller exactly once'
+);
+select ok(
+  not exists (
+    select 1 from public.notifications
+    where kind = 'deal_cancelled'
+      and data ? 'reason'
+  ),
+  'cancellation notifications do not expose the private reason'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select is(
+  (select cancellation_reason from public.deals where id = (select id from privacy_deal)),
+  'buyer cancellation',
+  'the seller can read the participant-private cancellation reason'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23333333-3333-4333-8333-333333333333","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23333333-3333-4333-8333-333333333333', true);
+select is(
+  (select count(*) from public.deals where id = (select id from privacy_deal)),
+  0::bigint,
+  'an outsider cannot read the cancellation reason through the deal row'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select is(
+  (select cancellation_reason from public.deals where id = (select id from privacy_deal)),
+  'buyer cancellation',
+  'the buyer can read the participant-private cancellation reason'
+);
+reset role;
+set local role postgres;
+update public.profiles
+set role = 'moderator'
+where id = '23333333-3333-4333-8333-333333333333';
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23333333-3333-4333-8333-333333333333","role":"authenticated","aal":"aal2"}', true);
+select set_config('request.jwt.claim.sub', '23333333-3333-4333-8333-333333333333', true);
+select is(
+  (select cancellation_reason from public.deals where id = (select id from privacy_deal)),
+  'buyer cancellation',
+  'authorized staff can read the cancellation reason for moderation'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select throws_ok(
+  $$
+    insert into public.reviews (deal_id, reviewer_id, reviewee_id, rating)
+    select id, auth.uid(), '23111111-1111-4111-8111-111111111111', 5
+    from privacy_deal
+  $$,
+  '23514', 'reviews require a completed deal',
+  'a cancelled deal cannot unlock a review'
+);
+select throws_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), 'duplicate cancellation') $$,
+  '23514', 'deal is not eligible for cancellation',
+  'duplicate cancellation is rejected without a second transition'
+);
+reset role;
+set local role postgres;
+select is(
+  (select count(*) from public.notifications where kind = 'deal_cancelled'),
+  1::bigint,
+  'duplicate cancellation creates no duplicate notification'
+);
+rollback to savepoint buyer_cancel_deal;
+
+savepoint seller_cancel_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select lives_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), 'seller cancellation') $$,
+  'the seller can cancel an eligible deal'
+);
+reset role;
+set local role postgres;
+select is(
+  (
+    select count(*) from public.notifications
+    where kind = 'deal_cancelled'
+      and profile_id = '23222222-2222-4222-8222-222222222222'
+  ),
+  1::bigint,
+  'seller cancellation notifies the buyer exactly once'
+);
+rollback to savepoint seller_cancel_deal;
+
+savepoint disputed_cancel_deal;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select lives_ok(
+  $$ select * from public.open_deal_dispute((select id from privacy_deal), 'real participant dispute details') $$,
+  'a participant opens a real report-bound deal dispute'
+);
+select lives_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), 'cancel disputed deal') $$,
+  'a participant can cancel an eligible disputed deal'
+);
+reset role;
+set local role postgres;
+create temp table cancelled_dispute_evidence on commit drop as
+select jsonb_build_object(
+  'status', status,
+  'cancelled_at', cancelled_at,
+  'cancelled_by', cancelled_by,
+  'cancellation_reason', cancellation_reason
+) as evidence
+from public.deals
+where id = (select id from privacy_deal);
+grant select on cancelled_dispute_evidence to authenticated;
+create temp table privacy_dispute_report on commit drop as
+select r.id
+from public.reports r
+where r.target_type = 'deal'
+  and r.target_id = (select id from privacy_deal);
+grant select on privacy_dispute_report to authenticated;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23888888-8888-4888-8888-888888888888","role":"authenticated","aal":"aal2"}', true);
+select set_config('request.jwt.claim.sub', '23888888-8888-4888-8888-888888888888', true);
+select is(
+  public.claim_moderation_report((select id from privacy_dispute_report)),
+  'claimed',
+  'an AAL2 moderator claims the participant-created deal report'
+);
+select throws_ok(
+  $$
+    select public.resolve_deal_dispute(
+      (select id from privacy_dispute_report),
+      (select id from privacy_deal),
+      'pending_confirmation',
+      'attempt to resume cancelled deal'
+    )
+  $$,
+  '23514', 'a cancelled deal cannot resume seller completion',
+  'moderation cannot resurrect a participant-cancelled deal'
+);
+select lives_ok(
+  $$
+    select public.resolve_deal_dispute(
+      (select id from privacy_dispute_report),
+      (select id from privacy_deal),
+      'cancelled',
+      'close report without rewriting participant cancellation'
+    )
+  $$,
+  'assigned staff can disposition the report after participant cancellation'
+);
+reset role;
+set local role postgres;
+select is(
+  (
+    select status::text from public.reports
+    where target_type = 'deal' and target_id = (select id from privacy_deal)
+  ),
+  'resolved',
+  'staff disposition closes the investigating misconduct report'
+);
+select is(
+  (
+    select jsonb_build_object(
+      'status', status,
+      'cancelled_at', cancelled_at,
+      'cancelled_by', cancelled_by,
+      'cancellation_reason', cancellation_reason
+    )
+    from public.deals where id = (select id from privacy_deal)
+  ),
+  (select evidence from cancelled_dispute_evidence),
+  'staff report disposition preserves participant cancellation evidence exactly'
+);
+select is(
+  (select cancelled_by from public.deals where id = (select id from privacy_deal)),
+  '23222222-2222-4222-8222-222222222222'::uuid,
+  'participant identity remains the cancellation actor after moderation disposition'
+);
+select is(
+  (select cancellation_reason from public.deals where id = (select id from privacy_deal)),
+  'cancel disputed deal',
+  'participant cancellation reason remains immutable after moderation disposition'
+);
+rollback to savepoint disputed_cancel_deal;
+
+savepoint moderation_preserving_completion;
+set local role postgres;
+alter table public.listings disable trigger user;
+update public.listings
+set status = 'removed'
+where id = '23522222-2222-4222-8222-222222222222';
+alter table public.listings enable trigger user;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select lives_ok(
+  $$ select public.complete_deal((select id from privacy_deal)) $$,
+  'the seller can complete a deal whose listing is moderation-suppressed'
+);
+reset role;
+set local role postgres;
+select is(
+  (select status::text from public.listings where id = '23522222-2222-4222-8222-222222222222'),
+  'removed',
+  'completion does not resurrect a moderation-removed listing'
+);
+select is(
+  (select status::text from public.deals where id = (select id from privacy_deal)),
+  'completed',
+  'seller completion transitions the deal directly to completed'
+);
+select is(
+  (
+    select count(*) from public.notifications
+    where kind = 'deal_completed'
+      and data ->> 'dealId' = (select id::text from privacy_deal)
+  ),
+  2::bigint,
+  'completion emits one notification for each participant'
+);
+select throws_ok(
+  $$ select public.complete_deal((select id from privacy_deal)) $$,
+  '23514', 'deal is not eligible for completion',
+  'duplicate completion is rejected'
+);
+select is(
+  (select count(*) from public.notifications where kind = 'deal_completed'),
+  2::bigint,
+  'duplicate completion creates no duplicate notification'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23222222-2222-4222-8222-222222222222', true);
+select lives_ok(
+  $$
+    insert into public.reviews (deal_id, reviewer_id, reviewee_id, rating)
+    select id, auth.uid(), '23111111-1111-4111-8111-111111111111', 5
+    from privacy_deal
+  $$,
+  'a genuinely completed deal unlocks an otherwise valid review'
+);
+select throws_ok(
+  $$ select public.cancel_deal((select id from privacy_deal), 'too late') $$,
+  '23514', 'deal is not eligible for cancellation',
+  'cancellation after completion is rejected'
+);
+rollback to savepoint moderation_preserving_completion;
+
+savepoint historical_confirmation_read;
+set local role postgres;
+insert into public.deal_confirmations (deal_id, profile_id, confirmed_at)
+select id, '23222222-2222-4222-8222-222222222222', now()
+from privacy_deal;
+select is(
+  (select status::text from public.deals where id = (select id from privacy_deal)),
+  'pending_confirmation',
+  'historical confirmation insertion no longer mutates deal lifecycle state'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23111111-1111-4111-8111-111111111111","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23111111-1111-4111-8111-111111111111', true);
+select is(
+  (select count(*) from public.deal_confirmations where deal_id = (select id from privacy_deal)),
+  1::bigint,
+  'a participant can still read historical confirmation evidence'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"23333333-3333-4333-8333-333333333333","role":"authenticated"}', true);
+select set_config('request.jwt.claim.sub', '23333333-3333-4333-8333-333333333333', true);
+select is(
+  (select count(*) from public.deal_confirmations where deal_id = (select id from privacy_deal)),
+  0::bigint,
+  'an outsider cannot read historical confirmation evidence'
+);
+rollback to savepoint historical_confirmation_read;
 
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"23222222-2222-4222-8222-222222222222","role":"authenticated"}', true);

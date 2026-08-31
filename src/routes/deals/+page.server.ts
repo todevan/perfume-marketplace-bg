@@ -2,7 +2,7 @@ import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import type { DealDto, ListingCardDto } from '$lib/contracts';
 import type { MarketplaceSupabaseClient } from '$lib/server/repositories';
-import { cancelDeal, confirmDeal, getDeals, openDealDispute, submitReview } from '$lib/server/services';
+import { cancelDeal, completeDeal, getDeals, openDealDispute, submitReview } from '$lib/server/services';
 
 const listing: ListingCardDto = {
   id: '00000000-0000-4000-8000-000000000201', slug: 'dior-sauvage-demo', kind: 'offer', dealMode: 'sale_or_swap',
@@ -15,7 +15,7 @@ const demoDeal: DealDto = {
   partyA: listing.seller,
   partyB: { id: '00000000-0000-4000-8000-000000000301', username: 'amber_room', avatarUrl: null, accountKind: 'private', merchantVerified: false },
   conversationId: '00000000-0000-4000-8000-000000000801',
-  status: 'pending_confirmation', confirmedBy: [], completedAt: null, disputedAt: null, cancelledAt: null,
+  status: 'pending_confirmation', completedAt: null, disputedAt: null, cancelledAt: null,
   cancellationReason: null, createdAt: '2026-07-20T14:32:00.000Z'
 };
 
@@ -35,12 +35,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 };
 
 export const actions: Actions = {
-  confirm: async ({ request, locals }) => {
-    if (locals.runtime.mode === 'demo') return { ok: true, operation: 'confirm' };
+  complete: async ({ request, locals }) => {
+    if (locals.runtime.mode === 'demo') return { ok: true, operation: 'complete' };
     const formData = await request.formData();
-    const result = await confirmDeal(clientFrom(locals), { dealId: formData.get('dealId') });
+    const result = await completeDeal(clientFrom(locals), { dealId: formData.get('dealId') });
     if (!result.ok) return fail(status(result.error.code), { ok: false, error: result.error });
-    return { ok: true, operation: 'confirm' };
+    return { ok: true, operation: 'complete' };
   },
   cancel: async ({ request, locals }) => {
     if (locals.runtime.mode === 'demo') return { ok: true, operation: 'cancel' };

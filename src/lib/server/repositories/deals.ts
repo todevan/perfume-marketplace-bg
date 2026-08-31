@@ -18,7 +18,6 @@ import { pageDto, throwIfError, type MarketplaceSupabaseClient } from './shared'
 
 type DealRow = Tables<'deals'>;
 type ProfileRow = Views<'public_profiles'>;
-type ConfirmationRow = Tables<'deal_confirmations'>;
 
 function actor(row: ProfileRow): ActorSummaryDto {
 	return toActorSummaryDto(row, 'deals.actor');
@@ -43,15 +42,13 @@ async function hydrateDeals(
 		...new Set(rows.flatMap((row) => [row.listing_id, row.offered_listing_id].filter(Boolean) as string[]))
 	];
 	const profileIds = [...new Set(rows.flatMap((row) => [row.party_a_id, row.party_b_id]))];
-	const dealIds = rows.map((row) => row.id);
 	const acceptedOfferIds = rows.map((row) => row.accepted_offer_id);
-	const [listingsResult, profilesResult, confirmationsResult, conversationsResult] = await Promise.all([
+	const [listingsResult, profilesResult, conversationsResult] = await Promise.all([
 		client.from('listings').select(LISTING_PROJECTION).in('id', listingIds),
 		client
 			.from('public_profiles')
 			.select('id,username,avatar_path,account_kind,is_merchant_verified')
 			.in('id', profileIds),
-		client.from('deal_confirmations').select('*').in('deal_id', dealIds),
 		client
 			.from('conversations')
 			.select('id,accepted_offer_id')
@@ -59,7 +56,6 @@ async function hydrateDeals(
 	]);
 	throwIfError('deals.listings', listingsResult.error);
 	throwIfError('deals.profiles', profilesResult.error);
-	throwIfError('deals.confirmations', confirmationsResult.error);
 	throwIfError('deals.conversations', conversationsResult.error);
 
 	const listings = await hydrateListingCards(
@@ -73,7 +69,6 @@ async function hydrateDeals(
 			return [summary.id, summary] as const;
 		})
 	);
-	const confirmations = (confirmationsResult.data ?? []) as ConfirmationRow[];
 	const conversationByOffer = new Map(
 		(conversationsResult.data ?? []).map((conversation) => [
 			conversation.accepted_offer_id,
@@ -95,9 +90,6 @@ async function hydrateDeals(
 			partyB,
 			conversationId,
 			status: row.status,
-			confirmedBy: confirmations
-				.filter((confirmation) => confirmation.deal_id === row.id)
-				.map((confirmation) => confirmation.profile_id),
 			completedAt: row.completed_at,
 			disputedAt: row.disputed_at,
 			cancelledAt: row.cancelled_at,
@@ -134,13 +126,12 @@ export async function findDealById(
 	return data ? (await hydrateDeals(client, [data as DealRow]))[0] ?? null : null;
 }
 
-export async function confirmDeal(
+export async function completeDeal(
 	client: MarketplaceSupabaseClient,
-	_profileId: string,
 	dealId: string
 ): Promise<void> {
-	const { error } = await client.rpc('confirm_deal', { target_deal_id: dealId });
-	throwIfError('deals.confirm', error);
+	const { error } = await client.rpc('complete_deal', { target_deal_id: dealId });
+	throwIfError('deals.complete', error);
 }
 
 export async function cancelDeal(

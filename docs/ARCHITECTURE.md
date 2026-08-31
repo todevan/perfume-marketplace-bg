@@ -127,7 +127,7 @@ Offer acceptance locks the physical listing(s), reserves them and creates the de
 
 Reviews are permitted only after seller completion. Cancelled deals do not unlock reviews.
 
-The current mutual-confirmation implementation is a known product gap recorded in `docs/PROJECT-STATUS.md`; it is not the target architecture.
+Seller completion and either-party cancellation are the current repository lifecycle; historical mutual-confirmation rows remain readable evidence but are not an active mutation path.
 
 Opening a dispute atomically marks the deal and creates its moderation case.
 

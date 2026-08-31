@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-	hasMutualConfirmation,
+	canCancelDeal,
+	canCompleteDeal,
+	canReviewDeal,
 	isDealParticipant,
-	statusAfterConfirmation
+	visibleCancellationReason
 } from '../../src/lib/domain/deals';
 import {
 	activeListingLimit,
@@ -11,44 +13,59 @@ import {
 } from '../../src/lib/domain/quota';
 import { validateReview } from '../../src/lib/domain/reviews';
 import type {
-	DealConfirmation,
 	DealParticipantSet,
 	ReviewInput,
 	ValidationResult
 } from '../../src/lib/domain/types';
 
 const participants: DealParticipantSet = { partyAId: 'seller', partyBId: 'buyer' };
-const sellerConfirmation: DealConfirmation = {
-	profileId: 'seller',
-	confirmedAt: '2026-07-21T10:00:00.000Z'
-};
-const buyerConfirmation: DealConfirmation = {
-	profileId: 'buyer',
-	confirmedAt: '2026-07-21T10:05:00.000Z'
-};
+describe('seller completion eligibility', () => {
+	it('allows only the listing seller to complete a pending deal', () => {
+		expect(canCompleteDeal('pending_confirmation', 'seller', 'seller')).toBe(true);
+		expect(canCompleteDeal('pending_confirmation', 'seller', 'buyer')).toBe(false);
+	});
+
+	it('does not offer completion after the pending state', () => {
+		for (const status of ['completed', 'cancelled', 'disputed'] as const) {
+			expect(canCompleteDeal(status, 'seller', 'seller')).toBe(false);
+		}
+	});
+});
+
+describe('participant deal presentation', () => {
+	it('allows either participant, but not an outsider, to cancel every nonterminal eligible deal', () => {
+		for (const status of ['pending_confirmation', 'disputed'] as const) {
+			expect(canCancelDeal(status, participants, 'seller')).toBe(true);
+			expect(canCancelDeal(status, participants, 'buyer')).toBe(true);
+			expect(canCancelDeal(status, participants, 'outsider')).toBe(false);
+		}
+		for (const status of ['completed', 'cancelled'] as const) {
+			expect(canCancelDeal(status, participants, 'seller')).toBe(false);
+			expect(canCancelDeal(status, participants, 'buyer')).toBe(false);
+		}
+	});
+
+	it('unlocks review actions only for completed deals', () => {
+		expect(canReviewDeal('completed')).toBe(true);
+		for (const status of ['pending_confirmation', 'cancelled', 'disputed'] as const) {
+			expect(canReviewDeal(status)).toBe(false);
+		}
+	});
+
+	it('reveals a cancellation reason only for a cancelled deal', () => {
+		expect(visibleCancellationReason('cancelled', 'Parcel was never sent.')).toBe(
+			'Parcel was never sent.'
+		);
+		expect(visibleCancellationReason('disputed', 'Private cancellation detail.')).toBeNull();
+		expect(visibleCancellationReason('completed', 'Private cancellation detail.')).toBeNull();
+	});
+});
 
 function issueCodes(result: ValidationResult): string[] {
 	return result.ok ? [] : result.issues.map((issue) => issue.code);
 }
 
-describe('double-confirmed deals', () => {
-	it('does not complete after a single confirmation or duplicate confirmations by one party', () => {
-		expect(hasMutualConfirmation(participants, [sellerConfirmation])).toBe(false);
-		expect(hasMutualConfirmation(participants, [sellerConfirmation, sellerConfirmation])).toBe(false);
-		expect(
-			statusAfterConfirmation(participants, [sellerConfirmation], 'pending_confirmation')
-		).toBe('pending_confirmation');
-	});
-
-	it('completes only after both distinct participants confirm', () => {
-		const confirmations = [sellerConfirmation, buyerConfirmation];
-		expect(hasMutualConfirmation(participants, confirmations)).toBe(true);
-		expect(statusAfterConfirmation(participants, confirmations, 'pending_confirmation')).toBe(
-			'completed'
-		);
-		expect(statusAfterConfirmation(participants, confirmations, 'disputed')).toBe('disputed');
-	});
-
+describe('deal participants', () => {
 	it('recognizes only the two deal participants', () => {
 		expect(isDealParticipant(participants, 'seller')).toBe(true);
 		expect(isDealParticipant(participants, 'buyer')).toBe(true);
@@ -75,16 +92,12 @@ describe('transaction review eligibility', () => {
 		).toEqual({ ok: true });
 	});
 
-	it('rejects reviews before mutual completion', () => {
-		expect(
-			issueCodes(
-				validateReview(review, {
-					dealStatus: 'pending_confirmation',
-					participants,
-					alreadyReviewed: false
-				})
-			)
-		).toContain('deal_not_completed');
+	it('rejects reviews for every non-completed lifecycle state', () => {
+		for (const dealStatus of ['pending_confirmation', 'cancelled', 'disputed'] as const) {
+			expect(
+				issueCodes(validateReview(review, { dealStatus, participants, alreadyReviewed: false }))
+			).toContain('deal_not_completed');
+		}
 	});
 
 	it('rejects outsiders, self-reviews and duplicate reviews', () => {
