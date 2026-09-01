@@ -1,14 +1,14 @@
-# Legacy pointer: domain authority
+# Domain Authority (current)
 
-This path is retained for compatibility and is **not current authority**.
+For design and architecture decisions, use this order:
 
-Use:
-- `../AROMATIKA-LAUNCH-READINESS-DESIGN.md` for strategic launch direction;
-- `../../PRODUCT.md` for product truth;
-- `../../DESIGN.md` for visual/UX truth;
-- `../ARCHITECTURE.md` for technical architecture;
-- `../PROJECT-STATUS.md` for current operational state;
-- `../BUSINESS-MODEL.md` for monetization;
-- the approved active issue for task-specific acceptance criteria.
+1. `docs/AGENTS.md`
+2. active issue acceptance criteria
+3. `docs/agents/WORKFLOW.md`
+4. `PRODUCT.md`
+5. `DESIGN.md`
+6. `ARCHITECTURE.md` (if present in `docs/`)
+7. `PROJECT-STATUS.md`
 
-Historical plans do not override these current authorities.
+Technical and product history is reference-only unless it is directly required by the
+current accepted issue scope.

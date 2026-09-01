@@ -1,10 +1,9 @@
-# Legacy pointer: owner gates
+# Human Gates
 
-This path is retained for compatibility and is **not current authority**.
+Follow this sequence for gating:
 
-Use:
-- `../../AGENTS.md` for owner role and R1-R3;
-- `SECURITY.md` for R2/R3;
-- `WORKFLOW.md` for task handoff.
+1. `AGENTS.md` for owner priorities, R1/R2/R3 boundaries, and authority.
+2. `SECURITY.md` for R2/R3-sensitive safeguards.
+3. `WORKFLOW.md` for handoff and completion expectations.
 
-The owner is not a code-review gate. R2 code is reviewed by independent agents and deterministic checks. Genuine product/business/legal/spending/protected real-world actions remain owner decisions.
+Owner decisions remain the only gate for protected real-world actions.

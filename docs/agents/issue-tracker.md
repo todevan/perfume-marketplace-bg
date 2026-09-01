@@ -1,10 +1,9 @@
-# Legacy pointer: issue workflow
+# Issue Tracking Authority
 
-This path is retained for compatibility and is **not current authority**.
+GitHub issues remain the sole engineering queue.
 
-Use `WORKFLOW.md` for the current issue contract, live selection, execution loop,
-and merge behavior.
+For this repository:
 
-GitHub Issues are the sole engineering queue. An approved issue is the executable
-specification for its explicit decisions; missing product or architecture decisions
-return to the owner.
+- Follow the active issue process in `WORKFLOW.md`.
+- Use `AGENTS.md` for authority precedence and owner action boundaries.
+- Keep product scope, acceptance, and risk statements inside the active issue.

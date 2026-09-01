@@ -1,10 +1,11 @@
-# Legacy pointer: autonomy
+# Autonomy and Decision Authority
 
-This path is retained for compatibility with historical links and is **not current authority**.
+Use this ladder in order:
 
-Use:
-- `../../AGENTS.md` for repository constitution and owner/local/GitHub authority;
-- `WORKFLOW.md` for engineering autonomy/lifecycle;
-- `SECURITY.md` for R2/R3 boundaries.
+1. `../../AGENTS.md` for repository constitution and owner constraints.
+2. the active issue or owner instruction for explicit scope.
+3. `WORKFLOW.md` for engineering lifecycle and handoff behavior.
+4. `SECURITY.md` for R2/R3 boundaries.
 
-Do not recover old beta or owner-code-approval gates from Git history unless an active investigation explicitly requires historical evidence.
+Do not recover historical owner gates unless directly needed for a specific unresolved safety
+question in the active context.

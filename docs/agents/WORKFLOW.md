@@ -116,6 +116,10 @@ Model discipline:
 - delegation: bounded, independent work only, with minimum sufficient context;
 - retries: deterministic evidence before escalation.
 
+For tooling-only candidates (no product behavior change), the lifecycle remains the same,
+except the final merge step is deferred while an unrelated product issue is active.
+See `TOOLING-RUNBOOK.md` for the dedicated sequencing and checks.
+
 One task owner remains accountable. More agent activity is not progress.
 
 ## Scope and defect triage

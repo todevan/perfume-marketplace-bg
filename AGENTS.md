@@ -46,10 +46,19 @@ At session start read:
 3. the active issue or current owner instruction;
 4. directory-specific AGENTS.md files for touched paths.
 
+For tooling-only work while a product issue is active, also read:
+
+1. `docs/agents/TOOLING-RUNBOOK.md` (required);
+2. `docs/agents/SKILL-ROUTER.md`.
+
 For substantial work read docs/agents/WORKFLOW.md. For R2/R3 work also read
 docs/agents/SECURITY.md. Load PRODUCT.md, DESIGN.md, docs/ARCHITECTURE.md,
 docs/LAUNCH-GATES.md, or docs/BUSINESS-MODEL.md only when the issue touches that
 concern.
+
+Tooling work that preserves product behavior and does not perform protected owner actions
+may proceed in an isolated branch/worktree while an unrelated issue is still
+`agent:active`.
 
 Before editing, fetch and reconcile live GitHub, Git, PR, CI, label, branch, and
 worktree state. Preserve unknown local work. Never develop directly on main.
