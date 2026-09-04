@@ -23,9 +23,11 @@ implementation plan, SDD artifact, roadmap, or ticket tree for executable work.
 
 ## Active state and scope
 
-Exactly one product issue carries `agent:active`, and exactly one branch/worktree
-receives active product edits. An explicitly authorized isolated tooling migration is
-an exception for that migration only, not a standing parallel lane.
+At most one product issue carries `agent:active`. Exactly one is required only while
+active product implementation is underway, and exactly one issue branch/worktree then
+receives product edits. Zero active product issues is valid while idle, after closure,
+when no eligible next issue is authorized, and during an explicitly authorized
+isolated tooling migration. That migration is not a standing parallel lane.
 
 Every changed tracked file maps to an acceptance criterion, required test, mandatory
 configuration/documentation update, or an in-scope defect needed for the security or
@@ -64,4 +66,3 @@ An issue remains authorized until it passes, a genuine owner decision appears, t
 external transaction envelope is exhausted, a protected action is reached, the owner
 stops it, or a safety policy requires interruption. Repair count alone is not a
 blocker.
-

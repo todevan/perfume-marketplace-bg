@@ -13,4 +13,3 @@
 - **Next safe action:** `<one bounded action>`
 - **Forbidden actions:** `<actions that would lose work, exceed authority, or retry uncertain state>`
 - **Supersedes:** `<prior checkpoint identifier or none>`
-

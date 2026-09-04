@@ -19,8 +19,8 @@ and stop before unauthorized work.
    applicable.
 2. Re-read live issue approval and scope, then merge only through the normal
    protected path when all exact-candidate gates pass. Merge and deploy are separate.
-3. Verify merge SHA, PR state, issue closure, labels, and absence of unintended issue
-   activation from live GitHub.
+3. Verify merge SHA and PR state; for issue-backed work also verify issue closure and
+   labels. Verify absence of unintended issue activation from live GitHub.
 4. Update [`../../PROJECT-STATUS.md`](../../PROJECT-STATUS.md) only when verified
    repository, product, deployment, hosted-system, or operational truth changed.
 5. Write one sanitized Engram closure observation and supersede older active
@@ -33,8 +33,9 @@ and stop before unauthorized work.
 
 ## Output
 
-Verified merge and closure, reconciled active state, current-truth documentation,
-sanitized memory, safe cleanup, and a live evidence handoff.
+Verified merge and issue closure when applicable, reconciled active state,
+current-truth documentation, sanitized memory, safe cleanup, and a live evidence
+handoff. Zero active product issues is a valid terminal state.
 
 ## Human gate
 
@@ -46,4 +47,3 @@ owner action
 - Any required check, review, proof, cleanup, or live closure evidence is missing.
 - Merge requires a protected owner action not already authorized.
 - Canonical or historical work cannot be classified safely.
-

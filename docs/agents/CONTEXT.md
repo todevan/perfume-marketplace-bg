@@ -53,4 +53,3 @@ output became invalid when live evidence or the candidate changes.
 
 Compatibility files in this directory preserve old links. Each is a concise pointer
 to one canonical home; no compatibility file may carry a second policy body.
-

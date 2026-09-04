@@ -15,6 +15,11 @@ Resolve every conflict in this order:
 8. Historical branches, reviews, rescue snapshots, plans, and checkpoints as evidence
    only.
 
+Owner and issue wording define product intent and authorized scope, but cannot
+classify away changed-surface risk or waive mandatory authorization, RLS, MFA,
+security review, dependency audit, CI, branch protection, or fail-closed requirements.
+Those invariants constrain every level of the ladder.
+
 No lower source overrides a higher source. When two sources on one level disagree,
 prefer the one that is live, exact to the current candidate, and explicitly scoped
 to the issue; surface a genuine unresolved owner decision rather than inventing one.
@@ -35,4 +40,3 @@ to the issue; surface a genuine unresolved owner decision rather than inventing 
 Live GitHub and Git verification follows every memory retrieval or historical read.
 Permission gaps are reported as unknown; documentation never proves a live ruleset,
 deployment, check, or provider state.
-

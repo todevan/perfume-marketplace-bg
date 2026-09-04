@@ -56,4 +56,3 @@ For a completed hosted-proof worktree, delete credential-bearing transient artif
 only under its proof cleanup contract and retain only the intentionally sanitized
 terminal record. Preserve a superseded tooling worktree until useful changes are
 ported, supersession is live-recorded, and every removal criterion passes.
-

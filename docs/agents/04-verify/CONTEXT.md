@@ -49,4 +49,3 @@ none — agent-owned
 - A required deterministic gate, final-SHA review, or CI check remains failed.
 - The risk surface materially changes and the required gate is unavailable.
 - A genuine owner decision, protected action, or safety interruption appears.
-

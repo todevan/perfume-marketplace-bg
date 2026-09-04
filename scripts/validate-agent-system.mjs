@@ -144,16 +144,44 @@ const activeAgentPaths = [
 		return extname(path) === '.md' && !rel.startsWith('docs/agents/postmortems/')
 	})
 ]
-const activeAgentText = activeAgentPaths
+const activePolicyPaths = [
+	...activeAgentPaths,
+	...[
+		'docs/AROMATIKA-LAUNCH-READINESS-DESIGN.md',
+		'docs/INCIDENT-RESPONSE.md',
+		'docs/PRODUCTION-SETUP.md'
+	].map((path) => join(ROOT, path))
+]
+const activePolicyText = activePolicyPaths
 	.map((path) => `${relative(ROOT, path)}\n${readFileSync(path, 'utf8')}`)
 	.join('\n')
-if (/(?:Issue\s*#22.{0,40}(?:is|remains)\s+(?:active|pending)|active\s+Issue\s*#22)/isu.test(activeAgentText)) {
+if (/(?:Issue\s*#22.{0,40}(?:is|remains)\s+(?:active|pending)|active\s+Issue\s*#22)/isu.test(activePolicyText)) {
 	fail('active agent authority claims Issue #22 is active or pending')
 }
-if (/Superpowers\s+(?:remains|is)\s+(?:the\s+)?(?:global\s+)?process\s+authorit/iu.test(activeAgentText)) {
+if (
+	/Superpowers[^\n]{0,40}(?:primary|global|sole)[^\n]{0,30}(?:process|lifecycle)|Superpowers\s+governs\s+engineering\s+process/iu.test(
+		activePolicyText
+	)
+) {
 	fail('active agent authority claims Superpowers owns the global process')
 }
-if (/\/home\/(?!<user>\/)[A-Za-z0-9._-]+\//u.test(activeAgentText)) {
+if (
+	/local-first\s+authority\s+model|cheap\s+worker\s*->|select[^\n]{0,80}next[^\n]{0,40}issue[^\n]{0,80}continue|WORKFLOW\.md[^\n]{0,80}detailed\s+engineering\s+lifecycle/iu.test(
+		activePolicyText
+	)
+) {
+	fail('active policy document contains a retired authority or lifecycle route')
+}
+if (/Exactly\s+one\s+product\s+issue\s+carries\s+`agent:active`/iu.test(activePolicyText)) {
+	fail('active policy forbids the valid zero-active-issue state')
+}
+if (!rootAgents.includes('At most one product issue carries `agent:active`')) {
+	fail('root router does not define the at-most-one active product issue invariant')
+}
+if (!rootAgents.includes('cannot\nclassify away changed-surface risk')) {
+	fail('root router lacks the mandatory issue-risk non-waiver rule')
+}
+if (/\/home\/(?!<user>\/)[A-Za-z0-9._-]+\/|[A-Z]:\\Users\\[^\\]+\\/u.test(activePolicyText)) {
 	fail('active repository agent documentation contains a hardcoded user home path')
 }
 

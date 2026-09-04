@@ -45,4 +45,3 @@ none — agent-owned
 - No eligible issue exists.
 - Live state exposes an unresolved owner decision or protected action.
 - The only available workspace contains unclassified work that cannot be isolated.
-

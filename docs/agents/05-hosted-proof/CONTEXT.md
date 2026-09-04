@@ -49,4 +49,3 @@ named in the transaction envelope
 - A stateful outcome is uncertain.
 - The transaction attempt limit or authorized envelope is exhausted.
 - Cleanup cannot be proven without deleting unknown resources.
-

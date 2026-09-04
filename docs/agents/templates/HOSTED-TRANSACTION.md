@@ -68,4 +68,3 @@ Uncertain outcomes stop for fresh inspection; they are never retried blindly.
 - **Owned cleanup targets:** `<exact provenance-bound list>`
 - **Cleanup readback:** `<independent sanitized absence evidence>`
 - **Terminal state:** `<cleanup_verified only when no mutation remains pending>`
-

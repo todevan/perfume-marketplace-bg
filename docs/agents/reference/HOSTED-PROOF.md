@@ -104,4 +104,3 @@ The proven code under [`scripts/issue22-hosted`](../../../scripts/issue22-hosted
 historical/reference operator code. Preserve its behavior. Reuse its contract through
 templates or extract only obviously pure, already-tested primitives; defer broader
 provider-adapter refactoring when it would create an R2 surface.
-

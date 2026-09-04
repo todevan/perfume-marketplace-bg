@@ -1,9 +1,8 @@
 # Aromatika Launch Readiness Design
 
-**Status:** Owner-approved design for review  
+**Status:** Owner-approved launch design; agent execution routes through Agent System V2
 **Date:** 2026-08-17  
 **Supersedes:** `2026-08-15-agent-os-v2-design.md` for current strategy  
-**Working location target:** `C:\Users\Admin\Documents\Сайт парфюми.worktrees\current-main-20260813\docs\AROMATIKA-LAUNCH-READINESS-DESIGN.md`
 
 ---
 
@@ -116,21 +115,14 @@ The owner should never be left wondering what to do next or whether work exists 
 
 ## 4. Authority model
 
-Aromatika uses a local-first authority model.
+The one current authority ladder is defined by the root [`AGENTS.md`](../AGENTS.md)
+router and [`docs/agents/reference/AUTHORITY.md`](agents/reference/AUTHORITY.md). This
+document owns launch strategy and product direction only; it does not create another
+engineering queue or execution ladder.
 
-### Priority order
-
-1. **Explicit current owner instruction**
-2. **Current local Aromatika workspace**
-3. **This design: `docs/AROMATIKA-LAUNCH-READINESS-DESIGN.md`**
-4. **Concern-specific current authority**
-5. **Active implementation plan/task**
-6. **GitHub `main` as the last reviewed and synchronized shared baseline**
-7. **Historical plans/reviews/builder artifacts**
-
-Local work does not blindly override GitHub. Before substantial work, the agent must compare local and remote state and determine whether divergence is intentional.
-
-Unknown local changes must never be discarded merely to match GitHub.
+Local and remote state must be reconciled before substantial work. Unknown local
+changes are preserved, while live GitHub Issues and Git provide queue and integration
+truth.
 
 ---
 
@@ -158,13 +150,13 @@ Evidence required before launch.
 Current monetization rules, prices/settings references, and commercial boundaries.
 
 ### `docs/agents/WORKFLOW.md`
-Detailed engineering lifecycle.
+Compatibility index for the six Agent System V2 stages.
 
 ### `docs/agents/SECURITY.md`
 Security-sensitive engineering and protected-action rules.
 
-Model tiers, escalation, context, retry, and cost rules are consolidated in
-`docs/agents/WORKFLOW.md`.
+Agent lifecycle, tool routing, and cost discipline are canonical under
+[`docs/agents/CONTEXT.md`](agents/CONTEXT.md) and its stage/reference links.
 
 ### `MASTER-PLAN.md`
 No longer a strategic authority. It becomes a small roadmap/index pointing to the current authoritative documents.
@@ -175,13 +167,10 @@ Historical August 15 Agent OS files remain available as evidence but must be cle
 
 ## 6. Local-first engineering workflow
 
-Primary working location:
-
-`C:\Users\Admin\Documents\Сайт парфюми.worktrees\current-main-20260813\`
-
-Normal lifecycle:
-
-`owner instruction -> local authority check -> fetch/compare GitHub -> isolate work -> implement -> local tests -> independent review -> security review if required -> commit -> PR -> CI -> merge -> synchronize -> next task`
+The canonical lifecycle is the six-stage map in
+[`docs/agents/CONTEXT.md`](agents/CONTEXT.md): orient, shape, implement, verify,
+conditional hosted proof, and complete. Candidate formation happens after deterministic
+pre-freeze work; final risk-appropriate review, exact-SHA CI, merge, and cleanup follow.
 
 ### Local/remote reconciliation
 
@@ -238,63 +227,11 @@ The owner does not orchestrate skills.
 
 ## 8. Risk model
 
-### R0 — trivial/reversible
-Examples: documentation, comments, formatting, internal metadata.
-
-Flow:
-
-`cheap worker -> lightweight checks -> merge`
-
-### R1 — normal product engineering
-Examples: ordinary UI, normal feature work within existing security boundaries, straightforward bugs, tests, non-security refactors.
-
-Flow:
-
-`implementer -> independent review -> relevant tests -> required CI -> autonomous merge`
-
-No owner code approval.
-
-### R2 — security-sensitive
-Includes material changes to:
-
-- authentication/session/registration/reset/MFA;
-- RLS/authorization;
-- admin/moderator authorization;
-- private data or Storage;
-- uploads/evidence trust boundaries;
-- chat/messages privacy;
-- reports/blocking/moderation;
-- account deletion/export/anonymization;
-- service-role usage;
-- `SECURITY DEFINER`;
-- secrets/security configuration;
-- cross-user visibility;
-- paid-entitlement authorization;
-- security-sensitive payment/provider integration.
-
-Flow:
-
-`strong implementer -> relevant specialist -> independent strong engineering review -> adversarial security review -> deterministic security tests -> full CI -> autonomous merge only if every gate passes`
-
-The owner does not approve R2 code.
-
-If safety cannot be established, do not merge.
-
-### R3 — protected real-world operation
-Includes:
-
-- destructive production-data actions;
-- production credential/secret rotation;
-- DNS/domain changes;
-- irreversible production migrations;
-- disabling security controls;
-- legal/privacy/business-policy changes;
-- meaningful spending;
-- accepting provider commercial terms;
-- setting/changing launch prices where owner approval is required;
-- final public launch action.
-
-Agents may investigate, implement, test, review, prepare rollback, and prepare exact instructions autonomously. The protected real-world action remains owner-controlled.
+R1, R2, and R3 classification and verification are canonical in the root
+[`AGENTS.md`](../AGENTS.md), the
+[`Issue Contract`](agents/reference/ISSUE-CONTRACT.md), and
+[`Security Contract`](agents/SECURITY.md). Risk follows the changed surface and
+security consequence; issue wording cannot waive mandatory security or CI gates.
 
 ---
 
@@ -736,67 +673,30 @@ Each ready issue contains:
 - dependencies;
 - explicit out-of-scope items.
 
-After a successful merge, the system should update status, reconcile/close the issue, select the highest-priority unblocked launch issue, and continue without asking the owner “what next?” when the approved queue already answers it.
+After a successful merge, the system updates current truth when needed, reconciles and
+closes the issue, and reports the next live-verified unblocked issue. It stops before
+starting that issue unless existing owner authority explicitly authorizes continuation.
 
 ---
 
 ## 26. Model routing and cost discipline
 
-Use capability tiers, not permanent vendor assumptions.
-
-### SCOUT
-Cheapest reliable model for search, evidence collection, log summarization, locating tests, simple docs, and mechanical low-risk edits.
-
-### BUILDER
-Cheap/medium capable model for straightforward UI, simple bugs, routine tests, bounded mechanical refactors, and implementation with clear boundaries.
-
-### LEAD
-Strong model for architecture, difficult debugging, ambiguous/high-impact work, database/domain design, important business logic, reviewer disagreement, and safety judgments.
-
-### REVIEWER
-Separate context from the implementer; strong enough for the risk.
-
-### CRITICAL
-Not a model name:
-
-`strong LEAD + independent strong REVIEWER + adversarial security review + deterministic evidence`
-
-Use for R2.
-
-Cost rules:
-
-1. start with the cheapest model suitable for the risk;
-2. escalate on demonstrated complexity/consequence;
-3. do not use several strong agents for routine work;
-4. minimize delegated context;
-5. prefer tools/tests/search over another model opinion;
-6. avoid duplicate generic reviews;
-7. stop unproductive retry loops;
-8. avoid speculative refactors;
-9. do not research deferred features without active need;
-10. optimize for safe progress per token.
+Use deterministic evidence before model delegation, one lead, bounded subagents only
+for independent work, and no review before the candidate is materially final. The
+canonical routing and credit rules are in
+[`docs/agents/reference/MODELS-AND-TOOLS.md`](agents/reference/MODELS-AND-TOOLS.md).
 
 ---
 
 ## 27. Repair and failure behavior
 
-Normal work uses a bounded repair loop:
-
-1. diagnose and repair with evidence;
-2. retry using new evidence or a different approach;
-3. escalate only when justified.
-
-After repeated evidence-based failure:
-
-- stop;
-- do not merge;
-- preserve the working system;
-- record the blocker;
-- provide the mandatory owner handoff.
-
-Do not ask the owner to debug code.
-
-For security work, inability to prove safety is itself a stop condition.
+Classify each blocker through the canonical
+[`Issue Contract`](agents/reference/ISSUE-CONTRACT.md). Deterministic defects inside
+approved scope remain agent-owned regardless of repair count; transient infrastructure
+failure preserves the exact candidate and never licenses gate weakening. Stop only at
+a real owner/protected boundary, exhausted transaction envelope, explicit owner stop,
+or safety-policy interruption. For security work, inability to prove safety remains a
+stop condition.
 
 ---
 

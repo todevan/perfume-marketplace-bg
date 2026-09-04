@@ -32,4 +32,3 @@ dependency branches before implementation.
 Inventory before installation. Keep one canonical same-name install, preserve the
 owner-selected source, and do not vendor personal skills into this product. Reload
 Codex at most once when discovery requires it and confirm discovery once.
-

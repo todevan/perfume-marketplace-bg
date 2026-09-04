@@ -48,4 +48,3 @@ Never store secrets, credentials, private or synthetic emails, tokens, links,
 provider response bodies, transient browser state, private manifest contents,
 screenshots, redundant command logs, or the full postmortem. Sanitize paths and
 external identifiers. State explicitly which older checkpoint is superseded.
-

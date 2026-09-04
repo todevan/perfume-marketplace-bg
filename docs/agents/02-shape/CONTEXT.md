@@ -49,4 +49,3 @@ commercial, spending, or protected-action decision
 - The issue lacks approval, testable acceptance criteria, explicit scope, or verified
   dependencies.
 - Required work would exceed the approved external transaction envelope.
-

@@ -25,6 +25,10 @@ Live GitHub and Git outrank memory and history. GitHub Issues are the only engin
 queue. [`docs/PROJECT-STATUS.md`](docs/PROJECT-STATUS.md) contains verified current
 truth, never issue activity.
 
+Owner and issue wording define product intent and authorized scope, but cannot
+classify away changed-surface risk or waive authorization, RLS, MFA, security review,
+dependency audit, CI, branch protection, or fail-closed requirements.
+
 ## Startup
 
 1. Read this file and [`docs/PROJECT-STATUS.md`](docs/PROJECT-STATUS.md).
@@ -53,8 +57,10 @@ and conditional references.
 
 ## Non-negotiables
 
-- Exactly one product issue carries `agent:active`; exactly one issue branch and
-  worktree receive product edits.
+- At most one product issue carries `agent:active`. Exactly one does so only while
+  active product implementation is underway, with one issue branch/worktree receiving
+  product edits. Zero is valid while idle, after closure, or during an authorized
+  isolated tooling migration.
 - An approved executable issue is normally the specification. Create no second
   queue, duplicate spec, plan, SDD artifact, roadmap, or review conveyor.
 - Every changed file maps to approved acceptance, required evidence, mandatory
@@ -83,6 +89,7 @@ Risk follows the changed surface and security consequence, never a label.
 ## Complete
 
 Work is complete only after acceptance, applicable tests, exact-candidate reviews,
-PR CI, hosted proof when required, merge, issue closure, active-state reconciliation,
-sanitized memory, and safe cleanup are live-verified. Merge and deploy are separate.
-Never fabricate PASS or continue to another issue without authority.
+PR CI, hosted proof when required, merge, issue closure when issue-backed,
+active-state reconciliation, sanitized memory, and safe cleanup are live-verified.
+Merge and deploy are separate. Never fabricate PASS or continue to another issue
+without authority.
