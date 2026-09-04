@@ -370,10 +370,27 @@ export async function executeOperatorStep({
 	const transition = STEP_TRANSITIONS[step];
 	if (!transition) throw new Issue22OperatorError('Issue #22 provider sequence is invalid.');
 	if (manifest.pending_mutation) {
-		throw new Issue22OperatorError('Issue #22 provider mutation requires recovery.');
+		const pending = manifest.pending_mutation;
+		if (step !== 'delete_worker' || manifest.state !== 'worker_deployed' || pending.step !== 'run_proof') {
+			throw new Issue22OperatorError('Issue #22 provider mutation requires recovery.');
+		}
+		validateManifest(manifest, { phase: 'proof' });
+		if (!sameTarget(pending.target, exactStepTarget(manifest, 'run_proof'))) {
+			throw new Issue22OperatorError('Issue #22 provider mutation requires recovery.');
+		}
+		const proofFailed = clone(manifest);
+		proofFailed.pending_mutation = null;
+		proofFailed.history = Array.isArray(proofFailed.history) ? proofFailed.history : [];
+		proofFailed.history.push({ step: 'run_proof_failed', completed_at: new Date(now()).toISOString() });
+		await persistManifest(/** @type {Issue22OperatorManifest} */ (proofFailed));
+		manifest = /** @type {Issue22OperatorManifest} */ (proofFailed);
 	}
 	if (completedStateAtOrAfter(manifest.state, transition.to)) return manifest;
-	if (manifest.state !== transition.from) {
+	const failedProofCleanup =
+		step === 'delete_worker' &&
+		manifest.state === 'worker_deployed' &&
+		manifest.history?.at(-1)?.step === 'run_proof_failed';
+	if (manifest.state !== transition.from && !failedProofCleanup) {
 		throw new Issue22OperatorError('Issue #22 provider sequence is invalid.');
 	}
 

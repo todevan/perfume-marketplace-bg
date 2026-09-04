@@ -206,6 +206,54 @@ describe('manifest-bound operator transitions', () => {
 		expect(persist).toHaveBeenCalledTimes(1);
 	});
 
+	test('transitions a failed non-mutating proof into exact manifest-bound cleanup', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		let current = manifest({
+			state: 'worker_deployed',
+			pending_mutation: {
+				step: 'run_proof',
+				target: {
+					provider: 'proof-runner',
+					transactionId,
+					projectId: 'abcdefghijklmnopqrst',
+					workerName: 'aromatika-issue-22-a1b2c3d',
+					versionId: '11111111-1111-4111-8111-111111111111',
+					mailtrapAccountId: 1_234_567,
+					mailtrapInboxId: 4_887_168,
+					candidateSha
+				},
+				started_at: '2026-09-01T10:00:00.000Z'
+			}
+		});
+		const deleted: Array<{ provider: string; id: string | number }> = [];
+		const persist = vi.fn(async (next: OperatorManifest) => {
+			current = structuredClone(next);
+		});
+		const action = vi.fn(async (target: unknown) => {
+			const cleanupTarget = target as {
+				provider: 'cloudflare' | 'supabase';
+				id: string | number;
+			};
+			deleted.push(cleanupTarget);
+			return { target: cleanupTarget };
+		});
+
+		current = await execute({ manifest: current, step: 'delete_worker', persist, action });
+		current = await execute({ manifest: current, step: 'delete_supabase_project', persist, action });
+
+		expect(current.state).toBe('supabase_project_deleted');
+		expect(current.pending_mutation).toBeNull();
+		expect(deleted).toEqual([
+			{ provider: 'cloudflare', id: 'aromatika-issue-22-a1b2c3d' },
+			{ provider: 'supabase', id: 'abcdefghijklmnopqrst' }
+		]);
+		expect(current.history?.map(({ step }) => step)).toEqual([
+			'run_proof_failed',
+			'delete_worker',
+			'delete_supabase_project'
+		]);
+	});
+
 	test('refuses cleanup for unmanifested, foreign, or owner-created resources', () => {
 		const assertCleanup = requiredFunction('assertCleanupTarget');
 		const value = manifest();

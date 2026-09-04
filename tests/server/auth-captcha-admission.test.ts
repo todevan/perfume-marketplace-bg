@@ -32,11 +32,18 @@ function registrationForm(token = 'registration-token'): FormData {
 	return formData;
 }
 
-function actionEvent(path: string, formData: FormData, supabase: unknown, providerFetch = vi.fn()) {
+function actionEvent(
+	path: string,
+	formData: FormData,
+	supabase: unknown,
+	providerFetch = vi.fn(),
+	cookies: unknown = { getAll: () => [], set: vi.fn() }
+) {
 	return {
 		request: new Request(`https://market.example${path}`, { method: 'POST', body: formData }),
 		url: new URL(`https://market.example${path}`),
 		fetch: providerFetch,
+		cookies,
 		locals: { runtime, supabase }
 	} as never;
 }
@@ -158,26 +165,63 @@ describe('Supabase-owned authentication CAPTCHA', () => {
 		expect(signUp).not.toHaveBeenCalled();
 	});
 
-	it('signs out and fails closed when signUp unexpectedly creates a session', async () => {
-		const signUp = vi.fn(async () => ({
-			data: { user: { id: 'new-user' }, session: { access_token: 'unexpected' } },
-			error: null
-		}));
-		const signOut = vi.fn(async () => {
-			throw new Error('sign-out transport failed');
-		});
-		const rpc = vi.fn();
+	it.each(['returned error', 'thrown error'])(
+		'expires every current-project auth cookie and fails closed when signOut has a %s',
+		async (failureMode) => {
+			const signUp = vi.fn(async () => ({
+				data: { user: { id: 'new-user' }, session: { access_token: 'unexpected' } },
+				error: null
+			}));
+			const signOut = vi.fn(async () => {
+				if (failureMode === 'thrown error') throw new Error('sign-out transport failed');
+				return { error: new Error('sign-out provider failed') };
+			});
+			const rpc = vi.fn();
+			const stored = new Map([
+				['sb-market-auth-token.0', 'session-chunk-0'],
+				['sb-market-auth-token.1', 'session-chunk-1'],
+				['sb-foreign-auth-token', 'foreign-session']
+			]);
+			const cookies = {
+				getAll: () => Array.from(stored, ([name, value]) => ({ name, value })),
+				delete: vi.fn((_name: string) => {
+					throw new Error('cookie delete adapter failed');
+				}),
+				set: vi.fn((name: string, value: string, options: { maxAge?: number; path?: string }) => {
+					if (value === '' && options.maxAge === 0) stored.delete(name);
+				})
+			};
 
-		const result = await actions.register(
-			actionEvent('/login?/register', registrationForm(), {
-				auth: { signUp, signOut },
-				rpc
-			})
-		);
+			const result = await actions.register(
+				actionEvent(
+					'/login?/register',
+					registrationForm(),
+					{ auth: { signUp, signOut }, rpc },
+					vi.fn(),
+					cookies
+				)
+			);
 
-		expect(result).toMatchObject({ status: 503, data: { success: false } });
-		expect(signOut).toHaveBeenCalledOnce();
-		expect(rpc).not.toHaveBeenCalled();
-		expect(JSON.stringify(result)).not.toContain('unexpected');
-	});
+			expect(result).toMatchObject({ status: 503, data: { success: false } });
+			expect(signOut).toHaveBeenCalledOnce();
+			expect(cookies.delete.mock.calls.map(([name]) => name)).toEqual([
+				'sb-market-auth-token.0',
+				'sb-market-auth-token.1'
+			]);
+			expect(
+				cookies.set.mock.calls.map(([name, value, options]) => ({
+					name,
+					value,
+					maxAge: options.maxAge,
+					path: options.path
+				}))
+			).toEqual([
+				{ name: 'sb-market-auth-token.0', value: '', maxAge: 0, path: '/' },
+				{ name: 'sb-market-auth-token.1', value: '', maxAge: 0, path: '/' }
+			]);
+			expect(cookies.getAll().map(({ name }) => name)).toEqual(['sb-foreign-auth-token']);
+			expect(rpc).not.toHaveBeenCalled();
+			expect(JSON.stringify(result)).not.toContain('unexpected');
+		}
+	);
 });

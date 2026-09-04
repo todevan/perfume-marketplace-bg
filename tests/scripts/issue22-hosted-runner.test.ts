@@ -45,6 +45,53 @@ afterEach(async () => {
 });
 
 describe('Issue #22 unprivileged runner boundary', () => {
+	test('launches the executable proof with only explicit proof and minimum runtime variables', async () => {
+		const launch = requiredFunction('launchHostedProofProcess');
+		const exec = vi.fn(async (..._arguments: unknown[]) => undefined);
+		const environment = {
+			...runnerEnvironment(),
+			PATH: '/runtime/bin',
+			HOME: '/runtime/home',
+			TMPDIR: '/runtime/tmp',
+			PLAYWRIGHT_BROWSERS_PATH: '/runtime/browsers',
+			GITHUB_TOKEN: 'github-private',
+			AWS_SECRET_ACCESS_KEY: 'aws-private',
+			DATABASE_URL: 'database-private',
+			SUPABASE_ACCESS_TOKEN: 'supabase-management-private',
+			CLOUDFLARE_API_TOKEN: 'cloudflare-management-private',
+			MAILTRAP_MANAGEMENT_TOKEN: 'mailtrap-management-private'
+		};
+
+		await launch(environment, { exec });
+
+		expect(exec).toHaveBeenCalledOnce();
+		const [command, args, options] = exec.mock.calls[0] as [
+			string,
+			string[],
+			{ env: Record<string, string | undefined> }
+		];
+		expect(command).toBe(process.execPath);
+		expect(args).toEqual([
+			expect.stringMatching(/node_modules\/@playwright\/test\/cli\.js$/u),
+			'test',
+			'--config',
+			expect.stringMatching(/scripts\/issue22-hosted\/playwright\.config\.mjs$/u)
+		]);
+		expect(options.env).toEqual({
+			...runnerEnvironment(),
+			PATH: '/runtime/bin',
+			HOME: '/runtime/home',
+			TMPDIR: '/runtime/tmp',
+			PLAYWRIGHT_BROWSERS_PATH: '/runtime/browsers'
+		});
+		expect(options.env).not.toHaveProperty('GITHUB_TOKEN');
+		expect(options.env).not.toHaveProperty('AWS_SECRET_ACCESS_KEY');
+		expect(options.env).not.toHaveProperty('DATABASE_URL');
+		expect(options.env).not.toHaveProperty('SUPABASE_ACCESS_TOKEN');
+		expect(options.env).not.toHaveProperty('CLOUDFLARE_API_TOKEN');
+		expect(options.env).not.toHaveProperty('MAILTRAP_MANAGEMENT_TOKEN');
+	});
+
 	test.each([
 		'SUPABASE_SERVICE_ROLE_KEY',
 		'SUPABASE_SECRET_KEY',
@@ -152,8 +199,12 @@ describe('Mailtrap polling and confirmation-link handling', () => {
 			{ fetchImpl, now: () => Date.parse('2026-09-01T10:00:00.000Z'), sleep: vi.fn() }
 		);
 
-		expect(selected).toEqual({ messageId: 33, html: `<a href="${confirmationLink}">Confirm</a>` });
-		expect(calls).toEqual([listUrl, bodyUrl]);
+		expect(selected).toEqual({
+			messageId: 33,
+			html: `<a href="${confirmationLink}">Confirm</a>`,
+			mailCount: 1
+		});
+		expect(calls).toEqual([listUrl, bodyUrl, listUrl]);
 	});
 
 	test('fails closed on more than one exact message without fetching either body', async () => {
@@ -179,6 +230,40 @@ describe('Mailtrap polling and confirmation-link handling', () => {
 			)
 		).rejects.toThrow('Issue #22 Mailtrap proof failed safely.');
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
+	test('fails when a delayed duplicate appears during the bounded final recount', async () => {
+		const poll = requiredFunction('pollForConfirmationMessage');
+		const recipient = 'issue22-delayed-duplicate@example.invalid';
+		let listCount = 0;
+		const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+			const url = String(input);
+			if (url.endsWith('/messages')) {
+				listCount += 1;
+				const messages = [
+					{ id: 1, to_email: recipient, received_at: '2026-09-01T10:00:00.000Z' }
+				];
+				if (listCount > 1) {
+					messages.push({ id: 2, to_email: recipient, received_at: '2026-09-01T10:00:01.000Z' });
+				}
+				return new Response(JSON.stringify(messages), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				});
+			}
+			return new Response(`<a href="${confirmationLink}">Confirm</a>`, { status: 200 });
+		});
+
+		await expect(
+			poll(
+				{
+					apiBaseUrl: 'https://mailtrap.io', accountId: 1, inboxId: 4_887_168, readToken: 'secret', recipient,
+					runStartedAt: '2026-09-01T10:00:00.000Z', pollIntervalMs: 1_000, timeoutMs: 3_000
+				},
+				{ fetchImpl, now: () => Date.parse('2026-09-01T10:00:00.000Z'), sleep: vi.fn() }
+			)
+		).rejects.toThrow('Issue #22 Mailtrap proof failed safely.');
+		expect(listCount).toBe(2);
 	});
 
 	test('uses a bounded interval and total timeout without an extra signup or unbounded request', async () => {
@@ -236,7 +321,7 @@ describe('exact hosted journey and sanitization', () => {
 		const signup = vi.fn(async () => events.push('signup'));
 		const poll = vi.fn(async ({ runStartedAt }: { runStartedAt: string }) => {
 			events.push(`poll:${runStartedAt}`);
-			return { messageId: 33, html: `<a href="${confirmationLink}">Confirm</a>` };
+			return { messageId: 33, html: `<a href="${confirmationLink}">Confirm</a>`, mailCount: 1 };
 		});
 		const confirm = vi.fn(async () => {
 			events.push('confirm');
@@ -265,6 +350,7 @@ describe('exact hosted journey and sanitization', () => {
 		expect(confirm).toHaveBeenCalledWith(confirmationLink);
 		expect(reuseConfirmationLink).toHaveBeenCalledTimes(1);
 		expect(reuseConfirmationLink).toHaveBeenCalledWith(confirmationLink);
+		expect(receipt.mailCount).toBe(1);
 		expect(events).toEqual([
 			'signup',
 			'poll:2026-09-01T10:00:00.000Z',
@@ -282,7 +368,11 @@ describe('exact hosted journey and sanitization', () => {
 			run(validateRunnerEnvironmentForTest(), {
 				now: () => 0,
 				signup: async () => undefined,
-				poll: async () => ({ messageId: 1, html: `<a href="${confirmationLink}">Confirm</a>` }),
+				poll: async () => ({
+					messageId: 1,
+					html: `<a href="${confirmationLink}">Confirm</a>`,
+					mailCount: 1
+				}),
 				confirm: async () => ({ redirectedTo: '/onboarding' }),
 				completeOnboarding: async () => undefined,
 				assertMarketplaceAccess: async () => undefined,

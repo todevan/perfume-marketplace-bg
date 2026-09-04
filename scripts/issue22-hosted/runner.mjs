@@ -1,4 +1,12 @@
+import { execFile as execFileCallback } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const execFile = promisify(execFileCallback);
+const RUNNER_FILE = fileURLToPath(import.meta.url);
+const REPOSITORY_ROOT = resolve(dirname(RUNNER_FILE), '../..');
 
 const EXACT_MAILTRAP_INBOX_ID = 4_887_168;
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
@@ -21,6 +29,21 @@ const ALLOWED_RUNNER_INPUTS = new Set([
 	'ISSUE22_WORKER_NAME',
 	'ISSUE22_WORKER_VERSION_ID',
 	'ISSUE22_MANIFEST_TRANSACTION_ID'
+]);
+const ALLOWED_RUNNER_RUNTIME_INPUTS = Object.freeze([
+	'PATH',
+	'HOME',
+	'TMPDIR',
+	'TMP',
+	'TEMP',
+	'SystemRoot',
+	'SYSTEMROOT',
+	'COMSPEC',
+	'PATHEXT',
+	'LOCALAPPDATA',
+	'USERPROFILE',
+	'APPDATA',
+	'PLAYWRIGHT_BROWSERS_PATH'
 ]);
 
 const FORBIDDEN_RUNNER_INPUT =
@@ -177,6 +200,43 @@ export function validateRunnerEnvironment(environment = process.env) {
 	});
 }
 
+/** Launch the executable Playwright proof in a process that cannot inherit ambient provider credentials. */
+/**
+ * @param {RunnerEnvironment} [environment]
+ * @param {{ exec?: Function }} [dependencies]
+ * @returns {Promise<void>}
+ */
+export async function launchHostedProofProcess(environment = process.env, dependencies = {}) {
+	const names = [...ALLOWED_RUNNER_INPUTS, ...ALLOWED_RUNNER_RUNTIME_INPUTS];
+	const childEnvironment = Object.fromEntries(
+		names
+			.filter((name) => Object.prototype.hasOwnProperty.call(environment, name))
+			.map((name) => [name, environment[name]])
+	);
+	validateRunnerEnvironment(childEnvironment);
+	const execute = dependencies.exec ?? execFile;
+	try {
+		await execute(
+			process.execPath,
+			[
+				join(REPOSITORY_ROOT, 'node_modules/@playwright/test/cli.js'),
+				'test',
+				'--config',
+				join(REPOSITORY_ROOT, 'scripts/issue22-hosted/playwright.config.mjs')
+			],
+			{
+				cwd: REPOSITORY_ROOT,
+				env: childEnvironment,
+				windowsHide: true,
+				encoding: 'utf8',
+				maxBuffer: 1024 * 1024
+			}
+		);
+	} catch {
+		throw new Issue22RunnerError('Issue #22 executable proof failed safely.');
+	}
+}
+
 /**
  * @param {string} baseUrl
  * @param {string} path
@@ -241,7 +301,7 @@ function exactMessages(messages, recipient, startedAtMs, baseOrigin) {
 /**
  * @param {MailtrapPollConfig} config
  * @param {PollDependencies} [dependencies]
- * @returns {Promise<{ messageId: number; html: string }>}
+ * @returns {Promise<{ messageId: number; html: string; mailCount: number }>}
  */
 export async function pollForConfirmationMessage(config, dependencies = {}) {
 	const fetchImpl = dependencies.fetchImpl ?? fetch;
@@ -291,6 +351,7 @@ export async function pollForConfirmationMessage(config, dependencies = {}) {
 				config.apiBaseUrl,
 				`/api/accounts/${config.accountId}/inboxes/${config.inboxId}/messages/${messageId}/body.html`
 			);
+			let html;
 			try {
 				const bodyResponse = await fetchImpl(bodyUrl, {
 					method: 'GET',
@@ -300,10 +361,36 @@ export async function pollForConfirmationMessage(config, dependencies = {}) {
 				if (!bodyResponse.ok || new URL(bodyResponse.url || bodyUrl).origin !== baseOrigin) {
 					throw new Error('request failed');
 				}
-				return { messageId, html: await bodyResponse.text() };
+				html = await bodyResponse.text();
 			} catch {
 				throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
 			}
+
+			const current = now();
+			if (current >= deadline) throw new Issue22RunnerError('Issue #22 Mailtrap proof timed out.');
+			await sleep(Math.min(config.pollIntervalMs, deadline - current));
+			let finalPayload;
+			try {
+				const finalResponse = await fetchImpl(listUrl, {
+					method: 'GET',
+					headers: { 'Api-Token': config.readToken, Accept: 'application/json' },
+					redirect: 'error'
+				});
+				if (!finalResponse.ok) throw new Error('request failed');
+				finalPayload = await finalResponse.json();
+			} catch {
+				throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
+			}
+			const finalMatches = exactMessages(
+				messageArray(finalPayload),
+				config.recipient,
+				startedAtMs,
+				baseOrigin
+			);
+			if (finalMatches.length !== 1 || finalMatches[0].id !== messageId) {
+				throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
+			}
+			return { messageId, html, mailCount: finalMatches.length };
 		}
 
 		const current = now();
@@ -414,7 +501,7 @@ export function createSyntheticIdentity(config) {
  * @param {{
  *   now: () => number,
  *   signup: (identity: { recipient: string; password: string; username: string; city: string }) => Promise<unknown>,
- *   poll: (config: MailtrapPollConfig & { recipient: string }) => Promise<{ messageId: number; html: string }>,
+ *   poll: (config: MailtrapPollConfig & { recipient: string }) => Promise<{ messageId: number; html: string; mailCount: number }>,
  *   confirm: (link: string) => Promise<{ redirectedTo?: string }>,
  *   completeOnboarding: (input: { username: string; city: string }) => Promise<unknown>,
  *   assertMarketplaceAccess: () => Promise<unknown>,
@@ -455,7 +542,7 @@ export async function runHostedJourney(config, dependencies) {
 		status: 'passed',
 		candidateSha: config.expectedSha,
 		signupCount: 1,
-		mailCount: 1,
+		mailCount: message.mailCount,
 		confirmationReuse: 'denied'
 	});
 }
@@ -472,5 +559,14 @@ export function assertSanitizedText(text, sensitiveValues = []) {
 		if (typeof value === 'string' && value && text.includes(value)) {
 			throw new Issue22RunnerError('Issue #22 diagnostic contains private material.');
 		}
+	}
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === RUNNER_FILE) {
+	try {
+		await launchHostedProofProcess();
+	} catch {
+		process.stderr.write('Issue #22 executable proof failed safely.\n');
+		process.exitCode = 1;
 	}
 }

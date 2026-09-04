@@ -1,3 +1,4 @@
+import { clearAuthCookiesAtScopes } from '@supabase/ssr';
 import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { loadRequestAuthContext } from '$lib/server/auth/context';
@@ -15,6 +16,33 @@ const DEMO_PASSWORD = 'demo-beta';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_PATTERN = /^[\p{L}\p{N}_.-]{3,40}$/u;
 const MAX_CAPTCHA_TOKEN_LENGTH = 2048;
+
+async function expireCurrentProjectAuthCookies(
+	cookies: Parameters<Actions['register']>[0]['cookies'],
+	publicSupabaseUrl: string
+): Promise<void> {
+	const projectRef = new URL(publicSupabaseUrl).hostname.split('.')[0];
+	await clearAuthCookiesAtScopes({
+		getAll: () => cookies.getAll(),
+		setAll: async (cookiesToSet) => {
+			let failed = false;
+			for (const { name, value, options } of cookiesToSet) {
+				try {
+					cookies.delete(name, { path: '/' });
+				} catch {
+					try {
+						cookies.set(name, value, { ...options, path: '/' });
+					} catch {
+						failed = true;
+					}
+				}
+			}
+			if (failed) throw new Error('auth cookie invalidation failed');
+		},
+		storageKey: `sb-${projectRef}-auth-token`,
+		scopes: [{ path: '/' }]
+	});
+}
 
 function readCaptchaToken(formData: FormData): string | null {
 	const values = formData.getAll('cf-turnstile-response');
@@ -131,6 +159,7 @@ export const actions: Actions = {
 		if (event.locals.runtime.mode === 'demo') {
 			redirect(303, next);
 		}
+		const publicSupabaseUrl = event.locals.runtime.publicSupabaseUrl;
 
 		if (
 			!EMAIL_PATTERN.test(email) ||
@@ -177,10 +206,12 @@ export const actions: Actions = {
 		}
 		if (data.session) {
 			try {
-				await supabase.auth.signOut();
+				const { error: signOutError } = await supabase.auth.signOut();
+				if (signOutError) throw signOutError;
 			} catch {
-				// Preserve the generic fail-closed response even if session cleanup cannot be confirmed.
+				// The independent cookie invalidation below remains mandatory when provider cleanup fails.
 			}
+			await expireCurrentProjectAuthCookies(event.cookies, publicSupabaseUrl);
 			return fail(503, {
 				success: false,
 				email,

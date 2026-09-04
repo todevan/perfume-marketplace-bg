@@ -227,6 +227,7 @@ describe('open email registration', () => {
 				body: formData
 			}),
 			url: new URL('https://market.example/login?/register'),
+			cookies: { getAll: () => [], delete: vi.fn(), set: vi.fn() },
 			fetch: vi.fn(async () =>
 				new Response(JSON.stringify({ success: true, action: 'register', hostname: 'market.example' }), { status: 200 })
 			),
