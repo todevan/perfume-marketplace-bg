@@ -16,6 +16,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const WORKER_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const MAILTRAP_POLL_INTERVAL_MS = 1_000;
 const MAILTRAP_POLL_TIMEOUT_MS = 30_000;
+const PASSWORD_RECOVERY_FREQUENCY_WAIT_MS = 61_000;
 
 const ALLOWED_RUNNER_INPUTS = new Set([
 	'ISSUE22_CANDIDATE_ORIGIN',
@@ -50,7 +51,7 @@ const ALLOWED_RUNNER_RUNTIME_INPUTS = Object.freeze([
 const FORBIDDEN_RUNNER_INPUT =
 	/(?:SUPABASE_(?:SERVICE_ROLE|SECRET|ACCESS_TOKEN|DB_PASSWORD)|CLOUDFLARE_(?:API_TOKEN|ACCOUNT_ID)|MAILTRAP_(?:SMTP_PASSWORD|MANAGEMENT_TOKEN)|SERVICE_ROLE|MANAGEMENT_CREDENTIAL|DESTRUCTIVE)/iu;
 const PRIVATE_ARTIFACT_PATTERN =
-	/(?:authorization\s*:|bearer\s+|set-cookie\s*:|cookie\s*:|token_hash=|access[_-]?token|refresh[_-]?token|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/iu;
+	/(?:authorization\s*:|bearer\s+|set-cookie\s*:|cookie\s*:|token_hash=|[?&](?:token|code)=|[?&]type=recovery(?:[&#\s"']|$)|access[_-]?token|refresh[_-]?token|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/iu;
 
 /** @typedef {Record<string, string | undefined>} RunnerEnvironment */
 /** @typedef {'absent' | 'present'} PresenceStatus */
@@ -515,9 +516,12 @@ export function createSyntheticIdentity(config) {
  *   completeOnboarding: (input: { username: string; city: string }) => Promise<unknown>,
  *   assertMarketplaceAccess: () => Promise<unknown>,
  *   reuseConfirmationLink: (link: string) => Promise<{ denied?: boolean }>,
+ *   waitForPasswordRecoveryWindow: (durationMs: number) => Promise<unknown>,
+ *   requestPasswordRecovery: (identity: { recipient: string; password: string; username: string; city: string }) => Promise<unknown>,
+ *   pollRecovery: (config: MailtrapPollConfig & { recipient: string }) => Promise<{ messageId: number; html: string; mailCount: number }>,
  *   artifactPaths?: string[]
  * }} dependencies
- * @returns {Promise<{ status: 'passed'; candidateSha: string; signupCount: number; mailCount: number; captchaForgery: string; confirmationReuse: string }>}
+ * @returns {Promise<{ status: 'passed'; candidateSha: string; signupCount: number; mailCount: number; recoveryMailCount: number; captchaForgery: string; confirmationReuse: string; passwordRecovery: string }>}
  */
 export async function runHostedJourney(config, dependencies) {
 	const identity = createSyntheticIdentity(config);
@@ -545,6 +549,17 @@ export async function runHostedJourney(config, dependencies) {
 	if (reuse?.denied !== true) {
 		throw new Issue22RunnerError('Issue #22 confirmation reuse was not denied.');
 	}
+	// Auth email max_frequency is 1m; the bounded margin avoids changing provider rate limits.
+	await dependencies.waitForPasswordRecoveryWindow(PASSWORD_RECOVERY_FREQUENCY_WAIT_MS);
+	const recoveryStartedAt = new Date(dependencies.now()).toISOString();
+	await dependencies.requestPasswordRecovery(identity);
+	const recoveryMessage = await dependencies.pollRecovery({
+		...config.mailtrap,
+		recipient: identity.recipient,
+		runStartedAt: recoveryStartedAt,
+		pollIntervalMs: MAILTRAP_POLL_INTERVAL_MS,
+		timeoutMs: MAILTRAP_POLL_TIMEOUT_MS
+	});
 	await assertSanitizedArtifacts(dependencies.artifactPaths ?? [], [
 		identity.recipient,
 		identity.password,
@@ -556,8 +571,10 @@ export async function runHostedJourney(config, dependencies) {
 		candidateSha: config.expectedSha,
 		signupCount: 1,
 		mailCount: message.mailCount,
+		recoveryMailCount: recoveryMessage.mailCount,
 		captchaForgery: 'denied',
-		confirmationReuse: 'denied'
+		confirmationReuse: 'denied',
+		passwordRecovery: 'delivered'
 	});
 }
 

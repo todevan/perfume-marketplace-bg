@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { actions as loginActions } from '../../src/routes/login/+page.server';
 import { actions as resetPasswordActions } from '../../src/routes/auth/reset-password/+page.server';
 
@@ -13,6 +13,10 @@ const runtime: App.Locals['runtime'] = {
 	turnstileSecretKey: 'turnstile-secret-key',
 	turnstileExpectedHostname: 'market.example'
 };
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 function oversizedForm(fields: Record<string, string>): FormData {
 	const formData = new FormData();
@@ -29,6 +33,27 @@ function actionStatus(result: unknown): number | undefined {
 	return result !== null && typeof result === 'object' && 'status' in result
 		? (result as { status?: number }).status
 		: undefined;
+}
+
+const genericPasswordResetSuccess = {
+	success: true,
+	message: 'Ако има профил с този имейл, ще получиш връзка за нова парола.'
+};
+
+function passwordResetForm(token?: string): FormData {
+	const formData = new FormData();
+	formData.set('email', ' Member@Example.BG ');
+	if (token !== undefined) formData.set('cf-turnstile-response', token);
+	return formData;
+}
+
+function passwordResetEvent(formData: FormData, resetPasswordForEmail: unknown, providerFetch = vi.fn()) {
+	return {
+		request: formRequest('/auth/reset-password', formData),
+		url: new URL('https://market.example/auth/reset-password'),
+		fetch: providerFetch,
+		locals: { runtime, supabase: { auth: { resetPasswordForEmail } } }
+	};
 }
 
 describe('anonymous auth action request-body limits', () => {
@@ -171,26 +196,144 @@ describe('anonymous auth action request-body limits', () => {
 		});
 	});
 
-	it('keeps a within-limit password reset able to reach Turnstile and the provider', async () => {
-		const turnstileFetch = vi.fn(async () =>
-			new Response(JSON.stringify({ success: true, action: 'password_reset', hostname: 'market.example' }))
+	it('preserves invalid-email rejection before CAPTCHA or password-recovery provider work', async () => {
+		const turnstileFetch = vi.fn();
+		const resetPasswordForEmail = vi.fn();
+		const formData = passwordResetForm('verified-reset-token');
+		formData.set('email', 'not-an-email');
+
+		const result = await resetPasswordActions.default(
+			passwordResetEvent(formData, resetPasswordForEmail, turnstileFetch) as never
 		);
-		const resetPasswordForEmail = vi.fn(async () => ({ data: {}, error: null }));
-		const formData = new FormData();
-		formData.set('email', 'member@example.bg');
-		formData.set('cf-turnstile-response', 'verified-reset-token');
+
+		expect(result).toMatchObject({
+			status: 400,
+			data: { success: false, email: 'not-an-email', message: 'Въведи валиден имейл.' }
+		});
+		expect(turnstileFetch).not.toHaveBeenCalled();
+		expect(resetPasswordForEmail).not.toHaveBeenCalled();
+	});
+
+	it('preserves demo password recovery without CAPTCHA or network work', async () => {
+		const turnstileFetch = vi.fn();
+		const resetPasswordForEmail = vi.fn();
 
 		const result = await resetPasswordActions.default({
-			request: formRequest('/auth/reset-password', formData),
+			request: formRequest('/auth/reset-password', passwordResetForm()),
 			url: new URL('https://market.example/auth/reset-password'),
 			fetch: turnstileFetch,
-			locals: { runtime, supabase: { auth: { resetPasswordForEmail } } }
+			locals: {
+				runtime: { ...runtime, mode: 'demo', demoMode: true },
+				supabase: { auth: { resetPasswordForEmail } }
+			}
 		} as never);
 
-		expect(result).toMatchObject({ success: true });
-		expect(turnstileFetch).toHaveBeenCalledOnce();
-		expect(resetPasswordForEmail).toHaveBeenCalledWith('member@example.bg', {
-			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password'
+		expect(result).toEqual({ success: true, message: 'Демо режимът не изпраща имейли.' });
+		expect(turnstileFetch).not.toHaveBeenCalled();
+		expect(resetPasswordForEmail).not.toHaveBeenCalled();
+	});
+
+	it('preserves unavailable password recovery when Supabase is missing', async () => {
+		const turnstileFetch = vi.fn();
+
+		const result = await resetPasswordActions.default({
+			request: formRequest('/auth/reset-password', passwordResetForm('verified-reset-token')),
+			url: new URL('https://market.example/auth/reset-password'),
+			fetch: turnstileFetch,
+			locals: { runtime, supabase: null }
+		} as never);
+
+		expect(result).toMatchObject({
+			status: 503,
+			data: {
+				success: false,
+				email: 'member@example.bg',
+				message: 'Възстановяването временно не е достъпно.'
+			}
 		});
+		expect(turnstileFetch).not.toHaveBeenCalled();
+	});
+
+	it('forwards exactly one bounded CAPTCHA token to password recovery without app Siteverify', async () => {
+		const turnstileFetch = vi.fn();
+		const resetPasswordForEmail = vi.fn(async () => ({ data: {}, error: null }));
+		const formData = passwordResetForm('verified-reset-token');
+
+		const result = await resetPasswordActions.default(
+			passwordResetEvent(formData, resetPasswordForEmail, turnstileFetch) as never
+		);
+
+		expect(result).toEqual(genericPasswordResetSuccess);
+		expect(turnstileFetch).not.toHaveBeenCalled();
+		expect(resetPasswordForEmail).toHaveBeenCalledOnce();
+		expect(resetPasswordForEmail).toHaveBeenCalledWith('member@example.bg', {
+			redirectTo: 'https://market.example/auth/callback?next=%2Fauth%2Fupdate-password',
+			captchaToken: 'verified-reset-token'
+		});
+	});
+
+	it.each([
+		['missing', undefined],
+		['blank', '  \t  '],
+		['oversized', 'x'.repeat(2_049)]
+	])('rejects a %s password-reset CAPTCHA token before provider recovery', async (_, token) => {
+		const turnstileFetch = vi.fn();
+		const resetPasswordForEmail = vi.fn();
+
+		const result = await resetPasswordActions.default(
+			passwordResetEvent(passwordResetForm(token), resetPasswordForEmail, turnstileFetch) as never
+		);
+
+		expect(result).toMatchObject({ status: 400, data: { success: false, email: 'member@example.bg' } });
+		expect(turnstileFetch).not.toHaveBeenCalled();
+		expect(resetPasswordForEmail).not.toHaveBeenCalled();
+	});
+
+	it('rejects duplicate password-reset CAPTCHA tokens before provider recovery', async () => {
+		const turnstileFetch = vi.fn();
+		const resetPasswordForEmail = vi.fn();
+		const formData = passwordResetForm('first-reset-token');
+		formData.append('cf-turnstile-response', 'second-reset-token');
+
+		const result = await resetPasswordActions.default(
+			passwordResetEvent(formData, resetPasswordForEmail, turnstileFetch) as never
+		);
+
+		expect(result).toMatchObject({ status: 400, data: { success: false, email: 'member@example.bg' } });
+		expect(turnstileFetch).not.toHaveBeenCalled();
+		expect(resetPasswordForEmail).not.toHaveBeenCalled();
+	});
+
+	it('keeps provider-rejected password recovery non-enumerating and emits only a sanitized event', async () => {
+		const providerError = new Error('recipient member@example.bg does not exist; token=private-token');
+		const resetPasswordForEmail = vi.fn(async () => ({ data: null, error: providerError }));
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+		const result = await resetPasswordActions.default(
+			passwordResetEvent(passwordResetForm('verified-reset-token'), resetPasswordForEmail) as never
+		);
+
+		expect(result).toEqual(genericPasswordResetSuccess);
+		expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+			JSON.stringify({ level: 'error', event: 'password_reset_provider_rejected' })
+		);
+		expect(JSON.stringify(result)).not.toMatch(/member@example\.bg|private-token|does not exist/iu);
+	});
+
+	it('keeps password-recovery transport failures non-enumerating and emits only a sanitized event', async () => {
+		const resetPasswordForEmail = vi.fn(async () => {
+			throw new Error('transport failed for member@example.bg with private-token');
+		});
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+		const result = await resetPasswordActions.default(
+			passwordResetEvent(passwordResetForm('verified-reset-token'), resetPasswordForEmail) as never
+		);
+
+		expect(result).toEqual(genericPasswordResetSuccess);
+		expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+			JSON.stringify({ level: 'error', event: 'password_reset_provider_transport_failed' })
+		);
+		expect(JSON.stringify(result)).not.toMatch(/member@example\.bg|private-token|transport failed/iu);
 	});
 });

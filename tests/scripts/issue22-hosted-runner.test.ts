@@ -365,6 +365,18 @@ describe('exact hosted journey and sanitization', () => {
 			events.push('reuse');
 			return { denied: true };
 		});
+		const waitForPasswordRecoveryWindow = vi.fn(async (durationMs: number) => {
+			events.push(`recovery-wait:${durationMs}`);
+		});
+		const requestPasswordRecovery = vi.fn(async () => events.push('recovery-request'));
+		const pollRecovery = vi.fn(async ({ runStartedAt }: { runStartedAt: string }) => {
+			events.push(`recovery-poll:${runStartedAt}`);
+			return {
+				messageId: 44,
+				html: '<a href="https://candidate.invalid/auth/callback?code=private-recovery-token">Reset</a>',
+				mailCount: 1
+			};
+		});
 
 		const receipt = await run(validateRunnerEnvironmentForTest(), {
 			now: () => Date.parse('2026-09-01T10:00:00.000Z'),
@@ -375,6 +387,9 @@ describe('exact hosted journey and sanitization', () => {
 			completeOnboarding,
 			assertMarketplaceAccess,
 			reuseConfirmationLink,
+			waitForPasswordRecoveryWindow,
+			requestPasswordRecovery,
+			pollRecovery,
 			artifactPaths: []
 		});
 
@@ -384,7 +399,11 @@ describe('exact hosted journey and sanitization', () => {
 		expect(confirm).toHaveBeenCalledWith(confirmationLink);
 		expect(reuseConfirmationLink).toHaveBeenCalledTimes(1);
 		expect(reuseConfirmationLink).toHaveBeenCalledWith(confirmationLink);
+		expect(waitForPasswordRecoveryWindow).toHaveBeenCalledExactlyOnceWith(61_000);
+		expect(requestPasswordRecovery).toHaveBeenCalledTimes(1);
+		expect(pollRecovery).toHaveBeenCalledTimes(1);
 		expect(receipt.mailCount).toBe(1);
+		expect(receipt.recoveryMailCount).toBe(1);
 		expect(events).toEqual([
 			'forged-captcha-denied',
 			'signup',
@@ -392,10 +411,15 @@ describe('exact hosted journey and sanitization', () => {
 			'confirm',
 			'onboarding',
 			'marketplace',
-			'reuse'
+			'reuse',
+			'recovery-wait:61000',
+			'recovery-request',
+			'recovery-poll:2026-09-01T10:00:00.000Z'
 		]);
 		expect(receipt.captchaForgery).toBe('denied');
+		expect(receipt.passwordRecovery).toBe('delivered');
 		expect(JSON.stringify(receipt)).not.toMatch(/example\.invalid|token_hash|private-token|authorization|cookie/iu);
+		expect(JSON.stringify(receipt)).not.toContain('private-recovery-token');
 	});
 
 	test('stops before valid signup when a forged CAPTCHA token is accepted', async () => {
@@ -411,6 +435,9 @@ describe('exact hosted journey and sanitization', () => {
 				completeOnboarding: vi.fn(),
 				assertMarketplaceAccess: vi.fn(),
 				reuseConfirmationLink: vi.fn(),
+				waitForPasswordRecoveryWindow: vi.fn(),
+				requestPasswordRecovery: vi.fn(),
+				pollRecovery: vi.fn(),
 				artifactPaths: []
 			})
 		).rejects.toThrow('Issue #22 forged CAPTCHA token was not denied.');
@@ -433,6 +460,9 @@ describe('exact hosted journey and sanitization', () => {
 				completeOnboarding: async () => undefined,
 				assertMarketplaceAccess: async () => undefined,
 				reuseConfirmationLink: async () => ({ denied: false }),
+				waitForPasswordRecoveryWindow: vi.fn(),
+				requestPasswordRecovery: vi.fn(),
+				pollRecovery: vi.fn(),
 				artifactPaths: []
 			})
 		).rejects.toThrow('Issue #22 confirmation reuse was not denied.');
@@ -441,6 +471,7 @@ describe('exact hosted journey and sanitization', () => {
 	test.each([
 		'issue22-private@example.invalid',
 		'https://candidate.invalid/auth/confirm?token_hash=private&type=email',
+		'https://candidate.invalid/auth/callback?token=private&type=recovery',
 		'Authorization: Bearer private-token',
 		'Cookie: sb-access-token=private-cookie',
 		'Set-Cookie: session=private-cookie'

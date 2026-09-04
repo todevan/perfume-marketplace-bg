@@ -4,7 +4,7 @@ set local role postgres;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions, pg_catalog;
 
-select plan(57);
+select plan(60);
 
 select ok(to_regprocedure('private.normalize_profile_city(text)') is not null, 'the canonical private city normalizer exists');
 select ok(
@@ -79,6 +79,11 @@ select is(
 select is(private.normalize_profile_city(chr(x'3000'::int) || 'София' || chr(x'00A0'::int)), 'София', 'leading and trailing Unicode spaces are trimmed');
 select is(private.normalize_profile_city(repeat(chr(x'10400'::int), 2)), repeat(chr(x'10400'::int), 2), 'accepts two astral Unicode letters as two code points');
 select is(private.normalize_profile_city(repeat(chr(x'10400'::int), 100)), repeat(chr(x'10400'::int), 100), 'accepts one hundred astral Unicode letters as one hundred code points');
+select is(
+  private.normalize_profile_city(repeat(' ', 399) || '42'),
+  null::text,
+  'rejects a 401-byte city before it can normalize to a valid short value'
+);
 
 select is(private.normalize_profile_city(''), null::text, 'rejects empty city');
 select is(private.normalize_profile_city('   '), null::text, 'rejects ASCII whitespace-only city');
@@ -205,6 +210,29 @@ select ok(
       and m.onboarding_completed_at is null and m.activated_at is null
   ),
   'invalid onboarding rolls back profile, membership, and timestamps together'
+);
+
+set local statement_timeout = '100ms';
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '82222222-2222-4222-8222-222222222222', true);
+select throws_ok(
+  $sql$select public.complete_beta_onboarding('city_pending', repeat(' ', 1000000) || 'София')$sql$,
+  '22023', 'city must be a normalized value containing 2 to 100 Unicode letters or numbers',
+  'authenticated onboarding rejects very large otherwise-normalizable city input within the local statement timeout'
+);
+reset role;
+set local role postgres;
+set local statement_timeout = 0;
+select ok(
+  exists (
+    select 1 from public.profiles p
+    join public.beta_memberships m on m.profile_id = p.id
+    where p.id = '82222222-2222-4222-8222-222222222222'
+      and p.city is null and m.status = 'pending'
+      and m.onboarding_completed_at is null and m.activated_at is null
+      and m.updated_at = m.created_at
+  ),
+  'oversized onboarding leaves the pending profile and membership unchanged'
 );
 
 set local role authenticated;

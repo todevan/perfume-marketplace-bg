@@ -58,14 +58,14 @@ async function gotoCandidate(page, origin, path) {
 /** @param {Page} page */
 async function waitForTurnstile(page) {
 	const host = page.locator('.cf-turnstile');
-	await expect(host, 'Registration must render exactly one Turnstile widget').toHaveCount(1, {
+	await expect(host, 'Authentication must render exactly one Turnstile widget').toHaveCount(1, {
 		timeout: TURNSTILE_TIMEOUT_MS
 	});
 	const response = page.locator('input[name="cf-turnstile-response"]');
 	await expect(response).toHaveCount(1, { timeout: TURNSTILE_TIMEOUT_MS });
 	await expect
 		.poll(() => response.inputValue(), {
-			message: 'Registration Turnstile did not issue a single-use response',
+			message: 'Authentication Turnstile did not issue a single-use response',
 			timeout: TURNSTILE_TIMEOUT_MS
 		})
 		.toMatch(/\S/u);
@@ -157,19 +157,22 @@ async function followConfirmation(page, link, origin, expectedPath) {
 }
 
 test('Issue #22 hosted registration proof', async ({ browser }) => {
-	test.setTimeout(150_000);
+	test.setTimeout(240_000);
 	const config = validateRunnerEnvironment();
 	await assertRuntimeCandidate(candidateUrl(config.candidateOrigin, '/login'), config.expectedSha);
 
 	const primaryContext = await browser.newContext();
 	const replayContext = await browser.newContext();
 	const forgeryContext = await browser.newContext();
+	const recoveryContext = await browser.newContext();
 	const primary = await primaryContext.newPage();
 	const replay = await replayContext.newPage();
 	const forgery = await forgeryContext.newPage();
+	const recovery = await recoveryContext.newPage();
 	primary.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
 	replay.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
 	forgery.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
+	recovery.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
 
 	try {
 		const result = await runHostedJourney(config, {
@@ -270,7 +273,33 @@ test('Issue #22 hosted registration proof', async ({ browser }) => {
 					failSafely('Issue #22 confirmation replay created an authenticated session.');
 				}
 				return { denied: true };
-			}
+			},
+			waitForPasswordRecoveryWindow: (durationMs) => recovery.waitForTimeout(durationMs),
+			requestPasswordRecovery: async (identity) => {
+				await gotoCandidate(recovery, config.candidateOrigin, '/auth/reset-password');
+				await recovery.getByLabel('Имейл').fill(identity.recipient);
+				await waitForTurnstile(recovery);
+				const responsePromise = recovery.waitForResponse(
+					(response) => {
+						const url = new URL(response.url());
+						return (
+							response.request().method() === 'POST' &&
+							url.origin === config.candidateOrigin &&
+							url.pathname === '/auth/reset-password'
+						);
+					},
+					{ timeout: NAVIGATION_TIMEOUT_MS }
+				);
+				const [response] = await Promise.all([
+					responsePromise,
+					recovery.getByRole('button', { name: 'Изпрати връзка', exact: true }).click()
+				]);
+				if (!response.ok()) failSafely('Issue #22 password recovery request failed safely.');
+				await expect(recovery.getByRole('status')).toHaveText(
+					'Ако има профил с този имейл, ще получиш връзка за нова парола.'
+				);
+			},
+			pollRecovery: (pollConfig) => pollForConfirmationMessage(pollConfig)
 		});
 
 		expect(result).toEqual({
@@ -278,10 +307,17 @@ test('Issue #22 hosted registration proof', async ({ browser }) => {
 			candidateSha: config.expectedSha,
 			signupCount: 1,
 			mailCount: 1,
+			recoveryMailCount: 1,
 			captchaForgery: 'denied',
-			confirmationReuse: 'denied'
+			confirmationReuse: 'denied',
+			passwordRecovery: 'delivered'
 		});
 	} finally {
-		await Promise.all([primaryContext.close(), replayContext.close(), forgeryContext.close()]);
+		await Promise.all([
+			primaryContext.close(),
+			replayContext.close(),
+			forgeryContext.close(),
+			recoveryContext.close()
+		]);
 	}
 });
