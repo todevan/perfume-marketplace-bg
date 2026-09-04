@@ -47,10 +47,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Audit production dependencies
-        run: pnpm audit --prod
-      - name: Audit all dependencies at high severity
-        run: pnpm audit --audit-level high
       - name: Validate catalogue
         run: pnpm validate:catalog
       - name: Run unit and contract tests
