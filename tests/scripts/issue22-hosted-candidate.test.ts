@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,7 @@ function requiredFunction<Name extends keyof CandidateModule>(name: Name): Candi
 }
 
 const execFile = promisify(execFileCallback);
+const playwrightCli = createRequire(import.meta.url).resolve('@playwright/test/cli');
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -160,5 +162,34 @@ describe('child-process and issue-scoped config safety', () => {
 			preserveOutput: 'never',
 			use: { trace: 'off', video: 'off', screenshot: 'off' }
 		});
+	});
+
+	test('discovers exactly the intended executable Issue #22 hosted proof', async () => {
+		const { stdout } = await execFile(
+			process.execPath,
+			[
+				playwrightCli,
+				'test',
+				'--config',
+				join(process.cwd(), 'scripts/issue22-hosted/playwright.config.mjs'),
+				'--list'
+			],
+			{
+				cwd: process.cwd(),
+				env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
+				windowsHide: true
+			}
+		);
+		const discoveredTests = stdout
+			.split(/\r?\n/u)
+			.filter((line) => line.includes(' › '));
+
+		expect(discoveredTests).toEqual([
+			expect.stringMatching(
+				/^\s*\[chromium\] › issue22-hosted-proof\.e2e\.mjs:\d+:\d+ › Issue #22 hosted registration proof$/u
+			)
+		]);
+		expect(stdout).toContain('Total: 1 test in 1 file');
+		expect(stdout).not.toContain('tests/e2e/');
 	});
 });
