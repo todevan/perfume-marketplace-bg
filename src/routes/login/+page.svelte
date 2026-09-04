@@ -1,10 +1,21 @@
 <script lang="ts">
-  import { ArrowRight, BadgeCheck, Eye, EyeOff, LockKeyhole, Mail, ShieldCheck, Store, UserRound } from '@lucide/svelte';
+  import { enhance } from '$app/forms';
+  import ArrowRight from '@lucide/svelte/icons/arrow-right';
+  import BadgeCheck from '@lucide/svelte/icons/badge-check';
+  import Eye from '@lucide/svelte/icons/eye';
+  import EyeOff from '@lucide/svelte/icons/eye-off';
+  import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
+  import Mail from '@lucide/svelte/icons/mail';
+  import ShieldCheck from '@lucide/svelte/icons/shield-check';
+  import Store from '@lucide/svelte/icons/store';
+  import UserRound from '@lucide/svelte/icons/user-round';
+  import type { SubmitFunction } from '@sveltejs/kit';
   import ScentMark from '$components/ScentMark.svelte';
 
   interface TurnstileApi {
     render: (element: HTMLElement, options: { sitekey: string; action: 'login' | 'register' }) => string;
     remove: (widgetId: string) => void;
+    reset: (widgetId: string) => void;
   }
 
   let { data, form } = $props();
@@ -18,6 +29,7 @@
   let initialized = $state(false);
   let turnstileElement = $state<HTMLDivElement>();
   let turnstileScriptLoaded = $state(false);
+  let turnstileWidgetId = $state<string>();
 
   function turnstileApi(): TurnstileApi | undefined {
     return (window as Window & { turnstile?: TurnstileApi }).turnstile;
@@ -33,8 +45,24 @@
     if (!turnstile) return;
 
     const widgetId = turnstile.render(turnstileElement, { sitekey, action });
-    return () => turnstile.remove(widgetId);
+    turnstileWidgetId = widgetId;
+    return () => {
+      turnstile.remove(widgetId);
+      if (turnstileWidgetId === widgetId) turnstileWidgetId = undefined;
+    };
   });
+
+  const enhanceAuth: SubmitFunction = () => {
+    loading = true;
+    return async ({ update }) => {
+      try {
+        if (turnstileWidgetId) turnstileApi()?.reset(turnstileWidgetId);
+        await update({ reset: false, invalidateAll: true });
+      } finally {
+        loading = false;
+      }
+    };
+  };
 
   $effect(() => {
     if (initialized) return;
@@ -76,7 +104,7 @@
 
       {#if form?.message}<p class="auth-feedback" class:success={form.success} role={form.success ? 'status' : 'alert'}>{form.message}</p>{/if}
 
-      <form method="POST" action={mode === 'login' ? '?/login' : '?/register'} onsubmit={() => (loading = true)}>
+      <form method="POST" action={mode === 'login' ? '?/login' : '?/register'} use:enhance={enhanceAuth}>
         <input type="hidden" name="next" value={data.next} />
         {#if mode === 'register'}<input type="hidden" name="kind" value={accountKind} />{/if}
         {#if mode === 'register'}<div class="field"><label for="username">Потребителско име</label><div class="with-icon"><UserRound size={18} /><input id="username" class="input" name="username" autocomplete="username" placeholder="например scent_archive" required /></div></div>{/if}

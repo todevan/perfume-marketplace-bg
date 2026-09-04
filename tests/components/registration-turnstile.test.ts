@@ -4,6 +4,34 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('$app/forms', () => ({
+	enhance: (form: HTMLFormElement, submit?: (input: any) => unknown) => {
+		const listener = async (event: Event) => {
+			event.preventDefault();
+			if (!submit) return;
+			const complete = await submit({
+				action: new URL(form.action),
+				formData: new FormData(form),
+				formElement: form,
+				controller: new AbortController(),
+				submitter: null,
+				cancel: vi.fn()
+			});
+			if (typeof complete === 'function') {
+				await complete({
+					action: new URL(form.action),
+					formData: new FormData(form),
+					formElement: form,
+					result: { type: 'failure', status: 400, data: { success: false } },
+					update: vi.fn(async () => undefined)
+				});
+			}
+		};
+		form.addEventListener('submit', listener);
+		return { destroy: () => form.removeEventListener('submit', listener) };
+	}
+}));
+
 import LoginPage from '../../src/routes/login/+page.svelte';
 
 afterEach(() => {
@@ -15,9 +43,11 @@ describe('registration Turnstile challenge', () => {
 	it('uses one action-specific challenge for the active login or registration mode', async () => {
 		const renderWidget = vi.fn(() => 'login-widget');
 		const removeWidget = vi.fn();
-		(window as Window & { turnstile?: { render: typeof renderWidget; remove: typeof removeWidget } }).turnstile = {
+		const resetWidget = vi.fn();
+		(window as Window & { turnstile?: { render: typeof renderWidget; remove: typeof removeWidget; reset: typeof resetWidget } }).turnstile = {
 			render: renderWidget,
-			remove: removeWidget
+			remove: removeWidget,
+			reset: resetWidget
 		};
 
 		const { container } = render(LoginPage, {
@@ -41,6 +71,12 @@ describe('registration Turnstile challenge', () => {
 			expect.any(HTMLElement),
 			expect.objectContaining({ action: 'login', sitekey: 'turnstile-site-key' })
 		);
+
+		const loginForm = container.querySelector<HTMLFormElement>('form');
+		expect(loginForm).not.toBeNull();
+		await fireEvent.submit(loginForm!);
+		await vi.waitFor(() => expect(resetWidget).toHaveBeenCalledExactlyOnceWith('login-widget'));
+		expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
 
 		const registrationTab = container.querySelectorAll<HTMLButtonElement>('.mode-tabs button')[1];
 		await fireEvent.click(registrationTab);

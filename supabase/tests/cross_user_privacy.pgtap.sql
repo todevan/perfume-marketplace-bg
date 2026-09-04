@@ -102,7 +102,7 @@ insert into auth.users (
 );
 
 update public.profiles
-set email_verified_at = now(), phone_verified_at = now()
+set city = 'Sofia', email_verified_at = now(), phone_verified_at = now()
 where id in (
   '23111111-1111-4111-8111-111111111111',
   '23222222-2222-4222-8222-222222222222',

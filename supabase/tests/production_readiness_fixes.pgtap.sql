@@ -123,7 +123,8 @@ insert into auth.users (
 );
 
 update public.profiles
-set email_verified_at = statement_timestamp(),
+set city = 'Sofia',
+    email_verified_at = statement_timestamp(),
     phone_verified_at = statement_timestamp()
 where id = '11111111-1111-4111-8111-111111111111';
 

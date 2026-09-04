@@ -78,7 +78,9 @@ function applySecurityHeaders(
 ): Response {
 	response.headers.set('content-security-policy', cspFor(runtime));
 	response.headers.set('permissions-policy', 'camera=(), geolocation=(), microphone=(), payment=()');
-	response.headers.set('referrer-policy', 'strict-origin-when-cross-origin');
+	if (!response.headers.has('referrer-policy')) {
+		response.headers.set('referrer-policy', 'strict-origin-when-cross-origin');
+	}
 	response.headers.set('x-content-type-options', 'nosniff');
 	response.headers.set('x-deployed-git-sha', deployedGitSha);
 	response.headers.set('x-frame-options', 'DENY');

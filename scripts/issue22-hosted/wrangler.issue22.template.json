@@ -1,0 +1,45 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "__ISSUE22_WORKER_NAME__",
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "compatibility_date": "2026-07-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "keep_vars": false,
+  "workers_dev": true,
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".svelte-kit/cloudflare",
+    "run_worker_first": ["/robots.txt", "/sitemap.xml"]
+  },
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false
+    },
+    "traces": {
+      "enabled": false,
+      "persist": false
+    }
+  },
+  "vars": {
+    "APP_ENV": "development",
+    "PUBLIC_DEMO_MODE": "false",
+    "PUBLIC_APP_URL": "__ISSUE22_CANDIDATE_ORIGIN__",
+    "PUBLIC_SUPABASE_URL": "__ISSUE22_SUPABASE_URL__",
+    "PUBLIC_SUPABASE_PUBLISHABLE_KEY": "__ISSUE22_SUPABASE_PUBLISHABLE_KEY__",
+    "PUBLIC_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+    "RELEASE_COMMIT_SHA": "__ISSUE22_EXPECTED_SHA__",
+    "IMAGE_PROCESSOR_MODE": "disabled",
+    "FEATURE_BILLING_ENABLED": "false",
+    "FEATURE_LISTING_FEES_ENABLED": "false",
+    "FEATURE_MERCHANT_SUBSCRIPTIONS_ENABLED": "false",
+    "FEATURE_BOOSTS_ENABLED": "false",
+    "FEATURE_DIRECT_ADS_ENABLED": "false",
+    "FEATURE_MYPOS_PAYMENTS_ENABLED": "false",
+    "FEATURE_STRIPE_FALLBACK_ENABLED": "false",
+    "PAYMENT_PROVIDER": "disabled"
+  }
+}
+

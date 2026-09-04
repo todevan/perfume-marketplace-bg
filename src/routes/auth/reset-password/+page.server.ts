@@ -1,6 +1,5 @@
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { verifyTurnstileForAction } from '$lib/server/auth/turnstile';
 import {
 	InvalidFormDataError,
 	parseBoundedFormData,
@@ -9,6 +8,15 @@ import {
 } from '$lib/server/http/request-body';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_CAPTCHA_TOKEN_LENGTH = 2048;
+
+function readCaptchaToken(formData: FormData): string | null {
+	const values = formData.getAll('cf-turnstile-response');
+	if (values.length !== 1 || typeof values[0] !== 'string') return null;
+	const token = values[0];
+	if (!token.trim() || token.length > MAX_CAPTCHA_TOKEN_LENGTH) return null;
+	return token;
+}
 
 export const load: PageServerLoad = ({ locals }) => ({
 	turnstileSiteKey: locals.runtime.publicTurnstileSiteKey ?? null,
@@ -39,20 +47,12 @@ export const actions: Actions = {
 			return { success: true, message: 'Демо режимът не изпраща имейли.' };
 		}
 
-		const challenge = await verifyTurnstileForAction(
-			event,
-			formData,
-			event.locals.runtime,
-			'password_reset'
-		);
-		if (!challenge.success) {
-			return fail(challenge.reason === 'not_configured' ? 503 : 400, {
+		const captchaToken = readCaptchaToken(formData);
+		if (!captchaToken) {
+			return fail(400, {
 				success: false,
 				email,
-				message:
-					challenge.reason === 'not_configured'
-						? 'Възстановяването временно не е достъпно.'
-						: 'Потвърди, че не си автоматизиран клиент.'
+				message: 'Потвърди, че не си автоматизиран клиент.'
 			});
 		}
 
@@ -63,9 +63,19 @@ export const actions: Actions = {
 		const appOrigin = event.locals.runtime.publicAppUrl ?? event.url.origin;
 		const callback = new URL('/auth/callback', appOrigin);
 		callback.searchParams.set('next', '/auth/update-password');
-		await event.locals.supabase.auth.resetPasswordForEmail(email, {
-			redirectTo: callback.toString()
-		});
+		try {
+			const { error: resetError } = await event.locals.supabase.auth.resetPasswordForEmail(email, {
+				redirectTo: callback.toString(),
+				captchaToken
+			});
+			if (resetError) {
+				console.error(JSON.stringify({ level: 'error', event: 'password_reset_provider_rejected' }));
+			}
+		} catch {
+			console.error(
+				JSON.stringify({ level: 'error', event: 'password_reset_provider_transport_failed' })
+			);
+		}
 
 		// Always return the same response so the endpoint cannot enumerate registered emails.
 		return {

@@ -45,7 +45,6 @@ notifications, backups, and hosted operators.
 
 Known repository/product discrepancies remain:
 
-- onboarding currently accepts a blank city/location;
 - paid extra-listing and promotion scaffolding exists, but launch-ready trusted
   30-day entitlement journeys are not proven;
 - billing, listing-fee, promotion, merchant-subscription, and provider feature flags

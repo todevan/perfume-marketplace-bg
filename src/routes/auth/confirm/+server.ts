@@ -1,61 +1,72 @@
-import type { EmailOtpType } from '@supabase/supabase-js';
-import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { safeRedirectPath } from '$lib/server/auth/redirect';
+import { expireCurrentProjectAuthCookies } from '$lib/server/auth/cookies';
 
-const ALLOWED_TYPES = new Set<EmailOtpType>([
-	'signup',
-	'invite',
-	'magiclink',
-	'recovery',
-	'email_change',
-	'email'
-]);
+const REDIRECT_HEADERS = {
+	'cache-control': 'private, no-store',
+	'referrer-policy': 'no-referrer'
+} as const;
 
-export const GET: RequestHandler = async ({ url, locals }) => {
-	if (locals.runtime.mode === 'demo') redirect(303, '/dashboard');
-	if (!locals.supabase) redirect(303, '/auth/error?reason=not_configured');
-
-	const tokenHash = url.searchParams.get('token_hash');
-	const rawType = url.searchParams.get('type');
-	if (!tokenHash || !rawType || !ALLOWED_TYPES.has(rawType as EmailOtpType)) {
-		redirect(303, '/auth/error?reason=invalid_link');
-	}
-
-	const type = rawType as EmailOtpType;
-	const { error: verificationError } = await locals.supabase.auth.verifyOtp({
-		token_hash: tokenHash,
-		type
+function confirmationRedirect(location: '/dashboard' | '/onboarding' | '/auth/error'): Response {
+	return new Response(null, {
+		status: 303,
+		headers: { ...REDIRECT_HEADERS, location }
 	});
-	if (verificationError) redirect(303, '/auth/error?reason=invalid_or_expired');
+}
 
-	if (type === 'invite') {
-		const inviteToken = url.searchParams.get('invite_token');
-		if (!inviteToken) {
-			await locals.supabase.auth.signOut();
-			redirect(303, '/auth/error?reason=missing_beta_invite');
+export const GET: RequestHandler = async ({ url, locals, cookies }) => {
+	if (locals.runtime.mode === 'demo') return confirmationRedirect('/dashboard');
+	if (!locals.supabase) return confirmationRedirect('/auth/error');
+	const supabase = locals.supabase;
+	const publicSupabaseUrl = locals.runtime.publicSupabaseUrl;
+	const rejectAuthenticatedSession = async () => {
+		try {
+			await supabase.auth.signOut();
+		} catch {
+			// Exact-project cookie invalidation remains mandatory when provider cleanup fails.
 		}
+		await expireCurrentProjectAuthCookies(cookies, publicSupabaseUrl);
+	};
 
-		const { error: inviteError } = await locals.supabase.rpc('redeem_beta_invite', {
-			invite_token: inviteToken
+	const rawTokenHash = url.searchParams.get('token_hash');
+	const tokenHash = rawTokenHash?.trim();
+	if (!tokenHash || url.searchParams.get('type') !== 'email') {
+		return confirmationRedirect('/auth/error');
+	}
+
+	let verification: Awaited<ReturnType<typeof supabase.auth.verifyOtp>>;
+	try {
+		verification = await supabase.auth.verifyOtp({
+			token_hash: tokenHash,
+			type: 'email'
 		});
-		if (inviteError) {
-			await locals.supabase.auth.signOut();
-			redirect(303, '/auth/error?reason=invalid_beta_invite');
-		}
-
-		const next = safeRedirectPath(url.searchParams.get('next'), '/dashboard');
-		redirect(303, `/onboarding?next=${encodeURIComponent(next)}`);
+	} catch {
+		await rejectAuthenticatedSession();
+		return confirmationRedirect('/auth/error');
 	}
 
-	if (type === 'recovery') redirect(303, '/auth/update-password');
-	if (type === 'signup') {
-		const { error: admissionError } = await locals.supabase.rpc('claim_open_registration');
-		if (admissionError) {
-			await locals.supabase.auth.signOut();
-			redirect(303, '/auth/error?reason=profile_activation_failed');
-		}
+	if (verification.error) {
+		if (verification.data?.session) await rejectAuthenticatedSession();
+		return confirmationRedirect('/auth/error');
 	}
-	redirect(303, safeRedirectPath(url.searchParams.get('next'), '/dashboard'));
+
+	const verifiedUser = verification.data?.user;
+	if (!verifiedUser?.email_confirmed_at) {
+		if (verification.data?.session) await rejectAuthenticatedSession();
+		return confirmationRedirect('/auth/error');
+	}
+
+	let claimResult: Awaited<ReturnType<typeof supabase.rpc>>;
+	try {
+		claimResult = await supabase.rpc('claim_open_registration');
+	} catch {
+		await rejectAuthenticatedSession();
+		return confirmationRedirect('/auth/error');
+	}
+	if (claimResult.error || claimResult.data !== true) {
+		await rejectAuthenticatedSession();
+		return confirmationRedirect('/auth/error');
+	}
+
+	return confirmationRedirect('/onboarding');
 };
 

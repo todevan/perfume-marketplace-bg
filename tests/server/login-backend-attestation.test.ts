@@ -125,14 +125,18 @@ describe('open email registration', () => {
 		expect(signUp).not.toHaveBeenCalled();
 	});
 
-	it('rejects a Turnstile response bound to a different action before account creation', async () => {
-		const signUp = vi.fn();
+	it('forwards the registration token to Supabase Auth without app Siteverify', async () => {
+		const signUp = vi.fn(async () => ({
+			data: { user: { id: 'new-user' }, session: null },
+			error: null
+		}));
+		const providerFetch = vi.fn();
 		const formData = new FormData();
 		formData.set('email', 'new.member@example.bg');
 		formData.set('password', 'correct-horse-battery-staple');
 		formData.set('username', 'scent_archive');
 		formData.set('ageAccepted', 'on');
-		formData.set('cf-turnstile-response', 'wrong-action-token');
+		formData.set('cf-turnstile-response', 'registration-token-direct');
 
 		const result = await actions.register({
 			request: new Request('https://market.example/login?/register', {
@@ -140,9 +144,7 @@ describe('open email registration', () => {
 				body: formData
 			}),
 			url: new URL('https://market.example/login?/register'),
-			fetch: vi.fn(async () =>
-				new Response(JSON.stringify({ success: true, action: 'login', hostname: 'market.example' }), { status: 200 })
-			),
+			fetch: providerFetch,
 			locals: {
 				runtime: {
 					...stagingRuntime,
@@ -152,8 +154,11 @@ describe('open email registration', () => {
 			}
 		} as never);
 
-		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(signUp).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ success: true });
+		expect(providerFetch).not.toHaveBeenCalled();
+		expect(signUp).toHaveBeenCalledWith(expect.objectContaining({
+			options: expect.objectContaining({ captchaToken: 'registration-token-direct' })
+		}));
 	});
 
 	it('creates an email-password account and requests confirmation before onboarding', async () => {
@@ -193,14 +198,14 @@ describe('open email registration', () => {
 			email: 'new.member@example.bg',
 			password: 'correct-horse-battery-staple',
 			options: {
-				emailRedirectTo: 'https://market.example/auth/confirm?next=%2Fonboarding%3Fnext%3D%252Fdashboard',
+				captchaToken: 'verified-registration-token',
 				data: { username: 'scent_archive', account_kind: 'merchant' }
 			}
 		});
 		expect(result).toMatchObject({ success: true, email: 'new.member@example.bg' });
 	});
 
-	it('claims invite-free membership when Supabase returns an immediate session', async () => {
+	it('fails closed when Supabase unexpectedly returns an immediate session', async () => {
 		const signUp = vi.fn(async () => ({
 			data: { user: { id: 'new-user' }, session: { access_token: 'session' } },
 			error: null
@@ -216,12 +221,13 @@ describe('open email registration', () => {
 		formData.set('next', '/dashboard');
 		formData.set('cf-turnstile-response', 'verified-registration-token');
 
-		await expect(actions.register({
+		const result = await actions.register({
 			request: new Request('https://market.example/login?/register', {
 				method: 'POST',
 				body: formData
 			}),
 			url: new URL('https://market.example/login?/register'),
+			cookies: { getAll: () => [], delete: vi.fn(), set: vi.fn() },
 			fetch: vi.fn(async () =>
 				new Response(JSON.stringify({ success: true, action: 'register', hostname: 'market.example' }), { status: 200 })
 			),
@@ -233,10 +239,10 @@ describe('open email registration', () => {
 				},
 				supabase: { auth: { signUp, signOut }, rpc }
 			}
-		} as never)).rejects.toMatchObject({ status: 303, location: '/onboarding?next=%2Fdashboard' });
+		} as never);
 
-		expect(rpc).toHaveBeenCalledOnce();
-		expect(rpc).toHaveBeenCalledWith('claim_open_registration');
-		expect(signOut).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ status: 503, data: { success: false } });
+		expect(rpc).not.toHaveBeenCalled();
+		expect(signOut).toHaveBeenCalledOnce();
 	});
 });

@@ -263,4 +263,32 @@ describe('hook-level service failure and selective-call behavior (contract tests
     expect(client.rpc).toHaveBeenCalled();
     expect(client.auth.mfa.getAuthenticatorAssuranceLevel).toHaveBeenCalled();
   });
+
+  it.each(['/onboarding', '/auth/error'])(
+    'preserves confirmation redirect privacy headers through the effective handle for %s',
+    async (location) => {
+      currentMockClient = {
+        auth: { getUser: vi.fn(async () => ({ data: { user: null }, error: null })) }
+      };
+
+      const event = makeEvent('/auth/confirm');
+      const response = await handle({
+        event,
+        resolve: async () =>
+          new Response(null, {
+            status: 303,
+            headers: {
+              location,
+              'cache-control': 'private, no-store',
+              'referrer-policy': 'no-referrer'
+            }
+          })
+      });
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(location);
+      expect(response.headers.get('cache-control')).toContain('no-store');
+      expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+    }
+  );
 });

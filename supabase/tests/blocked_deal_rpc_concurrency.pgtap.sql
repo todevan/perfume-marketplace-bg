@@ -148,13 +148,13 @@ begin
       );
 
       update public.profiles
-      set email_verified_at = now(), phone_verified_at = now()
+      set city = 'Sofia', email_verified_at = now(), phone_verified_at = now()
       where id in (
         '24111111-1111-4111-8111-111111111111',
         '24222222-2222-4222-8222-222222222222'
       );
       update public.profiles
-      set role = 'moderator', email_verified_at = now(), phone_verified_at = now()
+      set city = 'Sofia', role = 'moderator', email_verified_at = now(), phone_verified_at = now()
       where id = '24777777-7777-4777-8777-777777777777';
 
       insert into public.beta_invites (
