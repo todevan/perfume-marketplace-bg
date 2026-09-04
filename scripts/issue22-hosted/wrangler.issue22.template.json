@@ -24,7 +24,7 @@
     }
   },
   "vars": {
-    "APP_ENV": "staging",
+    "APP_ENV": "development",
     "PUBLIC_DEMO_MODE": "false",
     "PUBLIC_APP_URL": "__ISSUE22_CANDIDATE_ORIGIN__",
     "PUBLIC_SUPABASE_URL": "__ISSUE22_SUPABASE_URL__",

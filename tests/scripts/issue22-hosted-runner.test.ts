@@ -126,6 +126,34 @@ describe('Issue #22 unprivileged runner boundary', () => {
 		expect(validate(runnerEnvironment()).mailtrap.inboxId).toBe(4_887_168);
 	});
 
+	test('pins the Mailtrap API origin in the runner environment', () => {
+		const validate = requiredFunction('validateRunnerEnvironment');
+		expect(() =>
+			validate(runnerEnvironment({ ISSUE22_MAILTRAP_API_BASE_URL: 'https://mailtrap-proxy.example.invalid' }))
+		).toThrow('Issue #22 runner configuration is invalid.');
+	});
+
+	test('rejects a foreign Mailtrap origin before issuing any credential-bearing request', async () => {
+		const poll = requiredFunction('pollForConfirmationMessage');
+		const fetchImpl = vi.fn();
+		await expect(
+			poll(
+				{
+					apiBaseUrl: 'https://mailtrap-proxy.example.invalid',
+					accountId: 1_234_567,
+					inboxId: 4_887_168,
+					readToken: 'private-token',
+					recipient: 'issue22@example.invalid',
+					runStartedAt: '2026-09-01T10:00:00.000Z',
+					pollIntervalMs: 1_000,
+					timeoutMs: 3_000
+				},
+				{ fetchImpl }
+			)
+		).rejects.toThrow('Issue #22 Mailtrap proof failed safely.');
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
 	test('rejects a cross-origin Mailtrap API base rather than accepting a body URL from another host', async () => {
 		const poll = requiredFunction('pollForConfirmationMessage');
 		const fetchImpl = vi.fn(async () =>
@@ -318,6 +346,10 @@ describe('exact hosted journey and sanitization', () => {
 	test('records the start before one signup and reuses the same link only to prove denial', async () => {
 		const run = requiredFunction('runHostedJourney');
 		const events: string[] = [];
+		const assertForgedCaptchaRejected = vi.fn(async () => {
+			events.push('forged-captcha-denied');
+			return { denied: true };
+		});
 		const signup = vi.fn(async () => events.push('signup'));
 		const poll = vi.fn(async ({ runStartedAt }: { runStartedAt: string }) => {
 			events.push(`poll:${runStartedAt}`);
@@ -336,6 +368,7 @@ describe('exact hosted journey and sanitization', () => {
 
 		const receipt = await run(validateRunnerEnvironmentForTest(), {
 			now: () => Date.parse('2026-09-01T10:00:00.000Z'),
+			assertForgedCaptchaRejected,
 			signup,
 			poll,
 			confirm,
@@ -346,12 +379,14 @@ describe('exact hosted journey and sanitization', () => {
 		});
 
 		expect(signup).toHaveBeenCalledTimes(1);
+		expect(assertForgedCaptchaRejected).toHaveBeenCalledTimes(1);
 		expect(poll).toHaveBeenCalledTimes(1);
 		expect(confirm).toHaveBeenCalledWith(confirmationLink);
 		expect(reuseConfirmationLink).toHaveBeenCalledTimes(1);
 		expect(reuseConfirmationLink).toHaveBeenCalledWith(confirmationLink);
 		expect(receipt.mailCount).toBe(1);
 		expect(events).toEqual([
+			'forged-captcha-denied',
 			'signup',
 			'poll:2026-09-01T10:00:00.000Z',
 			'confirm',
@@ -359,7 +394,27 @@ describe('exact hosted journey and sanitization', () => {
 			'marketplace',
 			'reuse'
 		]);
+		expect(receipt.captchaForgery).toBe('denied');
 		expect(JSON.stringify(receipt)).not.toMatch(/example\.invalid|token_hash|private-token|authorization|cookie/iu);
+	});
+
+	test('stops before valid signup when a forged CAPTCHA token is accepted', async () => {
+		const run = requiredFunction('runHostedJourney');
+		const signup = vi.fn();
+		await expect(
+			run(validateRunnerEnvironmentForTest(), {
+				now: () => 0,
+				assertForgedCaptchaRejected: async () => ({ denied: false }),
+				signup,
+				poll: vi.fn(),
+				confirm: vi.fn(),
+				completeOnboarding: vi.fn(),
+				assertMarketplaceAccess: vi.fn(),
+				reuseConfirmationLink: vi.fn(),
+				artifactPaths: []
+			})
+		).rejects.toThrow('Issue #22 forged CAPTCHA token was not denied.');
+		expect(signup).not.toHaveBeenCalled();
 	});
 
 	test('fails if confirmation-link reuse succeeds', async () => {
@@ -367,6 +422,7 @@ describe('exact hosted journey and sanitization', () => {
 		await expect(
 			run(validateRunnerEnvironmentForTest(), {
 				now: () => 0,
+				assertForgedCaptchaRejected: async () => ({ denied: true }),
 				signup: async () => undefined,
 				poll: async () => ({
 					messageId: 1,

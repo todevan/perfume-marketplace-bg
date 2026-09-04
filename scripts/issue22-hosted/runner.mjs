@@ -9,6 +9,7 @@ const RUNNER_FILE = fileURLToPath(import.meta.url);
 const REPOSITORY_ROOT = resolve(dirname(RUNNER_FILE), '../..');
 
 const EXACT_MAILTRAP_INBOX_ID = 4_887_168;
+const EXACT_MAILTRAP_API_ORIGIN = 'https://mailtrap.io';
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const PROJECT_REF_PATTERN = /^[a-z]{20}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -175,6 +176,7 @@ export function validateRunnerEnvironment(environment = process.env) {
 		!Number.isSafeInteger(accountId) ||
 		accountId <= 0 ||
 		inboxId !== EXACT_MAILTRAP_INBOX_ID ||
+		apiBaseUrl !== EXACT_MAILTRAP_API_ORIGIN ||
 		!UUID_PATTERN.test(versionId) ||
 		!UUID_PATTERN.test(transactionId)
 	) {
@@ -245,7 +247,12 @@ export async function launchHostedProofProcess(environment = process.env, depend
 function safeMailtrapUrl(baseUrl, path) {
 	const base = new URL(baseUrl);
 	const url = new URL(path, `${base.origin}/`);
-	if (url.origin !== base.origin || url.username || url.password) {
+	if (
+		base.origin !== EXACT_MAILTRAP_API_ORIGIN ||
+		url.origin !== EXACT_MAILTRAP_API_ORIGIN ||
+		url.username ||
+		url.password
+	) {
 		throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
 	}
 	return url.href;
@@ -312,6 +319,7 @@ export async function pollForConfirmationMessage(config, dependencies = {}) {
 	const deadline = initialNow + config.timeoutMs;
 	if (
 		!Number.isFinite(startedAtMs) ||
+		config.apiBaseUrl !== EXACT_MAILTRAP_API_ORIGIN ||
 		!Number.isSafeInteger(config.accountId) ||
 		config.accountId <= 0 ||
 		config.inboxId !== EXACT_MAILTRAP_INBOX_ID ||
@@ -500,6 +508,7 @@ export function createSyntheticIdentity(config) {
  * @param {RunnerConfig} config
  * @param {{
  *   now: () => number,
+ *   assertForgedCaptchaRejected: (identity: { recipient: string; password: string; username: string; city: string }) => Promise<{ denied?: boolean }>,
  *   signup: (identity: { recipient: string; password: string; username: string; city: string }) => Promise<unknown>,
  *   poll: (config: MailtrapPollConfig & { recipient: string }) => Promise<{ messageId: number; html: string; mailCount: number }>,
  *   confirm: (link: string) => Promise<{ redirectedTo?: string }>,
@@ -508,10 +517,14 @@ export function createSyntheticIdentity(config) {
  *   reuseConfirmationLink: (link: string) => Promise<{ denied?: boolean }>,
  *   artifactPaths?: string[]
  * }} dependencies
- * @returns {Promise<{ status: 'passed'; candidateSha: string; signupCount: number; mailCount: number; confirmationReuse: string }>}
+ * @returns {Promise<{ status: 'passed'; candidateSha: string; signupCount: number; mailCount: number; captchaForgery: string; confirmationReuse: string }>}
  */
 export async function runHostedJourney(config, dependencies) {
 	const identity = createSyntheticIdentity(config);
+	const forgery = await dependencies.assertForgedCaptchaRejected(identity);
+	if (forgery?.denied !== true) {
+		throw new Issue22RunnerError('Issue #22 forged CAPTCHA token was not denied.');
+	}
 	const runStartedAt = new Date(dependencies.now()).toISOString();
 	await dependencies.signup(identity);
 	const message = await dependencies.poll({
@@ -543,6 +556,7 @@ export async function runHostedJourney(config, dependencies) {
 		candidateSha: config.expectedSha,
 		signupCount: 1,
 		mailCount: message.mailCount,
+		captchaForgery: 'denied',
 		confirmationReuse: 'denied'
 	});
 }

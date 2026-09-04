@@ -1,4 +1,5 @@
 import type { RequestHandler } from './$types';
+import { expireCurrentProjectAuthCookies } from '$lib/server/auth/cookies';
 
 const REDIRECT_HEADERS = {
 	'cache-control': 'private, no-store',
@@ -12,16 +13,18 @@ function confirmationRedirect(location: '/dashboard' | '/onboarding' | '/auth/er
 	});
 }
 
-export const GET: RequestHandler = async ({ url, locals }) => {
+export const GET: RequestHandler = async ({ url, locals, cookies }) => {
 	if (locals.runtime.mode === 'demo') return confirmationRedirect('/dashboard');
 	if (!locals.supabase) return confirmationRedirect('/auth/error');
 	const supabase = locals.supabase;
-	const signOutSafely = async () => {
+	const publicSupabaseUrl = locals.runtime.publicSupabaseUrl;
+	const rejectAuthenticatedSession = async () => {
 		try {
 			await supabase.auth.signOut();
 		} catch {
-			// The clean, non-cacheable error redirect must survive a provider sign-out failure.
+			// Exact-project cookie invalidation remains mandatory when provider cleanup fails.
 		}
+		await expireCurrentProjectAuthCookies(cookies, publicSupabaseUrl);
 	};
 
 	const rawTokenHash = url.searchParams.get('token_hash');
@@ -37,30 +40,30 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			type: 'email'
 		});
 	} catch {
+		await rejectAuthenticatedSession();
 		return confirmationRedirect('/auth/error');
 	}
 
 	if (verification.error) {
-		if (verification.data?.session) await signOutSafely();
+		if (verification.data?.session) await rejectAuthenticatedSession();
 		return confirmationRedirect('/auth/error');
 	}
 
 	const verifiedUser = verification.data?.user;
 	if (!verifiedUser?.email_confirmed_at) {
-		await signOutSafely();
+		if (verification.data?.session) await rejectAuthenticatedSession();
 		return confirmationRedirect('/auth/error');
 	}
 
+	let claimResult: Awaited<ReturnType<typeof supabase.rpc>>;
 	try {
-		const { data: claimed, error: claimError } = await supabase.rpc(
-			'claim_open_registration'
-		);
-		if (claimError || claimed !== true) {
-			await signOutSafely();
-			return confirmationRedirect('/auth/error');
-		}
+		claimResult = await supabase.rpc('claim_open_registration');
 	} catch {
-		await signOutSafely();
+		await rejectAuthenticatedSession();
+		return confirmationRedirect('/auth/error');
+	}
+	if (claimResult.error || claimResult.data !== true) {
+		await rejectAuthenticatedSession();
 		return confirmationRedirect('/auth/error');
 	}
 

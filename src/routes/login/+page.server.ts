@@ -1,6 +1,6 @@
-import { clearAuthCookiesAtScopes } from '@supabase/ssr';
 import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
+import { expireCurrentProjectAuthCookies } from '$lib/server/auth/cookies';
 import { loadRequestAuthContext } from '$lib/server/auth/context';
 import { safeRedirectPath } from '$lib/server/auth/redirect';
 import { attestHostedBackendBaseline } from '$lib/server/services/backend-health';
@@ -16,33 +16,6 @@ const DEMO_PASSWORD = 'demo-beta';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_PATTERN = /^[\p{L}\p{N}_.-]{3,40}$/u;
 const MAX_CAPTCHA_TOKEN_LENGTH = 2048;
-
-async function expireCurrentProjectAuthCookies(
-	cookies: Parameters<Actions['register']>[0]['cookies'],
-	publicSupabaseUrl: string
-): Promise<void> {
-	const projectRef = new URL(publicSupabaseUrl).hostname.split('.')[0];
-	await clearAuthCookiesAtScopes({
-		getAll: () => cookies.getAll(),
-		setAll: async (cookiesToSet) => {
-			let failed = false;
-			for (const { name, value, options } of cookiesToSet) {
-				try {
-					cookies.delete(name, { path: '/' });
-				} catch {
-					try {
-						cookies.set(name, value, { ...options, path: '/' });
-					} catch {
-						failed = true;
-					}
-				}
-			}
-			if (failed) throw new Error('auth cookie invalidation failed');
-		},
-		storageKey: `sb-${projectRef}-auth-token`,
-		scopes: [{ path: '/' }]
-	});
-}
 
 function readCaptchaToken(formData: FormData): string | null {
 	const values = formData.getAll('cf-turnstile-response');
@@ -130,7 +103,34 @@ export const actions: Actions = {
 		if (signInError) {
 			return fail(400, { success: false, email, message: 'Невалиден имейл или парола.' });
 		}
-		const context = await loadRequestAuthContext(supabase);
+		let context = await loadRequestAuthContext(supabase);
+		if (context.betaAccess === null) {
+			let claimFailed = false;
+			try {
+				const { data: claimed, error: claimError } = await supabase.rpc('claim_open_registration');
+				if (claimError || claimed !== true) {
+					claimFailed = true;
+				} else {
+					context = await loadRequestAuthContext(supabase);
+					claimFailed = context.betaAccess === null;
+				}
+			} catch {
+				claimFailed = true;
+			}
+			if (claimFailed) {
+				try {
+					await supabase.auth.signOut();
+				} catch {
+					// Exact-project cookie invalidation remains mandatory when provider cleanup fails.
+				}
+				await expireCurrentProjectAuthCookies(event.cookies, event.locals.runtime.publicSupabaseUrl);
+				return fail(503, {
+					success: false,
+					email,
+					message: 'Входът временно не е достъпен.'
+				});
+			}
+		}
 		if (!context.betaAccess?.isActive) {
 			redirect(303, `/onboarding?next=${encodeURIComponent(next)}`);
 		}

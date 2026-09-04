@@ -14,6 +14,13 @@ function requiredFunction<Name extends keyof HostedOperatorModule>(name: Name): 
 
 const transactionId = '22222222-2222-4222-8222-222222222222';
 const candidateSha = 'a'.repeat(40);
+const expectedAuthConfiguration = Object.freeze({
+	disable_signup: false,
+	external_email_enabled: true,
+	mailer_autoconfirm: false,
+	security_captcha_enabled: true,
+	security_captcha_provider: 'turnstile'
+});
 type OperatorManifest = Parameters<HostedOperatorModule['validateManifest']>[0];
 
 function manifest(overrides: Partial<OperatorManifest> = {}): OperatorManifest {
@@ -29,10 +36,19 @@ function manifest(overrides: Partial<OperatorManifest> = {}): OperatorManifest {
 		},
 		preflight: { status: 'passed', free_capacity: true, checked_at: '2026-09-01T09:00:00.000Z' },
 		providers: {
-			supabase: {
-				organization_id: 'organization-id',
-				project_id: 'abcdefghijklmnopqrst',
-				created_by_operator: true,
+				supabase: {
+					organization_id: 'organization-id',
+					project_id: 'abcdefghijklmnopqrst',
+					region: 'eu-central-1',
+					plan: 'free',
+					auth_configuration: expectedAuthConfiguration,
+					smtp: { account_id: 1_234_567, inbox_id: 4_887_168, configured: true },
+					confirmation_template: {
+						candidate_origin: 'https://aromatika-issue-22-a1b2c3d.workers.dev',
+						configured: true
+					},
+					migrations: { candidate_sha: candidateSha, applied: true },
+					created_by_operator: true,
 				cleanup_authorized: true,
 				absent_verified: false
 			},
@@ -45,8 +61,9 @@ function manifest(overrides: Partial<OperatorManifest> = {}): OperatorManifest {
 			},
 			cloudflare: {
 				account_id: 'b'.repeat(32),
-				worker_name: 'aromatika-issue-22-a1b2c3d',
-				version_id: '11111111-1111-4111-8111-111111111111',
+					worker_name: 'aromatika-issue-22-a1b2c3d',
+					version_id: '11111111-1111-4111-8111-111111111111',
+					candidate_sha: candidateSha,
 				created_by_operator: true,
 				cleanup_authorized: true,
 				absent_verified: false
@@ -58,6 +75,14 @@ function manifest(overrides: Partial<OperatorManifest> = {}): OperatorManifest {
 }
 
 describe('private manifest validation', () => {
+	test('pins the Mailtrap API origin exactly', () => {
+		const validate = requiredFunction('validateManifest');
+		const foreign = manifest();
+		foreign.providers.mailtrap.api_base_url = 'https://mailtrap-proxy.example.invalid';
+		expect(() => validate(foreign)).toThrow('Issue #22 provider manifest is invalid.');
+		expect(validate(manifest()).providers.mailtrap.api_base_url).toBe('https://mailtrap.io');
+	});
+
 	test('requires numeric Mailtrap account and exact inbox IDs before polling', () => {
 		const validate = requiredFunction('validateManifest');
 		const missingAccount = manifest();
@@ -96,6 +121,26 @@ describe('private manifest validation', () => {
 		void mutate;
 	});
 
+	test('requires every exact provider readback attestation before proof', () => {
+		const validate = requiredFunction('validateManifest');
+		expect(validate(manifest(), { phase: 'proof' }).state).toBe('worker_deployed');
+
+		const cases: Array<(value: OperatorManifest) => void> = [
+			(value) => delete (value.providers.supabase as Record<string, unknown>).region,
+			(value) => ((value.providers.supabase as Record<string, unknown>).plan = 'pro'),
+			(value) => delete (value.providers.supabase as Record<string, unknown>).auth_configuration,
+			(value) => delete (value.providers.supabase as Record<string, unknown>).smtp,
+			(value) => delete (value.providers.supabase as Record<string, unknown>).confirmation_template,
+			(value) => delete (value.providers.supabase as Record<string, unknown>).migrations,
+			(value) => delete (value.providers.cloudflare as Record<string, unknown>).candidate_sha
+		];
+		for (const mutate of cases) {
+			const value = manifest();
+			mutate(value);
+			expect(() => validate(value, { phase: 'proof' })).toThrow('Issue #22 provider manifest is invalid.');
+		}
+	});
+
 	test('rejects manifest paths inside the repository', () => {
 		const assertPrivatePath = requiredFunction('assertPrivateManifestPath');
 		expect(() => assertPrivatePath('C:/repo/private/provider-manifest.json', 'C:/repo')).toThrow(
@@ -108,9 +153,155 @@ describe('private manifest validation', () => {
 });
 
 describe('manifest-bound operator transitions', () => {
-	test('persists before and after each mutation in strict provider order', async () => {
+	test('configures and reads back exact transient-project Auth settings without returning credentials', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		const createAction = requiredFunction('createSupabaseAuthConfigurationAction');
+		const createReadback = requiredFunction('createSupabaseAuthConfigurationReadback');
+		const managementToken = 'supabase-management-private';
+		const captchaSecret = 'turnstile-secret-private';
+		const requests: Array<{ url: string; init: RequestInit }> = [];
+		const fetchImpl = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+			requests.push({ url: String(input), init });
+			if (init.method === 'PATCH') return new Response('{}', { status: 200 });
+			return new Response(JSON.stringify(expectedAuthConfiguration), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+		const target = { provider: 'supabase' as const, projectId: 'abcdefghijklmnopqrst' };
+
+		const action = createAction({ accessToken: managementToken, captchaSecret, fetchImpl });
+		const readBack = createReadback({ accessToken: managementToken, fetchImpl });
+		const value = manifest({ state: 'supabase_project_created' });
+		delete (value.providers.supabase as Record<string, unknown>).auth_configuration;
+		const persisted: OperatorManifest[] = [];
+		const completed = await execute({
+			manifest: value,
+			step: 'configure_supabase_auth',
+			persist: async (next: OperatorManifest) => {
+				persisted.push(structuredClone(next));
+			},
+			action,
+			readBack
+		});
+
+		expect(requests.map(({ url, init }) => [init.method, url])).toEqual([
+			['PATCH', 'https://api.supabase.com/v1/projects/abcdefghijklmnopqrst/config/auth'],
+			['GET', 'https://api.supabase.com/v1/projects/abcdefghijklmnopqrst/config/auth']
+		]);
+		expect(JSON.parse(String(requests[0].init.body))).toEqual({
+			...expectedAuthConfiguration,
+			security_captcha_secret: captchaSecret
+		});
+		expect(requests[0].init.headers).toMatchObject({ Authorization: `Bearer ${managementToken}` });
+		expect(completed.state).toBe('supabase_auth_configured');
+		expect(completed.providers.supabase.auth_configuration).toEqual(expectedAuthConfiguration);
+		expect(JSON.stringify(persisted)).not.toContain(managementToken);
+		expect(JSON.stringify(persisted)).not.toContain(captchaSecret);
+		expect(persisted).toHaveLength(2);
+		expect(persisted[0].pending_mutation?.target).toEqual(target);
+	});
+
+	test('fails safely when transient-project Auth readback does not match the required settings', async () => {
+		const createReadback = requiredFunction('createSupabaseAuthConfigurationReadback');
+		const readBack = createReadback({
+			accessToken: 'supabase-management-private',
+			fetchImpl: vi.fn(async () =>
+				new Response(JSON.stringify({ ...expectedAuthConfiguration, security_captcha_enabled: false }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				})
+			)
+		});
+		await expect(readBack({ provider: 'supabase', projectId: 'abcdefghijklmnopqrst' })).rejects.toThrow(
+			'Issue #22 Supabase Auth configuration could not be verified.'
+		);
+	});
+
+	test('keeps the Auth transition pending until a separate exact GET readback succeeds', async () => {
 		const execute = requiredFunction('executeOperatorStep');
 		const value = manifest({ state: 'supabase_project_created' });
+		delete (value.providers.supabase as Record<string, unknown>).auth_configuration;
+		const persisted: OperatorManifest[] = [];
+		await expect(
+			execute({
+				manifest: value,
+				step: 'configure_supabase_auth',
+				persist: async (next: OperatorManifest) => {
+					persisted.push(structuredClone(next));
+				},
+				action: async (target: Record<string, unknown>) => ({ target })
+			})
+		).rejects.toThrow('Issue #22 post-mutation readback is required.');
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0].pending_mutation).toMatchObject({ step: 'configure_supabase_auth' });
+	});
+
+	test('advances the Auth transition only after exact sanitized readback', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		const value = manifest({ state: 'supabase_project_created' });
+		delete (value.providers.supabase as Record<string, unknown>).auth_configuration;
+		const readBack = vi.fn(async () => ({
+			status: 'present',
+			projectId: 'abcdefghijklmnopqrst',
+			auth: expectedAuthConfiguration
+		}));
+		const completed = await execute({
+			manifest: value,
+			step: 'configure_supabase_auth',
+			persist: vi.fn(),
+			action: async (target: Record<string, unknown>) => ({ target }),
+			readBack
+		});
+		expect(completed.state).toBe('supabase_auth_configured');
+		expect(completed.providers.supabase.auth_configuration).toEqual(expectedAuthConfiguration);
+		expect(readBack).toHaveBeenCalledWith({ provider: 'supabase', projectId: 'abcdefghijklmnopqrst' });
+	});
+
+	test('authorizes exact Supabase cleanup only after organization, region, and free-plan readback', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		const value = manifest({ state: 'preflight_verified' });
+		value.providers.supabase = { organization_id: 'organization-id' };
+		const persist = vi.fn();
+		const action = vi.fn(async (target: Record<string, unknown>) => ({ target, projectId: 'abcdefghijklmnopqrst' }));
+		const mismatchedReadback = vi.fn(async () => ({
+			status: 'present',
+			projectId: 'abcdefghijklmnopqrst',
+			organizationId: 'foreign-organization',
+			region: 'eu-central-1',
+			plan: 'free'
+		}));
+		await expect(
+			execute({ manifest: value, step: 'create_supabase_project', persist, action, readBack: mismatchedReadback })
+		).rejects.toThrow('Issue #22 post-mutation readback is not verified.');
+		expect(value.providers.supabase.cleanup_authorized).not.toBe(true);
+
+		const completed = await execute({
+			manifest: value,
+			step: 'create_supabase_project',
+			persist: vi.fn(),
+			action,
+			readBack: async () => ({
+				status: 'present',
+				projectId: 'abcdefghijklmnopqrst',
+				organizationId: 'organization-id',
+				region: 'eu-central-1',
+				plan: 'free'
+			})
+		});
+		expect(completed.providers.supabase).toMatchObject({
+			project_id: 'abcdefghijklmnopqrst',
+			organization_id: 'organization-id',
+			region: 'eu-central-1',
+			plan: 'free',
+			created_by_operator: true,
+			cleanup_authorized: true
+		});
+	});
+
+	test('persists before and after each mutation in strict provider order', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		const value = manifest({ state: 'supabase_auth_configured' });
 		const events: string[] = [];
 		const persist = vi.fn(async (next: OperatorManifest) => {
 			events.push(`persist:${next.pending_mutation ? 'pending' : next.state}`);
@@ -119,10 +310,14 @@ describe('manifest-bound operator transitions', () => {
 			events.push('mutate');
 			return { target };
 		});
+		const readBack = vi.fn(async (target) => {
+			events.push('readback');
+			return { status: 'present', ...target, smtpConfigured: true };
+		});
 
-		const completed = await execute({ manifest: value, step: 'configure_mailtrap_smtp', persist, action });
+		const completed = await execute({ manifest: value, step: 'configure_mailtrap_smtp', persist, action, readBack });
 
-		expect(events).toEqual(['persist:pending', 'mutate', 'persist:mailtrap_smtp_active']);
+		expect(events).toEqual(['persist:pending', 'mutate', 'readback', 'persist:mailtrap_smtp_active']);
 		expect(completed.state).toBe('mailtrap_smtp_active');
 		expect(completed.pending_mutation).toBeNull();
 		expect(action).toHaveBeenCalledWith({
@@ -131,6 +326,123 @@ describe('manifest-bound operator transitions', () => {
 			mailtrapAccountId: 1_234_567,
 			mailtrapInboxId: 4_887_168
 		});
+		expect(completed.providers.supabase.smtp).toEqual({
+			account_id: 1_234_567,
+			inbox_id: 4_887_168,
+			configured: true
+		});
+	});
+
+	test('persists exact confirmation-template and migration readback attestations', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		let current = manifest({ state: 'mailtrap_smtp_active' });
+		delete (current.providers.supabase as Record<string, unknown>).confirmation_template;
+		delete (current.providers.supabase as Record<string, unknown>).migrations;
+		const action = async (target: Record<string, unknown>) => ({ target });
+		current = await execute({
+			manifest: current,
+			step: 'update_confirmation_template',
+			persist: vi.fn(),
+			action,
+			readBack: async (target: Record<string, unknown>) => ({
+				status: 'present',
+				...target,
+				confirmationTemplateConfigured: true
+			})
+		});
+		current = await execute({
+			manifest: current,
+			step: 'apply_migrations',
+			persist: vi.fn(),
+			action,
+			readBack: async (target: Record<string, unknown>) => ({
+				status: 'present',
+				...target,
+				migrationsApplied: true
+			})
+		});
+		expect(current.providers.supabase.confirmation_template).toEqual({
+			candidate_origin: 'https://aromatika-issue-22-a1b2c3d.workers.dev',
+			configured: true
+		});
+		expect(current.providers.supabase.migrations).toEqual({ candidate_sha: candidateSha, applied: true });
+	});
+
+	test('authorizes Worker cleanup only after exact account, name, version, and candidate readback', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		const value = manifest({ state: 'migrations_applied' });
+		value.providers.cloudflare = {
+			account_id: 'b'.repeat(32),
+			worker_name: 'aromatika-issue-22-a1b2c3d'
+		};
+		const target = {
+			provider: 'cloudflare' as const,
+			accountId: 'b'.repeat(32),
+			workerName: 'aromatika-issue-22-a1b2c3d',
+			candidateSha
+		};
+		const action = vi.fn(async () => ({
+			target,
+			versionId: '11111111-1111-4111-8111-111111111111'
+		}));
+		await expect(
+			execute({
+				manifest: value,
+				step: 'deploy_worker',
+				persist: vi.fn(),
+				action,
+				inspectExactTarget: async () => ({ status: 'absent' }),
+				readBack: async () => ({
+					status: 'present',
+					accountId: 'b'.repeat(32),
+					workerName: target.workerName,
+					versionId: '11111111-1111-4111-8111-111111111111',
+					candidateSha: 'c'.repeat(40)
+				})
+			})
+		).rejects.toThrow('Issue #22 post-mutation readback is not verified.');
+		expect(value.providers.cloudflare.cleanup_authorized).not.toBe(true);
+
+		const completed = await execute({
+			manifest: value,
+			step: 'deploy_worker',
+			persist: vi.fn(),
+			action,
+			inspectExactTarget: async () => ({ status: 'absent' }),
+			readBack: async () => ({
+				status: 'present',
+				accountId: 'b'.repeat(32),
+				workerName: target.workerName,
+				versionId: '11111111-1111-4111-8111-111111111111',
+				candidateSha
+			})
+		});
+		expect(completed.providers.cloudflare).toMatchObject({
+			account_id: 'b'.repeat(32),
+			worker_name: target.workerName,
+			version_id: '11111111-1111-4111-8111-111111111111',
+			candidate_sha: candidateSha,
+			created_by_operator: true,
+			cleanup_authorized: true
+		});
+	});
+
+	test('keeps a cleanup pending when post-delete absence is unknown', async () => {
+		const execute = requiredFunction('executeOperatorStep');
+		const persisted: OperatorManifest[] = [];
+		await expect(
+			execute({
+				manifest: manifest({ state: 'proof_passed' }),
+				step: 'delete_worker',
+				persist: async (next: OperatorManifest) => {
+					persisted.push(structuredClone(next));
+				},
+				action: async (target: Record<string, unknown>) => ({ target }),
+				readBack: async (target: Record<string, unknown>) => ({ status: 'unknown', id: target.id })
+			})
+		).rejects.toThrow('Issue #22 post-mutation readback is not verified.');
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0].pending_mutation).toMatchObject({ step: 'delete_worker' });
 	});
 
 	test('does not run a later step before its prerequisite', async () => {
@@ -164,7 +476,7 @@ describe('manifest-bound operator transitions', () => {
 		const persisted: Array<ReturnType<typeof manifest>> = [];
 		await expect(
 			execute({
-				manifest: manifest({ state: 'supabase_project_created' }),
+				manifest: manifest({ state: 'supabase_auth_configured' }),
 				step: 'configure_mailtrap_smtp',
 				persist: async (value: OperatorManifest) => { persisted.push(structuredClone(value)); },
 				action: async () => {
@@ -238,8 +550,20 @@ describe('manifest-bound operator transitions', () => {
 			return { target: cleanupTarget };
 		});
 
-		current = await execute({ manifest: current, step: 'delete_worker', persist, action });
-		current = await execute({ manifest: current, step: 'delete_supabase_project', persist, action });
+		current = await execute({
+			manifest: current,
+			step: 'delete_worker',
+			persist,
+			action,
+			readBack: async (target: Record<string, unknown>) => ({ status: 'absent', id: target.id })
+		});
+		current = await execute({
+			manifest: current,
+			step: 'delete_supabase_project',
+			persist,
+			action,
+			readBack: async (target: Record<string, unknown>) => ({ status: 'absent', id: target.id })
+		});
 
 		expect(current.state).toBe('supabase_project_deleted');
 		expect(current.pending_mutation).toBeNull();
@@ -309,7 +633,7 @@ describe('manifest-bound operator transitions', () => {
 		const persisted: Array<ReturnType<typeof manifest>> = [];
 		await expect(
 			execute({
-				manifest: manifest({ state: 'supabase_project_created' }),
+				manifest: manifest({ state: 'supabase_auth_configured' }),
 				step: 'configure_mailtrap_smtp',
 				persist: async (value: OperatorManifest) => { persisted.push(structuredClone(value)); },
 				action: async () => ({ target: { provider: 'supabase', projectId: 'foreign-project' } })

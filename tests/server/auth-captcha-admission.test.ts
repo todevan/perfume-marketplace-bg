@@ -129,6 +129,205 @@ describe('Supabase-owned authentication CAPTCHA', () => {
 		expect(rpc.mock.calls.map(([name]) => name)).toEqual(['get_my_beta_access']);
 	});
 
+	it('recovers a confirmed account with no membership and routes the claimed account to onboarding', async () => {
+		const signInWithPassword = vi.fn(async () => ({
+			data: { user: { id: 'user-1' }, session: {} },
+			error: null
+		}));
+		const accessRows = [
+			{
+				profile_id: 'user-1',
+				membership_status: null,
+				onboarding_completed_at: null,
+				has_current_consents: false,
+				is_active: false
+			},
+			{
+				profile_id: 'user-1',
+				membership_status: 'pending',
+				onboarding_completed_at: null,
+				has_current_consents: false,
+				is_active: false
+			}
+		];
+		const rpc = vi.fn(async (name: string) => {
+			if (name === 'get_my_beta_access') {
+				return { data: [accessRows.shift()], error: null };
+			}
+			if (name === 'claim_open_registration') return { data: true, error: null };
+			throw new Error(`Unexpected RPC: ${name}`);
+		});
+		const supabase = {
+			auth: {
+				signInWithPassword,
+				getUser: vi.fn(async () => ({ data: { user: { id: 'user-1' } }, error: null })),
+				mfa: {
+					getAuthenticatorAssuranceLevel: vi.fn(async () => ({
+						data: { currentLevel: 'aal1', nextLevel: 'aal1' },
+						error: null
+					}))
+				}
+			},
+			from: vi.fn(() => ({
+				select: () => ({
+					eq: () => ({
+						maybeSingle: async () => ({
+							data: { id: 'user-1', username: 'member', role: 'user' },
+							error: null
+						})
+					})
+				})
+			})),
+			rpc
+		};
+
+		await expect(
+			actions.login(actionEvent('/login?/login', loginForm(), supabase))
+		).rejects.toMatchObject({ status: 303, location: '/onboarding?next=%2Fmessages' });
+		expect(rpc.mock.calls.map(([name]) => name)).toEqual([
+			'get_my_beta_access',
+			'claim_open_registration',
+			'get_my_beta_access'
+		]);
+	});
+
+	it.each(['returned error', 'false result', 'thrown error'])(
+		'fails closed and clears only current-project cookies when a missing-membership claim has a %s',
+		async (failureMode) => {
+			const signInWithPassword = vi.fn(async () => ({
+				data: { user: { id: 'user-1' }, session: { access_token: 'private-session' } },
+				error: null
+			}));
+			const signOut = vi.fn(async () => ({ error: new Error('provider sign-out failed') }));
+			const rpc = vi.fn(async (name: string) => {
+				if (name === 'get_my_beta_access') {
+					return {
+						data: [{
+							profile_id: 'user-1',
+							membership_status: null,
+							onboarding_completed_at: null,
+							has_current_consents: false,
+							is_active: false
+						}],
+						error: null
+					};
+				}
+				if (name !== 'claim_open_registration') throw new Error(`Unexpected RPC: ${name}`);
+				if (failureMode === 'thrown error') throw new Error('private database transport detail');
+				if (failureMode === 'false result') return { data: false, error: null };
+				return { data: null, error: new Error('private database detail') };
+			});
+			const stored = new Map([
+				['sb-market-auth-token.0', 'session-chunk-0'],
+				['sb-market-auth-token.1', 'session-chunk-1'],
+				['sb-foreign-auth-token', 'foreign-session']
+			]);
+			const cookies = {
+				getAll: () => Array.from(stored, ([name, value]) => ({ name, value })),
+				delete: vi.fn((_name: string) => {
+					throw new Error('cookie delete adapter failed');
+				}),
+				set: vi.fn((name: string, value: string, options: { maxAge?: number; path?: string }) => {
+					if (value === '' && options.maxAge === 0) stored.delete(name);
+				})
+			};
+			const supabase = {
+				auth: {
+					signInWithPassword,
+					signOut,
+					getUser: vi.fn(async () => ({ data: { user: { id: 'user-1' } }, error: null })),
+					mfa: {
+						getAuthenticatorAssuranceLevel: vi.fn(async () => ({
+							data: { currentLevel: 'aal1', nextLevel: 'aal1' },
+							error: null
+						}))
+					}
+				},
+				from: vi.fn(() => ({
+					select: () => ({
+						eq: () => ({
+							maybeSingle: async () => ({
+								data: { id: 'user-1', username: 'member', role: 'user' },
+								error: null
+							})
+						})
+					})
+				})),
+				rpc
+			};
+
+			const result = await actions.login(
+				actionEvent('/login?/login', loginForm(), supabase, vi.fn(), cookies)
+			);
+
+			expect(result).toMatchObject({
+				status: 503,
+				data: { success: false, message: 'Входът временно не е достъпен.' }
+			});
+			expect(signOut).toHaveBeenCalledOnce();
+			expect(cookies.delete.mock.calls.map(([name]) => name)).toEqual([
+				'sb-market-auth-token.0',
+				'sb-market-auth-token.1'
+			]);
+			expect(cookies.getAll().map(({ name }) => name)).toEqual(['sb-foreign-auth-token']);
+			expect(rpc.mock.calls.map(([name]) => name)).toEqual([
+				'get_my_beta_access',
+				'claim_open_registration'
+			]);
+			expect(JSON.stringify(result)).not.toContain('private');
+		}
+	);
+
+	it.each(['pending', 'suspended', 'revoked'])(
+		'does not claim open registration for an existing %s membership',
+		async (membershipStatus) => {
+			const rpc = vi.fn(async (name: string) => {
+				if (name !== 'get_my_beta_access') throw new Error(`Unexpected RPC: ${name}`);
+				return {
+					data: [{
+						profile_id: 'user-1',
+						membership_status: membershipStatus,
+						onboarding_completed_at: null,
+						has_current_consents: false,
+						is_active: false
+					}],
+					error: null
+				};
+			});
+			const supabase = {
+				auth: {
+					signInWithPassword: vi.fn(async () => ({
+						data: { user: { id: 'user-1' }, session: {} },
+						error: null
+					})),
+					getUser: vi.fn(async () => ({ data: { user: { id: 'user-1' } }, error: null })),
+					mfa: {
+						getAuthenticatorAssuranceLevel: vi.fn(async () => ({
+							data: { currentLevel: 'aal1', nextLevel: 'aal1' },
+							error: null
+						}))
+					}
+				},
+				from: vi.fn(() => ({
+					select: () => ({
+						eq: () => ({
+							maybeSingle: async () => ({
+								data: { id: 'user-1', username: 'member', role: 'user' },
+								error: null
+							})
+						})
+					})
+				})),
+				rpc
+			};
+
+			await expect(
+				actions.login(actionEvent('/login?/login', loginForm(), supabase))
+			).rejects.toMatchObject({ status: 303, location: '/onboarding?next=%2Fmessages' });
+			expect(rpc.mock.calls.map(([name]) => name)).toEqual(['get_my_beta_access']);
+		}
+	);
+
 	it('passes the registration token directly to signUp without redirect data or app Siteverify', async () => {
 		const providerFetch = vi.fn();
 		const signUp = vi.fn(async () => ({ data: { user: { id: 'new-user' }, session: null }, error: null }));

@@ -241,6 +241,8 @@ export function validateWranglerConfig(config) {
 		config?.observability?.logs?.persist !== false ||
 		config?.observability?.traces?.enabled !== false ||
 		config?.observability?.traces?.persist !== false ||
+		config?.vars?.APP_ENV !== 'development' ||
+		config?.vars?.PUBLIC_DEMO_MODE !== 'false' ||
 		!SHA_PATTERN.test(config?.vars?.RELEASE_COMMIT_SHA ?? '') ||
 		config.images ||
 		config.routes ||

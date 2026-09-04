@@ -72,6 +72,17 @@ async function waitForTurnstile(page) {
 }
 
 /**
+ * @param {Page} page
+ * @param {{ recipient: string; password: string; username: string }} identity
+ */
+async function fillRegistration(page, identity) {
+	await page.getByLabel('Потребителско име').fill(identity.username);
+	await page.getByLabel('Имейл').fill(identity.recipient);
+	await page.getByLabel('Парола', { exact: true }).fill(identity.password);
+	await page.getByRole('checkbox', { name: /18 години/u }).check();
+}
+
+/**
  * @param {PlaywrightResponse} response
  * @param {string} origin
  * @param {string} expectedPath
@@ -146,28 +157,62 @@ async function followConfirmation(page, link, origin, expectedPath) {
 }
 
 test('Issue #22 hosted registration proof', async ({ browser }) => {
-	test.setTimeout(120_000);
+	test.setTimeout(150_000);
 	const config = validateRunnerEnvironment();
 	await assertRuntimeCandidate(candidateUrl(config.candidateOrigin, '/login'), config.expectedSha);
 
 	const primaryContext = await browser.newContext();
 	const replayContext = await browser.newContext();
+	const forgeryContext = await browser.newContext();
 	const primary = await primaryContext.newPage();
 	const replay = await replayContext.newPage();
+	const forgery = await forgeryContext.newPage();
 	primary.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
 	replay.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
+	forgery.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
 
 	try {
 		const result = await runHostedJourney(config, {
 			now: Date.now,
+			assertForgedCaptchaRejected: async (identity) => {
+				await gotoCandidate(forgery, config.candidateOrigin, '/login');
+				await forgery.getByRole('button', { name: 'Нова регистрация', exact: true }).click();
+				await expect(forgery.getByRole('heading', { name: 'Създай профил.' })).toBeVisible();
+				await fillRegistration(forgery, identity);
+				await waitForTurnstile(forgery);
+				await forgery.locator('input[name="cf-turnstile-response"]').evaluate((element) => {
+					/** @type {HTMLInputElement} */ (element).value = 'issue22-forged-turnstile-token';
+				});
+				const responsePromise = forgery.waitForResponse(
+					(response) => {
+						const url = new URL(response.url());
+						return (
+							response.request().method() === 'POST' &&
+							url.origin === config.candidateOrigin &&
+							url.pathname === '/login' &&
+							url.search === '?/register'
+						);
+					},
+					{ timeout: NAVIGATION_TIMEOUT_MS }
+				);
+				const [response] = await Promise.all([
+					responsePromise,
+					forgery.getByRole('button', { name: 'Създай профил', exact: true }).click()
+				]);
+				if (response.status() < 400) {
+					failSafely('Issue #22 forged CAPTCHA token was not denied.');
+				}
+				await expect(forgery.getByRole('alert')).toHaveText(
+					'Профилът не можа да бъде създаден. Провери данните или опитай по-късно.'
+				);
+				await expect(forgery.getByRole('status')).toHaveCount(0);
+				return { denied: true };
+			},
 			signup: async (identity) => {
 				await gotoCandidate(primary, config.candidateOrigin, '/login');
 				await primary.getByRole('button', { name: 'Нова регистрация', exact: true }).click();
 				await expect(primary.getByRole('heading', { name: 'Създай профил.' })).toBeVisible();
-				await primary.getByLabel('Потребителско име').fill(identity.username);
-				await primary.getByLabel('Имейл').fill(identity.recipient);
-				await primary.getByLabel('Парола', { exact: true }).fill(identity.password);
-				await primary.getByRole('checkbox', { name: /18 години/u }).check();
+				await fillRegistration(primary, identity);
 				await waitForTurnstile(primary);
 				await primary.getByRole('button', { name: 'Създай профил', exact: true }).click();
 				await expect(primary.getByRole('status')).toHaveText(
@@ -233,9 +278,10 @@ test('Issue #22 hosted registration proof', async ({ browser }) => {
 			candidateSha: config.expectedSha,
 			signupCount: 1,
 			mailCount: 1,
+			captchaForgery: 'denied',
 			confirmationReuse: 'denied'
 		});
 	} finally {
-		await Promise.all([primaryContext.close(), replayContext.close()]);
+		await Promise.all([primaryContext.close(), replayContext.close(), forgeryContext.close()]);
 	}
 });

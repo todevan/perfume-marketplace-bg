@@ -5,7 +5,8 @@ import { GET } from '../../src/routes/auth/confirm/+server';
 function confirmationEvent(
 	query: string,
 	supabase: unknown,
-	mode: 'production' | 'demo' = 'production'
+	mode: 'production' | 'demo' = 'production',
+	cookies: unknown = { getAll: () => [], delete: vi.fn(), set: vi.fn() }
 ) {
 	return {
 		url: new URL(`https://market.example/auth/confirm${query}`),
@@ -14,10 +15,12 @@ function confirmationEvent(
 				mode,
 				demoMode: mode === 'demo',
 				appEnvironment: 'development',
+				publicSupabaseUrl: 'https://market.supabase.co',
 				imageProcessorMode: 'disabled'
 			},
 			supabase
-		}
+		},
+		cookies
 	} as never;
 }
 
@@ -85,15 +88,51 @@ describe('email confirmation endpoint', () => {
 
 	it('does not claim a wrong or expired token', async () => {
 		const verifyOtp = vi.fn(async () => ({ data: { user: null, session: null }, error: new Error('invalid') }));
+		const signOut = vi.fn();
 		const rpc = vi.fn();
 		const response = await GET(
 			confirmationEvent('?token_hash=wrong-hash&type=email', {
-				auth: { verifyOtp, signOut: vi.fn() },
+				auth: { verifyOtp, signOut },
 				rpc
 			})
 		);
 
 		expect(verifyOtp).toHaveBeenCalledOnce();
+		expect(signOut).not.toHaveBeenCalled();
+		expect(rpc).not.toHaveBeenCalled();
+		expectPrivateRedirect(response, '/auth/error');
+	});
+
+	it('expires a possible session when verification throws after receiving the token', async () => {
+		const verifyOtp = vi.fn(async () => {
+			throw new Error('verification transport failed');
+		});
+		const signOut = vi.fn(async () => {
+			throw new Error('sign-out transport failed');
+		});
+		const rpc = vi.fn();
+		const stored = new Map([
+			['sb-market-auth-token', 'possible-session'],
+			['sb-foreign-auth-token', 'foreign-session']
+		]);
+		const cookies = {
+			getAll: () => Array.from(stored, ([name, value]) => ({ name, value })),
+			delete: vi.fn((name: string) => stored.delete(name)),
+			set: vi.fn()
+		};
+
+		const response = await GET(
+			confirmationEvent(
+				'?token_hash=hash&type=email',
+				{ auth: { verifyOtp, signOut }, rpc },
+				'production',
+				cookies
+			)
+		);
+
+		expect(signOut).toHaveBeenCalledOnce();
+		expect(cookies.delete).toHaveBeenCalledExactlyOnceWith('sb-market-auth-token', { path: '/' });
+		expect(cookies.getAll().map(({ name }) => name)).toEqual(['sb-foreign-auth-token']);
 		expect(rpc).not.toHaveBeenCalled();
 		expectPrivateRedirect(response, '/auth/error');
 	});
@@ -117,23 +156,51 @@ describe('email confirmation endpoint', () => {
 		expectPrivateRedirect(response, '/auth/error');
 	});
 
-	it('signs out and returns a clean error when the registration claim fails', async () => {
-		const verifyOtp = vi.fn(async () => verifiedResult());
-		const signOut = vi.fn(async () => {
-			throw new Error('sign-out transport failed');
-		});
-		const rpc = vi.fn(async () => ({ data: null, error: new Error('private database detail') }));
-		const response = await GET(
-			confirmationEvent('?token_hash=hash&type=email', {
-				auth: { verifyOtp, signOut },
-				rpc
-			})
-		);
+	it.each(['returned error', 'thrown error'])(
+		'expires only current-project cookies and returns a clean error when claim cleanup has a %s',
+		async (failureMode) => {
+			const verifyOtp = vi.fn(async () => verifiedResult());
+			const signOut = vi.fn(async () => {
+				if (failureMode === 'thrown error') throw new Error('sign-out transport failed');
+				return { error: new Error('sign-out provider failed') };
+			});
+			const rpc = vi.fn(async () => ({
+				data: null,
+				error: new Error('private database detail')
+			}));
+			const stored = new Map([
+				['sb-market-auth-token.0', 'session-chunk-0'],
+				['sb-market-auth-token.1', 'session-chunk-1'],
+				['sb-foreign-auth-token', 'foreign-session']
+			]);
+			const cookies = {
+				getAll: () => Array.from(stored, ([name, value]) => ({ name, value })),
+				delete: vi.fn((_name: string) => {
+					throw new Error('cookie delete adapter failed');
+				}),
+				set: vi.fn((name: string, value: string, options: { maxAge?: number; path?: string }) => {
+					if (value === '' && options.maxAge === 0) stored.delete(name);
+				})
+			};
+			const response = await GET(
+				confirmationEvent(
+					'?token_hash=hash&type=email',
+					{ auth: { verifyOtp, signOut }, rpc },
+					'production',
+					cookies
+				)
+			);
 
-		expect(signOut).toHaveBeenCalledOnce();
-		expectPrivateRedirect(response, '/auth/error');
-		expect(await response.text()).toBe('');
-	});
+			expect(signOut).toHaveBeenCalledOnce();
+			expect(cookies.delete.mock.calls.map(([name]) => name)).toEqual([
+				'sb-market-auth-token.0',
+				'sb-market-auth-token.1'
+			]);
+			expect(cookies.getAll().map(({ name }) => name)).toEqual(['sb-foreign-auth-token']);
+			expectPrivateRedirect(response, '/auth/error');
+			expect(await response.text()).toBe('');
+		}
+	);
 
 	it('does not claim when the same single-use link is reused', async () => {
 		const verifyOtp = vi

@@ -90,6 +90,15 @@ describe('candidate Git and deployment identity', () => {
 });
 
 describe('child-process and issue-scoped config safety', () => {
+	test('keeps local Auth open with confirmation and provider-enforced Turnstile CAPTCHA', async () => {
+		const config = await readFile(join(process.cwd(), 'supabase/config.toml'), 'utf8');
+		expect(config).toMatch(/\[auth\][\s\S]*?enable_signup = true/u);
+		expect(config).toMatch(/\[auth\.email\][\s\S]*?enable_signup = true[\s\S]*?enable_confirmations = true/u);
+		expect(config).toContain('[auth.captcha]');
+		expect(config).toMatch(/\[auth\.captcha\][\s\S]*?enabled = true[\s\S]*?provider = "turnstile"/u);
+		expect(config).toContain('secret = "1x0000000000000000000000000000000AA"');
+	});
+
 	test('omits only stale CLOUDFLARE_API_TOKEN from Wrangler while preserving encrypted OAuth environment', () => {
 		const buildEnvironment = requiredFunction('buildWranglerChildEnvironment');
 		expect(
@@ -139,16 +148,21 @@ describe('child-process and issue-scoped config safety', () => {
 			publishableKey: 'sb_publishable_test-only'
 		});
 		const config = JSON.parse(await readFile(outputPath, 'utf8'));
-		expect(validate(config)).toMatchObject({
-			name: 'aromatika-issue-22-a1b2c3d',
-			workers_dev: true,
+			expect(validate(config)).toMatchObject({
+				name: 'aromatika-issue-22-a1b2c3d',
+				workers_dev: true,
 			observability: {
 				enabled: false,
 				logs: { enabled: false, invocation_logs: false, persist: false },
 				traces: { enabled: false, persist: false }
 			},
-			vars: { RELEASE_COMMIT_SHA: 'a'.repeat(40) }
-		});
+				vars: {
+					APP_ENV: 'development',
+					PUBLIC_DEMO_MODE: 'false',
+					PUBLIC_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+					RELEASE_COMMIT_SHA: 'a'.repeat(40)
+				}
+			});
 		expect(config).not.toHaveProperty('images');
 		expect(config).not.toHaveProperty('routes');
 	});
