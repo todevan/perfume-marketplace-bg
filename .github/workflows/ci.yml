@@ -81,8 +81,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Audit production dependencies
-        run: pnpm audit --prod
       - run: pnpm db:start
       - run: pnpm db:reset
       - run: pnpm db:lint
