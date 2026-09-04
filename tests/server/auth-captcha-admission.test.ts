@@ -82,8 +82,17 @@ describe('Supabase-owned authentication CAPTCHA', () => {
 		expect(signInWithPassword).not.toHaveBeenCalled();
 	});
 
-	it('does not claim open registration during a successful login and preserves active routing', async () => {
-		const signInWithPassword = vi.fn(async () => ({ data: { user: { id: 'user-1' }, session: {} }, error: null }));
+	it('loads only verified user and beta access after login, then preserves active routing', async () => {
+		const signInWithPassword = vi.fn(async () => ({
+			data: { user: { id: 'user-1' }, session: {} },
+			error: null
+		}));
+		const getAuthenticatorAssuranceLevel = vi.fn(() => {
+			throw new Error('login must not load unrelated MFA context');
+		});
+		const from = vi.fn(() => {
+			throw new Error('login must not load an unrelated profile');
+		});
 		const rpc = vi.fn(async (name: string) => {
 			if (name === 'get_my_beta_access') {
 				return {
@@ -103,23 +112,9 @@ describe('Supabase-owned authentication CAPTCHA', () => {
 			auth: {
 				signInWithPassword,
 				getUser: vi.fn(async () => ({ data: { user: { id: 'user-1' } }, error: null })),
-				mfa: {
-					getAuthenticatorAssuranceLevel: vi.fn(async () => ({
-						data: { currentLevel: 'aal1', nextLevel: 'aal1' },
-						error: null
-					}))
-				}
+				mfa: { getAuthenticatorAssuranceLevel }
 			},
-			from: vi.fn(() => ({
-				select: () => ({
-					eq: () => ({
-						maybeSingle: async () => ({
-							data: { id: 'user-1', username: 'member', role: 'user' },
-							error: null
-						})
-					})
-				})
-			})),
+			from,
 			rpc
 		};
 
@@ -127,6 +122,8 @@ describe('Supabase-owned authentication CAPTCHA', () => {
 			actions.login(actionEvent('/login?/login', loginForm(), supabase))
 		).rejects.toMatchObject({ status: 303, location: '/messages' });
 		expect(rpc.mock.calls.map(([name]) => name)).toEqual(['get_my_beta_access']);
+		expect(from).not.toHaveBeenCalled();
+		expect(getAuthenticatorAssuranceLevel).not.toHaveBeenCalled();
 	});
 
 	it('recovers a confirmed account with no membership and routes the claimed account to onboarding', async () => {

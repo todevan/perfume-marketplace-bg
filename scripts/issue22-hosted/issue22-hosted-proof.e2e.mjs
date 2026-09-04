@@ -254,6 +254,7 @@ test('Issue #22 hosted registration proof', async ({ browser }) => {
 				]);
 				await expect(primary.getByRole('heading', { name: `Здравей, ${username}.` })).toBeVisible();
 				await expect(primary.getByText(`Град: ${city}`, { exact: true })).toBeVisible();
+				return { submittedCity: city, assertedCity: city };
 			},
 			assertMarketplaceAccess: async () => {
 				await gotoCandidate(primary, config.candidateOrigin, '/listings');
@@ -262,6 +263,32 @@ test('Issue #22 hosted registration proof', async ({ browser }) => {
 				}
 				await expect(primary.getByRole('heading', { name: 'Обяви', exact: true })).toBeVisible();
 				await expect(primary.getByRole('link', { name: 'Публикувай обява', exact: true })).toBeVisible();
+			},
+			signOut: async () => {
+				await Promise.all([
+					primary.waitForURL(
+						(url) => url.origin === config.candidateOrigin && url.pathname === '/login',
+						{ timeout: NAVIGATION_TIMEOUT_MS }
+					),
+					primary.locator('form.desktop-action[action="/auth/logout"] button').click()
+				]);
+			},
+			login: async (identity) => {
+				await expect(primary.getByRole('heading', { name: 'Влез в профила си.' })).toBeVisible();
+				await primary.getByLabel('Имейл').fill(identity.recipient);
+				await primary.getByLabel('Парола', { exact: true }).fill(identity.password);
+				await waitForTurnstile(primary);
+				await Promise.all([
+					primary.waitForURL(
+						(url) =>
+							url.origin === config.candidateOrigin &&
+							url.pathname === '/dashboard' &&
+							url.search.length === 0,
+						{ timeout: NAVIGATION_TIMEOUT_MS }
+					),
+					primary.getByRole('button', { name: 'Влез в профила', exact: true }).click()
+				]);
+				return { redirectedTo: '/dashboard' };
 			},
 			reuseConfirmationLink: async (link) => {
 				await followConfirmation(replay, link, config.candidateOrigin, '/auth/error');
@@ -310,6 +337,7 @@ test('Issue #22 hosted registration proof', async ({ browser }) => {
 			recoveryMailCount: 1,
 			captchaForgery: 'denied',
 			confirmationReuse: 'denied',
+			normalLogin: 'passed',
 			passwordRecovery: 'delivered'
 		});
 	} finally {

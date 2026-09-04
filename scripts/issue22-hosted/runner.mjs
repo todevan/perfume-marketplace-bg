@@ -261,19 +261,35 @@ function safeMailtrapUrl(baseUrl, path) {
 
 /**
  * @param {unknown} payload
- * @returns {Array<{ id: number; to_email?: string; received_at?: string; body_html_url?: string }>}
+ * @returns {Array<{ id: number; to_email?: string; received_at?: string; sent_at?: string; created_at?: string; body_html_url?: string }>}
  */
 function messageArray(payload) {
-	if (Array.isArray(payload)) return /** @type {Array<{ id: number; to_email?: string; received_at?: string; body_html_url?: string }>} */ (payload);
+	if (Array.isArray(payload)) return /** @type {Array<{ id: number; to_email?: string; received_at?: string; sent_at?: string; created_at?: string; body_html_url?: string }>} */ (payload);
 	if (payload && typeof payload === 'object') {
 		const messages = /** @type {{ messages?: unknown }} */ (payload).messages;
-		if (Array.isArray(messages)) return /** @type {Array<{ id: number; to_email?: string; received_at?: string; body_html_url?: string }>} */ (messages);
+		if (Array.isArray(messages)) return /** @type {Array<{ id: number; to_email?: string; received_at?: string; sent_at?: string; created_at?: string; body_html_url?: string }>} */ (messages);
 	}
 	throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
 }
 
 /**
- * @param {Array<{ id: string | number; to_email?: string; received_at?: string; body_html_url?: string }>} messages
+ * @param {{ received_at?: unknown; sent_at?: unknown; created_at?: unknown }} message
+ * @returns {number}
+ */
+function earliestMessageTimestamp(message) {
+	const values = [message.received_at, message.sent_at, message.created_at].filter(
+		(value) => value !== undefined && value !== null
+	);
+	if (values.length === 0) throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
+	const timestamps = values.map((value) => (typeof value === 'string' ? Date.parse(value) : Number.NaN));
+	if (timestamps.some((value) => !Number.isFinite(value))) {
+		throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
+	}
+	return Math.min(...timestamps);
+}
+
+/**
+ * @param {Array<{ id: string | number; to_email?: string; received_at?: string; sent_at?: string; created_at?: string; body_html_url?: string }>} messages
  * @param {string} recipient
  * @param {number} startedAtMs
  * @param {string} baseOrigin
@@ -293,14 +309,12 @@ function exactMessages(messages, recipient, startedAtMs, baseOrigin) {
 				throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
 			}
 		}
-		if (
-			message?.to_email === recipient &&
-			typeof message.received_at === 'string' &&
-			Number.isSafeInteger(Number(message.id)) &&
-			Date.parse(message.received_at) >= startedAtMs
-		) {
-			matches.push({ id: Number(message.id) });
-		}
+		if (message?.to_email !== recipient) continue;
+		const timestamp = earliestMessageTimestamp(message);
+		if (timestamp < startedAtMs) continue;
+		const id = Number(message.id);
+		if (!Number.isSafeInteger(id)) throw new Issue22RunnerError('Issue #22 Mailtrap proof failed safely.');
+		matches.push({ id });
 	}
 	return matches;
 }
@@ -513,15 +527,17 @@ export function createSyntheticIdentity(config) {
  *   signup: (identity: { recipient: string; password: string; username: string; city: string }) => Promise<unknown>,
  *   poll: (config: MailtrapPollConfig & { recipient: string }) => Promise<{ messageId: number; html: string; mailCount: number }>,
  *   confirm: (link: string) => Promise<{ redirectedTo?: string }>,
- *   completeOnboarding: (input: { username: string; city: string }) => Promise<unknown>,
+ *   completeOnboarding: (input: { username: string; city: string }) => Promise<{ submittedCity?: string; assertedCity?: string }>,
  *   assertMarketplaceAccess: () => Promise<unknown>,
+ *   signOut: () => Promise<unknown>,
+ *   login: (identity: { recipient: string; password: string; username: string; city: string }) => Promise<{ redirectedTo?: string }>,
  *   reuseConfirmationLink: (link: string) => Promise<{ denied?: boolean }>,
  *   waitForPasswordRecoveryWindow: (durationMs: number) => Promise<unknown>,
  *   requestPasswordRecovery: (identity: { recipient: string; password: string; username: string; city: string }) => Promise<unknown>,
  *   pollRecovery: (config: MailtrapPollConfig & { recipient: string }) => Promise<{ messageId: number; html: string; mailCount: number }>,
  *   artifactPaths?: string[]
  * }} dependencies
- * @returns {Promise<{ status: 'passed'; candidateSha: string; signupCount: number; mailCount: number; recoveryMailCount: number; captchaForgery: string; confirmationReuse: string; passwordRecovery: string }>}
+ * @returns {Promise<{ status: 'passed'; candidateSha: string; signupCount: number; mailCount: number; recoveryMailCount: number; captchaForgery: string; confirmationReuse: string; normalLogin: string; passwordRecovery: string }>}
  */
 export async function runHostedJourney(config, dependencies) {
 	const identity = createSyntheticIdentity(config);
@@ -543,7 +559,22 @@ export async function runHostedJourney(config, dependencies) {
 	if (confirmation?.redirectedTo !== '/onboarding') {
 		throw new Issue22RunnerError('Issue #22 confirmation did not reach onboarding.');
 	}
-	await dependencies.completeOnboarding({ username: identity.username, city: identity.city });
+	const onboarding = await dependencies.completeOnboarding({
+		username: identity.username,
+		city: identity.city
+	});
+	if (
+		onboarding?.submittedCity !== identity.city ||
+		onboarding?.assertedCity !== identity.city
+	) {
+		throw new Issue22RunnerError('Issue #22 onboarding city did not match the planned identity.');
+	}
+	await dependencies.assertMarketplaceAccess();
+	await dependencies.signOut();
+	const login = await dependencies.login(identity);
+	if (login?.redirectedTo !== '/dashboard') {
+		throw new Issue22RunnerError('Issue #22 normal login did not reach the dashboard.');
+	}
 	await dependencies.assertMarketplaceAccess();
 	const reuse = await dependencies.reuseConfirmationLink(link);
 	if (reuse?.denied !== true) {
@@ -574,6 +605,7 @@ export async function runHostedJourney(config, dependencies) {
 		recoveryMailCount: recoveryMessage.mailCount,
 		captchaForgery: 'denied',
 		confirmationReuse: 'denied',
+		normalLogin: 'passed',
 		passwordRecovery: 'delivered'
 	});
 }

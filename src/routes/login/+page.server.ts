@@ -1,7 +1,7 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { expireCurrentProjectAuthCookies } from '$lib/server/auth/cookies';
-import { loadRequestAuthContext } from '$lib/server/auth/context';
+import { loadAuthPieces, loadMinimalAuthContext } from '$lib/server/auth/context';
 import { safeRedirectPath } from '$lib/server/auth/redirect';
 import { attestHostedBackendBaseline } from '$lib/server/services/backend-health';
 import {
@@ -23,6 +23,13 @@ function readCaptchaToken(formData: FormData): string | null {
 	const token = values[0];
 	if (!token.trim() || token.length > MAX_CAPTCHA_TOKEN_LENGTH) return null;
 	return token;
+}
+
+async function loadLoginBetaAccess(client: Parameters<typeof loadMinimalAuthContext>[0]) {
+	const { user } = await loadMinimalAuthContext(client);
+	if (!user) return null;
+	const { betaAccess } = await loadAuthPieces(client, { needBetaAccess: true }, user.id);
+	return betaAccess ?? null;
 }
 
 export const load: PageServerLoad = async ({ url, locals }) => {
@@ -103,16 +110,16 @@ export const actions: Actions = {
 		if (signInError) {
 			return fail(400, { success: false, email, message: 'Невалиден имейл или парола.' });
 		}
-		let context = await loadRequestAuthContext(supabase);
-		if (context.betaAccess === null) {
+		let betaAccess = await loadLoginBetaAccess(supabase);
+		if (betaAccess === null) {
 			let claimFailed = false;
 			try {
 				const { data: claimed, error: claimError } = await supabase.rpc('claim_open_registration');
 				if (claimError || claimed !== true) {
 					claimFailed = true;
 				} else {
-					context = await loadRequestAuthContext(supabase);
-					claimFailed = context.betaAccess === null;
+					betaAccess = await loadLoginBetaAccess(supabase);
+					claimFailed = betaAccess === null;
 				}
 			} catch {
 				claimFailed = true;
@@ -131,7 +138,7 @@ export const actions: Actions = {
 				});
 			}
 		}
-		if (!context.betaAccess?.isActive) {
+		if (!betaAccess?.isActive) {
 			redirect(303, `/onboarding?next=${encodeURIComponent(next)}`);
 		}
 		redirect(303, next);

@@ -235,6 +235,68 @@ describe('Mailtrap polling and confirmation-link handling', () => {
 		expect(calls).toEqual([listUrl, bodyUrl, listUrl]);
 	});
 
+	test('accepts the live sent_at and created_at shape without weakening the exact time window', async () => {
+		const poll = requiredFunction('pollForConfirmationMessage');
+		const recipient = 'issue22-live-shape@example.invalid';
+		const listUrl = 'https://mailtrap.io/api/accounts/1234567/inboxes/4887168/messages';
+		const bodyUrl = 'https://mailtrap.io/api/accounts/1234567/inboxes/4887168/messages/33/body.html';
+		let now = Date.parse('2026-09-01T10:00:00.000Z');
+		const sleep = vi.fn(async (duration: number) => {
+			now += duration;
+		});
+		const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+			if (String(input) === listUrl) {
+				return new Response(
+					JSON.stringify([
+						{
+							id: 11,
+							to_email: recipient,
+							sent_at: '2026-09-01T09:59:59.999Z',
+							created_at: '2026-09-01T09:59:59.999Z'
+						},
+						{
+							id: 22,
+							to_email: 'other@example.invalid',
+							sent_at: '2026-09-01T10:00:00.000Z',
+							created_at: '2026-09-01T10:00:00.000Z'
+						},
+						{
+							id: 33,
+							to_email: recipient,
+							sent_at: '2026-09-01T10:00:00.000Z',
+							created_at: '2026-09-01T10:00:00.001Z'
+						}
+					]),
+					{ status: 200, headers: { 'content-type': 'application/json' } }
+				);
+			}
+			if (String(input) === bodyUrl) {
+				return new Response(`<a href="${confirmationLink}">Confirm</a>`, { status: 200 });
+			}
+			return new Response(null, { status: 404 });
+		});
+
+		await expect(
+			poll(
+				{
+					apiBaseUrl: 'https://mailtrap.io',
+					accountId: 1_234_567,
+					inboxId: 4_887_168,
+					readToken: 'private-token',
+					recipient,
+					runStartedAt: '2026-09-01T10:00:00.000Z',
+					pollIntervalMs: 1_000,
+					timeoutMs: 3_000
+				},
+				{ fetchImpl, now: () => now, sleep }
+			)
+		).resolves.toEqual({
+			messageId: 33,
+			html: `<a href="${confirmationLink}">Confirm</a>`,
+			mailCount: 1
+		});
+	});
+
 	test('fails closed on more than one exact message without fetching either body', async () => {
 		const poll = requiredFunction('pollForConfirmationMessage');
 		const recipient = 'issue22-duplicate@example.invalid';
@@ -359,8 +421,16 @@ describe('exact hosted journey and sanitization', () => {
 			events.push('confirm');
 			return { redirectedTo: '/onboarding' };
 		});
-		const completeOnboarding = vi.fn(async () => events.push('onboarding'));
+		const completeOnboarding = vi.fn(async () => {
+			events.push('onboarding');
+			return { submittedCity: 'София', assertedCity: 'София' };
+		});
 		const assertMarketplaceAccess = vi.fn(async () => events.push('marketplace'));
+		const signOut = vi.fn(async () => events.push('sign-out'));
+		const login = vi.fn(async () => {
+			events.push('normal-login');
+			return { redirectedTo: '/dashboard' };
+		});
 		const reuseConfirmationLink = vi.fn(async () => {
 			events.push('reuse');
 			return { denied: true };
@@ -386,6 +456,8 @@ describe('exact hosted journey and sanitization', () => {
 			confirm,
 			completeOnboarding,
 			assertMarketplaceAccess,
+			signOut,
+			login,
 			reuseConfirmationLink,
 			waitForPasswordRecoveryWindow,
 			requestPasswordRecovery,
@@ -397,6 +469,13 @@ describe('exact hosted journey and sanitization', () => {
 		expect(assertForgedCaptchaRejected).toHaveBeenCalledTimes(1);
 		expect(poll).toHaveBeenCalledTimes(1);
 		expect(confirm).toHaveBeenCalledWith(confirmationLink);
+		expect(completeOnboarding).toHaveBeenCalledWith({
+			username: expect.stringMatching(/^issue22_/u),
+			city: 'София'
+		});
+		expect(signOut).toHaveBeenCalledOnce();
+		expect(login).toHaveBeenCalledOnce();
+		expect(assertMarketplaceAccess).toHaveBeenCalledTimes(2);
 		expect(reuseConfirmationLink).toHaveBeenCalledTimes(1);
 		expect(reuseConfirmationLink).toHaveBeenCalledWith(confirmationLink);
 		expect(waitForPasswordRecoveryWindow).toHaveBeenCalledExactlyOnceWith(61_000);
@@ -411,12 +490,16 @@ describe('exact hosted journey and sanitization', () => {
 			'confirm',
 			'onboarding',
 			'marketplace',
+			'sign-out',
+			'normal-login',
+			'marketplace',
 			'reuse',
 			'recovery-wait:61000',
 			'recovery-request',
 			'recovery-poll:2026-09-01T10:00:00.000Z'
 		]);
 		expect(receipt.captchaForgery).toBe('denied');
+		expect(receipt.normalLogin).toBe('passed');
 		expect(receipt.passwordRecovery).toBe('delivered');
 		expect(JSON.stringify(receipt)).not.toMatch(/example\.invalid|token_hash|private-token|authorization|cookie/iu);
 		expect(JSON.stringify(receipt)).not.toContain('private-recovery-token');
@@ -434,6 +517,8 @@ describe('exact hosted journey and sanitization', () => {
 				confirm: vi.fn(),
 				completeOnboarding: vi.fn(),
 				assertMarketplaceAccess: vi.fn(),
+				signOut: vi.fn(),
+				login: vi.fn(),
 				reuseConfirmationLink: vi.fn(),
 				waitForPasswordRecoveryWindow: vi.fn(),
 				requestPasswordRecovery: vi.fn(),
@@ -442,6 +527,67 @@ describe('exact hosted journey and sanitization', () => {
 			})
 		).rejects.toThrow('Issue #22 forged CAPTCHA token was not denied.');
 		expect(signup).not.toHaveBeenCalled();
+	});
+
+	test.each([
+			['submitted', { submittedCity: 'софия', assertedCity: 'София' }],
+			['asserted', { submittedCity: 'София', assertedCity: 'софия' }]
+	])('fails when the %s city does not exactly match the planned identity', async (_, onboarding) => {
+		const run = requiredFunction('runHostedJourney');
+		const assertMarketplaceAccess = vi.fn();
+		await expect(
+			run(validateRunnerEnvironmentForTest(), {
+				now: () => 0,
+				assertForgedCaptchaRejected: async () => ({ denied: true }),
+				signup: async () => undefined,
+				poll: async () => ({
+					messageId: 1,
+					html: `<a href="${confirmationLink}">Confirm</a>`,
+					mailCount: 1
+				}),
+				confirm: async () => ({ redirectedTo: '/onboarding' }),
+				completeOnboarding: async () => onboarding,
+				assertMarketplaceAccess,
+				signOut: vi.fn(),
+				login: vi.fn(),
+				reuseConfirmationLink: vi.fn(),
+				waitForPasswordRecoveryWindow: vi.fn(),
+				requestPasswordRecovery: vi.fn(),
+				pollRecovery: vi.fn(),
+				artifactPaths: []
+			})
+		).rejects.toThrow('Issue #22 onboarding city did not match the planned identity.');
+		expect(assertMarketplaceAccess).not.toHaveBeenCalled();
+	});
+
+	test('fails before replay and recovery when normal login does not reach the dashboard', async () => {
+		const run = requiredFunction('runHostedJourney');
+		const reuseConfirmationLink = vi.fn();
+		const requestPasswordRecovery = vi.fn();
+		await expect(
+			run(validateRunnerEnvironmentForTest(), {
+				now: () => 0,
+				assertForgedCaptchaRejected: async () => ({ denied: true }),
+				signup: async () => undefined,
+				poll: async () => ({
+					messageId: 1,
+					html: `<a href="${confirmationLink}">Confirm</a>`,
+					mailCount: 1
+				}),
+				confirm: async () => ({ redirectedTo: '/onboarding' }),
+				completeOnboarding: async () => ({ submittedCity: 'София', assertedCity: 'София' }),
+				assertMarketplaceAccess: async () => undefined,
+				signOut: async () => undefined,
+				login: async () => ({ redirectedTo: '/login' }),
+				reuseConfirmationLink,
+				waitForPasswordRecoveryWindow: vi.fn(),
+				requestPasswordRecovery,
+				pollRecovery: vi.fn(),
+				artifactPaths: []
+			})
+		).rejects.toThrow('Issue #22 normal login did not reach the dashboard.');
+		expect(reuseConfirmationLink).not.toHaveBeenCalled();
+		expect(requestPasswordRecovery).not.toHaveBeenCalled();
 	});
 
 	test('fails if confirmation-link reuse succeeds', async () => {
@@ -457,8 +603,13 @@ describe('exact hosted journey and sanitization', () => {
 					mailCount: 1
 				}),
 				confirm: async () => ({ redirectedTo: '/onboarding' }),
-				completeOnboarding: async () => undefined,
+				completeOnboarding: async () => ({
+					submittedCity: 'София',
+					assertedCity: 'София'
+				}),
 				assertMarketplaceAccess: async () => undefined,
+				signOut: async () => undefined,
+				login: async () => ({ redirectedTo: '/dashboard' }),
 				reuseConfirmationLink: async () => ({ denied: false }),
 				waitForPasswordRecoveryWindow: vi.fn(),
 				requestPasswordRecovery: vi.fn(),
