@@ -113,7 +113,7 @@ begin
         ('24600000-0000-4000-8000-000000000014', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'issue24-race-mod-b@example.test', '', now(), '{"provider":"email","providers":["email"]}', '{"username":"issue24_race_mod_b"}', now(), now());
 
       update public.profiles
-      set email_verified_at = now(), phone_verified_at = now(),
+      set city = 'Sofia', email_verified_at = now(), phone_verified_at = now(),
           role = case when id in (
             '24600000-0000-4000-8000-000000000013',
             '24600000-0000-4000-8000-000000000014'

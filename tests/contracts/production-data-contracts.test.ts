@@ -66,9 +66,16 @@ describe('production data input contracts', () => {
 	});
 
 	it('normalizes empty optional profile URLs without accepting arbitrary strings', () => {
-		expect(updateProfileInputSchema.parse({ username: 'valid_user', avatarUrl: '' }).avatarUrl).toBeNull();
 		expect(
-			updateProfileInputSchema.safeParse({ username: 'valid_user', avatarUrl: 'javascript:alert(1)' }).success
+			updateProfileInputSchema.parse({ username: 'valid_user', city: 'София', avatarUrl: '' })
+				.avatarUrl
+		).toBeNull();
+		expect(
+			updateProfileInputSchema.safeParse({
+				username: 'valid_user',
+				city: 'София',
+				avatarUrl: 'javascript:alert(1)'
+			}).success
 		).toBe(false);
 	});
 });

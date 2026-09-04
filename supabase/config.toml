@@ -70,6 +70,10 @@ otp_expiry = 3600
 subject = "Покана за затворената beta"
 content_path = "./supabase/templates/invite.html"
 
+[auth.email.template.confirmation]
+subject = "Confirm your Aromatika email"
+content_path = "./supabase/templates/confirmation.html"
+
 [auth.sms]
 enable_signup = false
 enable_confirmations = true

@@ -163,10 +163,11 @@ describe('anonymous auth action request-body limits', () => {
 		} as never);
 
 		expect(result).toMatchObject({ status: 400, data: { success: false } });
-		expect(turnstileFetch).toHaveBeenCalledOnce();
+		expect(turnstileFetch).not.toHaveBeenCalled();
 		expect(signInWithPassword).toHaveBeenCalledWith({
 			email: 'member@example.bg',
-			password: 'correct-horse-battery-staple'
+			password: 'correct-horse-battery-staple',
+			options: { captchaToken: 'verified-login-token' }
 		});
 	});
 

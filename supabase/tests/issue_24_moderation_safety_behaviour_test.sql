@@ -63,7 +63,8 @@ insert into auth.users (
   ('24100000-0000-4000-8000-000000000005', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'issue24-admin@example.test', '', now(), '{"provider":"email","providers":["email"]}', '{"username":"issue24_admin"}', now(), now());
 
 update public.profiles
-set email_verified_at = now(),
+set city = 'Sofia',
+    email_verified_at = now(),
     phone_verified_at = now(),
     role = case id
       when '24100000-0000-4000-8000-000000000003'::uuid then 'moderator'::public.platform_role
