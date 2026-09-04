@@ -1,5 +1,10 @@
 # Приходен модел и go-to-market за парфюмния marketplace
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Статус и предназначение
 
 Статус: работна, но авторитетна бизнес рамка за pre-launch beta и бъдещата монетизация.

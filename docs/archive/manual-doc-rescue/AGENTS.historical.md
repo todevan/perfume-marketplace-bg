@@ -1,5 +1,10 @@
 # AGENTS.md
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose
 
 Guide autonomous engineering work for this SvelteKit, TypeScript, Supabase and Cloudflare Worker marketplace.

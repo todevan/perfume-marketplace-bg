@@ -25,6 +25,8 @@ jobs:
           version: 11.9.0
       - name: Install locked MCP dependencies
         run: pnpm install --frozen-lockfile
+      - name: Validate Agent System V2
+        run: pnpm agents:validate
       - name: Validate project-scoped Codex configuration
         run: python scripts/validate-codex-config.py
       - name: Verify isolated Svelte MCP launcher

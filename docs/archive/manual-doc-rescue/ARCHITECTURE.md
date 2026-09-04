@@ -1,5 +1,10 @@
 # Architecture
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose and authority
 
 This document defines the repository's authoritative application architecture, system boundaries, major security invariants and intended runtime shape.

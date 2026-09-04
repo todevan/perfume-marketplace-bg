@@ -1,5 +1,10 @@
 # Perfume Marketplace — Master Plan
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose
 
 This document defines the durable product direction, major roadmap phases, owner-controlled business decisions and long-lived project constraints for `perfume-marketplace-bg`.

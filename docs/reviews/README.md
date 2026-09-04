@@ -9,3 +9,6 @@ Use `../PROJECT-STATUS.md` for current operational state.
 ## Context and control records
 
 - [`aromatika-master-plan-progress-control-2026-08-23.md`](aromatika-master-plan-progress-control-2026-08-23.md) — dated, non-authoritative roadmap, evidence ledger, and agent-orientation record assembled from the 2026-08-22 context packet and evidence rechecked on 2026-08-23.
+
+The completed Issue #22 retrospective is indexed at
+[`../agents/postmortems/2026-09-04-issue-22.md`](../agents/postmortems/2026-09-04-issue-22.md).

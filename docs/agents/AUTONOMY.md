@@ -1,10 +1,7 @@
-# Legacy pointer: autonomy
+# Compatibility Pointer — Authority
 
-This path is retained for compatibility with historical links and is **not current authority**.
+This path is non-authoritative and retained for historical links.
 
-Use:
-- `../../AGENTS.md` for repository constitution and owner/local/GitHub authority;
-- `WORKFLOW.md` for engineering autonomy/lifecycle;
-- `SECURITY.md` for R2/R3 boundaries.
-
-Do not recover old beta or owner-code-approval gates from Git history unless an active investigation explicitly requires historical evidence.
+Use [`reference/AUTHORITY.md`](reference/AUTHORITY.md) for the authority ladder and
+[`reference/ISSUE-CONTRACT.md`](reference/ISSUE-CONTRACT.md) for agent-owned versus
+owner-owned decisions.

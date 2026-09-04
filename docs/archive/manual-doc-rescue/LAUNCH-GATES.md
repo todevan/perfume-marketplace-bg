@@ -1,5 +1,10 @@
 # Launch Gates
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose
 
 This document defines product, legal, operational and commercial conditions that must be satisfied before progressively broader marketplace exposure.

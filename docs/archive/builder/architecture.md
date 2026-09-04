@@ -1,5 +1,10 @@
 # Production beta implementation decisions
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 > **Historical artifact — not current authority.**
 >
 > This file records an earlier implementation state and may contain obsolete beta, invite, phone, transaction, monetization, or governance assumptions. Do not use it for current product, security, architecture, registration, release, or agent decisions. Use `AGENTS.md`, `docs/AROMATIKA-LAUNCH-READINESS-DESIGN.md`, `PRODUCT.md`, `DESIGN.md`, `docs/ARCHITECTURE.md`, and `docs/PROJECT-STATUS.md`.

@@ -102,12 +102,30 @@ Never trust filename or browser-declared MIME alone.
 - If ownership, coordinates, release identity, lifecycle state, or residual scope is ambiguous, fail closed and preserve the working system.
 - Recovery is a separate explicit boundary, not an automatic fallback from normal cleanup. Destructive provider operations remain subject to the applicable R2/R3 authority.
 
+Hosted proof additionally follows
+[`reference/HOSTED-PROOF.md`](reference/HOSTED-PROOF.md) for transaction envelopes,
+private manifests, provider capability preflight, persistent human browser handoff,
+secret-safe observability, and exact cleanup evidence.
+
 ## Staff access
 Staff/admin MFA/AAL2 remains mandatory.
 
 ## Security review failure
 A security finding blocks completion until disproved with evidence or fixed and covered by regression tests.
 Never waive a finding merely to ship.
+
+## P0 interruption
+
+When deterministic evidence shows an immediate security or data-loss risk:
+
+1. stop modifying the current issue;
+2. preserve a deterministic, non-secret checkpoint and the isolated worktree;
+3. push only tracked material that is safe for remote storage;
+4. record the exact interruption and remaining blocker in the live issue;
+5. remove stale `agent:active` state from the interrupted issue;
+6. create or identify the dedicated P0 issue and make it the only active issue;
+7. resume the interrupted issue only after the P0 closes and live selection proves it
+   remains eligible.
 
 ## R3 protected actions
 Agents may prepare and verify repository-side work, rollback steps, and exact instructions. Before any destructive or irreversible owner action, verify the exact target, current backup/recovery evidence, and rollback limitations; if any is missing, fail closed and do not hand off the action. The real external/destructive/legal/spending/launch action remains owner-controlled.
