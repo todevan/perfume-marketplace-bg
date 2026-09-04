@@ -32,7 +32,26 @@ jobs:
       - name: Verify isolated CodeGraph MCP launcher
         run: node --test scripts/run-codegraph-mcp.contract.test.mjs
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit --prod
+      - name: Audit all dependencies at high severity
+        run: pnpm audit --audit-level high
+
   app:
+    needs: dependency-audit
     runs-on: ubuntu-latest
     container:
       image: mcr.microsoft.com/playwright:v1.61.1-noble
@@ -65,6 +84,7 @@ jobs:
         run: pnpm exec wrangler deploy --dry-run --env=""
 
   database:
+    needs: dependency-audit
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
