@@ -1,5 +1,10 @@
 # Production setup for the pre-launch marketplace
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose and authority
 
 This runbook defines the engineering and operational setup for isolated staging and future production environments.

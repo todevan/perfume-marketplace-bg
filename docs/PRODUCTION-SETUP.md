@@ -580,7 +580,8 @@ pnpm db:staging:push:dry-run
 pnpm exec wrangler deploy --dry-run --env staging
 ```
 
-This is not a universal execution workflow and does not replace the current task or issue, Superpowers process, or applicable provider plan.
+This is not a universal execution workflow and does not replace the current issue,
+selected Agent System V2 stage contract, or applicable provider plan.
 
 Run the checks appropriate to the current task.
 

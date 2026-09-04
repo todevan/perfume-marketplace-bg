@@ -1,5 +1,10 @@
 # Staging credentials and configuration
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose
 
 Use this checklist when connecting the staging Cloudflare Worker and trusted operator tooling to hosted services.

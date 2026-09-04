@@ -1,5 +1,10 @@
 # Perfume marketplace — catalogue and UI contract
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 Status: implementation baseline, originally established 20 July 2026 and reconciled with later owner-approved product decisions.
 
 ## Role and authority

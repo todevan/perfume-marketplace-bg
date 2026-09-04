@@ -12,7 +12,5 @@ test-results
 supabase/.temp
 supabase/.branches
 .backups/
-.builder/checkpoints
-.builder/workflow-log.json
 .DS_Store
 *.log

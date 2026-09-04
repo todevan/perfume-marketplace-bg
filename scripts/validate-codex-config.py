@@ -81,11 +81,6 @@ CODEGRAPH_MCP_BOOTSTRAP = GIT_WORKTREE_ROOT_BOOTSTRAP + (
     "}"
 )
 CODEGRAPH_MCP_ARGS = ["--input-type=module", "--eval", CODEGRAPH_MCP_BOOTSTRAP]
-DISABLED_21ST_BEARER_PLACEHOLDER = "AROMATIKA_DISABLED_21ST_MCP_NO_TOKEN"
-DISABLED_21ST_BEARER_LINE = (
-    f'bearer_token_env_var = "{DISABLED_21ST_BEARER_PLACEHOLDER}"'
-)
-
 EXPECTED_RAW = (
     'model_reasoning_effort = "high"\n'
     "\n"
@@ -101,67 +96,27 @@ EXPECTED_RAW = (
     'default_tools_approval_mode = "prompt"\n'
     'enabled = false\n'
     "\n"
-    "[mcp_servers.21st]\n"
-    'url = "https://21st.dev/api/mcp"\n'
-    'enabled = false\n'
-    f'{DISABLED_21ST_BEARER_LINE}\n'
-    "\n"
     "[mcp_servers.codegraph]\n"
     'command = "node"\n'
     f"args = {json.dumps(CODEGRAPH_MCP_ARGS)}\n"
     'enabled = true\n'
     "\n"
-    "[mcp_servers.MCP_DOCKER]\n"
-    'command = "docker.exe"\n'
-    'args = ["mcp", "gateway", "run", "--profile", "profile"]\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.cloudflare]\n"
-    'url = "https://mcp.cloudflare.com/mcp"\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.cloudflare-bindings]\n"
-    'url = "https://bindings.mcp.cloudflare.com/mcp"\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.cloudflare-builds]\n"
-    'url = "https://builds.mcp.cloudflare.com/mcp"\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.cloudflare-docs]\n"
-    'url = "https://docs.mcp.cloudflare.com/mcp"\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.cloudflare-observability]\n"
-    'url = "https://observability.mcp.cloudflare.com/mcp"\n'
-    'enabled = false\n'
-    "\n"
     "[mcp_servers.context7]\n"
     'url = "https://mcp.context7.com/mcp"\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.github]\n"
-    'command = "npx"\n'
-    'args = ["-y", "@modelcontextprotocol/server-github"]\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.playwright]\n"
-    'command = "npx"\n'
-    'args = ["@playwright/mcp@latest"]\n'
-    'enabled = false\n'
-    "\n"
-    "[mcp_servers.sequential-thinking]\n"
-    'command = "npx"\n'
-    'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]\n'
     'enabled = false\n'
     "\n"
     "[mcp_servers.supabase]\n"
     'url = "https://mcp.supabase.com/mcp"\n'
     'enabled = false\n'
     "\n"
+    "[mcp_servers.playwright]\n"
+    'command = "npx"\n'
+    'args = ["-y", "@playwright/mcp@0.0.80"]\n'
+    'enabled = false\n'
+    "\n"
     "[mcp_servers.svelte]\n"
     'command = "npx"\n'
-    'args = ["-y", "@sveltejs/mcp"]\n'
+    'args = ["-y", "@sveltejs/mcp@0.1.26"]\n'
     'enabled = false\n'
 )
 
@@ -188,67 +143,27 @@ EXPECTED = {
             "default_tools_approval_mode": "prompt",
             "enabled": False,
         },
-        "21st": {
-            "url": "https://21st.dev/api/mcp",
-            "enabled": False,
-            "bearer_token_env_var": DISABLED_21ST_BEARER_PLACEHOLDER,
-        },
         "codegraph": {
             "command": "node",
             "args": CODEGRAPH_MCP_ARGS,
             "enabled": True,
         },
-        "MCP_DOCKER": {
-            "command": "docker.exe",
-            "args": ["mcp", "gateway", "run", "--profile", "profile"],
-            "enabled": False,
-        },
-        "cloudflare": {
-            "url": "https://mcp.cloudflare.com/mcp",
-            "enabled": False,
-        },
-        "cloudflare-bindings": {
-            "url": "https://bindings.mcp.cloudflare.com/mcp",
-            "enabled": False,
-        },
-        "cloudflare-builds": {
-            "url": "https://builds.mcp.cloudflare.com/mcp",
-            "enabled": False,
-        },
-        "cloudflare-docs": {
-            "url": "https://docs.mcp.cloudflare.com/mcp",
-            "enabled": False,
-        },
-        "cloudflare-observability": {
-            "url": "https://observability.mcp.cloudflare.com/mcp",
-            "enabled": False,
-        },
         "context7": {
             "url": "https://mcp.context7.com/mcp",
-            "enabled": False,
-        },
-        "github": {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-github"],
-            "enabled": False,
-        },
-        "playwright": {
-            "command": "npx",
-            "args": ["@playwright/mcp@latest"],
-            "enabled": False,
-        },
-        "sequential-thinking": {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
             "enabled": False,
         },
         "supabase": {
             "url": "https://mcp.supabase.com/mcp",
             "enabled": False,
         },
+        "playwright": {
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp@0.0.80"],
+            "enabled": False,
+        },
         "svelte": {
             "command": "npx",
-            "args": ["-y", "@sveltejs/mcp"],
+            "args": ["-y", "@sveltejs/mcp@0.1.26"],
             "enabled": False,
         },
     },
@@ -282,10 +197,7 @@ def main() -> None:
         fail("the repository-root marker must match the canonical value")
     if not REQUIRED_LF_ATTRIBUTES <= attributes:
         fail("security-critical Codex files must be checked out with LF bytes")
-    raw_without_approved_placeholder = raw.replace(
-        f"{DISABLED_21ST_BEARER_LINE}\n", ""
-    )
-    if FORBIDDEN_FIELD.search(raw_without_approved_placeholder):
+    if FORBIDDEN_FIELD.search(raw):
         fail("credential-bearing fields are not allowed")
     if TOKEN_SHAPE.search(raw):
         fail("token-shaped values are not allowed")

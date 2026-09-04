@@ -1,9 +1,6 @@
-# Legacy pointer: execution loop
+# Compatibility Pointer — Execution
 
-This path is retained for compatibility and is **not current authority**.
+This path is non-authoritative and retained for historical links.
 
-Use:
-- `../../AGENTS.md`;
-- `WORKFLOW.md`.
-
-Historical execution-loop text may be inspected only when an active task explicitly requires it.
+Start at [`CONTEXT.md`](CONTEXT.md), then enter the numbered stage that owns the
+current work.

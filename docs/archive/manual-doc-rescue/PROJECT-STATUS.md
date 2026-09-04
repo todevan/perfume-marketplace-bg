@@ -1,5 +1,10 @@
 # Project Status
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose
 
 This document is the repository's living operational status snapshot.

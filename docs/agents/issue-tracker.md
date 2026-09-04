@@ -1,10 +1,7 @@
-# Legacy pointer: issue workflow
+# Compatibility Pointer — Issue Contract
 
-This path is retained for compatibility and is **not current authority**.
+This path is non-authoritative and retained for historical links.
 
-Use `WORKFLOW.md` for the current issue contract, live selection, execution loop,
-and merge behavior.
-
-GitHub Issues are the sole engineering queue. An approved issue is the executable
-specification for its explicit decisions; missing product or architecture decisions
-return to the owner.
+GitHub Issues are the only engineering queue. Use
+[`reference/ISSUE-CONTRACT.md`](reference/ISSUE-CONTRACT.md) for issue eligibility,
+active state, scope, blocker classes, and authorization lifetime.

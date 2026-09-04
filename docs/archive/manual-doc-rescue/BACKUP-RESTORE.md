@@ -1,5 +1,10 @@
 # Backup and restore runbook
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose
 
 Supabase database backups do not contain Storage objects.

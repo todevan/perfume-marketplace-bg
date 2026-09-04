@@ -1,14 +1,10 @@
-# Legacy pointer: domain authority
+# Compatibility Pointer — Domain References
 
-This path is retained for compatibility and is **not current authority**.
+This path is non-authoritative and retained for historical links.
 
-Use:
-- `../AROMATIKA-LAUNCH-READINESS-DESIGN.md` for strategic launch direction;
-- `../../PRODUCT.md` for product truth;
-- `../../DESIGN.md` for visual/UX truth;
-- `../ARCHITECTURE.md` for technical architecture;
-- `../PROJECT-STATUS.md` for current operational state;
-- `../BUSINESS-MODEL.md` for monetization;
-- the approved active issue for task-specific acceptance criteria.
-
-Historical plans do not override these current authorities.
+Use the approved issue for task-specific decisions, then load only the relevant
+[`PRODUCT.md`](../../PRODUCT.md), [`DESIGN.md`](../../DESIGN.md),
+[`ARCHITECTURE.md`](../ARCHITECTURE.md),
+[`AROMATIKA-LAUNCH-READINESS-DESIGN.md`](../AROMATIKA-LAUNCH-READINESS-DESIGN.md),
+[`BUSINESS-MODEL.md`](../BUSINESS-MODEL.md), or
+[`PROJECT-STATUS.md`](../PROJECT-STATUS.md).

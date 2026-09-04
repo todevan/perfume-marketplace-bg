@@ -202,26 +202,12 @@ GitHub `main` is the shared verified baseline, not the origin of newer local pro
 
 ## 7. Engineering authority
 
-### Superpowers
-Superpowers is the primary engineering-process authority.
-
-Use it where applicable for:
-
-- brainstorming;
-- implementation planning;
-- systematic debugging;
-- TDD;
-- isolated work;
-- execution;
-- review;
-- review-feedback handling;
-- verification before completion;
-- branch/worktree completion.
-
-There is one primary process lifecycle per task.
+The root agent router and selected stage contract own the execution lifecycle. For
+shaping, Matt Pocock skills are primary; an already approved executable issue normally
+serves as the specification and does not need a duplicate plan.
 
 ### Matt Pocock skills
-Matt skills are preferred engineering-depth specialists inside the Superpowers lifecycle.
+Matt skills shape ambiguous or multi-session work before tactical implementation.
 
 Typical uses:
 
@@ -232,7 +218,16 @@ Typical uses:
 - exact owner/provider wizards;
 - agent-facing instruction writing.
 
-They deepen the Superpowers process; they do not create a competing lifecycle.
+They do not create a second queue or duplicate an already approved issue contract.
+
+### Superpowers
+Superpowers is tactical support for TDD, systematic debugging, isolated work,
+verification, and the final risk-appropriate review. It serves the selected stage and
+does not own a competing lifecycle.
+
+### ICM Architect
+ICM Architect is structural only: use it when the agent/document workspace itself
+needs restructuring, not as a recurring product-issue ritual.
 
 ### Narrow specialists
 Use Supabase/Postgres, Cloudflare, security, Playwright/E2E, provider documentation, and other narrow specialists only when the task touches their domain.
@@ -997,7 +992,8 @@ The migration is complete when:
 8. Bulgaria-only launch scope is explicit;
 9. perfume payment/delivery remains off-platform;
 10. Verified Merchants are part of launch without a required subscription;
-11. Agent OS keeps Superpowers as process authority;
+11. Agent System V2 keeps Matt primary for shaping, Superpowers tactical, and ICM
+    structural only;
 12. R2 code is independently reviewed/tested rather than owner-approved;
 13. R3 owner-level operations remain protected;
 14. `Sync status` is part of owner handoffs;
@@ -1012,4 +1008,4 @@ The migration is complete when:
 
 ## 32. Approved operating principle
 
-> Aromatika should behave like a small engineering team working for a nontechnical product owner. The owner decides product, business, legal, spending, and real-world launch choices. The local PC workspace is the active working authority. Superpowers governs engineering process. Specialist skills deepen that process where needed. Cheap models handle bounded mechanical work. Strong models handle difficult or high-consequence reasoning. Independent agents review agents. Tests, security evidence, and CI determine technical readiness. GitHub protects and publishes the reviewed shared baseline. Every task explains what changed, what the owner must do if anything, the local/GitHub sync state, what happens next, and when the system must stop.
+> Aromatika should behave like a small engineering team working for a nontechnical product owner. The owner decides product, business, legal, spending, and real-world launch choices. The local PC workspace is the active working authority. The root router and selected stage contract govern execution; Matt shapes, Superpowers supports tactical engineering, and ICM supports structural workspace changes. Specialist skills contribute only where needed. Deterministic evidence precedes model delegation, and stronger models are reserved for difficult or high-consequence reasoning. Tests, security evidence, final risk-appropriate review, and CI determine technical readiness. GitHub protects and publishes the reviewed shared baseline. Every task explains what changed, what the owner must do if anything, the local/GitHub sync state, what happens next, and when the system must stop.

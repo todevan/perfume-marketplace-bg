@@ -1,5 +1,10 @@
 # Closed-beta incident response
 
+> **Historical archive — non-authoritative.**
+>
+> Preserve this material only as dated evidence. Current owner decisions, live GitHub state, root `AGENTS.md`, and active repository contracts outrank it.
+
+
 ## Purpose and authority
 
 This is the operational runbook for containing, investigating and recovering from security, privacy, availability and data-integrity incidents during the closed beta.

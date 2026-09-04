@@ -11,10 +11,11 @@ During incident work, follow this order:
 1. `AGENTS.md` and authoritative repository/project documentation.
 2. The explicitly authorized environment, issue, gate and task scope.
 3. `docs/agents/WORKFLOW.md` and `docs/agents/SECURITY.md`.
-4. Superpowers as the primary process authority.
-5. Matt Pocock skills for deep engineering reasoning when useful.
-6. ECC or platform-specific skills for specialist security, backend, E2E, Supabase, Cloudflare, GitHub or similar work.
-7. Repository-defined verification and release gates.
+4. The selected Agent System V2 stage contract.
+5. Matt Pocock skills for shaping or deep engineering reasoning when useful.
+6. Superpowers for tactical debugging, TDD, verification, and review.
+7. ECC or platform-specific skills for specialist security, backend, E2E, Supabase, Cloudflare, GitHub or similar work.
+8. Repository-defined verification and release gates.
 
 Do not start a second competing planning, debugging, TDD, execution or completion loop for an incident.
 
@@ -110,7 +111,7 @@ Prefer evidence from authoritative logs, database state, reproducible requests a
 
 For debugging:
 
-Superpowers systematic debugging remains the primary debugging process.
+Use Superpowers systematic debugging as the tactical diagnosis loop.
 
 Matt `diagnosing-bugs`, `domain-modeling` or `codebase-design` may be used when deeper causal or architectural reasoning is useful.
 
@@ -172,12 +173,13 @@ Once the failure mechanism is understood:
 
 1. Create or update the canonical GitHub Issue for executable remediation work.
 2. Add a regression test that reproduces the failure when technically appropriate.
-3. Use the normal Superpowers process and repository execution loop for the repair.
-4. Use Matt deep-engineering skills only where they materially improve diagnosis, domain reasoning, design or review.
-5. Use ECC/platform specialists for the relevant technical domain.
-6. Prefer a narrow reviewed forward code/configuration change or forward migration.
-7. Do not bundle unrelated cleanup or opportunistic redesign into the incident repair.
-8. Apply the current `R0`–`R3` implementation, verification, merge, and owner-action rules.
+3. Use the selected Agent System V2 stage contract for the repair.
+4. Use Matt skills where they materially improve shaping, diagnosis, domain reasoning, or design.
+5. Use Superpowers tactically for TDD, systematic debugging, verification, or review.
+6. Use ECC/platform specialists for the relevant technical domain.
+7. Prefer a narrow reviewed forward code/configuration change or forward migration.
+8. Do not bundle unrelated cleanup or opportunistic redesign into the incident repair.
+9. Apply the current `R0`–`R3` implementation, verification, merge, and owner-action rules.
 
 R0/R1 incident fixes may proceed through normal autonomous review, verification and auto-merge rules.
 

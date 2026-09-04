@@ -1,10 +1,6 @@
-# Legacy pointer: skill routing
+# Compatibility Pointer — Skill Routing
 
-This path is retained for compatibility and is **not current authority**.
+This path is non-authoritative and retained for historical links.
 
-Current routing:
-- `../../AGENTS.md` — Superpowers/specialist relationship;
-- `WORKFLOW.md` — process and model routing;
-- `SECURITY.md` — security specialist triggers.
-
-Superpowers remains process authority. Specialist skills add engineering depth inside that lifecycle.
+Use [`reference/SKILLS.md`](reference/SKILLS.md). Matt Pocock skills shape work,
+Superpowers is tactical, and ICM Architect is structural only.
