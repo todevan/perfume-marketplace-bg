@@ -106,9 +106,12 @@ the set unrecoverable; storing it beside the artifact defeats this protection.
 
 ## Automation, freshness and retention
 
-The required executor is a trusted default-branch GitHub Actions workflow, manual
-plus daily at a non-round-hour schedule, with pinned actions/tools and minimal
-permissions. Never expose backup secrets to pull requests, forks or untrusted
+The executor contract is `.github/workflows/operations-backup.yml`: manual
+`workflow_dispatch` plus daily at 03:17 UTC, trusted protected `main` only, with
+immutable action SHAs, Node 22.23.2, Supabase CLI 2.109.1 and PostgreSQL 17.6
+from the immutable image pinned in `logical-recovery.mjs`. Permissions are limited
+to repository contents/read and Actions/read; upload uses the official Actions
+artifact capability. Never expose backup secrets to pull requests, forks or untrusted
 refs. Publish only encrypted components and a sanitized descriptor, retain them
 for 35 days, and independently read back artifact identity, size, creation/expiry
 and hashes. This retention provides at least seven daily and four weekly points
@@ -118,6 +121,47 @@ Do not claim a scheduled backup is operational merely because the workflow
 contract exists or a historical run was green. A new workflow requires one real
 post-merge default-branch dispatch with artifact and success-heartbeat readback
 before Issue #29 closes. A missing/failed execution remains a blocker.
+
+Private Actions handoffs are `ISSUE29_BACKUP_AUTHORIZATION_JSON`,
+`ISSUE29_OWNER_BACKUP_PUBLIC_KEY` (public PEM only), and
+`ISSUE29_GRAFANA_HEARTBEAT_JSON` (distinct narrow metrics write/read tokens).
+Authorization contains the **existing** expiring version-2 lifecycle manifest,
+exact source/deployment read credentials, pinned backup settings and a maximum
+artifact byte allowance. It cannot mint source provenance or renew authorization.
+The executor live-revalidates the source and deployment before every export;
+GitHub run attempt 2 or later cannot repeat an uncertain upload. Persisted upload
+and heartbeat intent belongs to the same private transaction manifest.
+
+Managed `auth`/`storage` baseline SQL is never installed as a GitHub secret or
+artifact. The runner reconstructs it in a fresh, empty local pinned Supabase
+fixture and requires the source-recorded normalized schema digest to match.
+Differences in hosted provider base schemas fail closed, even if PostgreSQL
+versions match. Plaintext and local fixtures stay on the ephemeral runner and are
+removed in the workflow's `always()` cleanup; the encrypted artifact is retained.
+
+The official artifact is immutable and retained for 35 days. Success requires exact
+artifact/run/repository/candidate metadata readback, archive-byte SHA-256
+verification, and rechecking every extracted ciphertext against the immutable
+descriptor. Only then can Grafana receive a success heartbeat carrying the original
+backup checkpoint time, followed by independent metrics readback. Daily creation
+uses only the public key and authenticates components before wiping the ephemeral
+data key; it is **not** owner-held private-key decryption or monthly restore proof.
+
+**Current lifecycle and cost limits:** Preserved canonical staging/production are
+inventory/read-only-monitoring targets only, never scheduled recovery sources.
+A disposable synthetic source that has been retired cannot silently become a
+standing daily source. Source expiry, retirement or missing authorization must
+make the workflow fail until a newly authorized source arrangement exists.
+Public repository status proves free standard-runner compute, not unbounded free
+artifact storage. The personal-owner budget has no documented REST readback;
+publication requires current private owner UI evidence of the exact Actions $0
+hard-stop budget, capture hash and expiry (maximum 24 hours). This is explicitly
+owner-attested UI evidence, not an API result. It is never automatically refreshed.
+No artifact upload is authorized while that evidence is missing or stale. See
+[GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
+and the currently organization-scoped [budget API](https://docs.github.com/en/rest/billing/budgets).
+The schedule is consequently not yet proof of unattended, continuously healthy
+backups under the current disposable-source authorization.
 
 - RPO target: 24 hours; warn above 24 hours, critical above 26 hours or on any
   integrity/decryption failure.
@@ -145,11 +189,12 @@ production
 
 when the tooling can prove the actual project identity.
 
-For staging operations, use the target-locking rules in:
-
-`docs/STAGING-CREDENTIALS.md`
-
-For production, use the production/release authority applicable at that time.
+Under the current Issue #29 owner boundary, canonical staging, production and
+all pre-existing inventory refs are **preserved**: read-only inventory/monitoring
+only, with no backup exports, restores, data changes or cleanup. Recovery source
+creation requires a fresh manifest-owned synthetic project with current live free
+capacity/cost and ownership proof. Historical source credentials do not authorize
+exports. Future production recovery requires separate current owner authority.
 
 A valid credential does not authorize backing up or restoring the wrong project.
 
@@ -164,9 +209,13 @@ capacity or delete an unrelated project to make room.
 
 Do not use production for routine rehearsal.
 
-The source and target must be proven synthetic and owner-controlled. Unknown or
+The source and target must be fresh manifest-owned synthetic projects. Unknown or
 real staging data must not be copied, deleted or reclassified to force a pass.
-If no compliant free synthetic arrangement exists, stop at that exact blocker.
+If simultaneous free capacity is unavailable, the current owner permits exact
+source deletion only **after** independent owner-key backup verification and a
+persisted no-further-source-reads boundary. Read back that source's absence, then
+live-recheck free quota/cost before creating the new restore target. Never delete
+an unrelated project for capacity. If no compliant arrangement exists, stop.
 
 Before restore mutation, verify that the selected target is the explicitly authorized rehearsal environment.
 
@@ -178,10 +227,11 @@ The single operator entry point is `node scripts/issue29-operations/cli.mjs`.
 Use only commands actually listed by that entry point. The intended sequence is
 `preflight` → `backup-set` → `verify-backup` → `restore` → `verify-restore` →
 `incident-drill` → `cleanup` → `validate-receipt`; a listed contract or command
-name is not evidence that a hosted adapter is implemented. Currently only
-`verify-backup` and `validate-receipt` provide local verification; hosted commands
-stop with `HOSTED_EXECUTION_UNAVAILABLE`. Do not accept a fabricated success
-receipt or describe this contract as a working hosted restore executor.
+name is not evidence that hosted acceptance has passed. The scheduled workflow
+uses `backup-set --manifest=PRIVATE_PATH --settings=PRIVATE_PATH`; source settings
+and baseline stay mode-0600 outside the repository. Consult the exact candidate's
+`--help` for available commands and current stop boundaries. No fabricated success
+receipt or historical local rehearsal can stand in for exact hosted proof.
 
 1. Create the private mode-0600, expiring transaction manifest outside the
    repository. Bind source/target identities, SHA/tree/deployment, forbidden refs,

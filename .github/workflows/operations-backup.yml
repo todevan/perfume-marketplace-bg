@@ -1,0 +1,157 @@
+name: operations-backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: issue29-encrypted-backup
+  cancel-in-progress: false
+
+jobs:
+  encrypted-backup:
+    if: >-
+      github.repository == 'todevan/perfume-marketplace-bg' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      github.workflow_ref == 'todevan/perfume-marketplace-bg/.github/workflows/operations-backup.yml@refs/heads/main' &&
+      github.workflow_sha == github.sha && github.run_attempt == 1 &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+      - name: Install exact locked tools without backup credentials
+        run: pnpm install --frozen-lockfile
+      - name: Verify nonzero backup contract discovery before secret-bearing execution
+        run: pnpm exec vitest run tests/scripts/issue29-artifact-store.test.ts tests/scripts/issue29-backup-automation.test.ts tests/contracts/operations-backup-workflow.contract.test.ts --passWithNoTests=false
+      - name: Prepare current private source authorization and public encryption key
+        id: prepare
+        env:
+          ISSUE29_BACKUP_AUTHORIZATION_JSON: ${{ secrets.ISSUE29_BACKUP_AUTHORIZATION_JSON }}
+          ISSUE29_OWNER_BACKUP_PUBLIC_KEY: ${{ secrets.ISSUE29_OWNER_BACKUP_PUBLIC_KEY }}
+        run: |
+          umask 077
+          node --input-type=module <<'JS'
+          import { appendFile } from 'node:fs/promises';
+          import { prepareBackupAutomation, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {
+            const p=await prepareBackupAutomation({authorizationJson:process.env.ISSUE29_BACKUP_AUTHORIZATION_JSON??'',publicKeyPem:process.env.ISSUE29_OWNER_BACKUP_PUBLIC_KEY??'',context:automationContextFromEnvironment(process.env),runnerTemp:process.env.RUNNER_TEMP,repositoryRoot:process.cwd()});
+            await appendFile(process.env.GITHUB_OUTPUT,`directory=${p.directory}\n`);
+          } catch(error) {console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Reconstruct and compare the exact managed baseline on this ephemeral runner
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+        run: |
+          umask 077
+          node --input-type=module <<'JS'
+          import { reconstructRunnerBaseline, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {await reconstructRunnerBaseline({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)});}
+          catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Create and authenticate one coordinated encrypted recovery set
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+        run: |
+          umask 077
+          node scripts/issue29-operations/cli.mjs backup-set \
+            --manifest="$ISSUE29_PRIVATE_DIRECTORY/manifest.json" \
+            --settings="$ISSUE29_PRIVATE_DIRECTORY/settings.json" \
+            > "$ISSUE29_PRIVATE_DIRECTORY/backup-result.json"
+      - name: Verify exact encrypted-only inventory and persist upload intent
+        id: publication
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFile } from 'node:fs/promises';
+          import { preparePublication, runnerPublicationOptions, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {
+            const p=await preparePublication(await runnerPublicationOptions({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}));
+            await appendFile(process.env.GITHUB_OUTPUT,`artifact-name=${p.artifactName}\n`);
+          }catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Upload only encrypted components and the sanitized immutable descriptor
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.publication.outputs.artifact-name }}
+          path: |
+            ${{ steps.prepare.outputs.directory }}/published/backup-set.json
+            ${{ steps.prepare.outputs.directory }}/published/component-*.bin
+            ${{ steps.prepare.outputs.directory }}/published/manifest.bin
+          if-no-files-found: error
+          retention-days: 35
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+      - name: Download the exact immutable artifact, never a name/latest match
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.upload.outputs.artifact-id }}
+          path: ${{ steps.prepare.outputs.directory }}/downloaded
+          merge-multiple: true
+      - name: Independently verify provider identity, retention, ZIP hash and every extracted ciphertext
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+          ISSUE29_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ISSUE29_ARCHIVE_SHA256: ${{ steps.upload.outputs.artifact-digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'JS'
+          import { finalizeArtifact, runnerPublicationOptions, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {await finalizeArtifact({...await runnerPublicationOptions({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}),artifactId:Number(process.env.ISSUE29_ARTIFACT_ID),archiveSha256:process.env.ISSUE29_ARCHIVE_SHA256,token:process.env.GH_TOKEN});}
+          catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Publish and independently read back the original backup-time heartbeat
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+          ISSUE29_GRAFANA_HEARTBEAT_JSON: ${{ secrets.ISSUE29_GRAFANA_HEARTBEAT_JSON }}
+        run: |
+          node --input-type=module <<'JS'
+          import { beginHeartbeat, finalizeHeartbeat, runnerPublicationOptions, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {
+            const p={...await runnerPublicationOptions({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}),heartbeatConfig:JSON.parse(process.env.ISSUE29_GRAFANA_HEARTBEAT_JSON??'null')};
+            await beginHeartbeat(p);
+            // Metrics ingestion can be eventually consistent. This wait never repeats the POST.
+            await new Promise(resolve=>setTimeout(resolve,30000));
+            await finalizeHeartbeat(p);
+          }catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Preserve sanitized exact reconciliation coordinates without private evidence
+        if: ${{ always() && steps.prepare.outputs.directory != '' }}
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+        run: |
+          node --input-type=module <<'JS'
+          import { backupTransactionSummary, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {console.log(JSON.stringify(await backupTransactionSummary({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)})));}
+          catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Always remove only this run's private plaintext and local fixture
+        if: ${{ always() && steps.prepare.outputs.directory != '' }}
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+        run: |
+          node --input-type=module <<'JS'
+          import { cleanupBackupAutomation, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {await cleanupBackupAutomation({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)});}
+          catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS

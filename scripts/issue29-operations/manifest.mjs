@@ -7,7 +7,9 @@ import { randomUUID } from 'node:crypto';
 /** @typedef {{provider:string,id:string,runId:string,createdAt:string,evidenceSha256:string,disposition:'disposable'|'persistent',absentAt:string|null,priorStateSha256?:string}} OwnedResource */
 /** @typedef {{step:string,operationId:string,startedAt:string,resourceId:string|null,priorStateSha256:string|null}} PendingIntent */
 /** @typedef {{step:string,operationId:string,completedAt:string,evidenceSha256:string,resourceId:string|null}} HistoryEntry */
-/** @typedef {{schemaVersion:number,issue:number,runId:string,expiresAt:string,state:string,candidate:Candidate,source:ProjectIdentity,target:ProjectIdentity|null,forbiddenRefs:string[],allowedActions:string[],capabilityIds:Record<string,string>,maximumCost:number,grafana:{stackAlias:string,destinationAlias:string,ruleAliases:string[]},backup:{destinationAlias:string,retentionDays:number,publicKeyId:string},fixture:{alias:string,classification:string},humanBoundary:string|null,cleanup:{authorized:boolean,resources:OwnedResource[]},pending:PendingIntent|null,attempts:Record<string,number>,history:HistoryEntry[],terminal:string|null}} OperationsManifest */
+/** @typedef {{createdAt:string,creationIntentId:string,creationReadbackSha256:string,fixtureRunId:string|null,fixtureManifestSha256:string|null,inventorySha256:string|null,releaseBindingSha256:string|null,verifiedAt:string|null}} SourceProvenance */
+/** @typedef {{organizationId:string,region:string,checkedAt:string,expiresAt:string,plan:'free',projectLimit:number,activeProjectCount:number,availableProjects:number,quotedCost:0,currency:'USD',deletionSupported:true,regionAvailable:true,inventoryRefs:string[],evidenceSha256:string}} ProviderPreflight */
+/** @typedef {{schemaVersion:number,issue:number,runId:string,expiresAt:string,state:string,candidate:Candidate,targetDeploymentId?:string,recoveryTimings?:{startedAt:string,databaseVerifiedAt?:string,storageStartedAt?:string,storageVerifiedAt?:string,applicationVerifiedAt?:string},source:ProjectIdentity|null,target:ProjectIdentity|null,preservedRefs:string[],provisioning:{organizationId:string,region:string,sourceName:string,targetName:string},sourceProvenance:SourceProvenance|null,providerPreflight:ProviderPreflight|null,backupVerification:{descriptorSha256:string,independentlyVerifiedAt:string,sourceReadsComplete:true}|null,forbiddenRefs:string[],allowedActions:string[],capabilityIds:Record<string,string>,maximumCost:number,grafana:{stackAlias:string,destinationAlias:string,ruleAliases:string[],configSha256?:string},backup:{destinationAlias:string,retentionDays:number,publicKeyId:string},fixture:{alias:string,classification:string,sentinel?:{sha256:string,bytes:number}},humanBoundary:string|null,cleanup:{authorized:boolean,resources:OwnedResource[]},pending:PendingIntent|null,attempts:Record<string,number>,history:HistoryEntry[],terminal:string|null}} OperationsManifest */
 /** @typedef {{now?:string,candidate?:Candidate}} ValidationOptions */
 /** @typedef {ValidationOptions & {repositoryRoot:string,replace?:boolean}} PrivateFileOptions */
 const SHA = /^[a-f0-9]{40}$/u;
@@ -15,8 +17,8 @@ const HASH = /^[a-f0-9]{64}$/u;
 const REF = /^[a-z]{20}$/u;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const ALIAS = /^[a-z0-9][a-z0-9-]{0,62}$/u;
-export const STATES = Object.freeze(['planned', 'preflighted', 'implementation_verified', 'monitoring_configured', 'monitoring_proved', 'backup_started', 'backup_verified', 'target_creation_pending', 'target_read_back', 'quarantine_verified', 'database_restored', 'storage_restored', 'integrity_verified', 'incident_drill_verified', 'transient_cleanup_pending', 'cleanup_verified']);
-export const ACTIONS = Object.freeze(['preflight', 'implementation-verified', 'configure-monitoring', 'monitoring-proof', 'backup-set', 'verify-backup', 'create-target', 'quarantine', 'restore-database', 'restore-storage', 'verify-restore', 'incident-drill', 'cleanup-resource', 'cleanup']);
+export const STATES = Object.freeze(['planned', 'provider_preflighted', 'source_creation_pending', 'source_read_back', 'source_verified', 'source_retirement_pending', 'source_absence_verified', 'preflighted', 'implementation_verified', 'monitoring_configured', 'monitoring_proved', 'backup_started', 'artifact_upload_pending', 'artifact_verified', 'backup_heartbeat_pending', 'backup_verified', 'target_creation_pending', 'target_read_back', 'quarantine_verified', 'database_restored', 'storage_restored', 'integrity_verified', 'incident_drill_verified', 'transient_cleanup_pending', 'cleanup_verified']);
+export const ACTIONS = Object.freeze(['preflight', 'deploy-worker', 'seed-source', 'create-source', 'verify-source', 'retire-source', 'implementation-verified', 'configure-monitoring', 'monitoring-proof', 'backup-set', 'artifact-upload', 'backup-heartbeat', 'verify-backup', 'create-target', 'quarantine', 'restore-database', 'restore-storage', 'verify-restore', 'incident-drill', 'cleanup-resource', 'cleanup']);
 export class OperationsError extends Error {
     /** @param {string} code */
     constructor(code) { super(`Issue #29: ${code}`); this.name = 'OperationsError'; }
@@ -24,6 +26,35 @@ export class OperationsError extends Error {
 /** @param {unknown} condition @param {string} code @returns {asserts condition} */
 export function ensure(condition, code) { if (!condition)
     throw new OperationsError(code); }
+/** Validate normalized LIVE provider evidence, never substitute documented quotas for readback.
+ * @param {unknown} input @param {{organizationId:string,region:string,preservedRefs:string[],now?:string}} expected
+ * @returns {ProviderPreflight}
+ */
+export function validateProviderPreflight(input, expected) {
+    record(input, ['organizationId','region','checkedAt','expiresAt','plan','projectLimit','activeProjectCount','availableProjects','quotedCost','currency','deletionSupported','regionAvailable','inventoryRefs','evidenceSha256']);
+    ensure(input.organizationId === expected.organizationId && input.region === expected.region, 'PROVIDER_PREFLIGHT_IDENTITY_MISMATCH');
+    timestamp(input.checkedAt); timestamp(input.expiresAt);
+    ensure(Date.parse(input.expiresAt) > Date.parse(input.checkedAt) && Date.parse(input.expiresAt) - Date.parse(input.checkedAt) <= 900000, 'PROVIDER_PREFLIGHT_STALE');
+    if (expected.now) ensure(Date.parse(expected.now) >= Date.parse(input.checkedAt) - 300000 && Date.parse(expected.now) < Date.parse(input.expiresAt), 'PROVIDER_PREFLIGHT_STALE');
+    ensure(input.plan === 'free' && input.quotedCost === 0 && input.currency === 'USD', 'ZERO_COST_REQUIRED');
+    for (const key of ['projectLimit','activeProjectCount','availableProjects']) ensure(Number.isSafeInteger(input[key]) && Number(input[key]) >= 0, 'CAPACITY_UNPROVEN');
+    ensure(Number(input.availableProjects) >= 1 && Number(input.availableProjects) <= Number(input.projectLimit) - Number(input.activeProjectCount), 'CAPACITY_UNPROVEN');
+    ensure(input.deletionSupported === true && input.regionAvailable === true, 'PROVIDER_CAPABILITY_UNPROVEN');
+    list(input.inventoryRefs, REF);
+    const inventoryRefs = input.inventoryRefs;
+    ensure(expected.preservedRefs.every(ref => inventoryRefs.includes(ref)), 'PRESERVED_INVENTORY_INCOMPLETE');
+    textValue(input.evidenceSha256, HASH);
+    return /** @type {ProviderPreflight} */ (/** @type {unknown} */ (input));
+}
+/** @param {OperationsManifest} manifest @returns {ProjectIdentity} */
+export function assertOwnedSource(manifest) {
+    const source = manifest.source;
+    ensure(source && !manifest.preservedRefs.includes(source.ref) && source.environment === 'synthetic', 'FRESH_SYNTHETIC_SOURCE_REQUIRED');
+    const created = manifest.cleanup.resources.find(r => r.provider === 'supabase' && r.id === source.ref && r.runId === manifest.runId && r.disposition === 'disposable');
+    ensure(created && created.absentAt === null && manifest.sourceProvenance?.verifiedAt && manifest.sourceProvenance.fixtureRunId === manifest.runId, 'SOURCE_PROVENANCE_UNPROVEN');
+    ensure(manifest.backupVerification?.sourceReadsComplete !== true, 'SOURCE_READS_CLOSED');
+    return source;
+}
 /** @param {unknown} value @param {string[]} keys @returns {asserts value is Record<string, unknown>} */
 function record(value, keys) { ensure(value !== null && typeof value === 'object' && !Array.isArray(value), 'MANIFEST_INVALID'); ensure(Object.keys(value).every(k => keys.includes(k)), 'MANIFEST_INVALID'); }
 /** @param {unknown} value @param {RegExp} [pattern] @returns {asserts value is string} */
@@ -36,8 +67,8 @@ function list(value, pattern) { ensure(Array.isArray(value) && value.length <= 1
 function identity(value) { record(value, ['organizationId', 'ref', 'region', 'environment', 'url', 'postgresVersion', 'classification']); textValue(value.organizationId, ALIAS); textValue(value.ref, REF); textValue(value.region, ALIAS); textValue(value.postgresVersion, /^\d+\.\d+(?:\.\d+)?$/u); ensure(value.classification === 'synthetic-owner-controlled', 'SOURCE_CLASSIFICATION_UNPROVEN'); ensure(value.url === `https://${value.ref}.supabase.co`, 'PROJECT_URL_MISMATCH'); ensure(['staging', 'disposable', 'synthetic'].includes(String(value.environment)), 'PRODUCTION_FORBIDDEN'); }
 /** Validate a private manifest; no provider payload or credential fields are accepted. @param {unknown} input @param {ValidationOptions} [options] @returns {OperationsManifest} */
 export function validateManifest(input, { now = new Date().toISOString(), candidate } = {}) {
-    record(input, ['schemaVersion', 'issue', 'runId', 'expiresAt', 'state', 'candidate', 'source', 'target', 'forbiddenRefs', 'allowedActions', 'capabilityIds', 'maximumCost', 'grafana', 'backup', 'fixture', 'humanBoundary', 'cleanup', 'pending', 'attempts', 'history', 'terminal']);
-    ensure(input.schemaVersion === 1 && input.issue === 29, 'MANIFEST_INVALID');
+    record(input, ['schemaVersion', 'issue', 'runId', 'expiresAt', 'state', 'candidate', 'targetDeploymentId', 'recoveryTimings', 'source', 'target', 'preservedRefs', 'provisioning', 'sourceProvenance', 'providerPreflight', 'backupVerification', 'forbiddenRefs', 'allowedActions', 'capabilityIds', 'maximumCost', 'grafana', 'backup', 'fixture', 'humanBoundary', 'cleanup', 'pending', 'attempts', 'history', 'terminal']);
+    ensure(input.schemaVersion === 2 && input.issue === 29, 'MANIFEST_INVALID');
     textValue(input.runId, UUID);
     timestamp(input.expiresAt);
     timestamp(now);
@@ -50,12 +81,42 @@ export function validateManifest(input, { now = new Date().toISOString(), candid
     textValue(input.candidate.deploymentId, /^[a-zA-Z0-9-]{1,128}$/u);
     if (candidate)
         ensure(candidate.sha === input.candidate.sha && candidate.tree === input.candidate.tree && candidate.deploymentId === input.candidate.deploymentId, 'CANDIDATE_MISMATCH');
-    identity(input.source);
+    if (input.targetDeploymentId !== undefined) { textValue(input.targetDeploymentId, /^[a-zA-Z0-9-]{1,128}$/u); ensure(input.target !== null, 'TARGET_IDENTITY_REQUIRED'); }
+    if (input.recoveryTimings !== undefined) { record(input.recoveryTimings, ['startedAt','databaseVerifiedAt','storageStartedAt','storageVerifiedAt','applicationVerifiedAt']); timestamp(input.recoveryTimings.startedAt); for (const value of Object.values(input.recoveryTimings)) timestamp(value); }
+    list(input.preservedRefs, REF);
+    ensure(input.preservedRefs.length > 0, 'PRESERVED_INVENTORY_REQUIRED');
+    record(input.provisioning, ['organizationId', 'region', 'sourceName', 'targetName']);
+    for (const key of ['organizationId', 'region', 'sourceName', 'targetName']) textValue(input.provisioning[key], ALIAS);
+    ensure(input.provisioning.sourceName !== input.provisioning.targetName && String(input.provisioning.sourceName).startsWith('issue29-') && String(input.provisioning.targetName).startsWith('issue29-'), 'PROJECT_NAME_INVALID');
     list(input.forbiddenRefs, REF);
-    ensure(input.forbiddenRefs.includes(input.source.ref), 'SOURCE_NOT_FORBIDDEN');
+    const forbiddenRefs = input.forbiddenRefs;
+    ensure(input.preservedRefs.every(ref => forbiddenRefs.includes(ref)), 'PRESERVED_INVENTORY_REQUIRED');
+    if (input.source !== null) {
+        identity(input.source);
+        ensure(!input.preservedRefs.includes(input.source.ref), 'PRESERVED_PROJECT_FORBIDDEN');
+        ensure(input.source.environment === 'synthetic', 'FRESH_SYNTHETIC_SOURCE_REQUIRED');
+        ensure(input.forbiddenRefs.includes(input.source.ref), 'SOURCE_NOT_FORBIDDEN');
+        ensure(input.source.organizationId === input.provisioning.organizationId && input.source.region === input.provisioning.region, 'TARGET_IDENTITY_MISMATCH');
+        record(input.sourceProvenance, ['createdAt', 'creationIntentId', 'creationReadbackSha256', 'fixtureRunId', 'fixtureManifestSha256', 'inventorySha256', 'releaseBindingSha256', 'verifiedAt']);
+        timestamp(input.sourceProvenance.createdAt); textValue(input.sourceProvenance.creationIntentId, UUID); textValue(input.sourceProvenance.creationReadbackSha256, HASH);
+        if (input.sourceProvenance.verifiedAt !== null) {
+            timestamp(input.sourceProvenance.verifiedAt);
+            ensure(input.sourceProvenance.fixtureRunId === input.runId, 'SOURCE_PROVENANCE_UNPROVEN');
+            for (const key of ['fixtureManifestSha256','inventorySha256','releaseBindingSha256']) textValue(input.sourceProvenance[key], HASH);
+        } else {
+            const provenance = input.sourceProvenance;
+            ensure(['fixtureRunId','fixtureManifestSha256','inventorySha256','releaseBindingSha256'].every(key => provenance[key] === null), 'SOURCE_PROVENANCE_UNPROVEN');
+        }
+    } else ensure(['planned','provider_preflighted','source_creation_pending'].includes(String(input.state)) && input.sourceProvenance === null && input.target === null, 'SOURCE_IDENTITY_REQUIRED');
     if (input.target !== null) {
         identity(input.target);
-        ensure(input.target.environment === 'disposable' && input.target.ref !== input.source.ref && !input.forbiddenRefs.includes(input.target.ref), 'TARGET_FORBIDDEN');
+        ensure(input.target.environment === 'disposable' && input.source !== null && input.target.ref !== input.source.ref && !input.forbiddenRefs.includes(input.target.ref), 'TARGET_FORBIDDEN');
+    }
+    if (input.providerPreflight !== null) validateProviderPreflight(input.providerPreflight, { organizationId: String(input.provisioning.organizationId), region: String(input.provisioning.region), preservedRefs: input.preservedRefs });
+    if (input.backupVerification !== null) {
+        record(input.backupVerification, ['descriptorSha256','independentlyVerifiedAt','sourceReadsComplete']);
+        textValue(input.backupVerification.descriptorSha256, HASH); timestamp(input.backupVerification.independentlyVerifiedAt);
+        ensure(input.backupVerification.sourceReadsComplete === true && input.source !== null, 'BACKUP_VERIFICATION_REQUIRED');
     }
     list(input.allowedActions, ALIAS);
     ensure(input.allowedActions.length > 0 && input.allowedActions.every(action => ACTIONS.includes(action)), 'MANIFEST_INVALID');
@@ -63,7 +124,8 @@ export function validateManifest(input, { now = new Date().toISOString(), candid
     record(input.capabilityIds, ['source-read', 'restore-write', 'monitoring-config', 'artifact-upload', 'cleanup']);
     for (const role of ['source-read', 'restore-write', 'monitoring-config', 'artifact-upload', 'cleanup'])
         textValue(input.capabilityIds[role], /^[a-zA-Z0-9:_-]{1,128}$/u);
-    record(input.grafana, ['stackAlias', 'destinationAlias', 'ruleAliases']);
+    record(input.grafana, ['stackAlias', 'destinationAlias', 'ruleAliases', 'configSha256']);
+    if (input.grafana.configSha256 !== undefined) textValue(input.grafana.configSha256, HASH);
     textValue(input.grafana.stackAlias, ALIAS);
     ensure(input.grafana.destinationAlias === 'owner-primary', 'MANIFEST_INVALID');
     list(input.grafana.ruleAliases, ALIAS);
@@ -71,7 +133,8 @@ export function validateManifest(input, { now = new Date().toISOString(), candid
     textValue(input.backup.destinationAlias, ALIAS);
     ensure(input.backup.retentionDays === 35, 'RETENTION_INVALID');
     textValue(input.backup.publicKeyId, HASH);
-    record(input.fixture, ['alias', 'classification']);
+    record(input.fixture, ['alias', 'classification', 'sentinel']);
+    if (input.fixture.sentinel !== undefined) { record(input.fixture.sentinel, ['sha256','bytes']); textValue(input.fixture.sentinel.sha256,HASH); ensure(Number.isSafeInteger(input.fixture.sentinel.bytes) && Number(input.fixture.sentinel.bytes) > 0 && Number(input.fixture.sentinel.bytes) <= 65536, 'SENTINEL_FIXTURE_INVALID'); }
     textValue(input.fixture.alias, ALIAS);
     ensure(input.fixture.classification === 'synthetic-owner-controlled', 'SOURCE_CLASSIFICATION_UNPROVEN');
     ensure(input.humanBoundary === null || (typeof input.humanBoundary === 'string' && ALIAS.test(input.humanBoundary)), 'MANIFEST_INVALID');
@@ -80,7 +143,7 @@ export function validateManifest(input, { now = new Date().toISOString(), candid
     const ids = new Set();
     for (const resource of input.cleanup.resources) {
         record(resource, ['provider', 'id', 'runId', 'createdAt', 'evidenceSha256', 'disposition', 'absentAt', 'priorStateSha256']);
-        ensure(['supabase', 'cloudflare', 'grafana', 'github'].includes(String(resource.provider)), 'MANIFEST_INVALID');
+        ensure(['supabase', 'supabase-storage', 'cloudflare', 'grafana', 'github'].includes(String(resource.provider)), 'MANIFEST_INVALID');
         textValue(resource.id, /^[a-zA-Z0-9:_-]{1,128}$/u);
         ensure(resource.runId === input.runId, 'CLEANUP_OWNERSHIP_MISMATCH');
         ensure(!ids.has(resource.id), 'MANIFEST_INVALID');
@@ -92,8 +155,14 @@ export function validateManifest(input, { now = new Date().toISOString(), candid
             timestamp(resource.absentAt);
         if (resource.priorStateSha256 !== undefined)
             textValue(resource.priorStateSha256, HASH);
+        if (resource.provider === 'supabase-storage') {
+            const match = /^storage-(?:bucket:([a-z]{20}):operations-sentinels|object:([a-z]{20}):([a-f0-9-]{36}):sentinel)$/u.exec(resource.id);
+            const ref = match?.[1] ?? match?.[2];
+            ensure(ref && !input.preservedRefs.includes(ref) && ((input.source !== null && ref === input.source.ref) || (input.target !== null && ref === input.target.ref)) && (!match?.[3] || match[3] === input.runId), 'STORAGE_OWNERSHIP_MISMATCH');
+            ensure(resource.disposition === 'disposable', 'STORAGE_OWNERSHIP_MISMATCH');
+        }
         if (resource.provider === 'supabase')
-            ensure(!input.forbiddenRefs.includes(resource.id) && input.target !== null && resource.id === input.target.ref, 'TARGET_FORBIDDEN');
+            ensure(!input.preservedRefs.includes(resource.id) && ((input.target !== null && resource.id === input.target.ref) || (input.source !== null && resource.id === input.source.ref)), 'TARGET_FORBIDDEN');
     }
     if (input.pending !== null) {
         record(input.pending, ['step', 'operationId', 'startedAt', 'resourceId', 'priorStateSha256']);
@@ -215,7 +284,7 @@ export function assertExactTarget(input, observed, { role, now, requireEmpty = t
     ensure(observed.plan === 'free' && observed.cost === 0 && observed.freeCapacity === true, 'ZERO_COST_REQUIRED');
     ensure(observed.owned === true, 'PROJECT_OWNERSHIP_UNPROVEN');
     ensure(observed.credential?.role === role && observed.credential.id === manifest.capabilityIds[role] && observed.credential.projectRef === expected.ref && observed.credential.organizationId === expected.organizationId, 'CREDENTIAL_ROLE_MISMATCH');
-    ensure(observed.candidate?.sha === manifest.candidate.sha && observed.candidate.tree === manifest.candidate.tree && observed.candidate.deploymentId === manifest.candidate.deploymentId, 'CANDIDATE_MISMATCH');
+    ensure(observed.candidate?.sha === manifest.candidate.sha && observed.candidate.tree === manifest.candidate.tree && observed.candidate.deploymentId === (scope === 'target' ? manifest.targetDeploymentId ?? manifest.candidate.deploymentId : manifest.candidate.deploymentId), 'CANDIDATE_MISMATCH');
     if (scope === 'target') {
         ensure(observed.isolation?.productionRoutes === false && observed.isolation.stagingRoutes === false && observed.isolation.foreignSecrets === false && observed.isolation.outboundEffects === false, 'QUARANTINE_UNPROVEN');
         if (requireEmpty)

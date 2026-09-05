@@ -153,10 +153,8 @@ recovery notification delivery readback, not only a green rules API response.
 ## Evidence and exact-target operator
 
 Use the one entry point `node scripts/issue29-operations/cli.mjs` and only commands
-currently exposed by it. `verify-backup` and `validate-receipt` provide local verification only;
-`preflight` and other hosted commands currently stop with
-`HOSTED_EXECUTION_UNAVAILABLE`. Contract verification is not hosted acceptance. Every
-stateful command requires an expiring mode-0600 manifest outside the repository,
+supported by the exact candidate's `--help`. A command contract or local synthetic
+test is not hosted acceptance. Every stateful command requires an expiring mode-0600 manifest outside the repository,
 with exact candidate/tree/deployment, source/target identities, allowed actions,
 zero-cost ceiling, forbidden refs and cleanup-owned IDs.
 
@@ -252,7 +250,13 @@ Do not rotate unrelated credentials by default. Rotate additional credentials on
 
 Production/provider credential rotation is still a protected mutation when repository policy classifies it that way. This document does not grant blanket authority to mutate Cloudflare, Supabase, email, Turnstile or other provider configuration.
 
-Never use staging credentials as authority for production actions.
+Never use staging credentials as authority for production actions. Under the
+current Issue #29 authorization, canonical staging/production and all pre-existing
+project refs are preserved: inventory/read-only monitoring only, no exports,
+restore, fixture mutation or cleanup. Recovery uses a new manifest-owned synthetic
+source and a distinct new disposable target. Source retirement requires independent
+owner-key backup verification, no further source reads, and exact absence proof
+before any sequential-capacity target creation.
 
 ## Investigation
 

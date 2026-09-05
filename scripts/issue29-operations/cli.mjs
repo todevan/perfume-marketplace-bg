@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { assertPrivatePath, readPrivateManifest, OperationsError } from './manifest.mjs';
 
 const repositoryRoot = resolve(import.meta.dirname, '../..');
-const unavailable = new Set(['preflight', 'monitoring-proof', 'backup-set', 'restore', 'verify-restore', 'incident-drill', 'cleanup']);
+const unavailable = new Set(['preflight', 'monitoring-proof', 'incident-drill', 'cleanup']);
 /** @param {string} code @returns {never} */
 function fail(code) { throw new OperationsError(code); }
 
@@ -34,27 +34,38 @@ function argumentsFor(args, names) {
   return values;
 }
 
+/** @param {import('./manifest.mjs').Candidate} candidate */
+function attestCandidate(candidate) {
+  /** @param {string[]} args */
+  const git=args=>execFileSync('git',args,{cwd:repositoryRoot,encoding:'utf8',env:{PATH:process.env.PATH},stdio:['ignore','pipe','ignore']}).trim();
+  if(git(['rev-parse','HEAD'])!==candidate.sha||git(['rev-parse','HEAD^{tree}'])!==candidate.tree||git(['status','--porcelain']).length)fail('CANDIDATE_MISMATCH');
+}
+
 /** @param {string[]} args @returns {Promise<string>} */
 export async function runCli(args) {
   const [command, ...rest] = args;
-  if (command === '--help' && rest.length === 0) return 'Issue #29 local verification:\n  verify-backup --manifest=ABSOLUTE_PATH --backup=ABSOLUTE_PATH --private-key=ABSOLUTE_PATH --descriptor-sha256=HASH\n  validate-receipt --receipt=ABSOLUTE_PATH --sha256=HASH --expected=ABSOLUTE_PATH --evidence=ABSOLUTE_DIRECTORY\nHosted mutations are unavailable until exact provider integration and source recovery proof are complete.\n';
+  if (command === '--help' && rest.length === 0) return 'Issue #29 exact-target operations:\n  backup-set --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  restore --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  verify-restore --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  verify-backup --manifest=ABSOLUTE_PATH --backup=ABSOLUTE_PATH --private-key=ABSOLUTE_PATH --descriptor-sha256=HASH\n  validate-receipt --receipt=ABSOLUTE_PATH --sha256=HASH --expected=ABSOLUTE_PATH --evidence=ABSOLUTE_DIRECTORY\nBackup requires current manifest-owned synthetic source and live exact release readback. Remaining hosted transaction commands require their exact integrated provider capabilities.\n';
   if (unavailable.has(command)) fail('HOSTED_EXECUTION_UNAVAILABLE');
+  if (command === 'backup-set') {
+    const values=argumentsFor(rest,['manifest','settings']);
+    const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});
+    attestCandidate(manifest.candidate);
+    const {executeBackupSet}=await import('./execution.mjs');
+    return JSON.stringify(await executeBackupSet({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';
+  }
+  if(command==='restore'||command==='verify-restore'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeRestore}=await import('./restore-execution.mjs');
+    return JSON.stringify(await executeRestore({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate,verifyOnly:command==='verify-restore'}))+'\n';
+  }
   if (command === 'verify-backup') {
     const values = argumentsFor(rest, ['manifest', 'backup', 'private-key', 'descriptor-sha256']);
     if (!/^[a-f0-9]{64}$/u.test(values['descriptor-sha256'])) fail('ARGUMENTS_INVALID');
     const manifest = await readPrivateManifest(values.manifest, { repositoryRoot });
-    /** @param {string[]} args */
-    const git = (args) => execFileSync('git', args, { cwd: repositoryRoot, encoding: 'utf8', env: { PATH: process.env.PATH }, stdio: ['ignore','pipe','ignore'] }).trim();
-    if (git(['rev-parse','HEAD']) !== manifest.candidate.sha || git(['rev-parse','HEAD^{tree}']) !== manifest.candidate.tree || git(['status','--porcelain']).length) fail('CANDIDATE_MISMATCH');
-    const privateKey = await privateBytes(values['private-key'], 16_384);
-    try {
-      const { verifyRecoverySet, readRecoveryDescriptor } = await import('./recovery-set.mjs');
-      const descriptor = await readRecoveryDescriptor({ directory: values.backup, repositoryRoot, expectedDescriptorSha256: values['descriptor-sha256'] });
-      if (descriptor.metadata.source.projectRef !== manifest.source.ref || descriptor.metadata.release.commitSha !== manifest.candidate.sha || descriptor.metadata.release.treeSha !== manifest.candidate.tree || descriptor.metadata.release.workerVersion !== manifest.candidate.deploymentId) fail('BACKUP_IDENTITY_MISMATCH');
-      const verified = await verifyRecoverySet({ directory: values.backup, repositoryRoot, privateKey,
-        expectedDescriptorSha256: values['descriptor-sha256'] });
-      return JSON.stringify({ status: 'LOCAL_CRYPTOGRAPHIC_VERIFICATION', descriptorSha256: values['descriptor-sha256'], backupSetId: verified.backupSetId, decryptionVerified: true }) + '\n';
-    } finally { privateKey.fill(0); }
+    attestCandidate(manifest.candidate);
+    if(!manifest.source) fail('SOURCE_IDENTITY_REQUIRED');
+    const {executeBackupVerification}=await import('./execution.mjs');
+    return JSON.stringify(await executeBackupVerification({manifestPath:values.manifest,repositoryRoot,candidate:manifest.candidate,directory:values.backup,privateKeyPath:values['private-key'],expectedDescriptorSha256:values['descriptor-sha256']}))+'\n';
   }
   if (command === 'validate-receipt') {
     const values = argumentsFor(rest, ['receipt', 'sha256', 'expected', 'evidence']);

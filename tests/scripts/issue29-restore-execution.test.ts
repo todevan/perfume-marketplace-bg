@@ -1,0 +1,13 @@
+import { afterEach, expect, it } from 'vitest';
+import { mkdtemp,writeFile,rm } from 'node:fs/promises';
+import {join} from 'node:path';import {tmpdir} from 'node:os';
+import {manifestFixture,candidate} from '../fixtures/issue29-operations';
+import {writePrivateManifest,readPrivateManifest} from '../../scripts/issue29-operations/manifest.mjs';
+import {executeRestore} from '../../scripts/issue29-operations/restore-execution.mjs';
+const now='2026-09-05T12:01:00.000Z';const dirs:string[]=[];
+afterEach(async()=>{await Promise.all(dirs.splice(0).map(p=>rm(p,{recursive:true,force:true})));});
+async function fixture(){const dir=await mkdtemp(join(tmpdir(),'issue29-restore-execution-'));dirs.push(dir);const manifest=manifestFixture();manifest.state='target_read_back';manifest.backupVerification={descriptorSha256:'d'.repeat(64),independentlyVerifiedAt:now,sourceReadsComplete:true};manifest.cleanup.resources.push({provider:'supabase',id:manifest.target!.ref,runId:manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'disposable',absentAt:null});const manifestPath=join(dir,'manifest.json');const settingsPath=join(dir,'settings.json');const settings={schemaVersion:1,operation:'restore',providerToken:'private-provider-token',targetServiceKey:'private-service-key',backupDirectory:join(dir,'backup'),descriptorSha256:'d'.repeat(64),privateKeyPath:join(dir,'private.pem'),connection:{host:`db.${manifest.target!.ref}.supabase.co`,port:5432,database:'postgres',user:'postgres',password:'private-password',sslmode:'verify-full'},toolchain:{mode:'container'}};await writePrivateManifest(manifestPath,manifest,{repositoryRoot:process.cwd(),candidate,now});await writeFile(settingsPath,JSON.stringify(settings),{mode:0o600});return{manifest,manifestPath,settingsPath,settings};}
+it.each(['unowned','no-backup','wrong-backup','wrong-state','verify-before-restore','private-settings'])('rejects %s before any provider or database write',async kind=>{
+ const f=await fixture();if(kind==='unowned')f.manifest.cleanup.resources=[];if(kind==='no-backup')f.manifest.backupVerification=null;if(kind==='wrong-backup')f.settings.descriptorSha256='f'.repeat(64);if(kind==='wrong-state')f.manifest.state='backup_verified';if(kind==='private-settings')(f.settings as any).productionSecret='must-not-copy';await writePrivateManifest(f.manifestPath,f.manifest,{repositoryRoot:process.cwd(),candidate,now,replace:true});await writeFile(f.settingsPath,JSON.stringify(f.settings),{mode:0o600});
+ await expect(executeRestore({...f,repositoryRoot:process.cwd(),candidate,now,verifyOnly:kind==='verify-before-restore'})).rejects.toThrow('Issue #29:');expect((await readPrivateManifest(f.manifestPath,{repositoryRoot:process.cwd(),now})).pending).toBeNull();
+});

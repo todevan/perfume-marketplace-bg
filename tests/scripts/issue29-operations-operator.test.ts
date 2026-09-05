@@ -4,17 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readPrivateManifest, validateManifest, writePrivateManifest } from '../../scripts/issue29-operations/manifest.mjs';
 const now = '2026-09-05T12:00:00.000Z';
-const candidate = { sha: 'a'.repeat(40), tree: 'b'.repeat(40), deploymentId: 'version-29' };
-const source = { organizationId: 'owned-org', ref: 'abcdefghijklmnopqrst', region: 'eu-central-1', environment: 'staging', url: 'https://abcdefghijklmnopqrst.supabase.co', postgresVersion: '17.6', classification: 'synthetic-owner-controlled' };
-const target = { ...source, ref: 'bcdefghijklmnopqrstu', url: 'https://bcdefghijklmnopqrstu.supabase.co', environment: 'disposable' };
-export function manifestFixture(): import('../../scripts/issue29-operations/manifest.mjs').OperationsManifest {
-    return { schemaVersion: 1, issue: 29, runId: '29292929-2929-4292-8292-292929292929', expiresAt: '2026-09-05T15:00:00.000Z', state: 'planned', candidate, source, target,
-        forbiddenRefs: [source.ref, 'cdefghijklmnopqrstuv'], allowedActions: ['preflight', 'implementation-verified', 'configure-monitoring', 'monitoring-proof', 'backup-set', 'verify-backup', 'create-target', 'quarantine', 'restore-database', 'restore-storage', 'verify-restore', 'incident-drill', 'cleanup-resource', 'cleanup'], maximumCost: 0, capabilityIds: { 'source-read': 'source-key', 'restore-write': 'restore-key', 'monitoring-config': 'monitor-key', 'artifact-upload': 'upload-key', cleanup: 'cleanup-key' },
-        grafana: { stackAlias: 'ops-free', destinationAlias: 'owner-primary', ruleAliases: ['storage-integrity'] },
-        backup: { destinationAlias: 'github-encrypted', retentionDays: 35, publicKeyId: 'c'.repeat(64) },
-        fixture: { alias: 'synthetic-recovery', classification: 'synthetic-owner-controlled' }, humanBoundary: null,
-        cleanup: { authorized: true, resources: [] }, pending: null, attempts: {}, history: [], terminal: null };
-}
+import { candidate, source, target, manifestFixture } from '../fixtures/issue29-operations';
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
 async function privatePath() { const dir = await mkdtemp(join(tmpdir(), 'issue29-test-')); await chmod(dir, 0o700); directories.push(dir); return join(dir, 'manifest.json'); }
@@ -163,36 +153,24 @@ describe('manifest-owned cleanup', () => {
         expect(() => validateManifest(input, { now })).toThrow('MANIFEST_INVALID');
     });
 });
-describe('disposable target creation readback', () => {
-    test('refuses a created project in a foreign organization before recording target ownership', async () => {
-        const path = await privatePath();
-        const input = manifestFixture();
-        input.state = 'backup_verified';
-        input.target = null;
-        await writePrivateManifest(path, input, { repositoryRoot: process.cwd(), now });
-        const observed = { ...projectReadback(), ...source, credential: { id: 'source-key', role: 'source-read', projectRef: source.ref, organizationId: source.organizationId }, creation: { organizationId: source.organizationId, region: source.region, plan: 'free', cost: 0, freeCapacity: true, credentialId: 'restore-key', cleanupAuthorized: true } };
-        await expect(executeOperatorStep({ manifestPath: path, repositoryRoot: process.cwd(), step: 'create-target', capability: 'restore-write', candidate, now, inspect: async () => observed, mutate: async () => { }, readback: async ({ operationId }) => ({ operationId, status: 'verified', resourceId: null, targetRef: source.ref, candidateSha: candidate.sha, completedAt: now, evidenceSha256: 'f'.repeat(64), project: { ...target, organizationId: 'foreign-org' }, createdResources: [{ provider: 'supabase', id: target.ref, runId: input.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'disposable', absentAt: null }] }) })).rejects.toThrow('TARGET_CREATION_READBACK_UNPROVEN');
-        const retained = await readPrivateManifest(path, { repositoryRoot: process.cwd(), now });
-        expect(retained.state).toBe('target_creation_pending');
-        expect(retained.target).toBeNull();
-        expect(retained.pending?.step).toBe('create-target');
-    });
-});
-test('records one newly created free target only after exact healthy empty readback', async () => {
-    const path = await privatePath();
-    const input = manifestFixture();
-    input.state = 'backup_verified';
-    input.target = null;
-    await writePrivateManifest(path, input, { repositoryRoot: process.cwd(), now });
-    const observed = { ...projectReadback(), ...source, credential: { id: 'source-key', role: 'source-read', projectRef: source.ref, organizationId: source.organizationId }, creation: { organizationId: source.organizationId, region: source.region, plan: 'free', cost: 0, freeCapacity: true, credentialId: 'restore-key', cleanupAuthorized: true } };
-    const result = await executeOperatorStep({ manifestPath: path, repositoryRoot: process.cwd(), step: 'create-target', capability: 'restore-write', candidate, now, inspect: async () => observed, mutate: async () => { }, readback: async ({ operationId }) => ({ operationId, status: 'verified', resourceId: null, targetRef: source.ref, candidateSha: candidate.sha, completedAt: now, evidenceSha256: 'f'.repeat(64), project: target, projectObservation: projectReadback(), createdResources: [{ provider: 'supabase', id: target.ref, runId: input.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'disposable', absentAt: null }] }) });
-    expect(result.state).toBe('target_read_back');
-    expect(result.target?.ref).toBe(target.ref);
-    expect(result.cleanup.resources[0].id).toBe(target.ref);
+test('requires the fresh project lifecycle for target creation instead of legacy source health assumptions',async()=>{
+    const path=await privatePath(); const input=manifestFixture(); input.state='backup_verified'; input.target=null; await writePrivateManifest(path,input,{repositoryRoot:process.cwd(),now});
+    await expect(executeOperatorStep({manifestPath:path,repositoryRoot:process.cwd(),step:'create-target',capability:'restore-write',candidate,now,inspect:async()=>projectReadback(),mutate:async()=>{throw new Error('must not mutate');},readback:async()=>{throw new Error('must not read');}})).rejects.toThrow('FRESH_PROJECT_LIFECYCLE_REQUIRED');
 });
 
 test('checks the live completion clock for a legitimate restore longer than five minutes',async()=>{
     const path=await privatePath(); const input=manifestFixture(); input.state='quarantine_verified'; await writePrivateManifest(path,input,{repositoryRoot:process.cwd(),now}); let liveTime=now;
     const result=await executeOperatorStep({manifestPath:path,repositoryRoot:process.cwd(),step:'restore-database',capability:'restore-write',candidate,clock:()=>liveTime,inspect:async()=>projectReadback(),mutate:async()=>{liveTime='2026-09-05T12:30:00.000Z';},readback:async({operationId})=>({operationId,status:'verified',resourceId:null,targetRef:target.ref,candidateSha:candidate.sha,completedAt:liveTime,evidenceSha256:'f'.repeat(64)})});
     expect(result.state).toBe('database_restored'); expect(result.history[0].completedAt).toBe('2026-09-05T12:30:00.000Z');
+});
+
+test('final cleanup verifies absence without probing an already retired source', async () => {
+ const path=await privatePath();const manifest=manifestFixture();manifest.state='transient_cleanup_pending';
+ manifest.cleanup.resources.push({provider:'supabase',id:source.ref,runId:manifest.runId,createdAt:now,evidenceSha256:'d'.repeat(64),disposition:'disposable',absentAt:now});
+ await writePrivateManifest(path,manifest,{repositoryRoot:process.cwd(),now});
+ let inspections=0;
+ const result=await executeOperatorStep({manifestPath:path,repositoryRoot:process.cwd(),step:'cleanup',capability:'cleanup',candidate,now,
+  inspect:async()=>{inspections++;throw new Error('source no longer exists');},
+  readback:async({operationId})=>({operationId,resourceId:null,targetRef:source.ref,candidateSha:candidate.sha,status:'verified',completedAt:now,evidenceSha256:'e'.repeat(64)})});
+ expect(result.state).toBe('cleanup_verified');expect(inspections).toBe(0);
 });
