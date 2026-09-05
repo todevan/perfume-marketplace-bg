@@ -292,3 +292,23 @@ describe('hook-level service failure and selective-call behavior (contract tests
     }
   );
 });
+
+// These routes authenticate their own dedicated credential/signature, not browser sessions.
+describe('operations provider routes do not depend on user Auth availability', () => {
+  it.each([
+    ['/api/operations/readiness', 'GET'],
+    ['/api/webhooks/resend', 'POST']
+  ])('reaches the exact %s boundary while user Auth is unavailable', async (path, method) => {
+    currentMockClient = null;
+    const event = makeEvent(path);
+    event.request = new Request(event.url, { method });
+    const response = await handle({ event, resolve: async () => new Response('boundary-denied', { status: 401 }) });
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe('boundary-denied');
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(response.headers.get('content-security-policy')).toBeTruthy();
+    expect(response.headers.get('x-deployed-git-sha')).toBeTruthy();
+    expect(event.locals.user).toBeNull();
+    expect(event.locals.supabase).toBeNull();
+  });
+});

@@ -4,9 +4,15 @@
 
 Supabase database backups do not contain Storage objects.
 
-The marketplace therefore treats PostgreSQL state and finalized listing images as two coordinated backup sets.
+The marketplace therefore treats PostgreSQL state and finalized listing images as one versioned, coordinated recovery set.
 
 This runbook defines the engineering backup/restore invariants and the regular restore-rehearsal procedure.
+
+**Verification boundary:** The Issue #29 recovery and readiness contracts below are
+requirements, not proof that hosted monitoring, automatic backups, Auth recovery,
+or a restore rehearsal have succeeded. Repository contract tests are not hosted
+acceptance. Do not declare recovery usable until the exact current source,
+components, key recovery, isolated restore, and cleanup have provider-backed proof.
 
 It does not by itself authorize:
 
@@ -50,62 +56,79 @@ Do not describe a database-only backup as complete marketplace recovery evidence
 
 # Backup
 
-1. Record the Supabase database backup/PITR checkpoint and exact project identifier.
+## Coordinated recovery contract
 
-2. Export only finalized listing-image records with:
+The zero-new-spend canonical path is a logical database export with the
+repository-pinned Supabase/Postgres tools, coordinated with the reviewed finalized
+`listing-images` backup. Paid managed cloning and “Restore to a new project” are
+not dependencies. Already-entitled managed backup metadata is supplementary only.
 
-```text
-listing_photos.sanitized_at IS NOT NULL
-```
+The versioned set must cover custom roles/grants, application schema/data,
+migration history/digest, approved synthetic Auth recovery state, custom
+`auth`/`storage` changes, extensions/publications inventory, finalized objects, and
+non-secret bucket/platform inventory. Bind it to the exact source organization,
+project/ref, region, synthetic classification, Git SHA/tree and Worker version.
 
-and download the corresponding finalized `listing-images` objects.
+Do not assume the CLI's default dump is a recovery contract. The inspected pinned
+CLI 2.109.1 data dump includes transient Auth sessions/refresh tokens/flow state,
+managed Storage metadata and outbound-hook state; default dumps omit migration
+history. **Never blindly replay that default data dump.** Explicit migration
+history export and a tested synthetic Auth/custom-managed-schema recovery path are
+required. The CLI does not expose a `--snapshot` option; a coherent database
+checkpoint and the finalized-photo rowset's before/after comparison must be
+empirically proven before a coordinated set is accepted. A tools-only inspection
+does not prove that the exporter or restore sequence is complete.
 
-3. Encrypt each object and the private manifest with AES-256-GCM:
+Only export finalized rows with `listing_photos.sanitized_at IS NOT NULL`, using
+the existing guarded Storage mechanism and recorded content hashes. Create one
+unique private temporary directory; never overwrite a completed set. Reject
+rowset/checkpoint drift, missing/added/duplicate objects, wrong paths/hashes, or
+uncoordinated components. Authenticate and hash every component before atomic
+publication. Remove definite failed partial plaintext/output, not completed sets.
 
-```bash
-BACKUP_ENCRYPTION_KEY="a unique secret of at least 32 characters" \
-PUBLIC_SUPABASE_URL="https://PROJECT.supabase.co" \
-SUPABASE_SECRET_KEY="..." \
-pnpm backup:storage
-```
+Inventory explicit exclusions and reconstruction steps: secrets, Edge Functions,
+Auth/API-key settings, Realtime/provider settings, DNS, Worker routes and external
+integrations are **not automatically restored** by a logical dump.
 
-The values above are placeholders.
+## Encryption and custody
 
-Never place a real backup key or Supabase server credential in documentation, source control or shared logs.
+Preserve the existing AES-256-GCM invariants. Each coordinated set requires a
+fresh random data-encryption key and a versioned public-key envelope wrapping that
+key to an owner-held public key. Automation may receive the public key only. The
+private key stays outside GitHub, providers, artifacts, logs, receipts and chat.
+Prove owner-held private-key recovery during the isolated rehearsal.
 
-4. The backup tooling must verify each object against its recorded `content_hash`.
+`BACKUP_ENCRYPTION_KEY` remains the existing offline Storage primitive's input;
+it is not permission to place a reusable decryption secret in a scheduled workflow.
+Do not put plaintext dumps, decrypted manifests, passphrases, data keys or private
+keys outside the ephemeral/private execution boundary. Loss of the owner key makes
+the set unrecoverable; storing it beside the artifact defeats this protection.
 
-5. The tooling must write an encrypted manifest and refuse to overwrite an existing backup object.
+## Automation, freshness and retention
 
-6. `.backups/` remains Git-ignored.
+The required executor is a trusted default-branch GitHub Actions workflow, manual
+plus daily at a non-round-hour schedule, with pinned actions/tools and minimal
+permissions. Never expose backup secrets to pull requests, forks or untrusted
+refs. Publish only encrypted components and a sanitized descriptor, retain them
+for 35 days, and independently read back artifact identity, size, creation/expiry
+and hashes. This retention provides at least seven daily and four weekly points
+only while daily execution remains healthy.
 
-7. Transfer the completed backup directory to an access-controlled encrypted backup destination.
+Do not claim a scheduled backup is operational merely because the workflow
+contract exists or a historical run was green. A new workflow requires one real
+post-merge default-branch dispatch with artifact and success-heartbeat readback
+before Issue #29 closes. A missing/failed execution remains a blocker.
 
-8. Remove the temporary local working copy only according to the approved retention/cleanup process.
-
----
-
-# Backup encryption key
-
-Keep:
-
-```text
-BACKUP_ENCRYPTION_KEY
-```
-
-in a separate password/secrets system from the encrypted backup set.
-
-Do not:
-
-- commit it;
-- store it inside the backup directory;
-- place it in ordinary Worker runtime configuration;
-- include it in backup receipts;
-- log it.
-
-Loss of the key makes the encrypted Storage set unrecoverable.
-
-Storing the key beside the backup defeats the intended protection.
+- RPO target: 24 hours; warn above 24 hours, critical above 26 hours or on any
+  integrity/decryption failure.
+- Full-service RTO target: 2 hours; record DB/Auth recovery and full recovery
+  separately.
+- Independent dead-man: Grafana Cloud Free, not the GitHub schedule itself.
+- Secondary copy: one owner-controlled encrypted destination, alias
+  `owner-secondary`; copy at least one complete encrypted artifact and compare its
+  hash without co-locating the private key.
+- Rehearse before launch, after a material recovery-contract change, and at least
+  monthly while beta is active.
 
 ---
 
@@ -134,11 +157,16 @@ A valid credential does not authorize backing up or restoring the wrong project.
 
 # Restore rehearsal
 
-The regular restore rehearsal must use an isolated empty staging/test project.
+The regular rehearsal requires one newly created, dedicated, disposable normal
+Supabase project within existing free capacity. Provider base schemas may exist;
+foreign Auth users, unrelated application data or objects may not. Do not purchase
+capacity or delete an unrelated project to make room.
 
 Do not use production for routine rehearsal.
 
-The rehearsal target must contain no real personal data.
+The source and target must be proven synthetic and owner-controlled. Unknown or
+real staging data must not be copied, deleted or reclassified to force a pass.
+If no compliant free synthetic arrangement exists, stop at that exact blocker.
 
 Before restore mutation, verify that the selected target is the explicitly authorized rehearsal environment.
 
@@ -146,45 +174,50 @@ Before restore mutation, verify that the selected target is the explicitly autho
 
 ## Rehearsal sequence
 
-1. Restore the matching database snapshot or migration-compatible database state into the authorized rehearsal target.
+The single operator entry point is `node scripts/issue29-operations/cli.mjs`.
+Use only commands actually listed by that entry point. The intended sequence is
+`preflight` → `backup-set` → `verify-backup` → `restore` → `verify-restore` →
+`incident-drill` → `cleanup` → `validate-receipt`; a listed contract or command
+name is not evidence that a hosted adapter is implemented. Currently only
+`verify-backup` and `validate-receipt` provide local verification; hosted commands
+stop with `HOSTED_EXECUTION_UNAVAILABLE`. Do not accept a fabricated success
+receipt or describe this contract as a working hosted restore executor.
 
-2. Verify that the database state corresponds to the Storage backup being rehearsed.
-
-3. Point the required environment variables only at the verified empty rehearsal project.
-
-4. Run the guarded restore command:
-
-```bash
-pnpm restore:storage -- --backup=/absolute/path/to/storage-TIMESTAMP
-```
-
-5. The restore tooling must authenticate every encrypted object.
-
-6. It must verify:
-
-- authenticated encryption;
-- expected byte length;
-- SHA-256 integrity.
-
-7. It must upload with:
-
-```text
-upsert: false
-```
-
-Existing destination objects are therefore a stop condition rather than permission to overwrite.
-
-8. Compare the restored database count of finalized photo records with the restored backup descriptor/object count.
-
-9. Open a representative sample across:
-
-- JPEG/WebP derivatives where represented by the backup;
-- different sellers;
-- different listing states.
-
-10. Verify that only finalized/sanitized paths intended by the architecture are available.
-
-11. Record the rehearsal receipt.
+1. Create the private mode-0600, expiring transaction manifest outside the
+   repository. Bind source/target identities, SHA/tree/deployment, forbidden refs,
+   role-scoped capabilities, zero cost and exact cleanup ownership.
+2. Read back source ownership/classification and free target capacity. Reject
+   source/target equality, production, canonical staging, historical/unrelated
+   forbidden refs and foreign state before mutation.
+3. Persist intent before any mutation, execute once, read back the exact provider
+   identity, then advance state. Ambiguous results stop for inspection, not retry.
+4. Read back `quarantine_verified` before data loading: no copied runtime secrets,
+   production routes, outbound email, copied cron/net jobs, webhooks, callbacks,
+   queued requests, billing or indexing. Inventory triggers and prove the load
+   method cannot cause outbound effects; uncertainty stops before restore writes.
+5. Use one empirically tested schema strategy: do not apply migrations then
+   blindly replay a full schema dump. Restore required roles/extensions,
+   application schema/data and migration history consistently; restore only the
+   approved custom managed-schema changes and synthetic Auth recovery state.
+   Exclude transient source sessions/tokens and unsafe managed Storage internals.
+6. Verify fresh target login and old-source-token rejection under distinct signing
+   identity, RLS, cross-user denials, staff MFA, schema/migration inventory and the
+   absence of production configuration/outbound effects.
+7. Restore finalized Storage through the existing authenticated mechanism with
+   exact target/manifest checks and `upsert: false`. A fresh target bucket must be
+   empty; resume only if every existing object is verified against this same
+   manifest. Do not treat unrelated objects as resumable state.
+8. Re-download and hash every object; reconcile complete path-tree/count/bytes and
+   finalized-photo rowset/checkpoint with the database.
+9. Reuse existing application/deal/safety/privacy proof journeys, including
+   listing/search, accepted-offer private chat, report/block/moderation/evidence,
+   finalized-image access and monitor health.
+10. Measure actual RPO and DB/Storage/application/full RTO from recorded UTC
+    boundaries. Missed RPO/RTO targets remain failed acceptance, not a warning-only
+    success.
+11. Perform the disposable Storage-sentinel incident drill in
+    `docs/INCIDENT-RESPONSE.md`, then delete only manifest-owned disposable resources
+    and independently prove absence. Retain approved monitors/encrypted artifacts.
 
 ---
 
@@ -203,7 +236,12 @@ Record at least:
 - restored object count;
 - integrity failures;
 - upload failures;
-- elapsed time;
+- `recoveryPointAgeAtStartMs` (actual RPO, at most 24 hours);
+- `databaseRecoveryElapsedMs` (through DB/Auth integrity);
+- `storageRecoveryElapsedMs` and `applicationRecoveryElapsedMs`;
+- `fullRecoveryElapsedMs` (through all checks, at most 2 hours);
+- private-key recovery proof without secret values;
+- runbook/configuration/isolation checksums and current-run provenance;
 - verification result;
 - cleanup/deletion disposition for rehearsal data.
 
@@ -231,7 +269,10 @@ Before cleanup:
 2. confirm it is not production;
 3. confirm the cleanup is within the authorized rehearsal scope;
 4. preserve required evidence/receipts;
-5. use the narrowest supported cleanup method.
+5. delete only IDs created by this manifest, or restore exact temporary
+   configuration captured before this transaction;
+6. read back every deletion/rollback and independently verify absence before
+   `cleanup_verified`; leave no ambiguous pending mutation.
 
 Do not use production data, migration history rewriting or unrelated provider cleanup as part of rehearsal teardown.
 
@@ -281,7 +322,9 @@ Confirm whether:
 - a previous rehearsal left state behind;
 - the restore was already partially attempted.
 
-Prefer an explicitly authorized clean rehearsal target rather than mutating existing objects to force the restore through.
+Resume only when every existing destination object matches this exact authenticated
+manifest and target. Otherwise stop; prefer an explicitly authorized dedicated
+rehearsal target rather than deleting or overwriting foreign state.
 
 ---
 
@@ -453,7 +496,7 @@ Backups must be attributable to the correct source.
 Encrypted objects must pass integrity verification.
 Restore targets must be explicitly verified.
 Routine rehearsals never use production.
-Existing destination objects are a stop condition, not overwrite permission.
+Existing foreign destination state is a stop condition, not overwrite permission.
 A restore is not proven until database and Storage agree.
 Production restore remains a protected R3 action.
 ```

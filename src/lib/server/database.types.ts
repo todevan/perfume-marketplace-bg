@@ -2370,6 +2370,16 @@ export type Database = {
         Args: { target_offer_id: string }
         Returns: string
       }
+      // Issue #29 RPC additions are locally generated; hosted application is unverified.
+      append_resend_delivery_event: {
+        Args: {
+          p_event_type: string
+          p_occurred_at: string
+          p_provider_event_id: string
+          p_provider_message_id: string
+        }
+        Returns: undefined
+      }
       array_has_unique_items: { Args: { items: unknown }; Returns: boolean }
       assert_active_beta_user: { Args: never; Returns: undefined }
       bind_first_admin_invite: {
@@ -2661,6 +2671,7 @@ export type Database = {
           username: string
         }[]
       }
+      get_operations_snapshot: { Args: never; Returns: Json }
       has_verified_phone: { Args: never; Returns: boolean }
       is_active_beta_user: { Args: never; Returns: boolean }
       is_admin: { Args: { check_user_id?: string }; Returns: boolean }
@@ -2869,6 +2880,16 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      record_operations_checkpoint: {
+        Args: {
+          p_checkpoint_at: string
+          p_deployment_identity: string
+          p_evidence_sha256: string
+          p_kind: string
+          p_ok: boolean
+        }
+        Returns: undefined
       }
       redeem_beta_invite: {
         Args: { invite_token: string }

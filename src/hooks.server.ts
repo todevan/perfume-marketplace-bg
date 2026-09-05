@@ -143,6 +143,20 @@ export const handle: Handle = async ({ event, resolve }) => {
 		return applySecurityHeaders(response, requestId, runtime, true);
 	}
 
+	// These exact server boundaries authenticate a dedicated token or raw provider
+	// signature. Browser cookies must neither authorize them nor make them depend
+	// on user-session availability. Their route handlers fail closed independently.
+	const independentOperationsRoute =
+		(event.url.pathname === '/api/operations/readiness' && event.request.method === 'GET') ||
+		(event.url.pathname === '/api/webhooks/resend' && event.request.method === 'POST');
+	if (independentOperationsRoute) {
+		event.locals.supabase = null;
+		event.locals.safeGetSession = async () => ({ session: null, user: null });
+		setAuthContext(event.locals, EMPTY_AUTH_CONTEXT);
+		const response = await resolve(event);
+		return applySecurityHeaders(response, requestId, runtime, true);
+	}
+
 	const forwardedAuthHeaders = new Set<string>();
 	const supabase = createServerClient(runtime.publicSupabaseUrl, runtime.publicSupabaseKey, {
 		auth: { flowType: 'pkce' },

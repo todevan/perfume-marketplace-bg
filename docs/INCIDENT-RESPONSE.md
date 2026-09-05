@@ -6,16 +6,10 @@ This is the operational runbook for containing, investigating, and recovering fr
 
 It does not create a separate execution framework or override repository authority.
 
-During incident work, follow this order:
-
-1. `AGENTS.md` and authoritative repository/project documentation.
-2. The explicitly authorized environment, issue, gate and task scope.
-3. `docs/agents/WORKFLOW.md` and `docs/agents/SECURITY.md`.
-4. The selected Agent System V2 stage contract.
-5. Matt Pocock skills for shaping or deep engineering reasoning when useful.
-6. Superpowers for tactical debugging, TDD, verification, and review.
-7. ECC or platform-specific skills for specialist security, backend, E2E, Supabase, Cloudflare, GitHub or similar work.
-8. Repository-defined verification and release gates.
+During incident work, follow the current owner decision, live canonical issue,
+root/path `AGENTS.md`, selected Agent System V2 stage and applicable security
+contract, then current verified code/Git/provider evidence. Memory and historical
+receipts are supporting evidence, never current target authority.
 
 Do not start a second competing planning, debugging, TDD, execution or completion loop for an incident.
 
@@ -46,6 +40,176 @@ When immediate containment and an R3 boundary are both relevant, perform every s
 Escalate severity when new evidence shows broader access, sensitive-data exposure, credential compromise, destructive modification or a larger affected population.
 
 Do not downgrade an incident merely because the visible symptom has stopped.
+
+## Roles, contacts and acknowledgement
+
+| Responsibility | Repository-visible alias |
+| --- | --- |
+| Incident Commander; privacy/communications decisions | `owner` |
+| Technical Lead; backup/restore operator | `authorized-operator` |
+| Independent Grafana alert destination | `owner-primary` |
+
+Private contact values live in the owner-controlled secrets/password system under
+`owner-private-contact-map`, outside Git, receipts and issue comments. The contact
+map attestation records its alias, freshness and owner responsibility, not an email
+address. Provider status/support routes and the private owner alert destination are
+the escalation contacts; there is no assumed second human or staffed 24/7 rota.
+
+During declared launch, rehearsal or active monitoring windows: acknowledge P0/P1
+within 15 minutes, P2 within 4 hours and P3 at the next planned work session.
+Escalate an unacknowledged incident through the private contact map/provider
+support route; do not claim coverage outside a declared window.
+
+## Operational signals and independent alerts
+
+Grafana Cloud Free is the selected independent alert plane; destination
+`owner-primary` uses Grafana-managed private email, **not Aromatika's Resend
+transport**. Cloudflare Workers Logs/Metrics and Supabase native operational
+surfaces remain diagnostic sources. No broad Supabase administrator credential may
+be handed to Grafana. The selected configuration is not a claim that a stack,
+rules, delivery or recovery notifications have been proven live.
+
+Use `GET /api/operations/readiness` only with a dedicated monitor Bearer credential;
+it returns a bounded sanitized signal contract, not raw rows, private paths,
+recipient values, provider bodies or topology. Missing evidence is unhealthy, not
+an assumed green result. Do not bypass Auth, CAPTCHA, MFA or RLS for monitoring.
+
+The public liveness cadence is 5 minutes; protected read-only checks are every
+10 minutes. Alert after two consecutive health failures and resolve after two
+successes. Protected rules require two failed evaluations within 10 minutes;
+deployment/integrity/privacy failures are immediate critical. Validate the actual
+provider schedule/window configuration; the cadence label alone is not proof that
+two protected evaluations fit the selected alert window. Stateful Auth/deal/safety
+journeys run during controlled release/restore proof, not continuous polling.
+
+### Health
+
+Check reachability, status/latency, TLS/DNS where supported, redirect environment
+and deployed identity. Two failed liveness checks are critical; an unexpected
+SHA/version is immediately critical. Inspect exact Worker version/log evidence.
+Do not silently repoint a monitor or roll back an unknown deployment.
+
+### Auth
+
+Check safe provider/application health and invalid-session denial without a real
+password or CAPTCHA bypass. For a failing signal, distinguish provider failure
+from application/session configuration using redacted evidence. Prove synthetic
+confirmation/login/session behavior only in the authorized isolated scope.
+
+### Database
+
+Check trivial read, expected schema/migration digest and the service-only aggregate
+operational snapshot. Preserve the error window and inspect native diagnostics;
+never use resets or migration-history repair as a health-check remedy.
+
+### Storage
+
+Read only the exact private synthetic sentinel and verify its content hash. A hash
+mismatch is immediate critical. Correlate aggregate quarantine, upload-cleanup
+retry and dead-letter health. Private sentinel paths remain outside external
+signals. Only the manifest-owned disposable sentinel may be fault-injected.
+
+### Email
+
+Check the internal delivery ledger and signed downstream Resend event health.
+Internal `sent` continues to mean provider API acceptance, not recipient delivery.
+The daily/manual synthetic canary is critical if absent 15 minutes after the
+explicit `OPERATIONS_CANARY_EXPECTED_UTC` (`HH:MM`) deadline; there is no inferred
+daily schedule. Keep exact message/event identities, bounded timestamp window and count
+in private evidence; no recipient in public evidence. Escalate through Grafana,
+not the failing Resend path. Do not resend user messages blindly.
+
+### Deals
+
+Treat impossible state/relationship invariants as immediate critical. Use
+aggregate read-only checks derived from current schema/tests, not continuous deal
+creation. Preserve evidence and use the controlled repair path; do not auto-repair
+state or invent a business-age SLA for ordinary deals.
+
+### Safety
+
+Authorization/privacy invariant failures are immediate critical. Check aggregate
+report/moderation queues, block/privacy boundaries and evidence access. Queue-age
+configuration is explicit: 24-hour warning and 48-hour critical pre-launch defaults
+unless approved product policy is stricter. Never expand moderator access to
+investigate an alert or expose report/message/evidence content in notifications.
+
+### Backup freshness
+
+Warn when the last usable coordinated backup is older than 24 hours; critical
+above 26 hours or on any integrity/decryption failure. Preserve the last known
+usable encrypted set. Verify the exact source, artifact readback, descriptor,
+component hashes and owner-held key recovery. Do not replace a corrupt set's
+expected hashes or send plaintext to diagnostics. Missed RPO stays failed.
+Follow `BACKUP-RESTORE.md`; a green historical workflow is not current proof.
+
+### Monitor heartbeat
+
+Alert after two missed expected intervals. Check Grafana's own rule execution and
+last application/backup heartbeat independently. Do not use the application being
+monitored as its sole dead-man or alert delivery path. Require actual failure and
+recovery notification delivery readback, not only a green rules API response.
+
+## Evidence and exact-target operator
+
+Use the one entry point `node scripts/issue29-operations/cli.mjs` and only commands
+currently exposed by it. `verify-backup` and `validate-receipt` provide local verification only;
+`preflight` and other hosted commands currently stop with
+`HOSTED_EXECUTION_UNAVAILABLE`. Contract verification is not hosted acceptance. Every
+stateful command requires an expiring mode-0600 manifest outside the repository,
+with exact candidate/tree/deployment, source/target identities, allowed actions,
+zero-cost ceiling, forbidden refs and cleanup-owned IDs.
+
+Persist mutation intent, execute once and read back the exact provider resource
+before state advances. If the result is ambiguous, stop and inspect; never blindly
+repeat create, restore, upload, rule, webhook or delete. Cleanup is limited to
+manifest-owned resources or exact temporary configuration captured before the
+run, with independent absence/restoration readback.
+
+Store full evidence in the private run directory named by the manifest; public
+receipts expose only aliases, UTC boundaries, normalized results and hashes.
+Content-addressed readiness evidence files are mode-0600 `<sha256>.json` files
+outside the repository. The release gate requires
+`OPERATIONS_READINESS_RECEIPT_PATH`/`OPERATIONS_READINESS_RECEIPT_SHA256`, the private
+`OPERATIONS_EVIDENCE_DIRECTORY`, exact `RELEASE_TREE_SHA`/`RELEASE_WORKER_VERSION`,
+and independent monitor-config/isolation-matrix checksums. It computes the current
+runbook checksum from repository bytes. Daily backup freshness does not refresh
+monthly restore/key-recovery evidence: both current and rehearsed descriptors are
+read and hash-checked against release identity, key fingerprint and the material
+recovery contract. Initial Issue #29 receipt validation additionally requires that
+the rehearsed set is the exact current backup. Keep private operational evidence for 35 days by default,
+without overriding legal/security preservation requirements; expire definite
+partial plaintext immediately and remove other temporary decrypted material in
+cleanup. Retained encrypted backup artifacts have a separate 35-day policy and
+must not be removed as transient evidence.
+
+Production remains exact read-only inventory for Issue #29. A restore-target
+mismatch, unknown/real source data, unavailable free capacity, incomplete cleanup
+authority or unproven quarantine is a pre-mutation stop. Do not delete/reclassify
+unknown users or objects to make a rehearsal possible.
+
+## Storage-sentinel incident drill
+
+Run only against the exact manifest-owned disposable environment after monitors
+are green and the current encrypted set has been verified:
+
+1. Record target, run ID, candidate and start time; persist fault intent.
+2. Delete/corrupt only the disposable sentinel and read back that exact mutation.
+3. Observe Storage/readiness failure, Grafana rule firing and independent delivery.
+4. Acknowledge as `owner`/`authorized-operator`, preserving detection, delivery and
+   acknowledgement times; inspect the exact evidence window and target.
+5. Record containment, diagnosis and the rollback-limit decision. Restore the
+   sentinel from the exact current backup/fixture; verify its hash and readiness.
+6. Observe two successful evaluations and actual recovery-notification delivery;
+   record recovery and incident closure times.
+7. Remove only current-run test resources/temporary credentials and independently
+   prove absence. Retain only the approved persistent monitors/encrypted backup.
+
+The receipt includes rule/config checksum, target/destination aliases, distinct
+failure/recovery event IDs, evidence hashes, and UTC mutation, detection, delivery,
+acknowledgement, diagnosis, restoration, recovery, closure and cleanup boundaries.
+No completed drill, measured RPO/RTO or independent delivery may be claimed from
+local payload fixtures alone.
 
 ## First response
 
@@ -156,6 +320,16 @@ Never treat a remembered project name, credential, environment variable or old p
 Shared hosted database migrations are forward-only. Do not use remote database reset, migration-history rewriting or destructive repair as normal incident remediation.
 
 If destructive recovery is genuinely required, stop at the protected R3 boundary and use the documented recovery process rather than improvising.
+
+## Rollback limits
+
+Read back the currently deployed Worker version immediately before an authorized
+rollback and require operator-supplied exact rollback-version provenance. A
+remembered or permanently hardcoded “safe” version is not authority. Check database
+compatibility before routing traffic to older code. A Worker rollback restores
+neither database state nor Storage objects, Auth state, external-provider settings
+or secret configuration; database/Storage recovery is the distinct protected
+process in `BACKUP-RESTORE.md`.
 
 ## Active tasks and incidents
 

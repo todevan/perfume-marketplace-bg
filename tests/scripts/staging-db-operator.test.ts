@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
 	existsSync,
 	mkdirSync,
@@ -18,7 +19,8 @@ import {
 	createPinnedSupabaseWorkdir,
 	runStagingCommand,
 	stagingCommandArguments,
-	verifyStagingTarget
+	verifyStagingTarget,
+	verifyStagingInventoryReceipt
 } from '../../scripts/staging-db-operator.mjs';
 
 const publishableKey = 'sb_publishable_frankfurt_test_key';
@@ -398,4 +400,31 @@ describe('Frankfurt staging operator commands', () => {
 			rmSync(fixtureBase, { recursive: true, force: true });
 		}
 	});
+});
+
+
+describe('current staging signup inventory', () => {
+  const categories = ['application_rows', 'auth_configuration', 'auth_users', 'database_objects',
+    'edge_functions', 'extensions', 'migrations', 'realtime', 'scheduled_jobs', 'secrets', 'storage'];
+  function verify(patch: Record<string, unknown> = {}) {
+    const directory = mkdtempSync(join(tmpdir(), 'issue29-signup-inventory-'));
+    try {
+      const path = join(directory, 'inventory.json');
+      const bytes = JSON.stringify({ projectRef: STAGING_PROJECT.ref, createdAt: new Date().toISOString(),
+        stopConditionsClear: true, containsRealData: false, publicSignupEnabled: true,
+        unexpectedObjects: [], completeCategories: categories, ...patch });
+      writeFileSync(path, bytes, { mode: 0o600 });
+      return verifyStagingInventoryReceipt({ STAGING_INVENTORY_RECEIPT_PATH: path,
+        STAGING_INVENTORY_RECEIPT_SHA256: createHash('sha256').update(bytes).digest('hex') });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }
+  it('accepts approved open signup without relaxing data or target safety', () => {
+    expect(() => verify()).not.toThrow();
+  });
+  it.each([false, undefined, 'true'])('rejects unverified signup state %s', (value) => {
+    expect(() => verify({ publicSignupEnabled: value })).toThrow(/stop condition/);
+  });
+  it.each([{ containsRealData: true }, { projectRef: 'foreign-project' }, { unexpectedObjects: ['foreign'] }])(
+    'still rejects unsafe inventory %j', (patch) => { expect(() => verify(patch)).toThrow(/stop condition/); }
+  );
 });

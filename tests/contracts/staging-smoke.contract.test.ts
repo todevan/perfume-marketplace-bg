@@ -324,20 +324,22 @@ describe('manual staging deploy workflow smoke contract', () => {
 		const smoke = commands.indexOf('node scripts/smoke-staging.mjs');
 		const turnstileEvidence = commands.indexOf('node scripts/verify-staging-turnstile.mjs');
 		const rollback = commands.findIndex((command) =>
-			command.includes('pnpm exec wrangler versions deploy "$SAFE_ROLLBACK_VERSION"')
+			command.includes('pnpm exec wrangler versions deploy "$ROLLBACK_VERSION_ID@100%"')
 		);
 		const rollbackSmoke = commands.indexOf('node scripts/smoke-staging.mjs --mode rollback');
 
 		expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
-		expect(workflow.on.workflow_dispatch).toBeNull();
+		expect(workflow.on.workflow_dispatch).toMatchObject({ inputs: { rollback_version_id: { required: true }, rollback_source_sha: { required: true }, rollback_provenance_sha256: { required: true } } });
 		expect(job.if).toBe("github.ref == 'refs/heads/main'");
-		expect(job.env?.A7_REQUIRE_DISABLED_SIGNUP).toBe('true');
+		expect(job.env?.A7_REQUIRE_DISABLED_SIGNUP).toBeUndefined();
 		expect(job.env).toMatchObject({
 			STAGING_ORIGIN: expectedOrigin,
 			EXPECTED_GIT_SHA: '${{ github.sha }}',
 			STAGING_SMOKE_ATTEMPTS: '6',
 			STAGING_SMOKE_DELAY_MS: '5000',
-			SAFE_ROLLBACK_VERSION: '75593db4-12fd-486d-ae8a-bdf9ebbb3ece'
+			ROLLBACK_VERSION_ID: '${{ inputs.rollback_version_id }}',
+			ROLLBACK_SOURCE_SHA: '${{ inputs.rollback_source_sha }}',
+			ROLLBACK_PROVENANCE_SHA256: '${{ inputs.rollback_provenance_sha256 }}'
 		});
 		expect(job).not.toHaveProperty('environment');
 		expect(commands.some((command) => command.includes('wrangler deploy --env production'))).toBe(
