@@ -10,6 +10,8 @@ change and regression evidence.
 - Stage 02 executable issue contract and acceptance map
 - The isolated issue worktree
 - Current code, tests, and effective configuration
+- Model, delegation, and credit rules in
+  [`../reference/MODELS-AND-TOOLS.md`](../reference/MODELS-AND-TOOLS.md)
 - [`../SECURITY.md`](../SECURITY.md) when the changed surface is R2/R3
 
 ## Procedure
@@ -19,7 +21,9 @@ change and regression evidence.
 3. Implement the minimum root-cause repair; keep every changed file mapped to
    acceptance, required evidence, mandatory configuration/documentation, or a defect
    required for correctness of the directly modified path.
-4. Observe focused green and run affected regressions. Confirm acceptance-critical
+4. Observe focused green and run affected regressions. Consume still-valid passing
+   evidence instead of regenerating it, and do not run or repeat broad project/risk gates
+   in this stage unless needed to diagnose a concrete failure. Confirm acceptance-critical
    test discovery rather than accepting a skipped or zero-test run.
 5. Classify findings under the blocker classes in
    [`../reference/ISSUE-CONTRACT.md`](../reference/ISSUE-CONTRACT.md). Fix ordinary
