@@ -178,3 +178,16 @@ it('refuses idempotency replay when changed secret bindings would change the req
  await monitor.scheduled(configuration);const initial=sends;expect(initial).toBeGreaterThan(0);configuration.RESEND_TO='changed@example.test';tick+=10*60_000;await monitor.scheduled(configuration);expect(sends).toBe(initial);
  const raw=(await configuration.MONITOR_STATE.get('issue29-monitor-state-v1'))!;expect(raw).not.toContain('changed@example.test');expect(raw).not.toContain('owner@example.test');
 });
+
+it('alerts a recurring persistent failure after late delivery of the previous recovery',async()=>{
+ const configuration=env();let tick=now;const sends:{id:string,body:string}[]=[];
+ const monitor=createIssue29Monitor({now:()=>tick,fetch:async(input,init)=>{if(new URL(String(input)).hostname==='api.resend.com'){const id=crypto.randomUUID();sends.push({id,body:String(init?.body)});return Response.json({id});}const minute=(tick-now)/60000;const data=readiness(minute===0||minute>=30?{storage:{ok:false,severity:'critical',reasonCode:'storage_integrity_mismatch'}}:{});data.signals=data.signals.map(s=>({...s,checkedAt:new Date(tick).toISOString()}));return fetcher({readiness:data})(input,init);}});
+ await monitor.fetch(new Request('https://monitor.example.test/ops/monitor/backup-checkpoint',{method:'POST',headers:{authorization:`Bearer ${configuration.BACKUP_CHECKPOINT_TOKEN}`,'content-type':'application/json'},body:JSON.stringify({schemaVersion:1,environment:'staging',release,checkpointAt:new Date(now).toISOString(),descriptorSha256:'d'.repeat(64),artifactSha256:'e'.repeat(64)})}),configuration);
+ const deliver=async(id:string)=>expect((await monitor.fetch(await signedWebhook(configuration,'msg_'+crypto.randomUUID(),JSON.stringify({type:'email.delivered',created_at:new Date(tick).toISOString(),data:{email_id:id}}),tick),configuration)).status).toBe(200);
+ await monitor.scheduled(configuration);await deliver(sends[0].id);
+ for(const minute of [10,20,30]){tick=now+minute*60000;await monitor.scheduled(configuration);}
+ const storage=()=>sends.filter(s=>JSON.parse(s.body).subject.endsWith(': storage'));expect(storage()).toHaveLength(2);
+ tick=now+35*60000;await deliver(storage()[1].id);
+ tick=now+40*60000;await monitor.scheduled(configuration);expect(storage()).toHaveLength(3);expect(JSON.parse(storage()[2].body).subject).toContain('failure');
+ const persisted=JSON.parse((await configuration.MONITOR_STATE.get('issue29-monitor-state-v1'))!);expect(persisted.signals.storage.deliveries.firing.sendAttemptedAt).toBe(new Date(tick).toISOString());
+});
