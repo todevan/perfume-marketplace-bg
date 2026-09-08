@@ -76,6 +76,30 @@ it('generates one selected configuration with all nine signal families and no de
   expect(JSON.stringify(plan)).not.toMatch(/private-owner|private-token|Bearer|supabase/);
 });
 
+it('binds k6 samples and native rule selectors to the exact current release, not mutable check job alone',async()=>{
+  const fixture=providerFixture(),a=createGrafanaAdapter(monitoringConfig,{fetchImpl:fixture.fetchImpl,now:()=>now}),p=a.configuration();
+  for(const r of p.resources){const op=a.resourceOperation(r.key);await op.inspect();await op.mutate();}
+  const checks=fixture.requests.filter(r=>r.method==='POST'&&new URL(r.url).pathname==='/api/v1/check');
+  for(const r of checks){const script=Buffer.from(r.body.settings.scripted.script,'base64').toString();
+    expect(script).toContain(`"issue29_candidate":"${monitoringConfig.candidateSha}"`);
+    expect(script).toContain(`"issue29_config":"${p.configSha256}"`);}
+  for(const r of fixture.stored.values())if(r.ruleGroup&&!r.labels.signal.startsWith('backup')){
+    expect(r.data[0].model.expr).toContain(`issue29_candidate="${monitoringConfig.candidateSha}"`);
+    expect(r.data[0].model.expr).toContain(`issue29_config="${p.configSha256}"`);}
+});
+
+it('reads the actual monitor heartbeat value and rejects stale, foreign, or duplicate series',async()=>{
+  let mode='valid';const clock='2026-09-05T12:00:00.000Z',heartbeatAt='2026-09-05T11:51:00.000Z';
+  const a=createGrafanaAdapter(monitoringConfig,{now:()=>clock,fetchImpl:async(url)=>{
+    const query=new URL(String(url)).searchParams.get('query')!;expect(query).toContain('last_over_time(probe_aromatika_monitor_checkpoint_seconds');
+    const labels={job:'i29-7abbd7fca0-protected',instance:monitoringConfig.targetOrigin+'/api/operations/readiness',issue29_run:monitoringConfig.runId,issue29_candidate:mode==='foreign'?'d'.repeat(40):monitoringConfig.candidateSha,issue29_config:a.configuration().configSha256};
+    const row={metric:labels,value:[Date.parse(clock)/1000,String(Date.parse(mode==='stale'?'2026-09-05T11:39:59.000Z':heartbeatAt)/1000)]};
+    return Response.json({status:'success',data:{resultType:'vector',result:mode==='duplicate'?[row,row]:[row]}});
+  }});
+  expect(await a.readMonitorHeartbeat()).toMatchObject({heartbeatAt,checkedAt:clock,candidateSha:monitoringConfig.candidateSha});
+  for(mode of ['stale','foreign','duplicate'])await expect(a.readMonitorHeartbeat()).rejects.toThrow('GRAFANA_MONITOR_HEARTBEAT_UNPROVEN');
+});
+
 // Public HTTP fixtures follow the current official SM v1.15.0/Receiver/historian payloads.
 // They are contract evidence only; no fixture result is a hosted alert-delivery attestation.
 
@@ -207,6 +231,9 @@ it('assembles all real HTTP-phase readbacks and private acknowledgements without
   const input={phases:phases as Parameters<typeof verifyMonitoringProof>[1]['phases'],acknowledgements,now:current};
   const proof=await verifyMonitoringProof(a,input);
   expect(proof.status).toBe('deterministic-only');expect(proof.timelines).toHaveLength(11);expect(JSON.stringify(proof)).not.toMatch(/private-owner|private-token/);
+  expect(proof.sourceConfigSha256).toBe(plan.configSha256);expect(proof.configuration.resources).toHaveLength(16);
+  expect(proof.signalFamilies).toEqual(['health','auth','database','storage','email','deals','safety','backup_freshness','monitor_heartbeat']);
+  expect(proof.ruleMappings).toHaveLength(11);expect(proof.ruleMappings.every(r=>r.ruleKey===r.sourceRuleKey)).toBe(true);
   await expect(verifyMonitoringProof(a,{...input,acknowledgements:[]})).rejects.toThrow('MONITORING_RULE_COVERAGE_INCOMPLETE');
   const tampered=structuredClone(input);tampered.phases[0].configSha256='d'.repeat(64);
   await expect(verifyMonitoringProof(a,tampered)).rejects.toThrow('MONITORING_PHASE_IDENTITY_OR_HASH_MISMATCH');
@@ -216,4 +243,122 @@ it('assembles all real HTTP-phase readbacks and private acknowledgements without
   await expect(verifyMonitoringProof(a,forged)).rejects.toThrow('MONITORING_NESTED_IDENTITY_MISMATCH');
   const unacknowledged=structuredClone(input);unacknowledged.acknowledgements[0].failureEventId='foreign-event';
   await expect(verifyMonitoringProof(a,unacknowledged)).rejects.toThrow('MONITORING_ACKNOWLEDGEMENT_INVALID');
+});
+it('isolates target monitoring resource identities from the persistent source configuration',()=>{
+  const source=createGrafanaAdapter(monitoringConfig).configuration();
+  const target=createGrafanaAdapter({...monitoringConfig,targetRole:'target',environmentAlias:'synthetic-restore',targetOrigin:'https://issue29-target.owner.workers.dev',folderUid:'issue29-target'}).configuration();
+  expect(target.targetRole).toBe('target');
+  expect(target.resources.every(r=>!source.resources.some(s=>s.key===r.key))).toBe(true);
+});
+it('creates a rule-specific expiring maintenance silence and expires only its exact read-back identity',async()=>{
+  const f=providerFixture();let silence:Record<string,any>|null=null,posts=0,deletes=0,ambiguous=false;
+  const fetchImpl:typeof fetch=async(url,init)=>{const path=new URL(String(url)).pathname;
+    if(path.endsWith('/api/v2/silences')){if(init?.method==='POST'){posts++;silence={...JSON.parse(String(init.body)),id:'45454545-4545-4454-8454-454545454545',status:{state:'active'},updatedAt:now};if(ambiguous)throw new Error('private body');return Response.json({silenceID:'45454545-4545-4454-8454-454545454545'});}return Response.json(silence?[silence]:[]);}
+    if(path.includes('/api/v2/silence/')){if(init?.method==='DELETE'){deletes++;silence={...silence,endsAt:now,status:{state:'expired'}};return new Response(null,{status:200});}return silence?Response.json(silence):new Response(null,{status:404});}
+    return f.fetchImpl(url,init);
+  };
+  const a=createGrafanaAdapter(monitoringConfig,{fetchImpl,now:()=>now});for(const r of a.configuration().resources){const op=a.resourceOperation(r.key);await op.inspect();await op.mutate();}
+  const maintenance={id:'65656565-6565-4656-8656-656565656565',authorizedAt:now,expiresAt:'2026-09-05T14:00:00.000Z',sourceConfigSha256:a.configuration().configSha256};
+  const key=a.configuration().resources.find(r=>r.key.endsWith('-storage'))!.key;
+  const op=a.maintenanceSilenceOperation({maintenance,ruleKey:key,action:'create'});await op.inspect();ambiguous=true;
+  await expect(op.mutate()).rejects.toThrow('GRAFANA_MUTATION_UNCERTAIN_READBACK_ONLY');
+  const proof=await a.maintenanceSilenceOperation({maintenance,ruleKey:key,action:'create'}).readback();
+  expect(proof).toMatchObject({status:'active',resourceId:'45454545-4545-4454-8454-454545454545',expiresAt:maintenance.expiresAt});expect(posts).toBe(1);
+  expect((silence as Record<string,any>|null)?.matchers).toContainEqual({name:'__alert_rule_uid__',value:key,isEqual:true,isRegex:false});
+  const heartbeat=a.configuration().resources.find(r=>r.key.endsWith('-monitor-heartbeat'))!.key;
+  expect(()=>a.maintenanceSilenceOperation({maintenance,ruleKey:heartbeat,action:'create'})).toThrow('MAINTENANCE_DEADMAN_SILENCE_FORBIDDEN');
+  const remove=a.maintenanceSilenceOperation({maintenance,ruleKey:key,action:'expire',resourceId:proof.resourceId});await remove.inspect();await remove.mutate();
+  expect(await remove.readback()).toMatchObject({status:'expired',effectiveAbsence:true});expect(deletes).toBe(1);
+  await expect(remove.mutate()).rejects.toThrow('GRAFANA_PRE_MUTATION_INSPECTION_REQUIRED');
+});
+it('independently reads back the exact failed-artifact event without changing the good checkpoint',async()=>{
+  let body='';const failure={candidateSha:config.candidateSha,configSha256:config.configSha256,evidenceSha256:'d'.repeat(64)};
+  const a=createGrafanaHeartbeatAdapter(config,{now:()=>now,fetchImpl:async(url,init)=>{
+    if(init?.method==='POST'){body=String(init.body);return new Response(null,{status:204});}
+    expect(new URL(String(url)).searchParams.get('query')).toContain(`evidence="${failure.evidenceSha256}"`);
+    return Response.json({status:'success',data:{resultType:'vector',result:[{metric:{environment:config.environmentAlias,candidate:config.candidateSha,config:config.configSha256,evidence:failure.evidenceSha256},value:[Date.parse(now)/1000,'1']}]}});
+  }});
+  await a.publishBackupFailure(failure);expect(await a.verifyBackupFailure(failure)).toMatchObject({status:'verified',reasonCode:'backup_integrity_failed'});
+  expect(body).toContain('aromatika_ops_backup_failure');expect(body).not.toContain('checkpoint_seconds');
+});
+
+import { createGrafanaRuleFixtureAdapter } from '../../scripts/issue29-operations/grafana-adapter.mjs';
+it('uses isolated disposable metric series and cloned rule predicates, never production injection or source metric writes',async()=>{
+  const f=providerFixture();const base=createGrafanaAdapter(monitoringConfig,{fetchImpl:f.fetchImpl,now:()=>now});
+  for(const r of base.configuration().resources){const op=base.resourceOperation(r.key);await op.inspect();await op.mutate();}
+  let published='',omit=false;const fetchImpl:typeof fetch=async(url,init)=>{const u=new URL(String(url));if(u.hostname.startsWith('influx-')){published=String(init?.body);return new Response(null,{status:204});}
+    if(u.pathname==='/api/prom/api/v1/query'){const rows=published.trim().split('\n').map(line=>{const [head,field,time]=line.split(' '),[name,...tags]=head.split(',');return {metric:{__name__:name+'_value',...Object.fromEntries(tags.map(t=>t.split('=')))},values:[[Number(BigInt(time)/1000000n)/1000,field.split('=')[1]]]};});return Response.json({status:'success',data:{resultType:'matrix',result:omit?rows.slice(1):rows}});}
+    return f.fetchImpl(url,init);};
+  const a=createGrafanaRuleFixtureAdapter(monitoringConfig,{writeOrigin:config.writeOrigin,writeToken:'fixture-metrics-write-123456789012345678',expiresAt:'2026-09-05T14:00:00.000Z'},{fetchImpl,now:()=>now});
+  const plan=a.configuration();expect(plan.targetRole).toBe('fixture');expect(plan.resources).toHaveLength(11);
+  expect(plan.sourceConfigSha256).toBe(base.configuration().configSha256);expect(plan.configSha256).not.toBe(plan.sourceConfigSha256);
+  expect(new Set(plan.ruleMappings.map(r=>r.sourceRuleKey)).size).toBe(11);
+  expect(plan.ruleMappings.every(r=>r.ruleKey.startsWith('f29-')&&r.sourceRuleKey.startsWith('i29-')&&base.configuration().resources.some(source=>source.key===r.sourceRuleKey))).toBe(true);
+  for(const r of plan.resources){const op=a.resourceOperation(r.key);await op.inspect();await op.mutate();}
+  const rules=[...f.stored.values()].filter(r=>r.uid?.startsWith('f29-'));
+  expect(rules.every(r=>r.data[0].model.expr.includes('aromatika_issue29_fixture_')&&!r.data[0].model.expr.includes(monitoringConfig.targetOrigin))).toBe(true);
+  expect(rules.every(r=>r.data[0].model.expr.includes('1788616800'))).toBe(true);
+  const op=a.fixtureSampleOperation({phase:'failure',sampleAt:now});await op.inspect();await op.mutate();
+  expect(published.split('\n').filter(Boolean)).toHaveLength(11);expect(published).not.toMatch(/probe_aromatika|aromatika_ops_backup,|private-token/);
+  expect(published).toContain('aromatika_issue29_fixture_backup_status_usable');
+  expect(await op.readback()).toMatchObject({status:'verified',phase:'failure',sampleAt:now});omit=true;await expect(op.readback()).rejects.toThrow('GRAFANA_FIXTURE_READBACK_MISMATCH');
+  await expect(op.mutate()).rejects.toThrow('GRAFANA_PRE_MUTATION_INSPECTION_REQUIRED');
+});
+
+it('updates only existing candidate-bound checks/rules after exact private prior capture, and resumes an ambiguous update by readback',async()=>{
+  const f=providerFixture(),old=createGrafanaAdapter(monitoringConfig,{now:()=>now,fetchImpl:f.fetchImpl});
+  for(const r of old.configuration().resources){const op=old.resourceOperation(r.key);await op.inspect();await op.mutate();await op.readback();}
+  const next=createGrafanaAdapter({...monitoringConfig,candidateSha:'b'.repeat(40)},{now:()=>now,fetchImpl:f.fetchImpl});
+  const resources=next.configuration().resources.filter(r=>['check','rule'].includes(r.kind)),before=f.requests.length;
+  for(const r of resources){const prior=await old.readResource(r.key);let privatePrior:Record<string,any>|null=null;
+    const op=next.releaseUpdateOperation(r.key,monitoringConfig.candidateSha,{resourceId:prior.resourceId!,capturePrior:async proof=>{privatePrior=proof;}});
+    await expect(op.mutate()).rejects.toThrow('GRAFANA_PRE_MUTATION_INSPECTION_REQUIRED');
+    const inspected=await op.inspect();expect(privatePrior).not.toBeNull();expect(inspected.priorStateSha256).toMatch(/^[a-f0-9]{64}$/);
+    await op.mutate();const read=await op.readback();expect(read).toMatchObject({status:'verified',resourceId:prior.resourceId,previousCandidateSha:monitoringConfig.candidateSha,candidateSha:'b'.repeat(40)});
+    expect(JSON.stringify(read)).not.toMatch(/private-token|private-owner|script|providerState/);
+    await expect(op.mutate()).rejects.toThrow('GRAFANA_PRE_MUTATION_INSPECTION_REQUIRED');
+  }
+  const writes=f.requests.slice(before).filter(r=>r.method!=='GET'&&!r.url.endsWith('/notification/query'));
+  expect(writes).toHaveLength(13);expect(writes.filter(r=>r.method==='POST').map(r=>new URL(r.url).pathname)).toEqual(['/api/v1/check/1','/api/v1/check/2']);
+  expect(writes.filter(r=>r.method==='PUT')).toHaveLength(11);expect(await next.verifyConfiguration()).toMatchObject({status:'verified'});
+  const key=resources[2].key,newer=createGrafanaAdapter({...monitoringConfig,candidateSha:'c'.repeat(40)},{now:()=>now,fetchImpl:async(url,init)=>{
+    const response=await f.fetchImpl(url,init);if(init?.method==='PUT')throw new Error('uncertain private body');return response;
+  }});
+  let privatePrior:Record<string,any>|undefined;const update=newer.releaseUpdateOperation(key,'b'.repeat(40),{resourceId:key,capturePrior:async proof=>{privatePrior=proof;}});
+  const inspected=await update.inspect();await expect(update.mutate()).rejects.toThrow('GRAFANA_MUTATION_UNCERTAIN_READBACK_ONLY');
+  const count=f.requests.filter(r=>r.method==='PUT').length;
+  const resume=newer.releaseUpdateOperation(key,'b'.repeat(40),{resourceId:key,priorState:privatePrior,expectedPriorSha256:inspected.priorStateSha256,capturePrior:async()=>{throw new Error('must not inspect');}});
+  expect(await resume.readback()).toMatchObject({status:'verified',candidateSha:'c'.repeat(40)});expect(f.requests.filter(r=>r.method==='PUT')).toHaveLength(count);
+});
+
+it('rejects retargeting and provider prior drift before any release-update write',async()=>{
+  const f=providerFixture(),old=createGrafanaAdapter(monitoringConfig,{now:()=>now,fetchImpl:f.fetchImpl});
+  const key=old.configuration().resources.find(r=>r.kind==='rule')!.key,create=old.resourceOperation(key);await create.inspect();await create.mutate();
+  const next=createGrafanaAdapter({...monitoringConfig,candidateSha:'b'.repeat(40)},{now:()=>now,fetchImpl:f.fetchImpl});
+  const op=next.releaseUpdateOperation(key,monitoringConfig.candidateSha,{resourceId:key,capturePrior:async()=>{}});await op.inspect();
+  f.stored.get('/api/v1/provisioning/alert-rules/'+key)!.isPaused=true;
+  await expect(op.mutate()).rejects.toThrow('GRAFANA_RELEASE_PRIOR_DRIFT');expect(f.requests.filter(r=>r.method==='PUT')).toHaveLength(0);
+  const retarget=createGrafanaAdapter({...monitoringConfig,candidateSha:'b'.repeat(40),targetOrigin:'https://unrelated.workers.dev'},{now:()=>now,fetchImpl:f.fetchImpl});
+  await expect(retarget.releaseUpdateOperation(key,monitoringConfig.candidateSha,{resourceId:key,capturePrior:async()=>{}}).inspect()).rejects.toThrow('GRAFANA_RESOURCE_CONFIG_MISMATCH');
+  expect(()=>next.releaseUpdateOperation(monitoringConfig.folderUid,monitoringConfig.candidateSha,{resourceId:monitoringConfig.folderUid,capturePrior:async()=>{}})).toThrow('GRAFANA_RELEASE_RESOURCE_FORBIDDEN');
+});
+
+it('uses distinct disposable rule/check identities for each monthly target cycle without changing the persistent source folder',()=>{
+  const base={...monitoringConfig,targetRole:'target' as const,targetOrigin:'https://issue29-restore-fixture.workers.dev'};
+  const first=createGrafanaAdapter({...base,targetCycleId:'45454545-4545-4454-8454-454545454545'}).configuration();
+  const second=createGrafanaAdapter({...base,targetCycleId:'56565656-5656-4565-8565-565656565656'}).configuration();
+  expect(first.resources.some(r=>r.kind==='folder')).toBe(false);expect(first.folderUid).toBe(second.folderUid);
+  expect(first.configSha256).not.toBe(second.configSha256);
+  expect(first.resources.every(r=>!second.resources.some(s=>s.key===r.key))).toBe(true);
+  expect(first.resources.map(r=>r.key)).toContain('t29-4545454545-public');
+});
+
+it('does not claim an exact check absent merely because its job name was changed',async()=>{
+  const f=providerFixture(),g=createGrafanaAdapter(monitoringConfig,{fetchImpl:f.fetchImpl,now:()=>now});
+  const key=g.configuration().resources.find(r=>r.kind==='check')!.key,create=g.resourceOperation(key);await create.inspect();await create.mutate();const receipt=await create.readback();
+  const listed=await (await f.fetchImpl(monitoringConfig.smOrigin+'/api/v1/check')).json();
+  await f.fetchImpl(monitoringConfig.smOrigin+'/api/v1/check/'+receipt.resourceId,{method:'POST',body:JSON.stringify({...listed.items[0],job:'foreign-renamed-check'})});
+  await expect(g.cleanupOperation(key,receipt.resourceId!).readback()).rejects.toThrow('GRAFANA_RESOURCE_CONFIG_MISMATCH');
+  expect(f.requests.some(r=>r.method==='GET'&&r.url.endsWith('/api/v1/check/1'))).toBe(true);
+  expect(f.requests.some(r=>r.method==='DELETE')).toBe(false);
 });

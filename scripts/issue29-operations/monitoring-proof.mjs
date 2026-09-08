@@ -16,6 +16,7 @@ export async function captureMonitoringPhase(adapter,input) {
   const p=adapter.configuration(),now=input.now??new Date().toISOString();
   ensure(['failure','recovery'].includes(input.phase) && Date.parse(input.windowStart)<=Date.parse(now) &&
     Date.parse(now)-Date.parse(input.windowStart)<=7200000,'MONITORING_PROOF_WINDOW_INVALID');
+  ensure(!p.fixtureExpiresAt||Date.parse(now)<Date.parse(p.fixtureExpiresAt),'MONITORING_FIXTURE_EXPIRED');
   const evaluation=await adapter.readEvaluation(input.ruleKey),score=await adapter.readRuleScore(input.ruleKey);
   ensure(evaluation.state===(input.phase==='failure'?'firing':'inactive') && score.score===(input.phase==='failure'?2:0),'MONITORING_PHASE_NOT_OBSERVED');
   ensure(Date.parse(evaluation.evaluatedAt)>=Date.parse(input.windowStart),'MONITORING_EVALUATION_PRECEDES_WINDOW');
@@ -87,6 +88,7 @@ export async function verifyMonitoringRuleJourney(adapter,input) {
  */
 export async function verifyMonitoringProof(adapter,input) {
   const p=adapter.configuration(),now=input.now??new Date().toISOString(),expected=p.resources.filter(r=>r.kind==='rule').map(r=>r.key);
+  ensure(!p.fixtureExpiresAt||Date.parse(now)<Date.parse(p.fixtureExpiresAt),'MONITORING_FIXTURE_EXPIRED');
   ensure(input.phases.length===expected.length*2 && input.acknowledgements.length===expected.length,'MONITORING_RULE_COVERAGE_INCOMPLETE');
   const configuration=await adapter.verifyConfiguration();
   const timelines=[];const eventIds=new Set();
@@ -97,6 +99,7 @@ export async function verifyMonitoringProof(adapter,input) {
   }
   const result={schemaVersion:1,status:p.evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode:p.evidenceMode,
     candidateSha:p.candidateSha,configSha256:p.configSha256,runId:p.runId,environmentAlias:p.environmentAlias,destinationAlias:'owner-primary',
-    verifiedAt:now,configurationEvidenceSha256:configuration.evidenceSha256,timelines};
+    verifiedAt:now,configurationEvidenceSha256:configuration.evidenceSha256,configuration,sourceConfigSha256:p.sourceConfigSha256??p.configSha256,
+    signalFamilies:p.signals,ruleMappings:p.ruleMappings,timelines};
   return {...result,evidenceSha256:digest(result)};
 }

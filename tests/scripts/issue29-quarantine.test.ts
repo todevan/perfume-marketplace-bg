@@ -12,3 +12,17 @@ it.each(['hook','function','project','worker'])('fails before restore writes on 
  const fetchImpl=request((p,v)=>{if(kind==='hook'&&p.endsWith('/config/auth'))v.hook_send_email_enabled=true;if(kind==='function'&&p.endsWith('/functions'))v.push({id:'unknown'});if(kind==='project'&&v.ref)v.ref='z'.repeat(20);return v;});
  await expect(readRestoreQuarantine({manifest,providerToken:'private-token',fetchImpl,now})).rejects.toThrow('Issue #29:');
 });
+it('keeps an exact persistent source Worker without permitting a target runtime before restore', async()=>{
+ const manifest=fixture();const name=`issue29-${manifest.runId}`;
+ manifest.cleanup.resources.push({provider:'cloudflare',id:name,runId:manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'persistent',absentAt:null});
+ manifest.cleanup.resources.push({provider:'supabase',id:manifest.source!.ref,runId:manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'persistent',absentAt:null});
+ const readWorkerBinding=async()=>({status:'verified',workerName:name,purpose:'source',projectRef:manifest.source!.ref,candidateSha:manifest.candidate.sha,candidateTree:manifest.candidate.tree,versionId:manifest.candidate.deploymentId,checkedAt:now,evidenceSha256:'f'.repeat(64)});
+ const sourceWorker={settings:{purpose:'source'},privateDirectory:'/private/worker',readToken:'private-read-token'};
+ const result=await readRestoreQuarantine({manifest,providerToken:'private-token',fetchImpl:request(),now,sourceWorker,repositoryRoot:process.cwd()},{readWorkerBinding});
+ expect(result.quarantine.noRuntimeRoutes).toBe(true);expect(result.evidence.sourceWorkerIsolationSha256).toBe('f'.repeat(64));
+ await expect(readRestoreQuarantine({manifest,providerToken:'private-token',fetchImpl:request(),now,sourceWorker,repositoryRoot:process.cwd()},{readWorkerBinding:async()=>({...await readWorkerBinding(),projectRef:manifest.target!.ref})})).rejects.toThrow('RESTORE_WORKER_QUARANTINE_UNPROVEN');
+});
+it('does not trust persistent classification alone to exempt a live Worker',async()=>{
+ const manifest=fixture();manifest.cleanup.resources.push({provider:'cloudflare',id:`issue29-${manifest.runId}`,runId:manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'persistent',absentAt:null});
+ await expect(readRestoreQuarantine({manifest,providerToken:'private-token',fetchImpl:request(),now})).rejects.toThrow('RESTORE_WORKER_QUARANTINE_UNPROVEN');
+});

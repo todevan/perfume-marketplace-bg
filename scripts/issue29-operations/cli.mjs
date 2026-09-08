@@ -4,10 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { assertPrivatePath, readPrivateManifest, OperationsError } from './manifest.mjs';
+import { ensure, assertPrivatePath, readPrivateManifest, OperationsError } from './manifest.mjs';
 
 const repositoryRoot = resolve(import.meta.dirname, '../..');
-const unavailable = new Set(['preflight', 'monitoring-proof', 'incident-drill', 'cleanup']);
 /** @param {string} code @returns {never} */
 function fail(code) { throw new OperationsError(code); }
 
@@ -44,8 +43,85 @@ function attestCandidate(candidate) {
 /** @param {string[]} args @returns {Promise<string>} */
 export async function runCli(args) {
   const [command, ...rest] = args;
-  if (command === '--help' && rest.length === 0) return 'Issue #29 exact-target operations:\n  backup-set --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  restore --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  verify-restore --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  verify-backup --manifest=ABSOLUTE_PATH --backup=ABSOLUTE_PATH --private-key=ABSOLUTE_PATH --descriptor-sha256=HASH\n  validate-receipt --receipt=ABSOLUTE_PATH --sha256=HASH --expected=ABSOLUTE_PATH --evidence=ABSOLUTE_DIRECTORY\nBackup requires current manifest-owned synthetic source and live exact release readback. Remaining hosted transaction commands require their exact integrated provider capabilities.\n';
-  if (unavailable.has(command)) fail('HOSTED_EXECUTION_UNAVAILABLE');
+  if (command === '--help' && rest.length === 0) return 'Issue #29 exact-target operations:\n  preflight | create-source | seed-source | verify-source | create-target --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  prepare-worker | deploy-worker | cleanup-worker | update-worker --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  implementation-verified | adopt-merged-release | generate-receipt --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  authorize-maintenance | pause-source | resume-source | verify-source-resumed --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  synthetic-jobs --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  cleanup --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  configure-monitoring | monitoring-proof | incident-drill | maintenance-silence | maintenance-unsilence --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  capture-source-session --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  copy-backup --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  backup-set --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  restore --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  verify-restore --manifest=ABSOLUTE_PATH --settings=ABSOLUTE_PATH\n  verify-backup --manifest=ABSOLUTE_PATH --backup=ABSOLUTE_PATH --private-key=ABSOLUTE_PATH --descriptor-sha256=HASH\n  validate-receipt --receipt=ABSOLUTE_PATH --sha256=HASH --expected=ABSOLUTE_PATH --evidence=ABSOLUTE_DIRECTORY\nBackup requires current manifest-owned synthetic source and live exact release readback. All provider mutations require exact scoped private capabilities and persisted intent; no command claims hosted acceptance from local fixtures.\n';
+  if(command==='generate-receipt'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeGenerateOperationsReceipt}=await import('./verification-execution.mjs');
+    return JSON.stringify(await executeGenerateOperationsReceipt({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';
+  }
+  if(command==='implementation-verified'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeImplementationVerification}=await import('./verification-execution.mjs');
+    return JSON.stringify(await executeImplementationVerification({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';
+  }
+  if(command==='adopt-merged-release'){
+    const values=argumentsFor(rest,['manifest','settings']);const value=JSON.parse((await privateBytes(values.settings)).toString());
+    ensure(value?.schemaVersion===1&&value.operation===command&&Object.keys(value).every(k=>['schemaVersion','operation','settings','evidenceDirectory'].includes(k))&&value.settings&&typeof value.evidenceDirectory==='string','PRIVATE_SETTINGS_INVALID');
+    const {executeAdoptMergedRelease}=await import('./worker-adapter.mjs');
+    const proof=await executeAdoptMergedRelease({manifestPath:values.manifest,repositoryRoot,settings:value.settings,evidenceDirectory:value.evidenceDirectory});
+    return JSON.stringify({status:'PROTECTED_MERGE_READBACK_VERIFIED',mergeSha:proof.mergeSha,treeSha:proof.treeSha})+'\n';
+  }
+  if(['configure-monitoring','monitoring-proof','incident-drill','maintenance-silence','maintenance-unsilence'].includes(command)){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const settings=JSON.parse((await privateBytes(values.settings)).toString());ensure(settings?.operation===command,'SETTINGS_OPERATION_MISMATCH');
+    const {executeMonitoringAction}=await import('./monitoring-execution.mjs');
+    const result=await executeMonitoringAction({manifestPath:values.manifest,repositoryRoot,candidate:manifest.candidate,settings});
+    return JSON.stringify({status:result.status??'MONITORING_COMMAND_COMPLETED',runId:manifest.runId,operation:command,phase:result.phase,state:result.state,evidenceSha256:result.evidenceSha256})+'\n';
+  }
+  if(command==='capture-source-session'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeSourceSessionCapture}=await import('./auth-execution.mjs');
+    return JSON.stringify(await executeSourceSessionCapture({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';
+  }
+  if (['preflight','create-source','create-target','verify-source'].includes(command)) {
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeHostedLifecycle}=await import('./hosted-execution.mjs');
+    return JSON.stringify(await executeHostedLifecycle({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate,operation:command}))+'\n';
+  }
+  if(command==='synthetic-jobs'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeSyntheticJobsCommand}=await import('./synthetic-jobs.mjs');
+    const proof=await executeSyntheticJobsCommand({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate,operation:'synthetic-jobs'});
+    return JSON.stringify({status:'SYNTHETIC_JOBS_READBACK_VERIFIED',runId:manifest.runId,role:proof.role,mode:proof.mode,evidenceSha256:proof.evidenceSha256})+'\n';
+  }
+  if(command==='seed-source'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeSeedSource}=await import('./source-execution.mjs');
+    return JSON.stringify(await executeSeedSource({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';
+  }
+  if(['prepare-worker','deploy-worker','cleanup-worker','update-worker'].includes(command)){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const value=JSON.parse((await privateBytes(values.settings)).toString());
+    ensure(value?.schemaVersion===1&&value.operation===command&&Object.keys(value).every(k=>['schemaVersion','operation','settings','secrets','privateDirectory','readToken','deployToken','cleanupToken','deployCapabilityId','cleanupCapabilityId','previousPrivateDirectory'].includes(k)),'PRIVATE_SETTINGS_INVALID');
+    const {prepareIssue29Worker,executeDeployWorker,executeCleanupWorker,executeUpdateSourceWorker}=await import('./worker-adapter.mjs');
+    if(command==='prepare-worker'){
+      ensure(value.settings&&value.secrets&&typeof value.privateDirectory==='string','PRIVATE_SETTINGS_INVALID');
+      const result=await prepareIssue29Worker({manifest,repositoryRoot,settings:value.settings,secrets:value.secrets,privateDirectory:value.privateDirectory});
+      return JSON.stringify({status:'PRIVATE_WORKER_BUILD_PREPARED',workerName:result.workerName,configSha256:result.configSha256,buildSha256:result.buildSha256})+'\n';
+    }
+    ensure(value.secrets===undefined,'PRIVATE_SETTINGS_INVALID');
+    const {schemaVersion:_,operation:__,...settings}=value;
+    if(command==='update-worker')ensure(typeof settings.previousPrivateDirectory==='string','PRIVATE_SETTINGS_INVALID');
+    const result=await(command==='update-worker'?executeUpdateSourceWorker:command==='deploy-worker'?executeDeployWorker:executeCleanupWorker)({...settings,manifestPath:values.manifest,repositoryRoot});
+    return JSON.stringify(result)+'\n';
+  }
+  if(['authorize-maintenance','pause-source','resume-source','verify-source-resumed'].includes(command)){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeMaintenanceCommand}=await import('./maintenance-execution.mjs');
+    return JSON.stringify(await executeMaintenanceCommand({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate,operation:command}))+'\n';
+  }
+  if(command==='cleanup'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const settings=JSON.parse((await privateBytes(values.settings)).toString());
+    if(settings.action==='finalize'){const {executeFinalizeCleanup}=await import('./verification-execution.mjs');return JSON.stringify(await executeFinalizeCleanup({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';}
+    const {executeProjectCleanup}=await import('./cleanup-execution.mjs');
+    return JSON.stringify(await executeProjectCleanup({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';
+  }
+  if(command==='copy-backup'){
+    const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    const {executeBackupCopy}=await import('./execution.mjs');
+    return JSON.stringify(await executeBackupCopy({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';
+  }
   if (command === 'backup-set') {
     const values=argumentsFor(rest,['manifest','settings']);
     const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});
@@ -55,6 +131,7 @@ export async function runCli(args) {
   }
   if(command==='restore'||command==='verify-restore'){
     const values=argumentsFor(rest,['manifest','settings']);const manifest=await readPrivateManifest(values.manifest,{repositoryRoot});attestCandidate(manifest.candidate);
+    if(command==='verify-restore'){const settings=JSON.parse((await privateBytes(values.settings)).toString());if(settings.operation==='verify-isolation'){const {executeIsolationVerification}=await import('./hosted-execution.mjs');return JSON.stringify(await executeIsolationVerification({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate,operation:'verify-isolation'}))+'\n';}if(settings.operation==='verify-application'){const {executeApplicationProof}=await import('./application-execution.mjs');return JSON.stringify(await executeApplicationProof({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate}))+'\n';}}
     const {executeRestore}=await import('./restore-execution.mjs');
     return JSON.stringify(await executeRestore({manifestPath:values.manifest,settingsPath:values.settings,repositoryRoot,candidate:manifest.candidate,verifyOnly:command==='verify-restore'}))+'\n';
   }

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, readdir, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {createHash} from 'node:crypto';
+import {canonicalJson} from '../../scripts/issue29-operations/recovery-set.mjs';
 import { configureGrafanaMonitoring } from '../../scripts/issue29-operations/grafana-operator.mjs';
 import { createGrafanaAdapter } from '../../scripts/issue29-operations/grafana-adapter.mjs';
 import { readPrivateManifest, writePrivateManifest } from '../../scripts/issue29-operations/manifest.mjs';
@@ -14,7 +16,7 @@ afterEach(async()=>{await Promise.all(directories.splice(0).map(path=>rm(path,{r
 async function setup() {
   const directory=await mkdtemp(join(tmpdir(),'issue29-grafana-'));directories.push(directory);await chmod(directory,0o700);
   const manifestPath=join(directory,'transaction.json'),manifest=manifestFixture();manifest.state='implementation_verified';manifest.target=null;
-  manifest.cleanup.resources.push({provider:'supabase',id:manifest.source!.ref,runId:manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'disposable',absentAt:null});
+  manifest.cleanup.resources.push({provider:'supabase',id:manifest.source!.ref,runId:manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'persistent',absentAt:null});
   const bindingSettings={providerToken:'private-provider-token',source:{apiUrl:manifest.source!.url,serviceKey:'private-storage-key'},
     deployment:{accountId:'c'.repeat(32),workerName:`issue29-${manifest.runId}`,versionId:manifest.candidate.deploymentId,
       origin:`https://issue29-${manifest.runId}.owner.workers.dev`,readToken:'private-cloudflare-token'}};
@@ -40,6 +42,8 @@ async function setup() {
     const mutation=init?.method==='POST'&&!u.endsWith('/notification/query');
     if(mutation){creates++;const persisted=JSON.parse(await readFile(manifestPath,'utf8'));
       expect(persisted.pending.step).toBe('configure-monitoring');expect(persisted.pending.resourceId).toBeTruthy();expect(persisted.grafana.configSha256).toBeTruthy();
+      const evidence=await Promise.all((await readdir(directory)).filter(name=>/^[a-f0-9]{64}\.json$/.test(name)).map(async name=>JSON.parse(await readFile(join(directory,name),'utf8'))));
+      expect(evidence.some(e=>e.kind==='issue29-operator-intent'&&e.pending.operationId===persisted.pending.operationId)).toBe(true);
       expect(JSON.stringify(init?.body)).not.toContain('private-storage-key');}
     const result=await provider.fetchImpl(url,init);
     if(mutation&&failAfterCreate){failAfterCreate=false;throw new Error('private response ambiguity');}
@@ -60,6 +64,17 @@ describe('one private Issue29 Grafana transaction',()=>{
     expect(result.cleanup.resources.filter(r=>r.provider==='grafana').every(r=>r.disposition==='persistent'&&r.runId===result.runId)).toBe(true);
     expect(result.grafana.configSha256).toBe(f.adapter.configuration().configSha256);
     expect(f.creates()).toBe(16);
+    for(const owned of result.cleanup.resources.filter(r=>r.provider==='grafana')){
+      const completed=result.history.find(h=>h.evidenceSha256===owned.evidenceSha256)!;
+      expect(completed.intentSha256).toMatch(/^[a-f0-9]{64}$/);
+      const prefix=f.manifestPath.slice(0,f.manifestPath.lastIndexOf('/'));
+      const intent=JSON.parse(await readFile(join(prefix,completed.intentSha256+'.json'),'utf8'));
+      expect(intent).toMatchObject({kind:'issue29-operator-intent',runId:result.runId,pending:{operationId:completed.operationId,resourceId:completed.resourceId}});
+      const bytes=await readFile(join(prefix,completed.evidenceSha256+'.json'));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(completed.evidenceSha256);
+      expect(JSON.parse(bytes.toString())).toMatchObject({status:'verified',resourceId:owned.id.slice(owned.id.indexOf(':')+1)});
+      expect(createHash('sha256').update(canonicalJson(intent)).digest('hex')).toBe(completed.intentSha256);
+    }
     await configureGrafanaMonitoring(f.options);expect(f.creates()).toBe(16);
   });
   it('resumes an ambiguous create by exact readback, never by repeating provider mutation',async()=>{
@@ -67,6 +82,13 @@ describe('one private Issue29 Grafana transaction',()=>{
     await expect(configureGrafanaMonitoring(f.options)).rejects.toThrow('MUTATION_OUTCOME_UNCERTAIN_READBACK_ONLY');
     const pending=await readPrivateManifest(f.manifestPath,{repositoryRoot,now,candidate:f.manifest.candidate});
     expect(pending.state).toBe('implementation_verified');expect(pending.pending?.step).toBe('configure-monitoring');expect(f.creates()).toBe(1);
+    const directory=f.manifestPath.slice(0,f.manifestPath.lastIndexOf('/'));
+    const names=await readdir(directory);let missing='';let bytes=Buffer.alloc(0);
+    for(const name of names.filter(name=>/^[a-f0-9]{64}\.json$/.test(name))){const file=await readFile(join(directory,name)),proof=JSON.parse(file.toString());if(proof.kind==='issue29-operator-intent'&&proof.pending.operationId===pending.pending?.operationId){missing=join(directory,name);bytes=file;}}
+    expect(missing).not.toBe('');await unlink(missing);
+    await expect(configureGrafanaMonitoring(f.options)).rejects.toThrow('INTENT_EVIDENCE_REQUIRED');expect(f.creates()).toBe(1);
+    await expect(readFile(missing)).rejects.toMatchObject({code:'ENOENT'});
+    await writeFile(missing,bytes,{mode:0o600});
     const result=await configureGrafanaMonitoring(f.options);expect(result.state).toBe('monitoring_configured');expect(f.creates()).toBe(16);
     expect(f.provider.requests.filter(r=>r.method==='POST'&&r.url.endsWith('/api/folders'))).toHaveLength(1);
   });
@@ -84,4 +106,33 @@ describe('one private Issue29 Grafana transaction',()=>{
     const f=await setup();await chmod(f.manifestPath,0o644);
     await expect(configureGrafanaMonitoring(f.options)).rejects.toThrow(/PRIVATE_/);expect(f.creates()).toBe(0);
   });
+});
+
+import {target,maintenanceFixture} from '../fixtures/issue29-operations';
+it('configures a separate disposable target while retaining the source monitors and shared owned folder',async()=>{
+  const f=await setup();await configureGrafanaMonitoring(f.options);
+  const m=await readPrivateManifest(f.manifestPath,{repositoryRoot,now});m.target=structuredClone(target);m.targetDeploymentId='target-version';m.state='storage_restored';m.maintenance=maintenanceFixture(m);m.maintenance.id='45454545-4545-4454-8454-454545454545';
+  m.cleanup.resources.push({provider:'supabase',id:target.ref,runId:m.runId,createdAt:now,evidenceSha256:'f'.repeat(64),disposition:'disposable',absentAt:null});
+  const bindingSettings={...f.bindingSettings,source:{apiUrl:target.url,serviceKey:'private-target-service-key'},deployment:{...f.bindingSettings.deployment,workerName:`issue29-restore-${m.maintenance.id}`,versionId:'target-version',origin:`https://issue29-restore-${m.maintenance.id}.owner.workers.dev`}};
+  const config={...f.config,targetRole:'target' as const,targetCycleId:m.maintenance.id,environmentAlias:'synthetic-restore',targetOrigin:bindingSettings.deployment.origin};
+  let sourceReads=0;const fetchImpl:typeof fetch=async(url,init)=>{const u=new URL(String(url));
+    if(u.href.includes(m.source!.ref)||u.hostname===new URL(f.bindingSettings.deployment.origin).hostname){sourceReads++;throw new Error('source paused');}
+    if(u.hostname==='api.supabase.com'){
+      if(u.pathname.includes('/organizations/'))return Response.json({id:'owned-org',plan:'free'});
+      if(u.pathname.endsWith('/api-keys'))return Response.json([{name:'service_role',api_key:bindingSettings.source.serviceKey}]);
+      return Response.json({ref:target.ref,organization_slug:'owned-org',region:target.region,status:'ACTIVE_HEALTHY',database:{version:'17.6.1'}});
+    }
+    if(u.hostname==='api.cloudflare.com'){
+      if(u.pathname.endsWith('/deployments'))return Response.json({success:true,result:{deployments:[{versions:[{version_id:'target-version',percentage:100}]}]}});
+      return Response.json({success:true,result:{id:'target-version',metadata:{created_on:now},resources:{bindings:[['RELEASE_COMMIT_SHA',m.candidate.sha],['PUBLIC_SUPABASE_URL',target.url],['APP_ENV','development'],['ISSUE29_CANDIDATE_TREE',m.candidate.tree],['ISSUE29_RUN_ID',m.runId]].map(([name,text])=>({type:'plain_text',name,text}))}}});
+    }
+    if(u.hostname.endsWith('.workers.dev'))return new Response(null,{status:200,headers:{'x-deployed-git-sha':m.candidate.sha}});
+    if(init?.method==='POST'&&!u.pathname.endsWith('/notification/query')){const persisted=JSON.parse(await readFile(f.manifestPath,'utf8'));expect(persisted.pending.step).toBe('configure-monitoring');expect(persisted.grafana.targetConfigSha256).toBeTruthy();}
+    return f.provider.fetchImpl(url,init);
+  };
+  const adapter=createGrafanaAdapter(config,{fetchImpl,now:()=>now});delete m.grafana.targetRuleAliases;delete m.grafana.targetConfigSha256;
+  await writePrivateManifest(f.manifestPath,m,{repositoryRoot,now,replace:true});
+  const result=await configureGrafanaMonitoring({...f.options,adapter,bindingSettings,fetchImpl});
+  expect(result.state).toBe('storage_restored');expect(sourceReads).toBe(0);expect(result.cleanup.resources.filter(r=>r.provider==='grafana'&&r.disposition==='disposable')).toHaveLength(15);
+  expect(result.cleanup.resources.filter(r=>r.provider==='grafana'&&r.disposition==='persistent')).toHaveLength(16);
 });

@@ -56,6 +56,16 @@ jobs:
             await appendFile(process.env.GITHUB_OUTPUT,`directory=${p.directory}\n`);
           } catch(error) {console.error(automationErrorMessage(error));process.exitCode=1;}
           JS
+      - name: Prove the daily synthetic canary delivery before the database checkpoint
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+          ISSUE29_DAILY_CANARY_JSON: ${{ secrets.ISSUE29_DAILY_CANARY_JSON }}
+        run: |
+          node --input-type=module <<'JS'
+          import { executeAutomationCanary, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {await executeAutomationCanary({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env),settingsJson:process.env.ISSUE29_DAILY_CANARY_JSON??''});}
+          catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
       - name: Reconstruct and compare the exact managed baseline on this ephemeral runner
         env:
           ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
@@ -64,6 +74,15 @@ jobs:
           node --input-type=module <<'JS'
           import { reconstructRunnerBaseline, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
           try {await reconstructRunnerBaseline({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)});}
+          catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Quiesce exact source jobs after canary and before coordinated export
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+        run: |
+          node --input-type=module <<'JS'
+          import { executeAutomationJobs, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {await executeAutomationJobs({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env),mode:'quiesce'});}
           catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
           JS
       - name: Create and authenticate one coordinated encrypted recovery set
@@ -75,6 +94,16 @@ jobs:
             --manifest="$ISSUE29_PRIVATE_DIRECTORY/manifest.json" \
             --settings="$ISSUE29_PRIVATE_DIRECTORY/settings.json" \
             > "$ISSUE29_PRIVATE_DIRECTORY/backup-result.json"
+      - name: Resume only captured source jobs after definite export outcome
+        if: always() && steps.prepare.outcome == 'success'
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+        run: |
+          node --input-type=module <<'JS'
+          import { executeAutomationJobs, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {await executeAutomationJobs({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env),mode:'resume'});}
+          catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
       - name: Verify exact encrypted-only inventory and persist upload intent
         id: publication
         env:
@@ -133,6 +162,26 @@ jobs:
             // Metrics ingestion can be eventually consistent. This wait never repeats the POST.
             await new Promise(resolve=>setTimeout(resolve,30000));
             await finalizeHeartbeat(p);
+          }catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
+          JS
+      - name: Deliver a definite local integrity failure without refreshing backup freshness
+        if: ${{ failure() && steps.publication.outcome == 'failure' }}
+        env:
+          ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
+          ISSUE29_GRAFANA_HEARTBEAT_JSON: ${{ secrets.ISSUE29_GRAFANA_HEARTBEAT_JSON }}
+        run: |
+          node --input-type=module <<'JS'
+          import { lstat } from 'node:fs/promises';
+          import { beginFailureHeartbeat, finalizeFailureHeartbeat, runnerPublicationOptions, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
+          try {
+            const directory=process.env.ISSUE29_PRIVATE_DIRECTORY;
+            const failure=await lstat(`${directory}/backup-failure.json`).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+            if(failure){
+              const p={...await runnerPublicationOptions({directory,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}),heartbeatConfig:JSON.parse(process.env.ISSUE29_GRAFANA_HEARTBEAT_JSON??'null')};
+              await beginFailureHeartbeat(p);
+              await new Promise(resolve=>setTimeout(resolve,30000));
+              await finalizeFailureHeartbeat(p);
+            }
           }catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
           JS
       - name: Preserve sanitized exact reconciliation coordinates without private evidence

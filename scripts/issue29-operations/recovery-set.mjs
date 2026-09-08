@@ -377,6 +377,8 @@ export function measureRecovery(input) {
     const times = [input.recoveryPointAt, input.authorizedAt, input.databaseIntegrityAt, input.storageStartedAt, input.storageIntegrityAt, input.applicationStartedAt, input.allIntegrityAt];
     ensure(times.every(value => INSTANT.test(value) && Number.isFinite(Date.parse(value))), 'RECOVERY_TIMING_INVALID');
     const [point, start, database, storageStart, storage, applicationStart, end] = times.map(Date.parse);
-    ensure(point <= start && start <= database && database <= storageStart && storageStart <= storage && storage <= applicationStart && applicationStart <= end, 'RECOVERY_TIMING_INVALID');
+    // DB/Auth completion may follow the Storage phase when fresh real application login
+    // is the last Auth check. Measure that observed completion, not an earlier DB-only point.
+    ensure(point <= start && start <= database && database <= end && start <= storageStart && storageStart <= storage && storage <= applicationStart && applicationStart <= end, 'RECOVERY_TIMING_INVALID');
     return { recoveryPointAgeAtStartMs: start - point, databaseRecoveryElapsedMs: database - start, storageRecoveryElapsedMs: storage - storageStart, applicationRecoveryElapsedMs: end - applicationStart, fullRecoveryElapsedMs: end - start, withinTargets: start - point <= 86400000 && end - start <= 7200000 };
 }

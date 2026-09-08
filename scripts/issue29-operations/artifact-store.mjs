@@ -1,3 +1,4 @@
+import { crc32, inflateRawSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, readdir } from 'node:fs/promises';
@@ -14,7 +15,7 @@ const artifactSchema = z.object({
     workflow_run: z.object({ id: z.number().int().positive(), repository_id: z.number().int().positive(),
         head_repository_id: z.number().int().positive(), head_branch: z.string(), head_sha: z.string() })
 });
-/** @typedef {{repository:string,repositoryId:number,runId:number,runAttempt:number,candidateSha:string,artifactId:number,artifactName:string,expectedArchiveSha256:string,maxBytes:number,token:string,now?:string,fetchImpl?:typeof fetch}} ArtifactOptions */
+/** @typedef {{repository:string,repositoryId:number,runId:number,runAttempt:number,candidateSha:string,artifactId:number,artifactName:string,expectedArchiveSha256:string,maxBytes:number,token:string,expectedDescriptorSha256?:string,now?:string,fetchImpl?:typeof fetch}} ArtifactOptions */
 /** Verify the immutable archive independently of the official upload/download action's status.
  * No mutations, retries, provider bodies, signed URLs or credentials are returned.
  * @param {ArtifactOptions} options
@@ -28,6 +29,7 @@ export async function verifyGitHubArtifact(options) {
         artifactName === `issue29-recovery-${runId}-${runAttempt}` &&
         Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= 1100000000 &&
         /^[A-Za-z0-9_-]{10,512}$/u.test(token) && Number.isFinite(Date.parse(now)), 'ARTIFACT_REQUEST_INVALID');
+    if(options.expectedDescriptorSha256!==undefined)ensure(HASH.test(options.expectedDescriptorSha256)&&maxBytes<=134217728,'ARCHIVE_RECOVERY_LIMIT');
     const endpoint = `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}`;
     const headers = { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`,
         'X-GitHub-Api-Version': '2026-03-10' };
@@ -57,6 +59,7 @@ export async function verifyGitHubArtifact(options) {
         ensure(archive.status === 200 && archive.body, 'ARTIFACT_DOWNLOAD_UNAVAILABLE');
         const digest = createHash('sha256');
         const reader = archive.body.getReader();
+        /** @type {Buffer[]} */ const archiveParts=[];
         let sizeBytes = 0;
         try {
             while (true) {
@@ -66,6 +69,7 @@ export async function verifyGitHubArtifact(options) {
                 sizeBytes += value.byteLength;
                 ensure(sizeBytes <= maxBytes && sizeBytes <= artifact.size_in_bytes, 'ARTIFACT_SIZE_LIMIT');
                 digest.update(value);
+                if(options.expectedDescriptorSha256)archiveParts.push(Buffer.from(value));
             }
         }
         finally {
@@ -74,7 +78,8 @@ export async function verifyGitHubArtifact(options) {
         }
         const sha256 = digest.digest('hex');
         ensure(sizeBytes === artifact.size_in_bytes && sha256 === expectedArchiveSha256, 'ARTIFACT_INTEGRITY_MISMATCH');
-        return { schemaVersion: 1, kind: 'issue29-artifact-readback', repository, repositoryId, runId, runAttempt,
+        const recovery=options.expectedDescriptorSha256?verifyEncryptedRecoveryArchive(Buffer.concat(archiveParts),options.expectedDescriptorSha256,maxBytes):undefined;
+        return { ...(recovery?{recovery}:{}),schemaVersion: 1, kind: 'issue29-artifact-readback', repository, repositoryId, runId, runAttempt,
             candidateSha, artifactId, artifactName, sha256, sizeBytes, retentionDays: 35,
             createdAt: artifact.created_at, expiresAt: artifact.expires_at,
             verifiedAt: options.now ?? new Date().toISOString() };
@@ -155,4 +160,50 @@ export async function verifyEncryptedArtifactDirectory(options) {
             throw error;
         throw new OperationsError('ARTIFACT_FILES_INVALID');
     }
+}
+
+/** Inspect a bounded ZIP in memory without extracting paths or trusting unrelated local files.
+ * Only ZIP32 stored/deflate members from the selected immutable Actions upload are supported.
+ * @param {Buffer} archive @param {string} expectedDescriptorSha256 @param {number} [maxBytes]
+ */
+export function verifyEncryptedRecoveryArchive(archive,expectedDescriptorSha256,maxBytes=134217728){
+ try{
+  ensure(Buffer.isBuffer(archive)&&archive.length>=22&&archive.length<=maxBytes&&maxBytes<=134217728&&HASH.test(expectedDescriptorSha256),'ARCHIVE_RECOVERY_LIMIT');
+  const validateExtra=(/** @type {number} */start,/** @type {number} */length)=>{const end=start+length;while(start<end){ensure(start+4<=end,'ARCHIVE_MEMBER_UNSUPPORTED');const tag=archive.readUInt16LE(start),bytes=archive.readUInt16LE(start+2);ensure(tag!==1&&start+4+bytes<=end,'ARCHIVE_MEMBER_UNSUPPORTED');start+=4+bytes;}};
+  let end=-1;for(let p=archive.length-22;p>=Math.max(0,archive.length-65557);p--)if(archive.readUInt32LE(p)===0x06054b50&&p+22+archive.readUInt16LE(p+20)===archive.length){end=p;break;}
+  ensure(end>=0&&archive.readUInt16LE(end+4)===0&&archive.readUInt16LE(end+6)===0,'ARCHIVE_DIRECTORY_INVALID');
+  const count=archive.readUInt16LE(end+10),centralBytes=archive.readUInt32LE(end+12),centralOffset=archive.readUInt32LE(end+16);
+  ensure(count>0&&count<=10000&&count===archive.readUInt16LE(end+8)&&centralOffset+centralBytes===end&&centralOffset!==0xffffffff,'ARCHIVE_DIRECTORY_INVALID');
+  /** @type {Map<string,Buffer>} */
+  const members=new Map();
+  /** @type {Array<[number,number]>} */
+  const ranges=[];let cursor=centralOffset,total=0;
+  for(let i=0;i<count;i++){
+   ensure(cursor+46<=end&&archive.readUInt32LE(cursor)===0x02014b50,'ARCHIVE_DIRECTORY_INVALID');
+   const flags=archive.readUInt16LE(cursor+8),method=archive.readUInt16LE(cursor+10),checksum=archive.readUInt32LE(cursor+16),packed=archive.readUInt32LE(cursor+20),size=archive.readUInt32LE(cursor+24),nameLength=archive.readUInt16LE(cursor+28),extraLength=archive.readUInt16LE(cursor+30),commentLength=archive.readUInt16LE(cursor+32),offset=archive.readUInt32LE(cursor+42);
+   ensure((flags&~0x0808)===0&&[0,8].includes(method)&&packed!==0xffffffff&&size!==0xffffffff&&size<=67108864&&packed<=maxBytes&&archive.readUInt16LE(cursor+34)===0,'ARCHIVE_MEMBER_UNSUPPORTED');
+   const mode=(archive.readUInt32LE(cursor+38)>>>16)&0xf000;ensure(mode===0||mode===0x8000,'ARCHIVE_LINK_FORBIDDEN');
+   ensure(nameLength>0&&nameLength<=64&&cursor+46+nameLength+extraLength+commentLength<=end,'ARCHIVE_MEMBER_INVALID');
+   validateExtra(cursor+46+nameLength,extraLength);
+   const nameBytes=archive.subarray(cursor+46,cursor+46+nameLength),name=nameBytes.toString('utf8');
+   ensure(/^(?:backup-set\.json|manifest\.bin|component-[0-9]{6}\.bin)$/u.test(name)&&Buffer.from(name).equals(nameBytes)&&!members.has(name),'ARCHIVE_MEMBER_NAME_FORBIDDEN');
+   ensure(offset+30<=centralOffset&&archive.readUInt32LE(offset)===0x04034b50&&archive.readUInt16LE(offset+6)===flags&&archive.readUInt16LE(offset+8)===method,'ARCHIVE_LOCAL_HEADER_INVALID');
+   const localNameLength=archive.readUInt16LE(offset+26),localExtra=archive.readUInt16LE(offset+28),start=offset+30+localNameLength+localExtra;
+   ensure(localNameLength===nameLength&&archive.subarray(offset+30,offset+30+localNameLength).equals(nameBytes)&&start+packed<=centralOffset,'ARCHIVE_LOCAL_HEADER_INVALID');
+   validateExtra(offset+30+localNameLength,localExtra);
+   if(!(flags&8))ensure(archive.readUInt32LE(offset+14)===checksum&&archive.readUInt32LE(offset+18)===packed&&archive.readUInt32LE(offset+22)===size,'ARCHIVE_LOCAL_HEADER_INVALID');
+   let finish=start+packed;
+   if(flags&8){const signed=archive.readUInt32LE(finish)===0x08074b50?4:0;ensure(finish+signed+12<=centralOffset&&archive.readUInt32LE(finish+signed)===checksum&&archive.readUInt32LE(finish+signed+4)===packed&&archive.readUInt32LE(finish+signed+8)===size,'ARCHIVE_DATA_DESCRIPTOR_INVALID');finish+=signed+12;}
+   ranges.push([offset,finish]);total+=size;ensure(total<=maxBytes,'ARCHIVE_EXPANSION_LIMIT');
+   const compressed=archive.subarray(start,start+packed);let bytes;
+   if(method===0)bytes=Buffer.from(compressed);else{const inflated=/** @type {unknown} */(inflateRawSync(compressed,{maxOutputLength:Math.max(1,size),info:true}));ensure(inflated&&typeof inflated==='object'&&'engine' in inflated&&inflated.engine&&typeof inflated.engine==='object'&&'bytesWritten' in inflated.engine&&inflated.engine.bytesWritten===packed&&'buffer' in inflated&&Buffer.isBuffer(inflated.buffer),'ARCHIVE_COMPRESSED_BOUNDARY');bytes=inflated.buffer;}
+   ensure(bytes.length===size&&crc32(bytes)===checksum,'ARCHIVE_MEMBER_INTEGRITY_MISMATCH');members.set(name,bytes);cursor+=46+nameLength+extraLength+commentLength;
+  }
+  ensure(cursor===end,'ARCHIVE_DIRECTORY_INVALID');ranges.sort((a,b)=>a[0]-b[0]);ensure(ranges[0][0]===0&&ranges.every((range,i)=>i===0||range[0]===ranges[i-1][1])&&ranges.at(-1)?.[1]===centralOffset,'ARCHIVE_OVERLAP_OR_HIDDEN_DATA');
+  const bytes=members.get('backup-set.json');ensure(bytes&&bytes.length<=1048576&&createHash('sha256').update(bytes).digest('hex')===expectedDescriptorSha256,'DESCRIPTOR_HASH_MISMATCH');
+  const descriptor=validateRecoveryDescriptor(JSON.parse(bytes.toString('utf8'))),components=[...descriptor.components,descriptor.manifest];
+  ensure(members.size===components.length+1&&components.every(c=>members.has(c.name)),'ARTIFACT_COMPONENT_INVENTORY_MISMATCH');
+  for(const c of components){const value=members.get(c.name);ensure(value&&value.length===c.bytes&&createHash('sha256').update(value).digest('hex')===c.ciphertextSha256,'ARTIFACT_COMPONENT_INTEGRITY_MISMATCH');}
+  return{descriptorSha256:expectedDescriptorSha256,componentInventorySha256:createHash('sha256').update(canonicalJson(components)).digest('hex'),objectCount:descriptor.storage.objectCount,sizeBytes:total};
+ }catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('ARCHIVE_RECOVERY_INVALID');}
 }

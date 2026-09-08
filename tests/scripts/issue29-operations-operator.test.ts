@@ -1,3 +1,5 @@
+import{createHash}from'node:crypto';import{canonicalJson}from'../../scripts/issue29-operations/recovery-set.mjs';
+function evidenced<T extends Record<string,unknown>>(value:T){const{evidenceSha256:_hash,evidence:_old,...evidence}=value;return{...value,evidence,evidenceSha256:createHash('sha256').update(canonicalJson(evidence)).digest('hex')};}
 import { afterEach, describe, expect, test } from 'vitest';
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -41,7 +43,7 @@ describe('persisted mutation execution', () => {
         const result = await executeOperatorStep({ manifestPath: path, repositoryRoot: process.cwd(), step: 'restore-database', capability: 'restore-write', candidate, now,
             inspect: async () => projectReadback(),
             mutate: async ({ operationId }) => { const persisted = await readPrivateManifest(path, { repositoryRoot: process.cwd(), now }); expect(persisted.pending?.operationId).toBe(operationId); expect(persisted.state).toBe('quarantine_verified'); mutations++; evidence.operationId = operationId; },
-            readback: async () => evidence });
+            readback: async () => evidenced(evidence) });
         expect(result.state).toBe('database_restored');
         expect(result.pending).toBeNull();
         expect(mutations).toBe(1);
@@ -60,7 +62,7 @@ describe('ambiguous mutation recovery', () => {
         const pending = (await readPrivateManifest(path, { repositoryRoot: process.cwd(), now })).pending!;
         await expect(executeOperatorStep({ ...base, step: 'restore-storage', readback: async () => { throw new Error('not reached'); } })).rejects.toThrow('PENDING_OPERATION_REQUIRES_READBACK');
         await expect(executeOperatorStep({ ...base, readback: async () => { throw new Error('SECRET_PROVIDER_BODY'); } })).rejects.toThrow('READBACK_UNCERTAIN_NO_RETRY');
-        const recovered = await executeOperatorStep({ ...base, readback: async () => ({ status: 'verified', evidenceSha256: 'd'.repeat(64), operationId: pending.operationId, resourceId: null, targetRef: target.ref, candidateSha: candidate.sha, completedAt: now }) });
+        const recovered = await executeOperatorStep({ ...base, readback: async () => evidenced({ status: 'verified', evidenceSha256: 'd'.repeat(64), operationId: pending.operationId, resourceId: null, targetRef: target.ref, candidateSha: candidate.sha, completedAt: now }) });
         expect(recovered.state).toBe('database_restored');
         expect(mutations).toBe(1);
         await executeOperatorStep({ ...base, readback: async () => { throw new Error('must not repeat'); } });
@@ -132,9 +134,9 @@ describe('manifest-owned cleanup', () => {
         const observed = projectReadback();
         observed.credential = { ...observed.credential, id: 'cleanup-key', role: 'cleanup' };
         const base = { manifestPath: path, repositoryRoot: process.cwd(), step: 'cleanup-resource', capability: 'cleanup' as const, resourceId: target.ref, candidate, now, inspect: async () => observed, mutate: async () => { deleted++; } };
-        await expect(executeOperatorStep({ ...base, readback: async ({ operationId }) => ({ operationId, status: 'present', resourceId: target.ref, targetRef: target.ref, candidateSha: candidate.sha, completedAt: now, evidenceSha256: 'f'.repeat(64) }) })).rejects.toThrow('READBACK_UNCERTAIN_NO_RETRY');
+        await expect(executeOperatorStep({ ...base, readback: async ({ operationId }) => evidenced({ operationId, status: 'present', resourceId: target.ref, targetRef: target.ref, candidateSha: candidate.sha, completedAt: now, evidenceSha256: 'f'.repeat(64) }) })).rejects.toThrow('READBACK_UNCERTAIN_NO_RETRY');
         expect((await readPrivateManifest(path, { repositoryRoot: process.cwd(), now })).cleanup.resources[0].absentAt).toBeNull();
-        const final = await executeOperatorStep({ ...base, readback: async ({ operationId }) => ({ operationId, status: 'absent', resourceId: target.ref, targetRef: target.ref, candidateSha: candidate.sha, completedAt: now, evidenceSha256: 'f'.repeat(64) }) });
+        const final = await executeOperatorStep({ ...base, readback: async ({ operationId }) => evidenced({ operationId, status: 'absent', resourceId: target.ref, targetRef: target.ref, candidateSha: candidate.sha, completedAt: now, evidenceSha256: 'f'.repeat(64) }) });
         expect(deleted).toBe(1);
         expect(final.cleanup.resources[0].absentAt).toBe(now);
     });
@@ -160,7 +162,7 @@ test('requires the fresh project lifecycle for target creation instead of legacy
 
 test('checks the live completion clock for a legitimate restore longer than five minutes',async()=>{
     const path=await privatePath(); const input=manifestFixture(); input.state='quarantine_verified'; await writePrivateManifest(path,input,{repositoryRoot:process.cwd(),now}); let liveTime=now;
-    const result=await executeOperatorStep({manifestPath:path,repositoryRoot:process.cwd(),step:'restore-database',capability:'restore-write',candidate,clock:()=>liveTime,inspect:async()=>projectReadback(),mutate:async()=>{liveTime='2026-09-05T12:30:00.000Z';},readback:async({operationId})=>({operationId,status:'verified',resourceId:null,targetRef:target.ref,candidateSha:candidate.sha,completedAt:liveTime,evidenceSha256:'f'.repeat(64)})});
+    const result=await executeOperatorStep({manifestPath:path,repositoryRoot:process.cwd(),step:'restore-database',capability:'restore-write',candidate,clock:()=>liveTime,inspect:async()=>projectReadback(),mutate:async()=>{liveTime='2026-09-05T12:30:00.000Z';},readback:async({operationId})=>evidenced({operationId,status:'verified',resourceId:null,targetRef:target.ref,candidateSha:candidate.sha,completedAt:liveTime,evidenceSha256:'f'.repeat(64)})});
     expect(result.state).toBe('database_restored'); expect(result.history[0].completedAt).toBe('2026-09-05T12:30:00.000Z');
 });
 
@@ -171,6 +173,6 @@ test('final cleanup verifies absence without probing an already retired source',
  let inspections=0;
  const result=await executeOperatorStep({manifestPath:path,repositoryRoot:process.cwd(),step:'cleanup',capability:'cleanup',candidate,now,
   inspect:async()=>{inspections++;throw new Error('source no longer exists');},
-  readback:async({operationId})=>({operationId,resourceId:null,targetRef:source.ref,candidateSha:candidate.sha,status:'verified',completedAt:now,evidenceSha256:'e'.repeat(64)})});
+  readback:async({operationId})=>evidenced({operationId,resourceId:null,targetRef:source.ref,candidateSha:candidate.sha,status:'verified',completedAt:now,evidenceSha256:'e'.repeat(64)})});
  expect(result.state).toBe('cleanup_verified');expect(inspections).toBe(0);
 });

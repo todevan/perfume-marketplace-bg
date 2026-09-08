@@ -30,6 +30,7 @@ async function request(fetchImpl, url, init, mutation = false) {
     ensure(response.status >= 200, 'GRAFANA_READBACK_UNAVAILABLE');
     if (response.status === 404) return {absent:true};
     if (response.status === 204) return {};
+    if(mutation&&!response.body)return {};
     const reader = response.body?.getReader();
     ensure(reader, 'GRAFANA_RESPONSE_INVALID');
     const parts = []; let length = 0;
@@ -89,9 +90,23 @@ export function createGrafanaHeartbeatAdapter(input, options = {}) {
      * @param {{candidateSha:string,configSha256:string,evidenceSha256:string}} raw */
     async publishBackupFailure(raw) {
       ensure(raw.candidateSha===c.candidateSha && raw.configSha256===c.configSha256 && hash.safeParse(raw.evidenceSha256).success,'GRAFANA_HEARTBEAT_IDENTITY_OR_TIME');
-      const body=`aromatika_ops_backup_status,environment=${c.environmentAlias},candidate=${c.candidateSha},config=${c.configSha256} usable=0 ${BigInt(Date.parse(now()))*1_000_000n}\n`;
+      const body=`aromatika_ops_backup_status,environment=${c.environmentAlias},candidate=${c.candidateSha},config=${c.configSha256} usable=0 ${BigInt(Date.parse(now()))*1_000_000n}\naromatika_ops_backup_failure,environment=${c.environmentAlias},candidate=${c.candidateSha},config=${c.configSha256},evidence=${raw.evidenceSha256} observed=1 ${BigInt(Date.parse(now()))*1_000_000n}\n`;
       await request(fetchImpl,`${writeOrigin}/api/v1/push/influx/write`,{method:'POST',headers:{Authorization:`Basic ${Buffer.from(`${c.metricsInstanceId}:${c.writeToken}`).toString('base64')}`,'Content-Type':'text/plain'},body},true);
       return {status:'submitted',reasonCode:'backup_integrity_failed',evidenceSha256:raw.evidenceSha256};
+    },
+    /** @param {{candidateSha:string,configSha256:string,evidenceSha256:string}} raw */
+    async verifyBackupFailure(raw) {
+      ensure(raw.candidateSha===c.candidateSha&&raw.configSha256===c.configSha256&&hash.safeParse(raw.evidenceSha256).success,'GRAFANA_HEARTBEAT_IDENTITY_OR_TIME');
+      const labels={environment:c.environmentAlias,candidate:c.candidateSha,config:c.configSha256,evidence:raw.evidenceSha256};
+      const selector=Object.entries(labels).map(([k,v])=>`${k}="${v}"`).join(',');
+      const query=`last_over_time(aromatika_ops_backup_failure_observed{${selector}}[5m]) and on(environment,candidate,config) last_over_time(aromatika_ops_backup_status_usable{environment="${c.environmentAlias}",candidate="${c.candidateSha}",config="${c.configSha256}"}[5m]) == 0`;
+      const result=await request(fetchImpl,`${queryOrigin}${c.queryBasePath}/api/v1/query?`+new URLSearchParams({query,time:now()}),
+        {headers:{Authorization:`Basic ${Buffer.from(`${c.metricsInstanceId}:${c.readToken}`).toString('base64')}`}});
+      const rows=result.data?.result;
+      ensure(result.status==='success'&&result.data?.resultType==='vector'&&Array.isArray(rows)&&rows.length===1&&
+        Object.entries(labels).every(([k,v])=>rows[0].metric?.[k]===v)&&Number(rows[0].value?.[1])===1&&
+        Math.abs(Number(rows[0].value?.[0])*1000-Date.parse(now()))<=300000,'GRAFANA_FAILURE_READBACK_MISMATCH');
+      return {status:'verified',reasonCode:'backup_integrity_failed',...raw,verifiedAt:now()};
     },
     /** Verify remote data by exact private linkage after publication/ambiguous request. No current-time substitution.
      * @param {BackupHeartbeat} raw */
@@ -115,7 +130,7 @@ const monitorConfigSchema = z.object({
   stackSlug:alias, stackId:z.number().int().positive(), orgId:z.number().int().positive(), tenantId:z.number().int().positive(),
   namespace:z.string().regex(/^stacks-[1-9][0-9]*$/u), smOrigin:z.string(), cloudReadToken:token,
   stackToken:token, syntheticToken:token, monitorToken:z.string().regex(/^[A-Za-z0-9_-]{43,256}$/u).refine(value=>!value.startsWith('sb_')),
-  privateEmail:z.email().max(254), environmentAlias:alias, runtimeEnvironment:z.enum(['development','staging']), runId:z.string().uuid(), candidateSha:sha,
+  targetRole:z.enum(['source','target']).optional(), targetCycleId:z.uuid().optional(), privateEmail:z.email().max(254), environmentAlias:alias, runtimeEnvironment:z.enum(['development','staging']), runId:z.string().uuid(), candidateSha:sha,
   targetOrigin:z.string(), publicPath:z.string().regex(/^\/[a-zA-Z0-9/_-]*$/u),
   folderUid:alias, datasourceUid:alias, publicProbeId:z.number().int().positive(), k6ChannelId:z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/u),
   metricsQueryOrigin:z.string(), metricsQueryBasePath:z.enum(['/api/prom','/prometheus']), metricsInstanceId:id, metricsReadToken:token,
@@ -135,13 +150,13 @@ function sampleScore(metric, intervalSeconds) {
   const recovery = `((${max} == bool 0) * (${n} >= bool 2))`;
   return `(sum(1 + ${trigger} - ${recovery})) or vector(2)`;
 }
-/** @param {GrafanaConfig} c @param {string} secretName */
-function protectedScript(c, secretName) {
+/** @param {GrafanaConfig} c @param {string} secretName @param {Record<string,string>} labels */
+function protectedScript(c, secretName, labels) {
   // No URL, exception message, response body or secret is logged or used as a custom metric label.
   return `import http from 'k6/http';
 import secrets from 'k6/secrets';
 import { Gauge } from 'k6/metrics';
-export const options = { maxRedirects:0, insecureSkipTLSVerify:false, systemTags:['status','method','name'], throw:false };
+export const options = { maxRedirects:0, insecureSkipTLSVerify:false, systemTags:['status','method','name'], tags:${JSON.stringify(labels)}, throw:false };
 const names = ${JSON.stringify(GRAFANA_SIGNALS.filter(x=>!['backup_freshness','monitor_heartbeat'].includes(x)))};
 const gauges = Object.fromEntries(names.map(n=>[n,new Gauge('aromatika_'+n)]));
 const heartbeat = new Gauge('aromatika_monitor_checkpoint_seconds');
@@ -169,13 +184,13 @@ export default async function() {
 }
 /** @param {GrafanaConfig} c */
 function resources(c) {
-  const suffix = c.runId.replaceAll('-','').slice(0,10), prefix=`i29-${suffix}`;
+  const suffix = c.runId.replaceAll('-','').slice(0,10), prefix=c.targetRole==='target'?`t29-${(c.targetCycleId??c.runId).replaceAll('-','').slice(0,10)}`:`i29-${suffix}`;
   const secretName=`${prefix}-monitor`, receiverTitle=`${prefix}-owner-primary`;
-  const configurationSha256=digest({version:1,stackId:c.stackId,orgId:c.orgId,tenantId:c.tenantId,environment:c.environmentAlias,
+  const configurationSha256=digest({version:1,...(c.targetRole==='target'?{targetCycleId:c.targetCycleId??c.runId}:{}),stackId:c.stackId,orgId:c.orgId,tenantId:c.tenantId,environment:c.environmentAlias,
     candidate:c.candidateSha,runtimeEnvironment:c.runtimeEnvironment,target:c.targetOrigin,publicPath:c.publicPath,probe:c.publicProbeId,k6:c.k6ChannelId,
-    folder:c.folderUid,datasource:c.datasourceUid,runId:c.runId,ruleContract:'raw-sample-hysteresis-v1',destinationAlias:'owner-primary'});
+    folder:c.folderUid,datasource:c.datasourceUid,runId:c.runId,ruleContract:'release-bound-raw-sample-hysteresis-v2',destinationAlias:'owner-primary'});
   const labels={issue29_run:c.runId,issue29_candidate:c.candidateSha,issue29_config:configurationSha256,environment:c.environmentAlias};
-  /** @type {Resource[]} */ const result=[{kind:'folder',key:c.folderUid,payload:{uid:c.folderUid,title:`Issue29 ${suffix}`}}];
+  /** @type {Resource[]} */ const result=c.targetRole==='target'?[]:[{kind:'folder',key:c.folderUid,payload:{uid:c.folderUid,title:`Issue29 ${suffix}`}}];
   result.push({kind:'secret',key:secretName,payload:{metadata:{name:secretName,namespace:c.namespace,labels:{'issue29-run':suffix}},
     spec:{description:'Issue29 read-only monitor',value:c.monitorToken,decrypters:['synthetic-monitoring']}}});
   // Receiver names are the base64url-encoded title in the v1beta1 compatibility API (provider owns UID).
@@ -187,7 +202,7 @@ function resources(c) {
     labels:Object.entries(labels).map(([name,value])=>({name,value})),folderUid:c.folderUid};
   const publicScript = `import http from 'k6/http';
 import { Gauge } from 'k6/metrics';
-export const options = {maxRedirects:0,insecureSkipTLSVerify:false,discardResponseBodies:true,systemTags:['status','method','name'],throw:false};
+export const options = {maxRedirects:0,insecureSkipTLSVerify:false,discardResponseBodies:true,systemTags:['status','method','name'],tags:${JSON.stringify(labels)},throw:false};
 const health = new Gauge('aromatika_public_health');
 export default function() {
   let state = 1;
@@ -200,7 +215,7 @@ export default function() {
   result.push({kind:'check',key:publicJob,payload:{...common,job:publicJob,target:c.targetOrigin+c.publicPath,frequency:300000,
     channels:{k6:{id:c.k6ChannelId}},settings:{scripted:{script:Buffer.from(publicScript).toString('base64')}}}});
   result.push({kind:'check',key:protectedJob,payload:{...common,job:protectedJob,target:c.targetOrigin+'/api/operations/readiness',frequency:600000,
-    channels:{k6:{id:c.k6ChannelId}},settings:{scripted:{script:Buffer.from(protectedScript(c,secretName)).toString('base64')}}}});
+    channels:{k6:{id:c.k6ChannelId}},settings:{scripted:{script:Buffer.from(protectedScript(c,secretName,labels)).toString('base64')}}}});
   /** @param {string} signal @param {string} expr @param {string} severity @param {string} postfix @param {string} [keep] */
   function rule(signal,expr,severity,postfix='',keep='0s') {
     const key=`${prefix}-${signal.replaceAll('_','-')}${postfix}`;
@@ -215,14 +230,15 @@ export default function() {
       notification_settings:{receiver:receiverTitle,group_by:['alertname','grafana_folder','issue29_run','issue29_candidate','issue29_config','signal'],
         group_wait:'0s',group_interval:'1m',repeat_interval:'4h'}}});
   }
+  const sampleLabels=`,issue29_candidate="${c.candidateSha}",issue29_config="${configurationSha256}",issue29_run="${c.runId}"`;
   for(const signal of GRAFANA_SIGNALS.filter(x=>!['backup_freshness','monitor_heartbeat'].includes(x))) {
-    const metric=`probe_aromatika_${signal}{job="${protectedJob}",instance="${c.targetOrigin}/api/operations/readiness"}`;
+    const metric=`probe_aromatika_${signal}{job="${protectedJob}",instance="${c.targetOrigin}/api/operations/readiness"${sampleLabels}}`;
     rule(signal,sampleScore(metric,600),'critical');
   }
   // Public hostname/TLS/DNS/header checks are independent of the protected surface's availability.
-  const publicMetric=`probe_aromatika_public_health{job="${publicJob}",instance="${c.targetOrigin+c.publicPath}"}`;
+  const publicMetric=`probe_aromatika_public_health{job="${publicJob}",instance="${c.targetOrigin+c.publicPath}"${sampleLabels}}`;
   rule('health',sampleScore(publicMetric,300),'critical','-public');
-  const heartbeat=`probe_aromatika_monitor_checkpoint_seconds{job="${protectedJob}",instance="${c.targetOrigin}/api/operations/readiness"}`;
+  const heartbeat=`probe_aromatika_monitor_checkpoint_seconds{job="${protectedJob}",instance="${c.targetOrigin}/api/operations/readiness"${sampleLabels}}`;
   rule('monitor_heartbeat',`(2 * (time() - max(last_over_time(${heartbeat}[1h])) > bool 1200)) or vector(2)`,'critical','','1m');
   const backup=`aromatika_ops_backup_checkpoint_seconds{environment="${c.environmentAlias}",candidate="${c.candidateSha}",config="${configurationSha256}"}`;
   const age=`(time() - max(last_over_time(${backup}[35d])))`;
@@ -231,11 +247,45 @@ export default function() {
   rule('backup_freshness',`(2 * clamp_max((${age} > bool 93600) + (${usable} != bool 1),1)) or vector(2)`,'critical','','1m');
   return {resources:result,configurationSha256,labels,publicJob,protectedJob,receiverTitle};
 }
+/** @typedef {{writeOrigin:string,writeToken:string,expiresAt:string}} GrafanaFixtureSettings */
+/** Native rule predicates are cloned with isolated metric selectors only. No application fault route,
+ * source metrics, source secrets, or standing monitor config is modified. The extra time gate stops
+ * test-only notifications after the authorized fixture expiry even if the operator is interrupted.
+ * @param {GrafanaConfig} c @param {GrafanaFixtureSettings} fixture */
+function fixtureResources(c,fixture){
+  const source=resources(c),prefix=`f29-${digest({source:source.configurationSha256,expiry:fixture.expiresAt}).slice(0,10)}`,environment=`fixture-${c.runId.slice(0,8)}`;
+  const configurationSha256=digest({source:source.configurationSha256,expiry:fixture.expiresAt,contract:'isolated-native-rule-fixture-v1'});
+  const labels={...source.labels,issue29_config:configurationSha256,environment,issue29_fixture:'true'};
+  const target=`https://issue29-fixture.invalid/${c.runId}`;
+  const result=source.resources.filter(r=>r.kind==='rule').map(r=>{
+    const payload=structuredClone(r.payload),key=r.key.replace(/^[it]29-[a-f0-9]{10}/u,prefix);
+    let expr=payload.data[0].model.expr.replaceAll('probe_aromatika_','aromatika_issue29_fixture_')
+      .replaceAll('aromatika_ops_backup_checkpoint_seconds','aromatika_issue29_fixture_backup_checkpoint_seconds')
+      .replaceAll('aromatika_ops_backup_status_usable','aromatika_issue29_fixture_backup_status_usable');
+    expr=expr.replace(/(aromatika_issue29_fixture_[a-z_]+)\{/gu,'$1_value{')
+      .replaceAll(source.publicJob,prefix+'-public').replaceAll(source.protectedJob,prefix+'-protected')
+      .replaceAll(c.targetOrigin+'/api/operations/readiness',target).replaceAll(c.targetOrigin+c.publicPath,target)
+      .replaceAll(c.environmentAlias,environment).replaceAll(source.configurationSha256,configurationSha256);
+    payload.uid=key;payload.title=key;payload.ruleGroup=prefix+'-one-minute';payload.labels={...payload.labels,...labels};
+    payload.data[0].model.expr=`(${expr}) * (time() < bool ${Date.parse(fixture.expiresAt)/1000})`;
+    return {kind:/** @type {const} */('rule'),key,payload};
+  });
+  return {...source,resources:result,configurationSha256,labels,publicJob:prefix+'-public',protectedJob:prefix+'-protected',sourceConfigSha256:source.configurationSha256};
+}
+/** @param {GrafanaConfig} input @param {GrafanaFixtureSettings} fixture @param {AdapterOptions} [options] */
+export function createGrafanaRuleFixtureAdapter(input,fixture,options={}){
+  ensure(z.object({writeOrigin:z.string(),writeToken:token,expiresAt:z.iso.datetime()}).strict().safeParse(fixture).success,'GRAFANA_FIXTURE_CONFIG_INVALID');
+  origin(fixture.writeOrigin,/^influx-[a-z0-9-]+\.grafana\.net$/u);
+  ensure(![input.stackToken,input.syntheticToken,input.monitorToken,input.cloudReadToken,input.metricsReadToken].includes(fixture.writeToken),'GRAFANA_CAPABILITIES_NOT_DISTINCT');
+  return selectedGrafanaAdapter(input,options,fixture);
+}
+/** @param {GrafanaConfig} input @param {AdapterOptions} [options] */
+export function createGrafanaAdapter(input,options={}){return selectedGrafanaAdapter(input,options);}
 /** Build one selected Grafana integration, never a multi-provider interface.
  * Every resource operation has separate inspect/mutate/readback callbacks so the persisted operator
  * can record intent before exactly one create and resume ambiguous results by readback alone.
- * @param {GrafanaConfig} input @param {AdapterOptions} options */
-export function createGrafanaAdapter(input, options={}) {
+ * @param {GrafanaConfig} input @param {AdapterOptions} options @param {GrafanaFixtureSettings|null} fixture */
+function selectedGrafanaAdapter(input, options={}, fixture=null) {
   const parsed=monitorConfigSchema.safeParse(input); ensure(parsed.success,'GRAFANA_CONFIG_INVALID');
   const c=parsed.data, now=options.now ?? (()=>new Date().toISOString()), fetchImpl=options.fetchImpl ?? fetch;
   ensure(c.namespace===`stacks-${c.stackId}` && new Set([c.cloudReadToken,c.stackToken,c.syntheticToken,c.monitorToken,c.metricsReadToken]).size===5,'GRAFANA_IDENTITY_OR_CAPABILITY_INVALID');
@@ -243,7 +293,7 @@ export function createGrafanaAdapter(input, options={}) {
   const smOrigin=origin(c.smOrigin,/^synthetic-monitoring-api(?:-[a-z0-9-]+)?\.grafana\.net$/u);
   origin(c.targetOrigin,/^[a-z0-9-]+(?:\.[a-z0-9-]+)?\.workers\.dev$/u);
   const queryOrigin=origin(c.metricsQueryOrigin,/^prometheus-[a-z0-9-]+\.grafana\.net$/u);
-  const p=resources(c);
+  const p=fixture?fixtureResources(c,fixture):{...resources(c),sourceConfigSha256:null};
   /** @param {Resource} r */
   function summary(r) { return {kind:r.kind,key:r.key,configSha256:p.configurationSha256}; }
   const stackHeaders={Authorization:`Bearer ${c.stackToken}`,'Content-Type':'application/json'};
@@ -283,6 +333,7 @@ export function createGrafanaAdapter(input, options={}) {
     const probes=await sm('/api/v1/probe');
     const probe=Array.isArray(probes)?probes.find(x=>x.id===c.publicProbeId):null;
     ensure(probe?.public===true && probe.online===true && probe.disabled===false && probe.deprecated===false && probe.capabilities?.disableScriptedChecks!==true && probe.k6Versions?.[c.k6ChannelId],'GRAFANA_PROBE_UNAVAILABLE');
+    if(c.targetRole==='target'){const folder=await stack(`/api/folders/${c.folderUid}`);ensure(folder.uid===c.folderUid&&folder.title===`Issue29 ${c.runId.replaceAll('-','').slice(0,10)}`,'GRAFANA_TARGET_FOLDER_UNPROVEN');}
     const organization=await stack('/api/org');ensure(organization.id===1,'GRAFANA_INTERNAL_ORGANIZATION_MISMATCH');
     const ds=await stack(`/api/datasources/uid/${c.datasourceUid}`);
     ensure(ds.uid===c.datasourceUid && ds.type==='prometheus' && ds.url===queryOrigin+c.metricsQueryBasePath && ds.basicAuthUser===c.metricsInstanceId,'GRAFANA_METRICS_DATASOURCE_MISMATCH');
@@ -298,6 +349,7 @@ export function createGrafanaAdapter(input, options={}) {
   /** @param {Resource} r @param {string} [resourceId] */
   async function readRaw(r,resourceId) {
     if(r.kind==='check') {
+      if(resourceId){ensure(id.safeParse(resourceId).success,'GRAFANA_RESOURCE_ID_INVALID');const raw=await sm(`/api/v1/check/${resourceId}`);ensure(raw.absent||String(raw.id)===resourceId,'GRAFANA_RESOURCE_ID_MISMATCH');return raw;}
       const matches=(await checks()).filter(x=>x.job===r.key);
       ensure(matches.length<=1,'GRAFANA_RESOURCE_AMBIGUOUS');
       if(matches.length===0)return {absent:true};
@@ -343,6 +395,42 @@ export function createGrafanaAdapter(input, options={}) {
           await stack(paths[r.kind],{method:'POST',body:JSON.stringify(r.payload)},true);}
       },
       readback:()=>readResource(key)
+    };
+  }
+  /** Same-origin protected-merge update of existing IDs only. Full provider prior state is private
+   * evidence, persisted by the caller before its pending intent; no create fallback or retry.
+   * @param {string} key @param {string} previousCandidateSha
+   * @param {{resourceId:string,capturePrior:(prior:Record<string,any>)=>Promise<void>,priorState?:Record<string,any>,expectedPriorSha256?:string}} settings */
+  function releaseUpdateOperation(key,previousCandidateSha,settings){
+    ensure(!fixture&&(c.targetRole??'source')==='source'&&sha.safeParse(previousCandidateSha).success&&previousCandidateSha!==c.candidateSha,'GRAFANA_RELEASE_UPDATE_FORBIDDEN');
+    const next=resource(key),previous=resources({...c,candidateSha:previousCandidateSha});
+    const old=previous.resources.find(r=>r.key===key);ensure(old&&['check','rule'].includes(next.kind)&&old.kind===next.kind,'GRAFANA_RELEASE_RESOURCE_FORBIDDEN');
+    ensure(typeof settings.resourceId==='string'&&settings.resourceId.length>0&&typeof settings.capturePrior==='function','GRAFANA_RELEASE_PRIOR_REQUIRED');
+    let prior=settings.priorState,inspectedAt=0,attempted=false;
+    function verifyPrior(){
+      ensure(prior&&prior.schemaVersion===1&&prior.kind==='issue29-grafana-release-prior'&&prior.key===key&&prior.resourceId===settings.resourceId&&
+        prior.previousCandidateSha===previousCandidateSha&&prior.candidateSha===c.candidateSha&&prior.previousConfigSha256===previous.configurationSha256&&prior.configSha256===p.configurationSha256,'GRAFANA_RELEASE_PRIOR_MISMATCH');
+      if(settings.expectedPriorSha256)ensure(digest(prior)===settings.expectedPriorSha256,'GRAFANA_RELEASE_PRIOR_MISMATCH');
+      ensure(validateResource(/** @type {Resource} */(old),prior.providerState).resourceId===settings.resourceId,'GRAFANA_RESOURCE_ID_MISMATCH');
+      return prior;
+    }
+    return {
+      async inspect(){await preflight();const raw=await readRaw(old,settings.resourceId),receipt=validateResource(old,raw);
+        ensure(receipt.resourceId===settings.resourceId,'GRAFANA_RESOURCE_ID_MISMATCH');
+        prior={schemaVersion:1,kind:'issue29-grafana-release-prior',key,resourceId:settings.resourceId,previousCandidateSha,candidateSha:c.candidateSha,
+          previousConfigSha256:previous.configurationSha256,configSha256:p.configurationSha256,providerState:raw};
+        await settings.capturePrior(prior);inspectedAt=Date.parse(now());const priorStateSha256=digest(prior);
+        return {status:'verified',key,resourceId:settings.resourceId,priorStateSha256,evidenceSha256:priorStateSha256};},
+      async mutate(){
+        ensure(inspectedAt>0&&Date.parse(now())>=inspectedAt&&Date.parse(now())-inspectedAt<=60000&&!attempted,'GRAFANA_PRE_MUTATION_INSPECTION_REQUIRED');
+        const captured=verifyPrior(),current=await readRaw(old,settings.resourceId);
+        ensure(digest(current)===digest(captured.providerState),'GRAFANA_RELEASE_PRIOR_DRIFT');attempted=true;
+        if(next.kind==='check')await sm(`/api/v1/check/${settings.resourceId}`,{method:'POST',body:JSON.stringify({...current,...next.payload,id:Number(settings.resourceId)})},true);
+        else await stack(`/api/v1/provisioning/alert-rules/${key}`,{method:'PUT',body:JSON.stringify({...current,...next.payload})},true);
+      },
+      async readback(){const captured=verifyPrior(),receipt=await readResource(key,settings.resourceId);ensure(receipt.status==='verified','GRAFANA_RELEASE_UPDATE_UNPROVEN');
+        const proof={...receipt,previousCandidateSha,candidateSha:c.candidateSha,priorStateSha256:digest(captured)};
+        return {...proof,evidenceSha256:digest(proof)};}
     };
   }
   /** @param {{ruleKey:string,status:'firing'|'resolved',from:string,to:string}} q */
@@ -394,6 +482,21 @@ export function createGrafanaAdapter(input, options={}) {
       [0,1,2].includes(Number(rows[0].value?.[1])) && Math.abs(Number(rows[0].value?.[0])*1000-Date.parse(now()))<=120000,'GRAFANA_RULE_SCORE_UNAVAILABLE');
     return {ruleKey:key,score:Number(rows[0].value[1]),checkedAt:now(),candidateSha:c.candidateSha,configSha256:p.configurationSha256};
   }
+  /** The metric value is the real independent check heartbeat, not the PromQL evaluation time. */
+  async function readMonitorHeartbeat() {
+    ensure(!fixture,'GRAFANA_ACTUAL_MONITOR_REQUIRED');
+    const labels={job:p.protectedJob,instance:c.targetOrigin+'/api/operations/readiness',issue29_run:c.runId,issue29_candidate:c.candidateSha,issue29_config:p.configurationSha256};
+    const query=`last_over_time(probe_aromatika_monitor_checkpoint_seconds{${Object.entries(labels).map(([k,v])=>`${k}="${v}"`).join(',')}}[1h])`;
+    const response=await request(fetchImpl,queryOrigin+c.metricsQueryBasePath+'/api/v1/query?'+new URLSearchParams({query,time:now()}),
+      {headers:{Authorization:`Basic ${Buffer.from(`${c.metricsInstanceId}:${c.metricsReadToken}`).toString('base64')}`}});
+    const rows=response.data?.result,checked=Date.parse(now());
+    ensure(response.status==='success'&&response.data?.resultType==='vector'&&Array.isArray(rows)&&rows.length===1&&
+      Object.entries(labels).every(([k,v])=>rows[0].metric?.[k]===v)&&Array.isArray(rows[0].value)&&rows[0].value.length===2&&
+      Math.abs(Number(rows[0].value[0])*1000-checked)<=120000&&Number.isFinite(Number(rows[0].value[1]))&&
+      checked-Number(rows[0].value[1])*1000>=0&&checked-Number(rows[0].value[1])*1000<=1200000,'GRAFANA_MONITOR_HEARTBEAT_UNPROVEN');
+    return {schemaVersion:1,kind:'issue29-monitor-heartbeat',runId:c.runId,candidateSha:c.candidateSha,configSha256:p.configurationSha256,
+      heartbeatAt:new Date(Number(rows[0].value[1])*1000).toISOString(),checkedAt:now()};
+  }
   async function verifyConfiguration() {
     await preflight();const observed=[];
     for(const r of p.resources) {const receipt=await readResource(r.key);ensure(receipt.status==='verified','GRAFANA_CONFIGURATION_INCOMPLETE');observed.push(receipt);}
@@ -420,11 +523,88 @@ export function createGrafanaAdapter(input, options={}) {
       async readback() {const receipt=await readResource(key,resourceId);ensure(receipt.status==='absent','GRAFANA_CLEANUP_ABSENCE_NOT_PROVEN');return receipt;}
     };
   }
+  /** Rule-scoped silence permissions; never silence independent backup or monitoring heartbeat.
+   * Grafana retains expired silence records: DELETE means effective absence, not necessarily404.
+   * @param {{maintenance:{id:string,authorizedAt:string,expiresAt:string,sourceConfigSha256:string},ruleKey:string,action:'create'|'expire',resourceId?:string}} input */
+  function maintenanceSilenceOperation(input) {
+    const {maintenance:m,ruleKey,action}=input,r=resource(ruleKey);
+    ensure((c.targetRole??'source')==='source'&&r.kind==='rule'&&!['backup_freshness','monitor_heartbeat'].includes(r.payload.labels.signal),'MAINTENANCE_DEADMAN_SILENCE_FORBIDDEN');
+    ensure(z.uuid().safeParse(m.id).success&&z.iso.datetime().safeParse(m.authorizedAt).success&&z.iso.datetime().safeParse(m.expiresAt).success&&
+      Date.parse(m.expiresAt)>Date.parse(m.authorizedAt)&&Date.parse(m.expiresAt)-Date.parse(m.authorizedAt)<=7200000&&
+      m.sourceConfigSha256===p.configurationSha256&&['create','expire'].includes(action),'MAINTENANCE_SILENCE_INVALID');
+    if(action==='expire')ensure(z.uuid().safeParse(input.resourceId).success,'MAINTENANCE_SILENCE_ID_REQUIRED');
+    const matchers=Object.entries({'__alert_rule_uid__':ruleKey,issue29_run:c.runId,issue29_candidate:c.candidateSha,issue29_config:p.configurationSha256,environment:c.environmentAlias})
+      .map(([name,value])=>({name,value,isEqual:true,isRegex:false}));
+    const comment=`issue29-maintenance:${m.id}:${ruleKey}`,base='/api/alertmanager/grafana/api/v2';
+    let inspectedAt=0,attempted=false;
+    /** @type {Record<string,any>|null} */let prior=null;
+    const matcherHash=/** @param {any[]} rows */ rows=>digest([...rows].sort((a,b)=>a.name.localeCompare(b.name)));
+    /** @param {Record<string,any>} raw */
+    function validate(raw) {
+      ensure(z.uuid().safeParse(raw.id).success&&(!input.resourceId||raw.id===input.resourceId)&&raw.createdBy==='authorized-operator'&&raw.comment===comment&&
+        Array.isArray(raw.matchers)&&matcherHash(raw.matchers)===matcherHash(matchers)&&
+        Date.parse(raw.startsAt)>=Date.parse(m.authorizedAt)&&Date.parse(raw.startsAt)<=Date.parse(now())&&
+        ['active','expired'].includes(raw.status?.state),'MAINTENANCE_SILENCE_READBACK_MISMATCH');
+      ensure(raw.status.state==='expired'?Date.parse(raw.endsAt)<=Date.parse(now()):Date.parse(raw.endsAt)===Date.parse(m.expiresAt),'MAINTENANCE_SILENCE_EXPIRY_MISMATCH');
+      const proof={status:raw.status.state,resourceId:raw.id,ruleKey,maintenanceId:m.id,configSha256:p.configurationSha256,
+        startsAt:raw.startsAt,expiresAt:m.expiresAt,effectiveAbsence:raw.status.state==='expired',readBackAt:now(),matchersSha256:matcherHash(raw.matchers)};
+      return {...proof,evidenceSha256:digest(proof)};
+    }
+    async function locate() {
+      if(input.resourceId){const raw=await stack(`${base}/silence/${input.resourceId}`);ensure(!raw.absent,'MAINTENANCE_SILENCE_ID_UNPROVEN');return raw;}
+      const rows=await stack(`${base}/silences?`+new URLSearchParams({filter:`__alert_rule_uid__="${ruleKey}"`}));
+      ensure(Array.isArray(rows)&&rows.length<1000,'MAINTENANCE_SILENCE_INVENTORY_BOUND');
+      const matches=rows.filter(row=>row.comment===comment);ensure(matches.length<=1,'MAINTENANCE_SILENCE_AMBIGUOUS');return matches[0]??null;
+    }
+    return {
+      async inspect(){await readResource(ruleKey);prior=await locate();
+        if(action==='create')ensure(!prior&&Date.parse(now())>=Date.parse(m.authorizedAt)&&Date.parse(now())<Date.parse(m.expiresAt),'MAINTENANCE_SILENCE_EXISTS_OR_EXPIRED');
+        else ensure(prior&&['active','expired'].includes(validate(prior).status),'MAINTENANCE_SILENCE_ID_UNPROVEN');
+        inspectedAt=Date.parse(now());return {status:action==='create'?'absent':'active',ruleKey,maintenanceId:m.id,
+          priorState:prior?{...validate(prior),endsAt:prior.endsAt,matchers:prior.matchers}:null,evidenceSha256:digest({prior,ruleKey,maintenanceId:m.id})};},
+      async mutate(){ensure(inspectedAt>0&&Date.parse(now())-inspectedAt>=0&&Date.parse(now())-inspectedAt<=60000&&!attempted,'GRAFANA_PRE_MUTATION_INSPECTION_REQUIRED');attempted=true;
+        if(action==='create')await stack(`${base}/silences`,{method:'POST',body:JSON.stringify({matchers,startsAt:now(),endsAt:m.expiresAt,createdBy:'authorized-operator',comment})},true);
+        else {if(prior?.status?.state==='expired')return;const raw=await locate();ensure(raw&&prior&&raw.id===prior.id&&digest(raw)===digest(prior),'MAINTENANCE_SILENCE_CHANGED_BEFORE_DELETE');await stack(`${base}/silence/${input.resourceId}`,{method:'DELETE'},true);}},
+      async readback(){const raw=await locate();ensure(raw,'MAINTENANCE_SILENCE_READBACK_MISSING');const proof=validate(raw);
+        ensure(action==='create'?proof.status==='active':proof.effectiveAbsence,'MAINTENANCE_SILENCE_POSTCONDITION_UNPROVEN');return proof;}
+    };
+  }
+  /** @param {{phase:'failure'|'recovery',sampleAt:string}} input */
+  function fixtureSampleOperation(input){
+    ensure(fixture&&['failure','recovery'].includes(input.phase)&&z.iso.datetime().safeParse(input.sampleAt).success,'GRAFANA_FIXTURE_REQUIRED');
+    const f=fixture,stamp=Date.parse(input.sampleAt),failure=input.phase==='failure';
+    const target=`https://issue29-fixture.invalid/${c.runId}`;
+    const common={environment:p.labels.environment,candidate:c.candidateSha,config:p.configurationSha256,run:c.runId,issue29_candidate:c.candidateSha,issue29_config:p.configurationSha256,issue29_run:c.runId};
+    const points=[...GRAFANA_SIGNALS.filter(n=>!['backup_freshness','monitor_heartbeat'].includes(n)).map(n=>({metric:`aromatika_issue29_fixture_${n}`,value:failure?1:0,labels:{...common,job:p.protectedJob,instance:target}})),
+      {metric:'aromatika_issue29_fixture_public_health',value:failure?1:0,labels:{...common,job:p.publicJob,instance:target}},
+      {metric:'aromatika_issue29_fixture_monitor_checkpoint_seconds',value:stamp/1000-(failure?1201:0),labels:{...common,job:p.protectedJob,instance:target}},
+      {metric:'aromatika_issue29_fixture_backup_checkpoint_seconds',value:stamp/1000-(failure?93601:0),labels:common},
+      {metric:'aromatika_issue29_fixture_backup_status_usable',value:failure?0:1,labels:common}];
+    let inspected=false,attempted=false;
+    function window(){ensure(Date.parse(now())<Date.parse(f.expiresAt)&&Date.parse(f.expiresAt)-Date.parse(now())<=7200000&&Math.abs(Date.parse(now())-stamp)<=5000,'GRAFANA_FIXTURE_WINDOW_INVALID');}
+    return {
+      async inspect(){window();await verifyConfiguration();inspected=true;return {status:'verified',evidenceSha256:digest({points,sampleAt:input.sampleAt})};},
+      async mutate(){ensure(inspected&&!attempted,'GRAFANA_PRE_MUTATION_INSPECTION_REQUIRED');window();attempted=true;
+        const body=points.map(point=>`${point.metric},${Object.entries(point.labels).map(([k,v])=>`${k}=${v}`).join(',')} value=${point.value} ${BigInt(stamp)*1000000n}`).join('\n')+'\n';
+        await request(fetchImpl,`${f.writeOrigin}/api/v1/push/influx/write`,{method:'POST',headers:{Authorization:`Basic ${Buffer.from(`${c.metricsInstanceId}:${f.writeToken}`).toString('base64')}`,'Content-Type':'text/plain'},body},true);},
+      async readback(){ensure(Date.parse(now())>=stamp&&Date.parse(now())-stamp<=7200000,'GRAFANA_FIXTURE_WINDOW_INVALID');
+        const query=`{__name__=~"aromatika_issue29_fixture_.+_value",environment="${common.environment}",candidate="${common.candidate}",config="${common.config}",run="${common.run}"}[2h]`;
+        const result=await request(fetchImpl,queryOrigin+c.metricsQueryBasePath+'/api/v1/query?'+new URLSearchParams({query,time:now()}),
+          {headers:{Authorization:`Basic ${Buffer.from(`${c.metricsInstanceId}:${c.metricsReadToken}`).toString('base64')}`}});
+        const rows=result.data?.result;ensure(result.status==='success'&&result.data?.resultType==='matrix'&&Array.isArray(rows)&&rows.length===points.length,'GRAFANA_FIXTURE_READBACK_MISMATCH');
+        for(const point of points){const matches=rows.filter(row=>row.metric?.__name__===point.metric+'_value'&&Object.entries(point.labels).every(([k,v])=>row.metric[k]===v));
+          ensure(matches.length===1&&Array.isArray(matches[0].values)&&matches[0].values.filter(/** @param {any[]} value */ value=>Number(value[0])*1000===stamp&&Number(value[1])===point.value).length===1,'GRAFANA_FIXTURE_READBACK_MISMATCH');}
+        return {status:'verified',phase:input.phase,sampleAt:input.sampleAt,configSha256:p.configurationSha256,readBackAt:now(),evidenceSha256:digest({points,sampleAt:input.sampleAt})};}
+    };
+  }
   return {
     assertCredentialSeparation(/** @type {string[]} */ forbidden) {ensure(!forbidden.some(value=>[c.stackToken,c.syntheticToken,c.monitorToken,c.cloudReadToken,c.metricsReadToken].includes(value)),'GRAFANA_CROSS_PROVIDER_CREDENTIAL_FORBIDDEN');},
-    preflight, resourceOperation, readResource, notificationHistory, readEvaluation, readRuleScore, verifyConfiguration, cleanupOperation,
-    configuration() { return {schemaVersion:1,evidenceMode:options.fetchImpl && options.fetchImpl!==fetch?'deterministic-http-fixture':'provider-readback',runId:c.runId,targetOrigin:c.targetOrigin,runtimeEnvironment:c.runtimeEnvironment,stackAlias:c.stackSlug,environmentAlias:c.environmentAlias,candidateSha:c.candidateSha,
+    preflight, resourceOperation, releaseUpdateOperation, readResource, notificationHistory, readEvaluation, readRuleScore, readMonitorHeartbeat, verifyConfiguration, cleanupOperation, maintenanceSilenceOperation, fixtureSampleOperation,
+    configuration() { return {schemaVersion:1,evidenceMode:options.fetchImpl && options.fetchImpl!==fetch?'deterministic-http-fixture':'provider-readback',runId:c.runId,folderUid:c.folderUid,targetRole:fixture?'fixture':c.targetRole??'source',targetCycleId:c.targetRole==='target'?c.targetCycleId??c.runId:null,sourceConfigSha256:p.sourceConfigSha256,fixtureExpiresAt:fixture?.expiresAt??null,targetOrigin:c.targetOrigin,runtimeEnvironment:c.runtimeEnvironment,stackAlias:c.stackSlug,environmentAlias:p.labels.environment,candidateSha:c.candidateSha,
       configSha256:p.configurationSha256,destinationAlias:'owner-primary',signals:[...GRAFANA_SIGNALS],
+      ruleMappings:p.resources.filter(r=>r.kind==='rule').map((r,index)=>({ruleKey:r.key,sourceRuleKey:fixture?resources(c).resources.filter(s=>s.kind==='rule')[index].key:r.key,signal:r.payload.labels.signal})),
       checks:p.resources.filter(r=>r.kind==='check').map(r=>({key:r.key,frequencyMs:r.payload.frequency})),resources:p.resources.map(summary)}; }
   };
 }
+
+export { monitorConfigSchema as grafanaConfigSchema };

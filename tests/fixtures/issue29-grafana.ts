@@ -22,7 +22,10 @@ export function providerFixture(overrides:Record<string,unknown>={}, selected:im
     if(u.pathname===`/api/datasources/uid/${selected.datasourceUid}`)return Response.json({uid:selected.datasourceUid,type:'prometheus',url:selected.metricsQueryOrigin+'/api/prom',basicAuthUser:'123'});
     if(u.pathname.endsWith('/notification/query'))return Response.json({entries:body.limit===1?[]:eventRows,counts:[]});
     if(u.pathname==='/api/v1/check' && method==='GET')return Response.json({items:checkRows,next_cursor:''});
-    if(u.pathname.includes('/rule-groups/'))return Response.json({interval:60,rules:[...stored.values()].filter(r=>r.ruleGroup)});
+    if(u.pathname.includes('/rule-groups/'))return Response.json({interval:60,rules:[...stored.values()].filter(r=>r.ruleGroup===u.pathname.split('/').at(-1))});
+    if(['GET','DELETE'].includes(method)&&/^\/api\/v1\/check\/[0-9]+$/.test(u.pathname)){const index=checkRows.findIndex(r=>String(r.id)===u.pathname.split('/').at(-1));if(index<0)return new Response(null,{status:404});if(method==='DELETE'){checkRows.splice(index,1);return new Response(null,{status:204});}return Response.json(checkRows[index]);}
+    if(method==='POST'&&/^\/api\/v1\/check\/[0-9]+$/.test(u.pathname)){const row=checkRows.find(r=>String(r.id)===u.pathname.split('/').at(-1));if(!row)return new Response(null,{status:404});Object.assign(row,body);return Response.json(row);}
+    if(method==='PUT'&&u.pathname.startsWith('/api/v1/provisioning/alert-rules/')){if(!stored.has(u.pathname))return new Response(null,{status:404});stored.set(u.pathname,body);return Response.json(body);}
     if(method==='POST'){
       if(u.pathname==='/api/v1/check') {const row={...body,id:checkRows.length+1,tenantId:selected.tenantId};checkRows.push(row);return Response.json(row);}
       const key=body.uid??body.metadata?.name??Buffer.from(body.spec.title).toString('base64url');

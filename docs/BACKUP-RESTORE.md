@@ -124,10 +124,24 @@ before Issue #29 closes. A missing/failed execution remains a blocker.
 
 Private Actions handoffs are `ISSUE29_BACKUP_AUTHORIZATION_JSON`,
 `ISSUE29_OWNER_BACKUP_PUBLIC_KEY` (public PEM only), and
-`ISSUE29_GRAFANA_HEARTBEAT_JSON` (distinct narrow metrics write/read tokens).
+`ISSUE29_GRAFANA_HEARTBEAT_JSON` (distinct narrow metrics write/read tokens), and
+`ISSUE29_DAILY_CANARY_JSON` (private source-scoped Resend/canary settings). The
+canary runs before the backup checkpoint: one persisted send, bounded delivery
+readback without resending, then its verified service-only checkpoint. Its Resend
+credentials and private recipient never enter Grafana or public workflow output.
+Missing delivery, quota, or current source proof fails the run; daily scheduling
+is not itself delivered-email evidence. After canary delivery, capture and quiesce
+only the two approved source DB-only jobs before export; restore their exact prior
+state afterward. The always-run resume step refuses to overwrite an ambiguous
+pending backup/job mutation. Such a failure requires exact readback, not a blind
+scheduled retry.
 Authorization contains the **existing** expiring version-2 lifecycle manifest,
 exact source/deployment read credentials, pinned backup settings and a maximum
 artifact byte allowance. It cannot mint source provenance or renew authorization.
+Each trusted GitHub run derives its own stable execution ID from the exact run and
+immutable private authorization hash; it retains the original source identity and
+history, and never reuses a previous backup-set ID. The runner lease binds the
+authorization window, GitHub run/SHA and execution ID.
 The executor live-revalidates the source and deployment before every export;
 GitHub run attempt 2 or later cannot repeat an uncertain upload. Persisted upload
 and heartbeat intent belongs to the same private transaction manifest.
@@ -143,15 +157,23 @@ The official artifact is immutable and retained for 35 days. Success requires ex
 artifact/run/repository/candidate metadata readback, archive-byte SHA-256
 verification, and rechecking every extracted ciphertext against the immutable
 descriptor. Only then can Grafana receive a success heartbeat carrying the original
-backup checkpoint time, followed by independent metrics readback. Daily creation
+backup checkpoint time, followed by independent metrics readback. Maintenance
+independently re-downloads the retained archive and verifies its descriptor and
+every ciphertext directly inside the ZIP, not against an unrelated local directory.
+The selected ZIP32 stored/deflate verifier performs no path extraction and fails
+closed above 128 MiB total or 64 MiB per member. Daily creation
 uses only the public key and authenticates components before wiping the ephemeral
 data key; it is **not** owner-held private-key decryption or monthly restore proof.
 
 **Current lifecycle and cost limits:** Preserved canonical staging/production are
 inventory/read-only-monitoring targets only, never scheduled recovery sources.
-A disposable synthetic source that has been retired cannot silently become a
-standing daily source. Source expiry, retirement or missing authorization must
-make the workflow fail until a newly authorized source arrangement exists.
+The owner-selected two-slot architecture retains one newly generated, manifest-owned
+synthetic source and its exact issue-scoped Worker for daily backups and monitoring.
+Preserved staging remains active. During rehearsal only that synthetic source may
+be paused after current encrypted retention and independent owner-key verification;
+pause is maintenance, never deletion or cleanup. A fresh target occupies the freed
+slot. Source authorization expiry, an open maintenance window, non-active provider
+status or missing ownership must stop daily exports without renewing authority.
 Public repository status proves free standard-runner compute, not unbounded free
 artifact storage. The personal-owner budget has no documented REST readback;
 publication requires current private owner UI evidence of the exact Actions $0
@@ -160,8 +182,11 @@ owner-attested UI evidence, not an API result. It is never automatically refresh
 No artifact upload is authorized while that evidence is missing or stale. See
 [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
 and the currently organization-scoped [budget API](https://docs.github.com/en/rest/billing/budgets).
-The schedule is consequently not yet proof of unattended, continuously healthy
-backups under the current disposable-source authorization.
+The schedule is not proof of unattended, continuously healthy backups: current
+source, release, cost, artifact and heartbeat readbacks remain necessary. Definite
+local encrypted-component failures before upload can emit the independent unusable
+backup signal; an ambiguous export/upload intent is never replaced to do so and
+continues to require exact readback. Failure delivery never refreshes a checkpoint.
 
 - RPO target: 24 hours; warn above 24 hours, critical above 26 hours or on any
   integrity/decryption failure.
@@ -209,13 +234,22 @@ capacity or delete an unrelated project to make room.
 
 Do not use production for routine rehearsal.
 
-The source and target must be fresh manifest-owned synthetic projects. Unknown or
-real staging data must not be copied, deleted or reclassified to force a pass.
-If simultaneous free capacity is unavailable, the current owner permits exact
-source deletion only **after** independent owner-key backup verification and a
-persisted no-further-source-reads boundary. Read back that source's absence, then
-live-recheck free quota/cost before creating the new restore target. Never delete
-an unrelated project for capacity. If no compliant arrangement exists, stop.
+The source is a retained manifest-owned synthetic project; every restore target is
+fresh and disposable. Unknown or real staging data must not be copied, deleted or
+reclassified to force a pass. Keep staging active throughout. Before pausing the
+source, independently verify its exact encrypted retained backup and owner-held
+decryption key, and record a bounded maintenance window with source preservation
+and monitoring evidence. Read back the exact source as paused and live-recheck
+free quota/cost before creating the target; no third active slot is assumed.
+
+The persistent source Worker (`issue29-<origin-run-id>`) remains unchanged while its
+Supabase project is paused. The target Worker has the distinct name
+`issue29-restore-<maintenance-id>` (a fresh identity for each monthly rehearsal). After restore/integrity/drill proof, delete only the
+disposable target and target Worker and independently prove their absence before
+resuming the same source. Verify original identity, configuration, provenance,
+Worker version, DB/Storage checkpoint, readiness and restored monitoring before
+closing maintenance. Never delete the source or source Worker to obtain capacity.
+A failed or ambiguous pause/resume stops for exact readback, not a blind retry.
 
 Before restore mutation, verify that the selected target is the explicitly authorized rehearsal environment.
 
@@ -224,14 +258,85 @@ Before restore mutation, verify that the selected target is the explicitly autho
 ## Rehearsal sequence
 
 The single operator entry point is `node scripts/issue29-operations/cli.mjs`.
-Use only commands actually listed by that entry point. The intended sequence is
-`preflight` → `backup-set` → `verify-backup` → `restore` → `verify-restore` →
-`incident-drill` → `cleanup` → `validate-receipt`; a listed contract or command
-name is not evidence that hosted acceptance has passed. The scheduled workflow
+Use only commands actually listed by that entry point. Every command takes its
+exact private manifest and operation-specific settings; run each mutation once,
+then use its persisted intent and readback path if the outcome is uncertain.
+
+1. Record final-candidate deterministic and independent review evidence with
+   `implementation-verified`, then run `preflight` for the approved two-slot
+   envelope. The preserved canonical staging project stays active throughout.
+2. For the first transaction only, run `create-source`, `seed-source`,
+   `prepare-worker`, `deploy-worker`, and `verify-source`. Retain their exact
+   source and Worker identities for subsequent rehearsals.
+3. Run `configure-monitoring` and the `monitoring-proof` actions to establish
+   nine-family rule operation, delivery, canary and heartbeat evidence. Prove
+   the two approved source jobs with `synthetic-jobs`, capture the old source
+   session with `capture-source-session`, then quiesce those jobs before export.
+4. Run `backup-set`, independently decrypt it with `verify-backup`, and retain
+   the encrypted set with `copy-backup` before the first protected merge. This
+   retained copy is rehearsal evidence; it does not prove the daily workflow.
+5. Run `authorize-maintenance`, `maintenance-silence`, and `pause-source` only
+   after the retained-set and scoped-quiescence readbacks pass. Run
+   `create-target` only after the exact source is confirmed inactive.
+6. Run `restore` through its quarantine, database and Storage phases. Prepare and
+   deploy the distinct target Worker, then run the `verify-restore` database,
+   isolation and real-application actions and the `incident-drill` actions.
+7. Remove the exact disposable target Worker with `cleanup-worker` and target
+   project with `cleanup`. Independently verify their absence before
+   `resume-source`. Run `verify-source-resumed` while the captured source jobs
+   are still quiesced, then run `synthetic-jobs` in source `resume` and `prove`
+   modes. Only after both jobs have successful executions in this maintenance
+   window may `maintenance-unsilence` restore scoped monitoring and close it.
+8. Finalize `cleanup` using fresh absence and persistent-health readbacks. After
+   protected merge, run `adopt-merged-release` and the source Worker/Grafana
+   release updates described below, then dispatch the real default-branch backup.
+   Rerun final `cleanup` with the actual artifact heartbeat and all 11 monitor
+   rules healthy. Run `generate-receipt` and `validate-receipt` with its independently verified
+   artifact and the original rehearsal evidence before closing the issue.
+
+A first pre-merge owner-copy rehearsal can close provisionally without a GitHub
+backup-freshness heartbeat: the workflow is not on the default branch yet. This
+requires current, matching, encrypted owner-copy and maintenance recovery evidence,
+all other monitoring rules healthy, successful resumed source jobs, and exact
+disposable absence. The cleanup proof records `deferredBackupFreshness: true`;
+it is not an operations-readiness receipt. Once merge adoption or a persistent
+GitHub artifact exists, backup freshness is mandatory again. The independently
+verified post-merge artifact and all-rule cleanup remain prerequisites for issue
+closure.
+
+A listed contract or command name is not hosted acceptance. The scheduled workflow
 uses `backup-set --manifest=PRIVATE_PATH --settings=PRIVATE_PATH`; source settings
 and baseline stay mode-0600 outside the repository. Consult the exact candidate's
 `--help` for available commands and current stop boundaries. No fabricated success
-receipt or historical local rehearsal can stand in for exact hosted proof.
+receipt or historical local rehearsal can stand in for exact hosted proof. The
+implementation-verification command consumes the existing Stage 04 raw command,
+machine-report and two final-SHA review artifacts; it does not run extra reviews.
+Nonzero native Node/pgTAP/Vitest/Playwright discovery is checked. Only the exact
+existing guarded real-beta and hosted-report-evidence cases may be counted as
+skipped in the full local browser gate; focused and hosted proofs receive no such
+exception. Final cleanup performs fresh readback only, never deletion as a fallback;
+all disposable IDs must already have recorded absence and the retained source,
+Worker and persistent monitoring must independently be healthy.
+The version-2 operations-readiness receipt additionally requires hash-bound closed
+maintenance, exact disposable absence and retained source/Worker identities;
+version-1 receipts cannot satisfy the new persistent-source contract. The maintenance
+ID distinguishes successive disposable targets without rewriting source origin or
+previous cleanup history.
+
+After protected merge, adoption independently checks the merged PR's exact reviewed
+head, current protected `main`, identical Git tree and required successful check runs
+for both candidate and merge. Only then update the existing persistent source Worker
+and same Grafana resource IDs; preserve prior private builds/configuration and never
+fall back to creating an absent resource. The source ref, origin, secrets and synthetic
+creation provenance remain unchanged. A changed tree requires new candidate proof,
+not reuse of old hosted receipts.
+
+The original rehearsed descriptor and first trusted merged daily artifact remain
+separate. Readiness permits that distinction only with actual hash-bound GitHub,
+Worker and Grafana adoption readbacks, the same source, owner key and recovery
+contract, and an unchanged tree. It still validates the original measured RPO/RTO
+and monthly rehearsal clock, plus the latest merged artifact's own freshness,
+encryption and 35-day retention; a new upload cannot refresh restore/decryption proof.
 
 1. Create the private mode-0600, expiring transaction manifest outside the
    repository. Bind source/target identities, SHA/tree/deployment, forbidden refs,
@@ -267,7 +372,9 @@ receipt or historical local rehearsal can stand in for exact hosted proof.
     success.
 11. Perform the disposable Storage-sentinel incident drill in
     `docs/INCIDENT-RESPONSE.md`, then delete only manifest-owned disposable resources
-    and independently prove absence. Retain approved monitors/encrypted artifacts.
+    and independently prove absence. Resume and verify the unchanged persistent source
+    and its monitoring before closure; retain it, its Worker, approved monitors and
+    encrypted artifacts.
 
 ---
 

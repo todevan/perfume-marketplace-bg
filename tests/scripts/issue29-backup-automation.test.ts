@@ -18,13 +18,15 @@ const now = '2026-09-05T12:00:00.000Z';
 const context = { repository: 'todevan/perfume-marketplace-bg', repositoryId: 12, eventName: 'workflow_dispatch', ref: 'refs/heads/main', refProtected: true, workflowRef: 'todevan/perfume-marketplace-bg/.github/workflows/operations-backup.yml@refs/heads/main', sha: 'a'.repeat(40), workflowSha: 'a'.repeat(40), runId: 34, runAttempt: 1 };
 const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 3072 });
 function authorization() {
-    const manifest = manifestFixture();
+    const manifest = structuredClone(manifestFixture());
     manifest.target = null;
     manifest.state = 'monitoring_proved';
+    manifest.candidate.deploymentId = '29292929-2929-4292-8292-292929292929';
     manifest.allowedActions.push('artifact-upload', 'backup-heartbeat');
+    manifest.grafana.configSha256='e'.repeat(64);
     manifest.backup.publicKeyId = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
-    manifest.cleanup.resources.push({ provider: 'supabase', id: manifest.source!.ref, runId: manifest.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'disposable', absentAt: null });
-    return { manifest, costAuthorization: { schemaVersion: 1, kind: 'github-personal-budget-ui-readback', account: 'todevan', product: 'actions', budgetUsd: 0, stopUsage: true, capturedAt: now, expiresAt: '2026-09-06T12:00:00.000Z', capturedEvidenceSha256: '1'.repeat(64), attestedBy: 'owner' }, maxArtifactBytes: 1000000, settings: { deployment: { accountId: 'a'.repeat(32), workerName: 'issue29-fixture', versionId: '29292929-2929-4292-8292-292929292929', origin: 'https://issue29-fixture.example.workers.dev', readToken: 'r'.repeat(40) }, schemaVersion: 1, operation: 'backup-set', providerToken: 'sbp_fixture_provider_read_only', connection: { host: `db.${manifest.source!.ref}.supabase.co`, port: 5432, database: 'postgres', user: 'postgres', password: 'fixture-password', sslmode: 'verify-full' }, toolchain: { mode: 'container' }, source: { apiUrl: manifest.source!.url, serviceKey: 'fixture-service-key' }, managedBaseline: { path: '/private/source-baseline.json', sha256: 'e'.repeat(64) }, ownerPublicKeyPath: '/private/owner-public.pem', outputDirectory: '/private/output', privateDirectory: '/private/temp' } };
+    manifest.cleanup.resources.push({ provider: 'supabase', id: manifest.source!.ref, runId: manifest.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'persistent', absentAt: null });
+    return { manifest, costAuthorization: { schemaVersion: 1, kind: 'github-personal-budget-ui-readback', account: 'todevan', product: 'actions', budgetUsd: 0, stopUsage: true, capturedAt: now, expiresAt: '2026-09-06T12:00:00.000Z', capturedEvidenceSha256: '1'.repeat(64), attestedBy: 'owner' }, maxArtifactBytes: 1000000, settings: { deployment: { accountId: 'a'.repeat(32), workerName: `issue29-${manifest.runId}`, versionId: '29292929-2929-4292-8292-292929292929', origin: `https://issue29-${manifest.runId}.example.workers.dev`, readToken: 'r'.repeat(40) }, schemaVersion: 1, operation: 'backup-set', providerToken: 'sbp_fixture_provider_read_only', connection: { host: `db.${manifest.source!.ref}.supabase.co`, port: 5432, database: 'postgres', user: 'postgres', password: 'fixture-password', sslmode: 'verify-full' }, toolchain: { mode: 'container' }, source: { apiUrl: manifest.source!.url, serviceKey: 'fixture-service-key' }, managedBaseline: { path: '/private/source-baseline.json', sha256: 'e'.repeat(64) }, ownerPublicKeyPath: '/private/owner-public.pem', outputDirectory: '/private/output', privateDirectory: '/private/temp' } };
 }
 it('materializes only an existing authorized synthetic source without renewing its manifest', async () => {
     const runnerTemp = await mkdtemp(join(tmpdir(), 'issue29-runner-test-'));
@@ -95,13 +97,14 @@ async function publicationFixture() {
     const runnerTemp = await mkdtemp(join(tmpdir(), 'issue29-runner-test-'));
     const a = authorization();
     const paths = await prepareBackupAutomation({ authorizationJson: JSON.stringify(a), publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(), context, runnerTemp, repositoryRoot: process.cwd(), now });
+    const executionId=JSON.parse(await readFile(paths.settingsPath,'utf8')).executionId;
     const manifest = await readPrivateManifest(paths.manifestPath, { repositoryRoot: process.cwd(), now });
     manifest.state = 'backup_started';
     const checkpoint = { snapshotId: 'fixture-snapshot', finalizedRowsetSha256: 'd'.repeat(64) };
-    const created = await createRecoverySet({ destination: paths.outputDirectory, repositoryRoot: process.cwd(), publicKey, components: new Map(Object.keys(LOGICAL_COMPONENTS).map(name => [name, Buffer.from(`synthetic ${name}`)])), storageManifest: { bucket: 'listing-images', files: [] }, checkpointBefore: checkpoint, checkpointAfter: checkpoint, metadata: { backupSetId: manifest.runId, source: { environmentAlias: manifest.fixture.alias, organizationId: manifest.source!.organizationId, projectRef: manifest.source!.ref, region: manifest.source!.region, classification: 'synthetic-owner-controlled' }, release: { commitSha: manifest.candidate.sha, treeSha: manifest.candidate.tree, workerVersion: manifest.candidate.deploymentId }, startedAt: now, finishedAt: now, tools: { supabaseCli: '2.109.1', postgres: '17.6', operator: 'issue29-v1' }, migration: { count: 1, sha256: 'd'.repeat(64) }, destinationAlias: manifest.backup.destinationAlias, exclusions: ['source-sessions'], manualReconstruction: ['auth-settings'] } });
-    manifest.history.push({ step: 'backup-set', operationId: manifest.runId, completedAt: now, evidenceSha256: created.descriptorSha256, resourceId: null });
+    const created = await createRecoverySet({ destination: paths.outputDirectory, repositoryRoot: process.cwd(), publicKey, components: new Map(Object.keys(LOGICAL_COMPONENTS).map(name => [name, Buffer.from(`synthetic ${name}`)])), storageManifest: { bucket: 'listing-images', files: [] }, checkpointBefore: checkpoint, checkpointAfter: checkpoint, metadata: { backupSetId: executionId, source: { environmentAlias: manifest.fixture.alias, organizationId: manifest.source!.organizationId, projectRef: manifest.source!.ref, region: manifest.source!.region, classification: 'synthetic-owner-controlled' }, release: { commitSha: manifest.candidate.sha, treeSha: manifest.candidate.tree, workerVersion: manifest.candidate.deploymentId }, startedAt: now, finishedAt: now, tools: { supabaseCli: '2.109.1', postgres: '17.6', operator: 'issue29-v1' }, migration: { count: 1, sha256: 'd'.repeat(64) }, destinationAlias: manifest.backup.destinationAlias, exclusions: ['source-sessions'], manualReconstruction: ['auth-settings'] } });
+    manifest.history.push({ step: 'backup-set', operationId: executionId, completedAt: now, evidenceSha256: created.descriptorSha256, resourceId: null });
     await writePrivateManifest(paths.manifestPath, manifest, { repositoryRoot: process.cwd(), now, replace: true });
-    const options = { ...paths, context, repositoryRoot: process.cwd(), expectedDescriptorSha256: created.descriptorSha256, now };
+    const options = { ...paths, executionId, context, repositoryRoot: process.cwd(), expectedDescriptorSha256: created.descriptorSha256, now };
     return { runnerTemp, paths, created, options };
 }
 it('persists exact immutable upload intent before the official action and never blindly repeats it', async () => {
@@ -159,7 +162,11 @@ it('keeps ambiguous independent heartbeat pending and retries only readback, nev
         const archive = Buffer.from('opaque encrypted ZIP fixture');
         const archiveSha256 = createHash('sha256').update(archive).digest('hex');
         const fetchArtifact = async (url: string | URL | Request) => String(url).endsWith('/56') ? Response.json({ id: 56, name: 'issue29-recovery-34-1', size_in_bytes: archive.length, expired: false, created_at: now, expires_at: '2026-10-10T12:00:00.000Z', digest: `sha256:${archiveSha256}`, workflow_run: { id: 34, repository_id: 12, head_repository_id: 12, head_branch: 'main', head_sha: context.sha } }) : String(url).endsWith('/zip') ? new Response(null, { status: 302, headers: { location: 'https://fixture.blob.core.windows.net/exact.zip' } }) : new Response(archive);
+        const artifactPending=await readPrivateManifest(f.paths.manifestPath,{repositoryRoot:process.cwd(),now});
         await finalizeArtifact({ ...f.options, artifactId: 56, archiveSha256, token: 'github-token-fixture', fetchImpl: fetchArtifact });
+        // Simulate process loss after the private readback file was written but before state advance.
+        await writePrivateManifest(f.paths.manifestPath,artifactPending,{repositoryRoot:process.cwd(),now,replace:true});
+        await finalizeArtifact({ ...f.options,now:'2026-09-05T12:01:00.000Z', artifactId: 56, archiveSha256, token: 'github-token-fixture', fetchImpl: fetchArtifact });
         const heartbeatConfig = { writeOrigin: 'https://influx-fixture.grafana.net', queryOrigin: 'https://prometheus-fixture.grafana.net', queryBasePath: '/api/prom' as const, metricsInstanceId: '12', writeToken: 'w'.repeat(40), readToken: 'r'.repeat(40), environmentAlias: 'synthetic-recovery', candidateSha: context.sha, configSha256: 'e'.repeat(64) };
         let posts = 0;
         const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => { if (init?.method === 'POST') {
@@ -208,4 +215,48 @@ it('does not clean a directory owned by another GitHub run', async () => {
         await expect(cleanupBackupAutomation({ directory: f.paths.directory, repositoryRoot: process.cwd(), context: { ...context, runId: 35 } })).rejects.toThrow('RUNNER_CLEANUP_OWNERSHIP_MISMATCH');
         expect((await stat(f.paths.directory)).isDirectory()).toBe(true);
     } finally { await rm(f.runnerTemp, { recursive: true, force: true }); }
+});
+
+it('binds fresh recurring execution to immutable authorization and GitHub run without rewriting source provenance', async () => {
+ const runnerTemp=await mkdtemp(join(tmpdir(),'issue29-recurring-test-'));const auth=authorization();
+ auth.manifest.state='backup_verified';auth.manifest.history.push({step:'backup-set',operationId:'11111111-1111-4111-8111-111111111111',completedAt:now,evidenceSha256:'1'.repeat(64),resourceId:null});auth.manifest.attempts['backup-set:11111111-1111-4111-8111-111111111111']=1;
+ try {
+  const input={authorizationJson:JSON.stringify(auth),publicKeyPem:publicKey.export({type:'spki',format:'pem'}).toString(),runnerTemp,repositoryRoot:process.cwd(),now};
+  const one=await prepareBackupAutomation({...input,context});const two=await prepareBackupAutomation({...input,context:{...context,runId:35}});
+  const a=JSON.parse(await readFile(one.settingsPath,'utf8'));const b=JSON.parse(await readFile(two.settingsPath,'utf8'));
+  expect(a.executionId).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);expect(a.executionId).not.toBe(b.executionId);
+  const lease=JSON.parse(await readFile(one.directory+'/runner-lease.json','utf8'));
+  expect(lease.authorizationSha256).toBe(createHash('sha256').update(input.authorizationJson).digest('hex'));expect(lease.preparedAt).toBe(now);expect(lease.authorizationExpiresAt).toBe(auth.manifest.expiresAt);
+  expect(JSON.parse(await readFile(one.manifestPath,'utf8'))).toEqual(auth.manifest);
+ } finally {await rm(runnerTemp,{recursive:true,force:true});}
+});
+
+it('publishes definite local ciphertext corruption once without refreshing a checkpoint or replacing another pending operation', async () => {
+ const f=await publicationFixture();try{
+  const fs=await import('node:fs/promises');await fs.writeFile(join(f.paths.outputDirectory,'component-000000.bin'),'corrupt',{mode:0o600});
+  await expect(preparePublication(f.options)).rejects.toThrow('ARTIFACT_COMPONENT_INTEGRITY_MISMATCH');
+  const {beginFailureHeartbeat,finalizeFailureHeartbeat}=await import('../../scripts/issue29-operations/backup-automation.mjs');
+  const heartbeatConfig={writeOrigin:'https://influx-fixture.grafana.net',queryOrigin:'https://prometheus-fixture.grafana.net',queryBasePath:'/api/prom' as const,metricsInstanceId:'12',writeToken:'w'.repeat(40),readToken:'r'.repeat(40),environmentAlias:'synthetic-recovery',candidateSha:context.sha,configSha256:'e'.repeat(64)};
+  let posts=0;let observed='';const fetchImpl:typeof fetch=async(url,init)=>{if(init?.method==='POST'){posts++;const m=await readPrivateManifest(f.paths.manifestPath,{repositoryRoot:process.cwd(),now});expect(m.pending).toMatchObject({step:'backup-heartbeat',resourceId:'failure'});expect(String(init.body)).not.toContain('checkpoint_seconds');observed=/evidence=([a-f0-9]{64})/.exec(String(init.body))![1];return new Response(null,{status:204});}return Response.json({status:'success',data:{resultType:'vector',result:[{metric:{environment:'synthetic-recovery',candidate:context.sha,config:'e'.repeat(64),evidence:observed},value:[Date.parse(now)/1000,'1']}]}});};
+  const options={...f.options,heartbeatConfig,fetchImpl};await beginFailureHeartbeat(options);expect(await beginFailureHeartbeat(options)).toEqual({status:'readback-only'});expect(posts).toBe(1);await finalizeFailureHeartbeat(options);
+  const after=await readPrivateManifest(f.paths.manifestPath,{repositoryRoot:process.cwd(),now});expect(after.pending).toBeNull();expect(after.state).toBe('backup_started');expect(after.backupVerification).toBeNull();
+ }finally{await rm(f.runnerTemp,{recursive:true,force:true});}
+});
+
+it('requires private daily canary settings and exact trusted-run lease before any canary side effect',async()=>{
+ const f=await publicationFixture();try{
+  const {executeAutomationCanary}=await import('../../scripts/issue29-operations/backup-automation.mjs');
+  await expect(executeAutomationCanary({directory:f.paths.directory,repositoryRoot:process.cwd(),context:{...context,runId:35},settingsJson:'{}',now})).rejects.toThrow('RUNNER_CLEANUP_OWNERSHIP_MISMATCH');
+  await expect(executeAutomationCanary({directory:f.paths.directory,repositoryRoot:process.cwd(),context,settingsJson:'',now})).rejects.toThrow('DAILY_CANARY_SETTINGS_REQUIRED');
+ }finally{await rm(f.runnerTemp,{recursive:true,force:true});}
+});
+it('never displaces ambiguous backup intent to resume jobs and does not resume historical jobs',async()=>{
+ const f=await publicationFixture();try{
+  const {executeAutomationJobs}=await import('../../scripts/issue29-operations/backup-automation.mjs');
+  const opts={directory:f.paths.directory,repositoryRoot:process.cwd(),context,mode:'resume' as const,now};
+  expect(await executeAutomationJobs(opts)).toEqual({status:'NO_CURRENT_JOBS_QUIESCE'});
+  const m=await readPrivateManifest(f.paths.manifestPath,{repositoryRoot:process.cwd(),now});m.pending={step:'backup-set',operationId:m.runId,startedAt:now,resourceId:null,priorStateSha256:null};await writePrivateManifest(f.paths.manifestPath,m,{repositoryRoot:process.cwd(),now,replace:true});
+  await expect(executeAutomationJobs(opts)).rejects.toThrow('PENDING_MUTATION_REQUIRES_READBACK');
+  expect((await readPrivateManifest(f.paths.manifestPath,{repositoryRoot:process.cwd(),now})).pending).toEqual(m.pending);
+ }finally{await rm(f.runnerTemp,{recursive:true,force:true});}
 });

@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { readIssue29BrowserBoundary, issue29SessionFromCookies, writeIssue29BrowserSessions } from '../../scripts/issue29-operations/browser-boundary.mjs';
 import { createHmac, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
@@ -12,6 +14,11 @@ import { expect, test, type APIResponse, type Page, type TestInfo } from '@playw
  * active marketplace members; seller and buyer use ordinary email/password
  * accounts, while the moderator must have an enrolled TOTP factor and a
  * moderator/admin role.
+ *
+ * The Issue29 operator may select the exact disposable restored target through a
+ * private E2E_ISSUE29_BROWSER_SETTINGS file. That branch waits for a real human
+ * Turnstile challenge and reuses the resulting session; it never installs testing
+ * keys, solves challenges, or weakens the original staging test-key requirement.
  *
  * Required for the marketplace flow:
  *   E2E_REAL_RUN=true
@@ -43,6 +50,12 @@ import { expect, test, type APIResponse, type Page, type TestInfo } from '@playw
  *   E2E_REAL_MODERATOR_TOTP_SECRET=<base32 secret for an already-enrolled factor>
  */
 
+const issue29Boundary = process.env.E2E_ISSUE29_BROWSER_SETTINGS
+	? await readIssue29BrowserBoundary(process.env.E2E_ISSUE29_BROWSER_SETTINGS, resolve('.'))
+	: null;
+const environment = issue29Boundary?.environment ?? process.env;
+const issue29Sessions = new Map<string, { access_token: string; refresh_token: string }>();
+
 interface Credentials {
 	email: string;
 	password: string;
@@ -53,7 +66,7 @@ interface MarketplaceConfig {
 	origin: string;
 	seller: Credentials;
 	buyer: Credentials;
-	turnstileTesting: true;
+	turnstileTesting: true | 'owner-assisted';
 	publication:
 		| { mode: 'uploads'; brand: string }
 		| { mode: 'seeded'; slug: string; query: string };
@@ -72,15 +85,15 @@ interface ModeratorConfig {
 	email: string;
 	password: string;
 	totpSecret: string;
-	turnstileTesting: true;
+	turnstileTesting: true | 'owner-assisted';
 }
 
 const REQUIRED_REAL_FLAG = 'Set E2E_REAL_RUN=true to run the state-changing real-beta suite.';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const TURNSTILE_READINESS_TIMEOUT_MS = 60_000;
+const TURNSTILE_READINESS_TIMEOUT_MS = issue29Boundary ? 180_000 : 60_000;
 
 function requiredEnvironment(name: string): string {
-	const value = process.env[name]?.trim();
+	const value = environment[name]?.trim();
 	if (!value) throw new Error(`Missing required environment variable: ${name}`);
 	return value;
 }
@@ -97,8 +110,9 @@ function realOrigin(): string {
 	return candidate.origin;
 }
 
-function requireTestingTurnstile(): true {
-	if (process.env.E2E_REAL_TURNSTILE_TESTING !== 'true') {
+function requireTestingTurnstile(): true | 'owner-assisted' {
+	if (issue29Boundary) return 'owner-assisted';
+	if (environment.E2E_REAL_TURNSTILE_TESTING !== 'true') {
 		throw new Error(
 			'E2E_REAL_TURNSTILE_TESTING=true is required; configure the target with Cloudflare always-pass testing keys.'
 		);
@@ -118,7 +132,7 @@ function crossUserPrivacyConfig(
 	seller: Credentials,
 	buyer: Credentials
 ): CrossUserPrivacyConfig | null {
-	if (process.env.E2E_REAL_CROSS_USER_PRIVACY_RUN !== 'true') return null;
+	if (environment.E2E_REAL_CROSS_USER_PRIVACY_RUN !== 'true') return null;
 
 	const outsider = credentials('OUTSIDER');
 	const actors = [seller, buyer, outsider];
@@ -149,8 +163,8 @@ function crossUserPrivacyConfig(
 		throw new Error('The Supabase public URL must exactly match the approved project ref.');
 	}
 	const publicKey =
-		process.env.E2E_REAL_SUPABASE_PUBLISHABLE_KEY?.trim() ||
-		process.env.E2E_REAL_SUPABASE_ANON_KEY?.trim();
+		environment.E2E_REAL_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+		environment.E2E_REAL_SUPABASE_ANON_KEY?.trim();
 	if (!publicKey) {
 		throw new Error('The explicit Supabase public key is required for the privacy proof.');
 	}
@@ -165,7 +179,7 @@ function marketplaceConfig(): MarketplaceConfig {
 		throw new Error('Seller and buyer must be different pre-provisioned users.');
 	}
 
-	const uploadsEnabled = process.env.E2E_REAL_UPLOADS === 'true';
+	const uploadsEnabled = environment.E2E_REAL_UPLOADS === 'true';
 	const publication: MarketplaceConfig['publication'] = uploadsEnabled
 		? { mode: 'uploads', brand: requiredEnvironment('E2E_REAL_BRAND') }
 		: {
@@ -177,7 +191,7 @@ function marketplaceConfig(): MarketplaceConfig {
 		throw new Error('E2E_REAL_LISTING_SLUG must contain only the listing slug, not a path.');
 	}
 	const privacy = crossUserPrivacyConfig(seller, buyer);
-	if (privacy && publication.mode !== 'uploads') {
+	if (privacy && publication.mode !== 'uploads' && !issue29Boundary) {
 		throw new Error(
 			'E2E_REAL_CROSS_USER_PRIVACY_RUN=true requires E2E_REAL_UPLOADS=true so the seller publishes fresh private evidence.'
 		);
@@ -198,13 +212,13 @@ function moderatorConfig(): ModeratorConfig {
 		origin: realOrigin(),
 		email: requiredEnvironment('E2E_REAL_MODERATOR_EMAIL'),
 		password: requiredEnvironment('E2E_REAL_MODERATOR_PASSWORD'),
-		totpSecret: requiredEnvironment('E2E_REAL_MODERATOR_TOTP_SECRET'),
+		totpSecret: issue29Boundary ? '' : requiredEnvironment('E2E_REAL_MODERATOR_TOTP_SECRET'),
 		turnstileTesting: requireTestingTurnstile()
 	};
 }
 
 function onlyExplicitRealChromium(testInfo: TestInfo): void {
-	test.skip(process.env.E2E_REAL_RUN !== 'true', REQUIRED_REAL_FLAG);
+	test.skip(environment.E2E_REAL_RUN !== 'true', REQUIRED_REAL_FLAG);
 	test.skip(
 		testInfo.project.name !== 'chromium',
 		'Real-beta mutations run once in the desktop Chromium project.'
@@ -227,6 +241,7 @@ async function waitForTestingTurnstile(
 	hostSelector: string,
 	context: string
 ): Promise<void> {
+	if (issue29Boundary) await page.bringToFront();
 	const deadline = Date.now() + TURNSTILE_READINESS_TIMEOUT_MS;
 	const remaining = (): number => Math.max(1, deadline - Date.now());
 	const host = page.locator(hostSelector);
@@ -237,7 +252,7 @@ async function waitForTestingTurnstile(
 	await response.waitFor({ state: 'attached', timeout: remaining() });
 	await expect
 		.poll(() => response.inputValue(), {
-			message: `${context} Turnstile testing token was not issued`,
+			message: `${context} Turnstile token was not issued`,
 			timeout: remaining()
 		})
 		.toMatch(/\S/u);
@@ -259,6 +274,7 @@ async function login(
 		(url) => url.origin === origin && new URL(url).pathname === next,
 		{ timeout: 30_000 }
 	);
+	if (issue29Boundary) issue29Sessions.set(account.email, issue29SessionFromCookies(await page.context().cookies(origin), environment.E2E_REAL_SUPABASE_PROJECT_REF!));
 }
 
 async function expectSanitizedActionResponse(
@@ -290,7 +306,11 @@ async function authenticateEphemeralClient(
 	client: SupabaseClient,
 	account: Pick<Credentials, 'email' | 'password'>
 ): Promise<void> {
-	const { error } = await client.auth.signInWithPassword(account);
+	const session = issue29Sessions.get(account.email);
+	if (issue29Boundary && !session) throw new Error('The target actor must first complete the real application login.');
+	const { error } = issue29Boundary
+		? await client.auth.setSession(session!)
+		: await client.auth.signInWithPassword(account);
 	if (error) throw new Error('A disposable privacy actor could not authenticate.');
 }
 
@@ -580,9 +600,12 @@ function currentTotp(secret: string): string {
 }
 
 test.describe('real hosted marketplace', () => {
+	test.afterAll(async () => {
+		if (issue29Boundary && issue29Sessions.size === 4) await writeIssue29BrowserSessions(issue29Boundary, issue29Sessions);
+	});
 	test('seller → buyer → offer → chat → deal → review', async ({ browser }, testInfo) => {
 		onlyExplicitRealChromium(testInfo);
-		test.setTimeout(240_000);
+		test.setTimeout(issue29Boundary ? 900_000 : 240_000);
 		const config = marketplaceConfig();
 		testInfo.annotations.push({
 			type: 'environment',
@@ -795,7 +818,7 @@ test.describe('real hosted marketplace', () => {
 
 	test('moderator reaches the AAL2 moderation queue', async ({ browser }, testInfo) => {
 		onlyExplicitRealChromium(testInfo);
-		test.setTimeout(90_000);
+		test.setTimeout(issue29Boundary ? 600_000 : 90_000);
 		const config = moderatorConfig();
 		const context = await browser.newContext();
 		const page = await context.newPage();
@@ -814,11 +837,24 @@ test.describe('real hosted marketplace', () => {
 
 			if (new URL(page.url()).pathname === '/auth/mfa') {
 				await expect(page.getByRole('heading', { name: 'Потвърди втория фактор.' })).toBeVisible();
-				await expect(page.getByRole('button', { name: 'Настрой MFA' })).toHaveCount(0);
-				const millisecondsLeft = 30_000 - (Date.now() % 30_000);
-				if (millisecondsLeft < 4_000) await page.waitForTimeout(millisecondsLeft + 250);
-				await page.locator('#mfa-code').fill(currentTotp(config.totpSecret));
-				await page.getByRole('button', { name: 'Продължи' }).click();
+				if (issue29Boundary) {
+					// The restored ordinary actor has no source MFA state. Enroll a genuine
+					// disposable target factor through the existing protected application.
+					await expect(page.getByRole('button', { name: 'Настрой MFA' })).toHaveCount(1);
+					await page.getByRole('button', { name: 'Настрой MFA' }).click();
+					const secret = (await page.locator('details code').textContent())?.trim() ?? '';
+					if (!/^[A-Z2-7]{16,128}$/u.test(secret)) throw new Error('Synthetic target MFA enrollment failed.');
+					const remaining = 30_000 - (Date.now() % 30_000);
+					if (remaining < 4_000) await page.waitForTimeout(remaining + 250);
+					await page.locator('#enrollment-code').fill(currentTotp(secret));
+					await page.getByRole('button', { name: 'Активирай MFA' }).click();
+				} else {
+					await expect(page.getByRole('button', { name: 'Настрой MFA' })).toHaveCount(0);
+					const millisecondsLeft = 30_000 - (Date.now() % 30_000);
+					if (millisecondsLeft < 4_000) await page.waitForTimeout(millisecondsLeft + 250);
+					await page.locator('#mfa-code').fill(currentTotp(config.totpSecret));
+					await page.getByRole('button', { name: 'Продължи' }).click();
+				}
 				await page.waitForURL((url) => url.origin === config.origin && url.pathname === '/admin', {
 					timeout: 30_000
 				});
@@ -827,6 +863,7 @@ test.describe('real hosted marketplace', () => {
 			await expect(page.getByRole('heading', { name: 'Модерационен център' })).toBeVisible();
 			await expect(page.getByText('Защитена сесия · AAL2', { exact: true })).toBeVisible();
 			await expect(page.getByRole('region', { name: 'Състояние на опашката' })).toBeVisible();
+			if (issue29Boundary) issue29Sessions.set(config.email, issue29SessionFromCookies(await context.cookies(config.origin), environment.E2E_REAL_SUPABASE_PROJECT_REF!));
 		} finally {
 			await context.close();
 		}

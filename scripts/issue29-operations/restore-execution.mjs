@@ -1,5 +1,6 @@
 import {constants} from 'node:fs';
 import {open,unlink} from 'node:fs/promises';
+import {dirname,join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {assertPrivatePath,ensure,OperationsError,readPrivateManifest,writePrivateManifest} from './manifest.mjs';
@@ -10,7 +11,14 @@ import {restoreFinalizedStorage,verifyFinalizedStorage} from './storage-adapter.
 import {readRestoreQuarantine} from './quarantine.mjs';
 /** @param {unknown} value */
 const digest=value=>createHash('sha256').update(canonicalJson(value)).digest('hex');
-const settingsSchema=z.strictObject({schemaVersion:z.literal(1),operation:z.literal('restore'),providerToken:z.string().min(10),targetServiceKey:z.string().min(10),backupDirectory:z.string(),descriptorSha256:z.string().regex(/^[a-f0-9]{64}$/u),privateKeyPath:z.string(),
+/** Persist actual generated readback bytes before their history reference.
+ * @param {unknown} proof @param {string} manifestPath @param {string} repositoryRoot */
+async function storeRestoreProof(proof,manifestPath,repositoryRoot){
+ const bytes=Buffer.from(canonicalJson(proof));ensure(bytes.length<=1048576,'RESTORE_EVIDENCE_LIMIT');const sha256=digest(proof),path=join(dirname(manifestPath),sha256+'.json');await assertPrivatePath(path,repositoryRoot);let handle;
+ try{handle=await open(path,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);}catch(error){ensure(/** @type {NodeJS.ErrnoException} */(error).code==='EEXIST'&&(await readPrivateBytes(path,repositoryRoot)).equals(bytes),'RESTORE_EVIDENCE_COLLISION');return sha256;}
+ try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}return sha256;
+}
+const settingsSchema=z.strictObject({schemaVersion:z.literal(1),operation:z.literal('restore'),providerToken:z.string().min(10),targetServiceKey:z.string().min(10),backupDirectory:z.string(),descriptorSha256:z.string().regex(/^[a-f0-9]{64}$/u),privateKeyPath:z.string(),sourceWorker:z.strictObject({settings:z.unknown(),privateDirectory:z.string(),readToken:z.string().min(10)}).optional(),
  connection:z.strictObject({host:z.string(),port:z.literal(5432),database:z.literal('postgres'),user:z.string(),password:z.string().min(1),sslmode:z.literal('verify-full'),sslRootCert:z.literal('system').optional()}),toolchain:z.strictObject({mode:z.literal('container')})});
 /** @typedef {{manifestPath:string,repositoryRoot:string,candidate:import('./manifest.mjs').Candidate,settingsPath:string,now?:string,clock?:()=>string,verifyOnly?:boolean}} RestoreOptions */
 /** Coordinated real DB/Auth and Storage restore within the existing manifest. This does not claim
@@ -37,21 +45,21 @@ export async function executeRestore(options){
    ensure(descriptor.metadata.source.projectRef===scope.sourceRef&&descriptor.metadata.release.commitSha===candidate.sha&&descriptor.metadata.release.treeSha===candidate.tree&&descriptor.metadata.release.workerVersion===candidate.deploymentId,'BACKUP_IDENTITY_MISMATCH');
    const platform=JSON.parse(/** @type {Buffer} */(components.get('platform-inventory.json')).toString());
    const save=()=>writePrivateManifest(manifestPath,manifest,{repositoryRoot,candidate,now:clock(),replace:true});
-   if(!manifest.recoveryTimings){const age=Date.parse(clock())-Date.parse(descriptor.metadata.finishedAt);ensure(age>=0&&age<=86400000,'BACKUP_RPO_EXCEEDED');manifest.recoveryTimings={startedAt:clock()};await save();}
+   if(!manifest.recoveryTimings){const age=Date.parse(clock())-Date.parse(descriptor.metadata.startedAt);ensure(age>=0&&age<=86400000,'BACKUP_RPO_EXCEEDED');ensure(manifest.maintenance?.phase==='paused'&&manifest.maintenance.pausedAt&&Date.parse(manifest.maintenance.pausedAt)<=Date.parse(clock()),'RESTORE_MAINTENANCE_REQUIRED');manifest.recoveryTimings={startedAt:manifest.maintenance.pausedAt};await save();}
    if(manifest.state==='target_read_back'){
-    ensure(!manifest.pending,'PENDING_OPERATION_REQUIRES_READBACK');const q=await readRestoreQuarantine({manifest,providerToken:settings.providerToken,now:clock()});
+    ensure(!manifest.pending,'PENDING_OPERATION_REQUIRES_READBACK');const q=await readRestoreQuarantine({manifest,providerToken:settings.providerToken,now:clock(),repositoryRoot,sourceWorker:settings.sourceWorker});
     const baseline=await captureManagedBaseline(database);ensure(baseline.schemaSha256===platform.managedBaselineSha256,'MANAGED_BASE_SCHEMA_DRIFT');
-    manifest.history.push({step:'quarantine',operationId:randomUUID(),completedAt:clock(),resourceId:null,evidenceSha256:digest({provider:q.evidence,baselineSha256:baseline.schemaSha256})});manifest.state='quarantine_verified';await save();
+    manifest.history.push({step:'quarantine',operationId:randomUUID(),completedAt:clock(),resourceId:target.ref,evidenceSha256:await storeRestoreProof({provider:q.evidence,baselineSha256:baseline.schemaSha256},manifestPath,repositoryRoot)});manifest.state='quarantine_verified';await save();
    }
    if(manifest.state==='quarantine_verified'){
     ensure(!options.verifyOnly,'RESTORE_STATE_INVALID');
     if(!manifest.pending){
-     ensure(!manifest.attempts['restore-database'],'ATTEMPT_LIMIT');const q=await readRestoreQuarantine({manifest,providerToken:settings.providerToken,now:clock()});
-     manifest.pending={step:'restore-database',operationId:randomUUID(),startedAt:clock(),resourceId:null,priorStateSha256:settings.descriptorSha256};manifest.attempts['restore-database']=1;await save();
+     ensure(!manifest.attempts[`restore-database:${target.ref}`],'ATTEMPT_LIMIT');const q=await readRestoreQuarantine({manifest,providerToken:settings.providerToken,now:clock(),repositoryRoot,sourceWorker:settings.sourceWorker});
+     manifest.pending={step:'restore-database',operationId:randomUUID(),startedAt:clock(),resourceId:null,priorStateSha256:settings.descriptorSha256};manifest.attempts[`restore-database:${target.ref}`]=1;await save();
      await restoreLogicalRecovery({...database,components,quarantine:q.quarantine});
     }else ensure(manifest.pending.step==='restore-database'&&manifest.pending.priorStateSha256===settings.descriptorSha256,'PENDING_OPERATION_REQUIRES_READBACK');
     const proof=await verifyLogicalRecovery({...database,expectedInventory:platform});
-    manifest.history.push({step:'restore-database',operationId:manifest.pending.operationId,completedAt:clock(),resourceId:null,evidenceSha256:digest(proof)});manifest.pending=null;manifest.state='database_restored';manifest.recoveryTimings.databaseVerifiedAt=clock();await save();
+    manifest.history.push({step:'restore-database',operationId:manifest.pending.operationId,completedAt:clock(),resourceId:target.ref,evidenceSha256:await storeRestoreProof(proof,manifestPath,repositoryRoot)});manifest.pending=null;manifest.state='database_restored';manifest.recoveryTimings.databaseVerifiedAt=clock();await save();
    }
    const photos=await readFinalizedPhotos(database);
    const storage={scope,secretKey:settings.targetServiceKey,photos,expectedRowsetSha256:descriptor.checkpoint.finalizedRowsetSha256,storageManifest,descriptorSha256:settings.descriptorSha256,bucketInventory:platform.storageBuckets};
@@ -60,15 +68,15 @@ export async function executeRestore(options){
     await verifyLogicalRecovery({...database,expectedInventory:platform});
     manifest.recoveryTimings.storageStartedAt??=clock();await save();
     /** @param {import('./storage-adapter.mjs').StorageIntent} intent */
-    const key=intent=>digest({kind:intent.kind,resource:intent.resource});
-    await restoreFinalizedStorage({...storage,components,...(manifest.history.some(h=>h.step==='restore-storage')||manifest.pending?.step==='restore-storage'?{resumeDescriptorSha256:settings.descriptorSha256}:{}),
+    const key=intent=>digest({targetRef:target.ref,kind:intent.kind,resource:intent.resource});
+    await restoreFinalizedStorage({...storage,components,...(manifest.history.some(h=>h.step==='restore-storage'&&Date.parse(h.completedAt)>=Date.parse(/** @type {NonNullable<typeof manifest.recoveryTimings>} */(manifest.recoveryTimings).storageStartedAt??''))||manifest.pending?.step==='restore-storage'?{resumeDescriptorSha256:settings.descriptorSha256}:{}),
      persistIntent:async intent=>{const resourceId=key(intent);ensure(!manifest.pending,'PENDING_UPLOAD_REQUIRES_READBACK');ensure(!manifest.attempts[`restore-storage:${resourceId}`],'ATTEMPT_LIMIT');manifest.pending={step:'restore-storage',operationId:randomUUID(),startedAt:clock(),resourceId,priorStateSha256:settings.descriptorSha256};manifest.attempts[`restore-storage:${resourceId}`]=1;await save();},
-     readbackVerified:async intent=>{const resourceId=key(intent);if(manifest.history.some(h=>h.step==='restore-storage'&&h.resourceId===resourceId))return;ensure(manifest.pending?.step==='restore-storage'&&manifest.pending.resourceId===resourceId&&manifest.pending.priorStateSha256===settings.descriptorSha256,'STORAGE_READBACK_PROVENANCE_REQUIRED');manifest.history.push({step:'restore-storage',operationId:manifest.pending.operationId,completedAt:clock(),resourceId,evidenceSha256:digest(intent)});manifest.pending=null;await save();}});
-    ensure(!manifest.pending,'PENDING_UPLOAD_REQUIRES_READBACK');const proof=await verifyFinalizedStorage(storage);manifest.state='storage_restored';manifest.recoveryTimings.storageVerifiedAt=clock();manifest.history.push({step:'restore-storage',operationId:randomUUID(),completedAt:clock(),resourceId:null,evidenceSha256:digest(proof)});await save();
+     readbackVerified:async intent=>{const resourceId=key(intent);if(manifest.history.some(h=>h.step==='restore-storage'&&h.resourceId===resourceId))return;ensure(manifest.pending?.step==='restore-storage'&&manifest.pending.resourceId===resourceId&&manifest.pending.priorStateSha256===settings.descriptorSha256,'STORAGE_READBACK_PROVENANCE_REQUIRED');manifest.history.push({step:'restore-storage',operationId:manifest.pending.operationId,completedAt:clock(),resourceId,evidenceSha256:await storeRestoreProof(intent,manifestPath,repositoryRoot)});manifest.pending=null;await save();}});
+    ensure(!manifest.pending,'PENDING_UPLOAD_REQUIRES_READBACK');const proof=await verifyFinalizedStorage(storage);manifest.state='storage_restored';manifest.recoveryTimings.storageVerifiedAt=clock();manifest.history.push({step:'restore-storage',operationId:randomUUID(),completedAt:clock(),resourceId:target.ref,evidenceSha256:await storeRestoreProof(proof,manifestPath,repositoryRoot)});await save();
    }
    const dbProof=await verifyLogicalRecovery({...database,expectedInventory:platform});const storageProof=await verifyFinalizedStorage(storage);
    const timing=manifest.recoveryTimings;
-   return{status:'DATABASE_STORAGE_VERIFIED_APPLICATION_PROOF_PENDING',descriptorSha256:settings.descriptorSha256,targetRef:target.ref,database:dbProof,storage:storageProof,recoveryPointAgeAtStartSeconds:(Date.parse(timing.startedAt)-Date.parse(descriptor.metadata.finishedAt))/1000,databaseRecoveryElapsedSeconds:(Date.parse(timing.databaseVerifiedAt??'')-Date.parse(timing.startedAt))/1000,storageRecoveryElapsedSeconds:(Date.parse(timing.storageVerifiedAt??'')-Date.parse(timing.storageStartedAt??''))/1000,fullRecoveryElapsedSeconds:null};
+   return{status:'DATABASE_STORAGE_VERIFIED_APPLICATION_PROOF_PENDING',descriptorSha256:settings.descriptorSha256,targetRef:target.ref,database:dbProof,storage:storageProof,recoveryPointAgeAtStartSeconds:(Date.parse(timing.startedAt)-Date.parse(descriptor.metadata.startedAt))/1000,databaseRecoveryElapsedSeconds:(Date.parse(timing.databaseVerifiedAt??'')-Date.parse(timing.startedAt))/1000,storageRecoveryElapsedSeconds:(Date.parse(timing.storageVerifiedAt??'')-Date.parse(timing.storageStartedAt??''))/1000,fullRecoveryElapsedSeconds:null};
   });
  }catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('RESTORE_OUTCOME_REQUIRES_PRIVATE_READBACK');}
  finally{privateKey?.fill(0);await lock.close();await unlink(`${manifestPath}.lock`);}

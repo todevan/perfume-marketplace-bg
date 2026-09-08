@@ -21,7 +21,7 @@ function project(s,now){
   const m=validateManifest(s.manifest,{now});
   const selected=s.projectRef===m.source?.ref?m.source:s.projectRef===m.target?.ref?m.target:null;
   ensure(selected && ['synthetic','disposable'].includes(selected.environment),'INCIDENT_PROJECT_IDENTITY_INVALID');
-  const owned=m.cleanup.resources.find(r=>r.provider==='supabase'&&r.id===s.projectRef&&r.runId===m.runId&&r.disposition==='disposable'&&r.absentAt===null);
+  const owned=m.cleanup.resources.find(r=>r.provider==='supabase'&&r.id===s.projectRef&&r.runId===m.runId&&r.disposition===(s.projectRef===m.source?.ref?'persistent':'disposable')&&r.absentAt===null);
   ensure(owned && m.sourceProvenance?.fixtureRunId===m.runId && m.sourceProvenance.verifiedAt,'INCIDENT_PROJECT_OWNERSHIP_UNPROVEN');
   ensure(m.humanBoundary===null && m.terminal===null,'TRANSACTION_TERMINAL');
   for(const key of [s.providerToken,s.serviceKey])ensure(typeof key==='string'&&key.length>=16&&!/[\r\n]/u.test(key),'INCIDENT_CREDENTIAL_INVALID');
@@ -65,8 +65,8 @@ export function createSentinelAdapter(settings,options={}){
   const context=exactProject(settings,options),{selected,preflight,now,fetchImpl}=context,m=settings.manifest;
   ensure(settings.sentinel.path===`${m.runId}/sentinel.bin`&&HASH.test(settings.sentinel.sha256)&&settings.sentinel.bytes instanceof Uint8Array&&
     settings.sentinel.bytes.byteLength>0&&settings.sentinel.bytes.byteLength<=4096&&sha256(settings.sentinel.bytes)===settings.sentinel.sha256,'SENTINEL_FIXTURE_INVALID');
-  ensure(/^https:\/\/issue29-[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/u.test(settings.readinessOrigin)&&settings.readinessOrigin.includes(m.runId)&&
-    typeof settings.monitorToken==='string'&&settings.monitorToken.length>=32&&settings.monitorToken!==settings.serviceKey,'SENTINEL_MONITOR_BOUNDARY_INVALID');
+  ensure(/^https:\/\/issue29-[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/u.test(settings.readinessOrigin)&&settings.readinessOrigin.startsWith(`https://issue29-${selected.ref===m.target?.ref?`restore-${m.maintenance?.id??m.runId}`:m.runId}.`)&&
+    /^[A-Za-z0-9_-]{43,256}$/u.test(settings.monitorToken)&&!settings.monitorToken.startsWith('sb_')&&settings.monitorToken!==settings.serviceKey,'SENTINEL_MONITOR_BOUNDARY_INVALID');
   const evidenceMode=options.fetchImpl&&options.fetchImpl!==fetch?'deterministic-http-fixture':'provider-readback';
   /** @template {Record<string,unknown>} T @param {T} fields */
   function receipt(fields){const body={schemaVersion:1,evidenceMode,runId:m.runId,candidateSha:m.candidate.sha,projectRef:selected.ref,checkedAt:now(),...fields};return {...body,evidenceSha256:evidence(body)};}
@@ -82,7 +82,7 @@ export function createSentinelAdapter(settings,options={}){
     return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
   }}});
   /** @param {string} id */
-  function owned(id){ensure(m.cleanup.resources.some(r=>r.provider==='supabase-storage'&&r.id===id&&r.runId===m.runId&&r.disposition==='disposable'&&r.absentAt===null),'SENTINEL_RESOURCE_NOT_OWNED');}
+  function owned(id){ensure(m.cleanup.resources.some(r=>r.provider==='supabase-storage'&&r.id===id&&r.runId===m.runId&&r.disposition===(selected.ref===m.source?.ref?'persistent':'disposable')&&r.absentAt===null),'SENTINEL_RESOURCE_NOT_OWNED');}
   async function bucket(){const r=await client.storage.getBucket(BUCKET);if(r.error){ensure(r.error.status===404,'SENTINEL_BUCKET_READ_FAILED');return null;}
     ensure(r.data?.id===BUCKET&&r.data.name===BUCKET&&r.data.public===false,'SENTINEL_BUCKET_PRIVACY_MISMATCH');return r.data;}
   async function read(){
@@ -94,7 +94,8 @@ export function createSentinelAdapter(settings,options={}){
   }
   /** @param {'create-bucket'|'upload'|'remove'|'recover'|'delete-bucket'} action */
   function operation(action){
-    ensure(['create-bucket','upload','remove','recover','delete-bucket'].includes(action),'SENTINEL_ACTION_INVALID');let inspectedAt=0,attempted=false;
+    ensure(['create-bucket','upload','remove','recover','delete-bucket'].includes(action),'SENTINEL_ACTION_INVALID');
+    ensure(selected.ref!==m.source?.ref||['create-bucket','upload'].includes(action),'PERSISTENT_SENTINEL_DESTRUCTION_FORBIDDEN');let inspectedAt=0,attempted=false;
     return {
       async inspect(){await preflight();const b=await bucket();
         if(action==='create-bucket')ensure(b===null,'SENTINEL_BUCKET_FOREIGN');
@@ -146,7 +147,7 @@ export async function readCanaryLedger(options,input){
   } catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('CANARY_LEDGER_READ_FAILED');}
   finally{await session.close();}
 }
-/** @typedef {ProjectSettings & {database:import('./logical-recovery.mjs').DatabaseOptions,resend:{apiKey:string,domainId:string,webhookId:string,from:string,to:string,operationId:string,windowStart:string,webhookOrigin:string,syntheticScopeEvidenceSha256:string,freePlanEvidence:{observedAt:string,remainingDaily:number,quotedCost:0,evidenceSha256:string}}}} CanarySettings */
+/** @typedef {ProjectSettings & {database:import('./logical-recovery.mjs').DatabaseOptions,resend:{apiKey:string,domainId:string,webhookId:string,from:string,to:string,operationId:string,windowStart:string,webhookOrigin:string,syntheticScopeEvidenceSha256:string,requireLiveQuota?:boolean,freePlanEvidence:{observedAt:string,remainingDaily:number,quotedCost:0,evidenceSha256:string}}}} CanarySettings */
 /** @typedef {Options & {ledgerReader?:typeof readCanaryLedger}} CanaryOptions */
 /** Controlled one-email journey. Success is provider delivered AND a signed-ingestion ledger event,
  * never internal sent/provider API acceptance. Unknown message ID after timeout remains readback-only.
@@ -155,23 +156,30 @@ export function createEmailCanaryAdapter(settings,options={}){
   const {selected,preflight,now,fetchImpl}=exactProject(settings,options),m=settings.manifest,c=settings.resend;
   ensure([c.domainId,c.webhookId,c.operationId].every(v=>UUID.test(v))&&z.email().safeParse(c.from).success&&z.email().safeParse(c.to).success&&
     /^re_[A-Za-z0-9_-]{16,256}$/u.test(c.apiKey)&&HASH.test(c.syntheticScopeEvidenceSha256)&&
-    /^https:\/\/issue29-[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/u.test(c.webhookOrigin)&&c.webhookOrigin.includes(m.runId),'CANARY_PRIVATE_CONFIG_INVALID');
+    /^https:\/\/issue29-[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/u.test(c.webhookOrigin)&&c.webhookOrigin.startsWith(`https://issue29-${selected.ref===m.target?.ref?`restore-${m.maintenance?.id??m.runId}`:m.runId}.`),'CANARY_PRIVATE_CONFIG_INVALID');
   ensure(settings.database.scope.projectRef===selected.ref&&settings.database.scope.runId===m.runId&&m.preservedRefs.every(ref=>settings.database.scope.preservedRefs.includes(ref)),'CANARY_DATABASE_SCOPE_MISMATCH');
   assertRecoveryScope(settings.database.scope);
   const headers={Authorization:`Bearer ${c.apiKey}`,'Content-Type':'application/json'},subject=`Aromatika synthetic canary ${m.runId} ${c.operationId}`;
   const ledgerReader=options.ledgerReader??readCanaryLedger;
+  /** @type {{daily:number,monthly:number,checkedAt:string}|null} */
+  let quota=null;
   /** @param {string} path @param {RequestInit} [init] @param {boolean} [mutation] */
-  const resend=(path,init={},mutation=false)=>jsonRequest(fetchImpl,'https://api.resend.com'+path,{...init,headers:{...headers,...init.headers}},mutation);
+  const resend=(path,init={},mutation=false)=>jsonRequest(async(url,request)=>{const response=await fetchImpl(url,request);
+    if((request?.method??'GET')==='GET'&&response.ok){const daily=response.headers.get('x-resend-daily-quota'),monthly=response.headers.get('x-resend-monthly-quota');
+      if(daily!==null&&monthly!==null&&/^[0-9]{1,7}$/u.test(daily)&&/^[0-9]{1,7}$/u.test(monthly))quota={daily:Number(daily),monthly:Number(monthly),checkedAt:now()};}
+    return response;},'https://api.resend.com'+path,{...init,headers:{...headers,...init.headers}},mutation);
   /** @param {string} name @param {Record<string,unknown>} body */
   const rpc=(name,body)=>jsonRequest(fetchImpl,selected.url+'/rest/v1/rpc/'+name,{method:'POST',headers:{apikey:settings.serviceKey,Authorization:`Bearer ${settings.serviceKey}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
   async function inspect(){
     await preflight();const age=Date.parse(now())-Date.parse(c.windowStart),free=c.freePlanEvidence;
-    ensure(age>=0&&age<=900000&&free.quotedCost===0&&Number.isSafeInteger(free.remainingDaily)&&free.remainingDaily>=1&&HASH.test(free.evidenceSha256)&&
-      Date.parse(now())-Date.parse(free.observedAt)>=0&&Date.parse(now())-Date.parse(free.observedAt)<=3600000,'CANARY_FREE_WINDOW_UNPROVEN');
+    ensure(age>=0&&age<=900000,'CANARY_FREE_WINDOW_UNPROVEN');
     const domain=await resend('/domains/'+c.domainId);ensure(domain.id===c.domainId&&domain.name===c.from.split('@')[1]&&domain.status==='verified'&&domain.capabilities?.sending==='enabled','CANARY_SENDER_UNVERIFIED');
     const webhook=await resend('/webhooks/'+c.webhookId);ensure(webhook.id===c.webhookId&&webhook.endpoint===c.webhookOrigin+'/api/webhooks/resend'&&webhook.status==='enabled'&&
       Array.isArray(webhook.events)&&webhook.events.includes('email.delivered'),'CANARY_WEBHOOK_SCOPE_UNPROVEN');
-    return {status:'verified',projectRef:selected.ref,operationId:c.operationId,evidenceSha256:evidence({runId:m.runId,operationId:c.operationId,source:selected.ref,scope:c.syntheticScopeEvidenceSha256,at:now()})};
+    const live=quota&&quota.daily<100&&quota.monthly<3000&&Date.parse(now())-Date.parse(quota.checkedAt)<=60000;
+    const attested=!c.requireLiveQuota&&free.quotedCost===0&&Number.isSafeInteger(free.remainingDaily)&&free.remainingDaily>=1&&HASH.test(free.evidenceSha256)&&Date.parse(now())-Date.parse(free.observedAt)>=0&&Date.parse(now())-Date.parse(free.observedAt)<=3600000;
+    ensure(live||attested,'CANARY_FREE_QUOTA_UNPROVEN');
+    return {status:'verified',projectRef:selected.ref,operationId:c.operationId,quotaEvidenceMode:live?'provider-headers':'owner-attestation',evidenceSha256:evidence({runId:m.runId,operationId:c.operationId,source:selected.ref,scope:c.syntheticScopeEvidenceSha256,quota:live?quota:free.evidenceSha256,at:now()})};
   }
   /** @param {string} messageId */
   async function readback(messageId){
@@ -207,7 +215,7 @@ export function createEmailCanaryAdapter(settings,options={}){
    * @param {Awaited<ReturnType<typeof readback>>} delivered */
   function checkpointOperation(delivered){let inspectedAt=0,attempted=false;
     return {
-      async inspect(){await preflight();const current=await readback(delivered.providerMessageId);ensure(current.providerEventId===delivered.providerEventId&&current.deliveredAt===delivered.deliveredAt,'CANARY_CHECKPOINT_EVIDENCE_MISMATCH');inspectedAt=Date.parse(now());return current;},
+      async inspect(){const {evidenceSha256,...body}=delivered;ensure(evidence(body)===evidenceSha256&&body.projectRef===selected.ref&&body.runId===m.runId&&body.candidateSha===m.candidate.sha&&body.operationId===c.operationId,'CANARY_CHECKPOINT_EVIDENCE_MISMATCH');await preflight();const current=await readback(delivered.providerMessageId);ensure(current.providerEventId===delivered.providerEventId&&current.deliveredAt===delivered.deliveredAt,'CANARY_CHECKPOINT_EVIDENCE_MISMATCH');inspectedAt=Date.parse(now());return current;},
       async mutate(){ensure(inspectedAt>0&&Date.parse(now())-inspectedAt>=0&&Date.parse(now())-inspectedAt<=60000&&!attempted,'CANARY_INSPECTION_REQUIRED');attempted=true;
         try{await rpc('record_operations_checkpoint',{p_kind:'email_canary',p_deployment_identity:m.candidate.sha,p_checkpoint_at:delivered.deliveredAt,p_ok:true,p_evidence_sha256:delivered.evidenceSha256});}
         catch{throw new OperationsError('CANARY_CHECKPOINT_UNCERTAIN_READBACK_ONLY');}},
@@ -243,7 +251,7 @@ export async function captureIncidentBaseline(grafana,sentinel,options={}){
   }
   const body={schemaVersion:1,status:config.evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode:config.evidenceMode,
     runId:id.runId,candidateSha:id.candidateSha,projectRef:id.projectRef,configSha256:config.configSha256,checkedAt,
-    configurationEvidenceSha256:configuration.evidenceSha256,object,signal,rules};
+    configurationEvidenceSha256:configuration.evidenceSha256,configuration,object,signal,rules};
   return {...body,evidenceSha256:evidence(body)};
 }
 /** @typedef {{[key:string]:any,evidenceSha256:string,checkedAt:string}} IncidentReceipt */
@@ -294,6 +302,6 @@ export async function verifyStorageIncident(grafana,sentinel,input){
     startedAt:b.checkedAt,mutationReadBackAt:input.removed.checkedAt,detectedAt:input.failureSignal.checkedAt,...timeline,
     containedAt:input.containedAt,diagnosedAt:input.diagnosedAt,rollbackDecision:input.rollbackDecision,recoveredAt:input.recovered.checkedAt,
     closedAt:input.closedAt,verifiedAt:now,runbookSha256:input.runbookSha256,cleanup,
-    evidenceHashes:[b,input.removed,input.failureSignal,input.recovered,input.recoverySignal,...input.phases].map(r=>r.evidenceSha256)};
+    evidenceHashes:[b,input.removed,input.failureSignal,input.recovered,input.recoverySignal,...input.phases].map(r=>evidence(r))};
   return {...body,evidenceSha256:evidence(body)};
 }

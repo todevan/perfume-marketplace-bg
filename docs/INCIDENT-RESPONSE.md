@@ -254,9 +254,15 @@ Never use staging credentials as authority for production actions. Under the
 current Issue #29 authorization, canonical staging/production and all pre-existing
 project refs are preserved: inventory/read-only monitoring only, no exports,
 restore, fixture mutation or cleanup. Recovery uses a new manifest-owned synthetic
-source and a distinct new disposable target. Source retirement requires independent
-owner-key backup verification, no further source reads, and exact absence proof
-before any sequential-capacity target creation.
+source retained for operations and a distinct new disposable target. Only the
+synthetic source may be paused during a bounded maintenance window after independent
+owner-key recovery and encrypted-retention verification. Preserved staging stays
+active; the persistent source Worker stays unchanged. Pause is not cleanup.
+Prove exact target/target-Worker deletion and absence, then resume the same source
+and recheck its identity, provenance, configuration, checkpoint, Worker, readiness
+and monitor recovery before closing maintenance. If the source cannot be resumed
+or any invariant changes, keep the incident open; do not substitute a new source
+or mutate preserved staging.
 
 ## Investigation
 

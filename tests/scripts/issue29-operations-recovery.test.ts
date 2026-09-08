@@ -129,3 +129,8 @@ describe('measured recovery targets', () => {
         expect(() => measureRecovery({ ...input, databaseIntegrityAt: '2026-09-05T11:00:00.000Z' })).toThrow('RECOVERY_TIMING_INVALID');
     });
 });
+
+test('measures actual DB/Auth completion even when fresh target login follows Storage verification',()=>{
+ const measured=measureRecovery({recoveryPointAt:'2026-09-05T11:59:00.000Z',authorizedAt:'2026-09-05T12:00:00.000Z',databaseIntegrityAt:'2026-09-05T12:10:00.000Z',storageStartedAt:'2026-09-05T12:02:00.000Z',storageIntegrityAt:'2026-09-05T12:05:00.000Z',applicationStartedAt:'2026-09-05T12:05:00.000Z',allIntegrityAt:'2026-09-05T12:11:00.000Z'});
+ expect(measured.databaseRecoveryElapsedMs).toBe(600000);expect(measured.storageRecoveryElapsedMs).toBe(180000);expect(measured.fullRecoveryElapsedMs).toBe(660000);expect(measured.withinTargets).toBe(true);
+});

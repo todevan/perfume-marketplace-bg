@@ -1,10 +1,11 @@
+import { crc32, deflateRawSync } from 'node:zlib';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRecoverySet, LOGICAL_COMPONENTS } from '../../scripts/issue29-operations/recovery-set.mjs';
 import { describe, expect, it } from 'vitest';
-import { verifyGitHubArtifact, verifyEncryptedArtifactDirectory } from '../../scripts/issue29-operations/artifact-store.mjs';
+import { verifyGitHubArtifact, verifyEncryptedArtifactDirectory, verifyEncryptedRecoveryArchive } from '../../scripts/issue29-operations/artifact-store.mjs';
 describe('Issue 29 GitHub encrypted artifact boundary', () => {
     it('rejects the wrong candidate before following an artifact download redirect', async () => {
         const calls: string[] = [];
@@ -145,6 +146,17 @@ describe('Issue 29 GitHub encrypted artifact boundary', () => {
             const options = { directory, repositoryRoot: process.cwd(), expectedDescriptorSha256: created.descriptorSha256, maxBytes: 1048576 };
             const verified = await verifyEncryptedArtifactDirectory(options);
             expect(verified.fileNames).toHaveLength(9);
+            const files=await Promise.all(verified.fileNames.map(async name=>({name,bytes:await readFile(join(directory,name))})));
+            for(const compressed of [false,true]){
+                const archive=zipFixture(files,compressed),hash=createHash('sha256').update(archive).digest('hex');
+                const fixture=artifactFixture();fixture.metadata.size_in_bytes=archive.length;fixture.metadata.digest=`sha256:${hash}`;
+                const original=fixture.options.fetchImpl;
+                const result=await verifyGitHubArtifact({...fixture.options,maxBytes:1048576,expectedArchiveSha256:hash,expectedDescriptorSha256:created.descriptorSha256,fetchImpl:async(url,init)=>String(url).includes('blob.core.windows.net')?new Response(archive):original(url,init)});
+                expect(result.recovery).toMatchObject({descriptorSha256:created.descriptorSha256,componentInventorySha256:verified.componentInventorySha256,objectCount:0});
+            }
+            expect(()=>verifyEncryptedRecoveryArchive(zipFixture(files,true,Buffer.from('hidden bytes')),created.descriptorSha256,1048576)).toThrow('ARCHIVE_COMPRESSED_BOUNDARY');
+            const corrupted=files.map((file,index)=>index===1?{...file,bytes:Buffer.from('ciphertext replaced')}:file);
+            expect(()=>verifyEncryptedRecoveryArchive(zipFixture(corrupted),created.descriptorSha256,1048576)).toThrow('ARTIFACT_COMPONENT_INTEGRITY_MISMATCH');
             const componentPath = join(directory, created.descriptor.components[0].name);
             await chmod(componentPath, 0o644);
             await expect(verifyEncryptedArtifactDirectory(options)).rejects.toThrow('ARTIFACT_FILE_UNSAFE');
@@ -160,4 +172,25 @@ describe('Issue 29 GitHub encrypted artifact boundary', () => {
             await rm(root, { recursive: true, force: true });
         }
     });
+});
+
+function zipFixture(files:{name:string,bytes:Buffer}[],compressed=false,hidden=Buffer.alloc(0)){
+ const locals:Buffer[]=[],central:Buffer[]=[];let offset=0;
+ for(const file of files){const name=Buffer.from(file.name),body=compressed?Buffer.concat([deflateRawSync(file.bytes),hidden]):file.bytes;const local=Buffer.alloc(30);local.writeUInt32LE(0x04034b50);local.writeUInt16LE(20,4);local.writeUInt16LE(compressed?8:0,8);local.writeUInt32LE(crc32(file.bytes),14);local.writeUInt32LE(body.length,18);local.writeUInt32LE(file.bytes.length,22);local.writeUInt16LE(name.length,26);
+ const c=Buffer.alloc(46);c.writeUInt32LE(0x02014b50);c.writeUInt16LE(20,4);c.writeUInt16LE(20,6);c.writeUInt16LE(compressed?8:0,10);c.writeUInt32LE(crc32(file.bytes),16);c.writeUInt32LE(body.length,20);c.writeUInt32LE(file.bytes.length,24);c.writeUInt16LE(name.length,28);c.writeUInt32LE(offset,42);central.push(c,name);locals.push(local,name,body);offset+=local.length+name.length+body.length;}
+ const c=Buffer.concat(central),end=Buffer.alloc(22);end.writeUInt32LE(0x06054b50);end.writeUInt16LE(files.length,8);end.writeUInt16LE(files.length,10);end.writeUInt32LE(c.length,12);end.writeUInt32LE(offset,16);return Buffer.concat([...locals,c,end]);
+}
+
+it.each(['traversal','duplicate','encryption','symlink','zip64','expansion','local-name','checksum','overlap','hidden-data'])('rejects unsafe %s ZIP content before trusting its descriptor',kind=>{
+ let archive=zipFixture([{name:kind==='traversal'?'../backup-set.json':'backup-set.json',bytes:Buffer.from('{}')},...(kind==='duplicate'?[{name:'backup-set.json',bytes:Buffer.from('{}')}]:[])]);
+ let central=archive.readUInt32LE(archive.length-6);
+ if(kind==='encryption')archive.writeUInt16LE(1,central+8);
+ if(kind==='symlink')archive.writeUInt32LE((0xa1ff<<16)>>>0,central+38);
+ if(kind==='zip64')archive.writeUInt32LE(0xffffffff,central+24);
+ if(kind==='expansion')archive.writeUInt32LE(70000000,central+24);
+ if(kind==='local-name')archive[30]='x'.charCodeAt(0);
+ if(kind==='checksum')archive[30+'backup-set.json'.length]^=1;
+ if(kind==='overlap')archive.writeUInt32LE(1,central+42);
+ if(kind==='hidden-data'){const prefix=Buffer.from('hidden');archive=Buffer.concat([prefix,archive]);central+=prefix.length;archive.writeUInt32LE(central,archive.length-6);archive.writeUInt32LE(prefix.length,central+42);}
+ expect(()=>verifyEncryptedRecoveryArchive(archive,createHash('sha256').update('{}').digest('hex'),1048576)).toThrow('Issue #29:');
 });

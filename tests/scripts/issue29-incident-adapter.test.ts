@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createSentinelAdapter } from '../../scripts/issue29-operations/incident-adapter.mjs';
-import { manifestFixture } from '../fixtures/issue29-operations';
+import { manifestFixture, target } from '../fixtures/issue29-operations';
 import { createHash } from 'node:crypto';
 const now='2026-09-05T12:00:00.000Z';
 const bytes=Buffer.from('Issue 29 private synthetic sentinel\n');
 const sha256=createHash('sha256').update(bytes).digest('hex');
 function settings() {const m=manifestFixture();return{manifest:m,projectRef:m.source!.ref,providerToken:'private-provider-token',serviceKey:'private-service-key',
-  sentinel:{path:`${m.runId}/sentinel.bin`,sha256,bytes},readinessOrigin:`https://issue29-${m.runId}.owner.workers.dev`,monitorToken:'dedicated-monitor-token-12345678901234'};}
+  sentinel:{path:`${m.runId}/sentinel.bin`,sha256,bytes},readinessOrigin:`https://issue29-${m.runId}.owner.workers.dev`,monitorToken:'dedicated-monitor-token-12345678901234567890123456'};}
 describe('Issue29 exact sentinel transaction',()=>{
   it('rejects preserved project and wrong path before any Storage or provider action',()=>{
     const s=settings();s.manifest.preservedRefs.push(s.projectRef);let calls=0;
@@ -14,7 +14,8 @@ describe('Issue29 exact sentinel transaction',()=>{
     expect(calls).toBe(0);
   });
 });
-function ownedSettings(){const s=settings();s.manifest.target=null;s.manifest.cleanup.resources.push({provider:'supabase',id:s.projectRef,runId:s.manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'disposable',absentAt:null});return s;}
+function ownedSettings(){const s=settings();s.manifest.target=null;s.manifest.cleanup.resources.push({provider:'supabase',id:s.projectRef,runId:s.manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'persistent',absentAt:null});return s;}
+function targetSettings(){const s=ownedSettings();s.manifest.target=structuredClone(target);s.projectRef=target.ref;s.readinessOrigin=`https://issue29-restore-${s.manifest.runId}.owner.workers.dev`;s.manifest.cleanup.resources.push({provider:'supabase',id:target.ref,runId:s.manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'disposable',absentAt:null});return s;}
 function storageFixture(s:ReturnType<typeof ownedSettings>){
   let bucket:Record<string,unknown>|null=null,object:Uint8Array|null=null,foreign=false,failDelete=false;
   const mutations:{method:string;path:string;body:unknown;headers:Headers}[]=[];
@@ -39,10 +40,10 @@ function storageFixture(s:ReturnType<typeof ownedSettings>){
   };
   return {fetchImpl,mutations,setForeign:()=>{foreign=true;},failDelete:()=>{failDelete=true;},setCorrupt:()=>{object=Buffer.from('bad');}};
 }
-function own(s:ReturnType<typeof ownedSettings>,id:string){s.manifest.cleanup.resources.push({provider:'supabase-storage',id,runId:s.manifest.runId,createdAt:now,evidenceSha256:'f'.repeat(64),disposition:'disposable',absentAt:null});}
+function own(s:ReturnType<typeof ownedSettings>,id:string){s.manifest.cleanup.resources.push({provider:'supabase-storage',id,runId:s.manifest.runId,createdAt:now,evidenceSha256:'f'.repeat(64),disposition:s.projectRef===s.manifest.source?.ref?'persistent':'disposable',absentAt:null});}
 
 it('creates one private owned bucket/sentinel, removes exactly that path, recovers without upsert and proves absence',async()=>{
-  const s=ownedSettings(),fixture=storageFixture(s),adapter=createSentinelAdapter(s,{now:()=>now,fetchImpl:fixture.fetchImpl});
+  const s=targetSettings(),fixture=storageFixture(s),adapter=createSentinelAdapter(s,{now:()=>now,fetchImpl:fixture.fetchImpl});
   const bucket=adapter.operation('create-bucket');await bucket.inspect();await bucket.mutate();expect(await bucket.readback()).toMatchObject({status:'verified'});own(s,adapter.resourceIds.bucket);
   const upload=adapter.operation('upload');await upload.inspect();await upload.mutate();expect(await upload.readback()).toMatchObject({status:'verified',sha256});own(s,adapter.resourceIds.object);
   const remove=adapter.operation('remove');await remove.inspect();await remove.mutate();expect(await remove.readback()).toMatchObject({status:'absent'});
@@ -53,7 +54,7 @@ it('creates one private owned bucket/sentinel, removes exactly that path, recove
   const cleanupBucket=adapter.operation('delete-bucket');await cleanupBucket.inspect();await cleanupBucket.mutate();expect(await cleanupBucket.readback()).toMatchObject({status:'absent'});
 });
 it('does not retry an ambiguous sentinel deletion and refuses unknown bucket content or a corrupt fixture',async()=>{
-  const s=ownedSettings(),fixture=storageFixture(s),a=createSentinelAdapter(s,{now:()=>now,fetchImpl:fixture.fetchImpl});
+  const s=targetSettings(),fixture=storageFixture(s),a=createSentinelAdapter(s,{now:()=>now,fetchImpl:fixture.fetchImpl});
   const bucket=a.operation('create-bucket');await bucket.inspect();await bucket.mutate();await bucket.readback();own(s,a.resourceIds.bucket);
   const upload=a.operation('upload');await upload.inspect();await upload.mutate();await upload.readback();own(s,a.resourceIds.object);
   const remove=a.operation('remove');await remove.inspect();fixture.failDelete();await expect(remove.mutate()).rejects.toThrow('SENTINEL_MUTATION_UNCERTAIN_READBACK_ONLY');
@@ -108,7 +109,7 @@ import { createGrafanaAdapter } from '../../scripts/issue29-operations/grafana-a
 import { captureMonitoringPhase } from '../../scripts/issue29-operations/monitoring-proof.mjs';
 import { monitoringConfig, providerFixture } from '../fixtures/issue29-grafana';
 it('requires a restored target and re-reads exact delivered/recovered notifications and sentinel absence for the drill',async()=>{
-  const s=settings();s.projectRef=s.manifest.target!.ref;s.manifest.state='integrity_verified';
+  const s=settings();s.projectRef=s.manifest.target!.ref;s.readinessOrigin=`https://issue29-restore-${s.manifest.runId}.owner.workers.dev`;s.manifest.state='integrity_verified';
   s.manifest.cleanup.resources.push({provider:'supabase',id:s.projectRef,runId:s.manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'disposable',absentAt:null});
   const storage=storageFixture(s),config={...monitoringConfig,runId:s.manifest.runId,targetOrigin:s.readinessOrigin,runtimeEnvironment:'development' as const};
   const grafana=providerFixture({},config);let current=now,phase='green',healthy=true;
@@ -149,4 +150,11 @@ it('requires a restored target and re-reads exact delivered/recovered notificati
   await expect(verifyStorageIncident(g,a,{...input,recovered:{...recovered,sha256:'f'.repeat(64)}})).rejects.toThrow('INCIDENT_RECEIPT_INVALID');
   await expect(verifyStorageIncident(g,a,{...input,acknowledgement:{...input.acknowledgement,failureEventId:'unrelated'}})).rejects.toThrow('MONITORING_ACKNOWLEDGEMENT_INVALID');
   s.manifest.state='database_restored';await expect(captureIncidentBaseline(g,a,{now:current})).rejects.toThrow('INCIDENT_RESTORED_INTEGRITY_REQUIRED');
+});
+it('keeps persistent source sentinel resources out of destructive rehearsal and cleanup',()=>{
+  const s=ownedSettings(),a=createSentinelAdapter(s,{now:()=>now,fetchImpl:storageFixture(s).fetchImpl});
+  expect(()=>a.operation('remove')).toThrow('PERSISTENT_SENTINEL_DESTRUCTION_FORBIDDEN');
+  expect(()=>a.operation('recover')).toThrow('PERSISTENT_SENTINEL_DESTRUCTION_FORBIDDEN');
+  expect(()=>a.operation('delete-bucket')).toThrow('PERSISTENT_SENTINEL_DESTRUCTION_FORBIDDEN');
+  expect(()=>a.operation('upload')).not.toThrow();
 });

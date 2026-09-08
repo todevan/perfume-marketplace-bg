@@ -5,6 +5,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { assertPrivatePath, ensure, OperationsError, readPrivateManifest, writePrivateManifest } from './manifest.mjs';
 import { readPrivateBytes } from './execution.mjs';
+import { readProtectedMergeEvidence } from './worker-adapter.mjs';
 import { canonicalJson } from './recovery-set.mjs';
 import { validateManagedBaseline, validateDatabaseConnection } from './logical-recovery.mjs';
 import { initializeSyntheticSource, createSyntheticSentinel, verifySyntheticSource } from './synthetic-source.mjs';
@@ -14,6 +15,8 @@ const digest = value => createHash('sha256').update(canonicalJson(value)).digest
 /** @param {string} value */
 const fingerprint = value => createHash('sha256').update(value).digest();
 const settingsSchema = z.strictObject({ schemaVersion: z.literal(1), operation: z.literal('seed-source'), providerToken: z.string().min(10).max(4096), source: z.strictObject({ apiUrl: z.string().url(), serviceKey: z.string().min(10).max(4096) }), connection: z.strictObject({ host: z.string(), port: z.literal(5432), database: z.literal('postgres'), user: z.string(), password: z.string().min(1).max(1024), sslmode: z.literal('verify-full'), sslRootCert: z.literal('system').optional() }), toolchain: z.strictObject({ mode: z.literal('container') }), privateDirectory: z.string() });
+/** @param {string} path @param {string} repositoryRoot */
+export async function readSourceSettings(path,repositoryRoot){try{const parsed=settingsSchema.safeParse(JSON.parse((await readPrivateBytes(path,repositoryRoot)).toString()));ensure(parsed.success,'PRIVATE_SETTINGS_INVALID');return parsed.data;}catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('PRIVATE_SETTINGS_INVALID');}}
 /** @typedef {z.infer<typeof settingsSchema>} SourceSettings */
 /** @typedef {{manifestPath:string,settingsPath:string,repositoryRoot:string,candidate:import('./manifest.mjs').Candidate,now?:string,clock?:()=>string}} SourceExecutionOptions */
 /** @param {string} path @param {unknown} value @param {string} root */
@@ -79,12 +82,10 @@ export async function executeSeedSource(options, dependencies = {}) {
         const manifest = await readPrivateManifest(manifestPath, { repositoryRoot, candidate, now: clock() });
         ensure(manifest.state === 'source_read_back' && manifest.allowedActions.includes('seed-source') && manifest.source && manifest.sourceProvenance && manifest.humanBoundary === null && manifest.terminal === null && !manifest.backupVerification, 'SOURCE_SEED_STATE_INVALID');
         const source = manifest.source;
-        const owned = manifest.cleanup.resources.find(resource => resource.provider === 'supabase' && resource.id === source.ref && resource.runId === manifest.runId && resource.disposition === 'disposable' && resource.absentAt === null);
+        const owned = manifest.cleanup.resources.find(resource => resource.provider === 'supabase' && resource.id === source.ref && resource.runId === manifest.runId && resource.disposition === 'persistent' && resource.absentAt === null);
         ensure(owned && !manifest.preservedRefs.includes(source.ref), 'SOURCE_OWNERSHIP_UNPROVEN');
         ensure(!manifest.pending || (manifest.pending.step === 'seed-source' && manifest.pending.resourceId === digest({ kind: 'source-disable-signup', resource: source.ref })), 'SOURCE_MUTATION_READBACK_REQUIRED');
-        const parsed = settingsSchema.safeParse(JSON.parse((await readPrivateBytes(options.settingsPath, repositoryRoot)).toString()));
-        ensure(parsed.success, 'PRIVATE_SETTINGS_INVALID');
-        const settings = parsed.data;
+        const settings=await readSourceSettings(options.settingsPath,repositoryRoot);
         ensure(settings.source.apiUrl === source.url, 'SOURCE_IDENTITY_MISMATCH');
         await assertPrivatePath(join(settings.privateDirectory, 'boundary'), repositoryRoot);
         const directory = await lstat(settings.privateDirectory);
@@ -159,4 +160,10 @@ export async function executeSeedSource(options, dependencies = {}) {
     }
 }
 /** Read generated, hash-bound private source evidence; callers must separately compare a fresh verifySyntheticSource result and release binding. @param {{manifest:import('./manifest.mjs').OperationsManifest,privateDirectory:string,repositoryRoot:string}} options */
-export async function readSeededSourceEvidence({ manifest, privateDirectory, repositoryRoot }) { const completed = manifest.history.find(entry => entry.step === 'seed-source' && entry.resourceId === null); ensure(completed && manifest.source, 'SOURCE_SEED_EVIDENCE_REQUIRED'); const summaryBytes = await readPrivateBytes(join(privateDirectory, 'source-seed-evidence.json'), repositoryRoot); ensure(createHash('sha256').update(summaryBytes).digest('hex') === completed.evidenceSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH'); const summary = JSON.parse(summaryBytes.toString()); ensure(summary.runId === manifest.runId && summary.projectRef === manifest.source.ref && canonicalJson(summary.candidate) === canonicalJson(manifest.candidate), 'SOURCE_SEED_EVIDENCE_MISMATCH'); const fixtureBytes = await readPrivateBytes(join(privateDirectory, 'source-fixture.json'), repositoryRoot); const baselineBytes = await readPrivateBytes(join(privateDirectory, 'managed-baseline.json'), repositoryRoot, 8388608); ensure(createHash('sha256').update(fixtureBytes).digest('hex') === summary.fixtureManifestSha256 && createHash('sha256').update(baselineBytes).digest('hex') === summary.baselineFileSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH'); return { summary, fixture: JSON.parse(fixtureBytes.toString()), managedBaseline: validateManagedBaseline(JSON.parse(baselineBytes.toString())) }; }
+export async function readSeededSourceEvidence({ manifest, privateDirectory, repositoryRoot }) { const completed = manifest.history.find(entry => entry.step === 'seed-source' && entry.resourceId === null); ensure(completed && manifest.source, 'SOURCE_SEED_EVIDENCE_REQUIRED'); const summaryBytes = await readPrivateBytes(join(privateDirectory, 'source-seed-evidence.json'), repositoryRoot); ensure(createHash('sha256').update(summaryBytes).digest('hex') === completed.evidenceSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH'); const summary = JSON.parse(summaryBytes.toString());
+ const merged=summary.candidate?.sha!==manifest.candidate.sha?await readProtectedMergeEvidence(manifest,privateDirectory,repositoryRoot):null;
+ const candidate=merged?merged.fromCandidate:manifest.candidate;
+ const workerName=`issue29-${manifest.runId}`;
+ const deploymentLinked=manifest.history.some(h=>h.step==='deploy-worker'&&h.resourceId===workerName&&manifest.cleanup.resources.some(r=>r.provider==='cloudflare'&&r.id===workerName&&r.runId===manifest.runId&&r.disposition==='persistent'&&r.absentAt===null&&(r.evidenceSha256===h.evidenceSha256||(merged&&r.priorStateSha256&&manifest.history.some(update=>update.step==='update-worker'&&update.resourceId===workerName&&update.evidenceSha256===r.evidenceSha256)))));
+ ensure(summary.runId===manifest.runId&&summary.projectRef===manifest.source.ref&&summary.candidate.sha===candidate.sha&&summary.candidate.tree===candidate.tree&&candidate.tree===manifest.candidate.tree&&(summary.candidate.deploymentId===candidate.deploymentId||(summary.candidate.deploymentId==='pending'&&candidate.deploymentId!=='pending'&&deploymentLinked)),'SOURCE_SEED_EVIDENCE_MISMATCH');
+ const fixtureBytes = await readPrivateBytes(join(privateDirectory, 'source-fixture.json'), repositoryRoot); const baselineBytes = await readPrivateBytes(join(privateDirectory, 'managed-baseline.json'), repositoryRoot, 8388608); ensure(createHash('sha256').update(fixtureBytes).digest('hex') === summary.fixtureManifestSha256 && createHash('sha256').update(baselineBytes).digest('hex') === summary.baselineFileSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH'); return { summary, fixture: JSON.parse(fixtureBytes.toString()), managedBaseline: validateManagedBaseline(JSON.parse(baselineBytes.toString())) }; }

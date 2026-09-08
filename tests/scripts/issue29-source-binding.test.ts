@@ -29,3 +29,11 @@ describe('live synthetic source/release binding',()=>{
   await expect(readSourceReleaseBinding({manifest,settings,fetchImpl})).rejects.toThrow('SOURCE_BINDING_READ_FAILED');
  });
 });
+
+import { readTargetReleaseBinding } from '../../scripts/issue29-operations/source-binding.mjs';
+it('binds exact restore Worker and target role without reading paused source',async()=>{
+ const m=structuredClone(manifest);m.targetDeploymentId='target-version';m.cleanup.resources.push({provider:'supabase',id:m.target!.ref,runId:m.runId,createdAt:'2026-09-05T12:00:00.000Z',evidenceSha256:'a'.repeat(64),disposition:'disposable',absentAt:null});
+ const s={...structuredClone(settings),source:{apiUrl:m.target!.url,serviceKey:'target-secret'},deployment:{...settings.deployment,workerName:`issue29-restore-${m.runId}`,versionId:'target-version',origin:`https://issue29-restore-${m.runId}.owner.workers.dev`}};
+ const base=request();const urls:string[]=[];const fetchImpl=async(url:string|URL|Request,init?:RequestInit)=>{const u=String(url);urls.push(u);const mapped=u.replaceAll(s.deployment.workerName,settings.deployment.workerName).replaceAll(s.deployment.versionId,settings.deployment.versionId).replaceAll(m.target!.ref,m.source!.ref);const r=await base(mapped,init);if(!r.headers.get('content-type')?.includes('json'))return r;const text=(await r.text()).replaceAll(m.source!.ref,m.target!.ref).replaceAll(settings.source.serviceKey,s.source.serviceKey).replaceAll(settings.deployment.versionId,s.deployment.versionId);return new Response(text,{headers:{'content-type':'application/json'}});};
+ const proof=await readTargetReleaseBinding({manifest:m,settings:s,fetchImpl,now:'2026-09-05T12:01:00.000Z'});expect(proof.targetRef).toBe(m.target!.ref);expect(urls.some(u=>u.includes(m.source!.ref))).toBe(false);expect(proof.workerName).toBe(s.deployment.workerName);
+});
