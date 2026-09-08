@@ -129,6 +129,10 @@ Private Actions handoffs are `ISSUE29_BACKUP_AUTHORIZATION_JSON`,
 canary runs before the backup checkpoint: one persisted send, bounded delivery
 readback without resending, then its verified service-only checkpoint. Its Resend
 credentials and private recipient never enter public workflow output.
+The account-test canary uses only Resend's supported `onboarding@resend.dev` sender
+to the Resend account's private email, excluding `resend.dev` simulator addresses.
+It is owner-only rehearsal/test evidence and makes no claim of public-domain email
+delivery.
 Missing delivery, quota, or current source proof fails the run; daily scheduling
 is not itself delivered-email evidence. After canary delivery, capture and quiesce
 only the two approved source DB-only jobs before export; restore their exact prior

@@ -147,14 +147,14 @@ export async function readCanaryLedger(options,input){
   } catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('CANARY_LEDGER_READ_FAILED');}
   finally{await session.close();}
 }
-/** @typedef {ProjectSettings & {database:import('./logical-recovery.mjs').DatabaseOptions,resend:{apiKey:string,domainId:string,webhookId:string,from:string,to:string,operationId:string,windowStart:string,webhookOrigin:string,syntheticScopeEvidenceSha256:string,requireLiveQuota?:boolean,freePlanEvidence:{observedAt:string,remainingDaily:number,quotedCost:0,evidenceSha256:string}}}} CanarySettings */
+/** @typedef {ProjectSettings & {database:import('./logical-recovery.mjs').DatabaseOptions,resend:{apiKey:string,senderMode:'resend-account-test',webhookId:string,from:'onboarding@resend.dev',to:string,operationId:string,windowStart:string,webhookOrigin:string,syntheticScopeEvidenceSha256:string,requireLiveQuota?:boolean,freePlanEvidence:{observedAt:string,remainingDaily:number,quotedCost:0,evidenceSha256:string}}}} CanarySettings */
 /** @typedef {Options & {ledgerReader?:typeof readCanaryLedger}} CanaryOptions */
 /** Controlled one-email journey. Success is provider delivered AND a signed-ingestion ledger event,
  * never internal sent/provider API acceptance. Unknown message ID after timeout remains readback-only.
  * @param {CanarySettings} settings @param {CanaryOptions} options */
 export function createEmailCanaryAdapter(settings,options={}){
   const {selected,preflight,now,fetchImpl}=exactProject(settings,options),m=settings.manifest,c=settings.resend;
-  ensure([c.domainId,c.webhookId,c.operationId].every(v=>UUID.test(v))&&z.email().safeParse(c.from).success&&z.email().safeParse(c.to).success&&
+  ensure(c.senderMode==='resend-account-test'&&c.from==='onboarding@resend.dev'&&!Object.hasOwn(c,'domainId')&&[c.webhookId,c.operationId].every(v=>UUID.test(v))&&z.email().safeParse(c.to).success&&!c.to.toLowerCase().endsWith('@resend.dev')&&
     /^re_[A-Za-z0-9_-]{16,256}$/u.test(c.apiKey)&&HASH.test(c.syntheticScopeEvidenceSha256)&&
     /^https:\/\/issue29-[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/u.test(c.webhookOrigin)&&c.webhookOrigin.startsWith(`https://issue29-${selected.ref===m.target?.ref?`restore-${m.maintenance?.id??m.runId}`:m.runId}.`),'CANARY_PRIVATE_CONFIG_INVALID');
   ensure(settings.database.scope.projectRef===selected.ref&&settings.database.scope.runId===m.runId&&m.preservedRefs.every(ref=>settings.database.scope.preservedRefs.includes(ref)),'CANARY_DATABASE_SCOPE_MISMATCH');
@@ -173,7 +173,6 @@ export function createEmailCanaryAdapter(settings,options={}){
   async function inspect(){
     await preflight();const age=Date.parse(now())-Date.parse(c.windowStart),free=c.freePlanEvidence;
     ensure(age>=0&&age<=900000,'CANARY_FREE_WINDOW_UNPROVEN');
-    const domain=await resend('/domains/'+c.domainId);ensure(domain.id===c.domainId&&domain.name===c.from.split('@')[1]&&domain.status==='verified'&&domain.capabilities?.sending==='enabled','CANARY_SENDER_UNVERIFIED');
     const webhook=await resend('/webhooks/'+c.webhookId);ensure(webhook.id===c.webhookId&&webhook.endpoint===c.webhookOrigin+'/api/webhooks/resend'&&webhook.status==='enabled'&&
       Array.isArray(webhook.events)&&webhook.events.includes('email.delivered'),'CANARY_WEBHOOK_SCOPE_UNPROVEN');
     const live=quota&&quota.daily<100&&quota.monthly<3000&&Date.parse(now())-Date.parse(quota.checkedAt)<=60000;

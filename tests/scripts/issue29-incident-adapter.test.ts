@@ -78,8 +78,8 @@ import { handleResendWebhook } from '../../src/lib/server/operations/resend-webh
 import { createHmac } from 'node:crypto';
 it('requires an actual signed downstream delivered event, not provider acceptance or a sent event',async()=>{
   const s=ownedSettings(),sourceFixture=storageFixture(s),time='2026-09-05T12:01:00.000Z',messageId='4ef9a417-02e9-4d39-ad75-9611e0fcc33c';
-  const resend={apiKey:'re_privatefixtureapikey123456789',domainId:'d91cd9bd-1176-453e-8fc1-35364d380206',webhookId:'4dd369bc-aa82-4ff3-97de-514ae3000ee0',
-    from:'canary@example.test',to:'private-canary@example.test',operationId:'21212121-2121-4212-8212-212121212121',windowStart:now,
+  const resend={apiKey:'re_privatefixtureapikey123456789',senderMode:'resend-account-test' as const,webhookId:'4dd369bc-aa82-4ff3-97de-514ae3000ee0',
+    from:'onboarding@resend.dev' as const,to:'private-canary@example.test',operationId:'21212121-2121-4212-8212-212121212121',windowStart:now,
     webhookOrigin:s.readinessOrigin,syntheticScopeEvidenceSha256:'a'.repeat(64),freePlanEvidence:{observedAt:now,remainingDaily:5,quotedCost:0 as const,evidenceSha256:'b'.repeat(64)}};
   const database={scope:{mode:'hosted' as const,role:'source' as const,runId:s.manifest.runId,projectRef:s.projectRef,sourceRef:s.projectRef,preservedRefs:s.manifest.preservedRefs,createdResourceEvidenceSha256:'e'.repeat(64),apiUrl:s.manifest.source!.url},
     connection:{host:`db.${s.projectRef}.supabase.co`,port:5432,user:'postgres',database:'postgres',password:'private-db-secret',sslmode:'verify-full' as const},toolchain:{mode:'container' as const}};
@@ -87,7 +87,7 @@ it('requires an actual signed downstream delivered event, not provider acceptanc
   const fetchImpl:typeof fetch=async(url,init)=>{
     const u=new URL(String(url));
     if(u.hostname==='api.resend.com'){
-      if(u.pathname.startsWith('/domains/'))return Response.json({id:resend.domainId,name:'example.test',status:'verified',capabilities:{sending:'enabled'}});
+      if(u.pathname.startsWith('/domains/'))throw new Error('obsolete Resend domain lookup');
       if(u.pathname.startsWith('/webhooks/'))return Response.json({id:resend.webhookId,endpoint:s.readinessOrigin+'/api/webhooks/resend',status:'enabled',events:['email.delivered'],signing_secret:'private-signing-key'});
       if(u.pathname==='/emails'){sends++;expect(new Headers(init?.headers).get('Idempotency-Key')).toBe(`issue29/${s.manifest.runId}/${resend.operationId}`);return Response.json({id:messageId});}
       return Response.json({id:messageId,from:resend.from,to:[resend.to],subject:`Aromatika synthetic canary ${s.manifest.runId} ${resend.operationId}`,created_at:now,last_event:lastEvent,html:'must not escape'});
@@ -96,6 +96,10 @@ it('requires an actual signed downstream delivered event, not provider acceptanc
     if(u.pathname.endsWith('/get_operations_snapshot'))return Response.json({checkpoints:{email_canary:checkpoint}});
     return sourceFixture.fetchImpl(url,init);
   };
+  expect(()=>createEmailCanaryAdapter({...s,resend:{...resend,senderMode:'domain-verified'} as any,database},{now:()=>time,fetchImpl,ledgerReader:async()=>rows})).toThrow('CANARY_PRIVATE_CONFIG_INVALID');
+  expect(()=>createEmailCanaryAdapter({...s,resend:{...resend,from:'canary@example.test'} as any,database},{now:()=>time,fetchImpl,ledgerReader:async()=>rows})).toThrow('CANARY_PRIVATE_CONFIG_INVALID');
+  expect(()=>createEmailCanaryAdapter({...s,resend:{...resend,to:'simulator@resend.dev'},database},{now:()=>time,fetchImpl,ledgerReader:async()=>rows})).toThrow('CANARY_PRIVATE_CONFIG_INVALID');
+  expect(()=>createEmailCanaryAdapter({...s,resend:{...resend,domainId:'d91cd9bd-1176-453e-8fc1-35364d380206'} as any,database},{now:()=>time,fetchImpl,ledgerReader:async()=>rows})).toThrow('CANARY_PRIVATE_CONFIG_INVALID');
   const a=createEmailCanaryAdapter({...s,resend,database},{now:()=>time,fetchImpl,ledgerReader:async()=>rows}),op=a.sendOperation();
   await op.inspect();expect(await op.mutate()).toMatchObject({status:'accepted',providerMessageId:messageId});
   await expect(op.readback()).rejects.toThrow('CANARY_DOWNSTREAM_DELIVERY_UNPROVEN');lastEvent='delivered';
