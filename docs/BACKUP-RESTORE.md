@@ -124,11 +124,11 @@ before Issue #29 closes. A missing/failed execution remains a blocker.
 
 Private Actions handoffs are `ISSUE29_BACKUP_AUTHORIZATION_JSON`,
 `ISSUE29_OWNER_BACKUP_PUBLIC_KEY` (public PEM only), and
-`ISSUE29_GRAFANA_HEARTBEAT_JSON` (distinct narrow metrics write/read tokens), and
+`ISSUE29_MONITOR_HEARTBEAT_JSON` (distinct narrow checkpoint write/evidence read tokens), and
 `ISSUE29_DAILY_CANARY_JSON` (private source-scoped Resend/canary settings). The
 canary runs before the backup checkpoint: one persisted send, bounded delivery
 readback without resending, then its verified service-only checkpoint. Its Resend
-credentials and private recipient never enter Grafana or public workflow output.
+credentials and private recipient never enter public workflow output.
 Missing delivery, quota, or current source proof fails the run; daily scheduling
 is not itself delivered-email evidence. After canary delivery, capture and quiesce
 only the two approved source DB-only jobs before export; restore their exact prior
@@ -156,8 +156,8 @@ removed in the workflow's `always()` cleanup; the encrypted artifact is retained
 The official artifact is immutable and retained for 35 days. Success requires exact
 artifact/run/repository/candidate metadata readback, archive-byte SHA-256
 verification, and rechecking every extracted ciphertext against the immutable
-descriptor. Only then can Grafana receive a success heartbeat carrying the original
-backup checkpoint time, followed by independent metrics readback. Maintenance
+descriptor. Only then can the Cloudflare monitor receive a trusted backup checkpoint carrying the original
+backup checkpoint time, followed by exact authenticated checkpoint readback. Maintenance
 independently re-downloads the retained archive and verifies its descriptor and
 every ciphertext directly inside the ZIP, not against an unrelated local directory.
 The selected ZIP32 stored/deflate verifier performs no path extraction and fails
@@ -192,7 +192,7 @@ continues to require exact readback. Failure delivery never refreshes a checkpoi
   integrity/decryption failure.
 - Full-service RTO target: 2 hours; record DB/Auth recovery and full recovery
   separately.
-- Independent dead-man: Grafana Cloud Free, not the GitHub schedule itself.
+- Independent monitor watchdog: GitHub Actions checks Cloudflare cycle freshness with an explicit tolerated delay; it does not certify its own health.
 - Secondary copy: one owner-controlled encrypted destination, alias
   `owner-secondary`; copy at least one complete encrypted artifact and compare its
   hash without co-locating the private key.
@@ -268,30 +268,33 @@ then use its persisted intent and readback path if the outcome is uncertain.
 2. For the first transaction only, run `create-source`, `seed-source`,
    `prepare-worker`, `deploy-worker`, and `verify-source`. Retain their exact
    source and Worker identities for subsequent rehearsals.
-3. Run `configure-monitoring` and the `monitoring-proof` actions to establish
-   nine-family rule operation, delivery, canary and heartbeat evidence. Prove
+3. Run `deploy-monitor` in create mode and `configure-monitoring` for the one
+   source-bound monitor Worker. Establish canary and heartbeat evidence. Prove
    the two approved source jobs with `synthetic-jobs`, capture the old source
    session with `capture-source-session`, then quiesce those jobs before export.
 4. Run `backup-set`, independently decrypt it with `verify-backup`, and retain
    the encrypted set with `copy-backup` before the first protected merge. This
    retained copy is rehearsal evidence; it does not prove the daily workflow.
+   Publish its independently verified trusted checkpoint with `backup-checkpoint`,
+   then prove all nine signal families and their failure/recovery delivery events.
 5. Run `authorize-maintenance`, `maintenance-silence`, and `pause-source` only
    after the retained-set and scoped-quiescence readbacks pass. Run
    `create-target` only after the exact source is confirmed inactive.
 6. Run `restore` through its quarantine, database and Storage phases. Prepare and
-   deploy the distinct target Worker, then run the `verify-restore` database,
+   deploy the distinct target Worker, attach its exact private readiness target
+   with `attach-target`, then run the `verify-restore` database,
    isolation and real-application actions and the `incident-drill` actions.
-7. Remove the exact disposable target Worker with `cleanup-worker` and target
+7. Detach the probe with `remove-target`. Remove the exact disposable target Worker with `cleanup-worker` and target
    project with `cleanup`. Independently verify their absence before
    `resume-source`. Run `verify-source-resumed` while the captured source jobs
    are still quiesced, then run `synthetic-jobs` in source `resume` and `prove`
    modes. Only after both jobs have successful executions in this maintenance
    window may `maintenance-unsilence` restore scoped monitoring and close it.
 8. Finalize `cleanup` using fresh absence and persistent-health readbacks. After
-   protected merge, run `adopt-merged-release` and the source Worker/Grafana
+   protected merge, run `adopt-merged-release` and the source application/monitor Worker
    release updates described below, then dispatch the real default-branch backup.
-   Rerun final `cleanup` with the actual artifact heartbeat and all 11 monitor
-   rules healthy. Run `generate-receipt` and `validate-receipt` with its independently verified
+   Rerun final `cleanup` with the actual artifact heartbeat and all nine monitor
+   signals healthy. Run `generate-receipt` and `validate-receipt` with its independently verified
    artifact and the original rehearsal evidence before closing the issue.
 
 A first pre-merge owner-copy rehearsal can close provisionally without a GitHub
@@ -326,14 +329,14 @@ previous cleanup history.
 After protected merge, adoption independently checks the merged PR's exact reviewed
 head, current protected `main`, identical Git tree and required successful check runs
 for both candidate and merge. Only then update the existing persistent source Worker
-and same Grafana resource IDs; preserve prior private builds/configuration and never
+and same monitor Worker identity; preserve prior private builds/configuration and never
 fall back to creating an absent resource. The source ref, origin, secrets and synthetic
 creation provenance remain unchanged. A changed tree requires new candidate proof,
 not reuse of old hosted receipts.
 
 The original rehearsed descriptor and first trusted merged daily artifact remain
 separate. Readiness permits that distinction only with actual hash-bound GitHub,
-Worker and Grafana adoption readbacks, the same source, owner key and recovery
+application and monitor Worker adoption readbacks, the same source, owner key and recovery
 contract, and an unchanged tree. It still validates the original measured RPO/RTO
 and monthly rehearsal clock, plus the latest merged artifact's own freshness,
 encryption and 35-day retention; a new upload cannot refresh restore/decryption proof.

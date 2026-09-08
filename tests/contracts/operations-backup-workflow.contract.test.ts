@@ -53,7 +53,7 @@ describe('Issue 29 trusted encrypted backup workflow', () => {
 it('publishes only a classified publication failure without turning the failed workflow green',()=>{
  const step=steps.find(s=>s.run?.includes('beginFailureHeartbeat('));expect(step?.if).toContain('failure()');expect(step?.if).toContain("steps.publication.outcome == 'failure'");expect(step?.run).toContain('finalizeFailureHeartbeat(');expect(step?.run).not.toContain('continue-on-error');
 });
-it('runs the private daily canary before backup export without exposing its credentials to Grafana or PRs',()=>{
+it('runs the private daily canary before backup export without exposing its credentials to the monitor or PRs',()=>{
  const canary=steps.findIndex(s=>s.run?.includes('executeAutomationCanary('));const backup=steps.findIndex(s=>s.run?.includes('cli.mjs backup-set'));
  expect(canary).toBeGreaterThan(steps.findIndex(s=>s.run?.includes('prepareBackupAutomation(')));expect(canary).toBeLessThan(backup);
  expect(steps[canary]?.env?.ISSUE29_DAILY_CANARY_JSON).toBe('${{ secrets.ISSUE29_DAILY_CANARY_JSON }}');

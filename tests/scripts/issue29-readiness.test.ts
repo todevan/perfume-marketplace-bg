@@ -26,13 +26,14 @@ function receiptFixture() {
 		commitSha: 'c'.repeat(40), treeSha: 'd'.repeat(40), workerVersion: 'worker-contract-fixture',
 		environmentAlias: 'staging', projectRef: sourceRef, generatedAt: time('12:00'),
 		monitor: {
-			provider: 'grafana-cloud-free', stackAlias: 'owner-operations', destinationAlias: 'owner-primary',
+			provider: 'cloudflare-scheduled-free', workerAlias: 'owner-operations', destinationAlias: 'owner-primary',
 			targetProjectRef: sourceRef, targetEnvironmentAlias: 'staging', targetCommitSha: 'c'.repeat(40),
 			targetWorkerVersion: 'worker-contract-fixture', configSha256: hash,
 			readBackAt: time('11:55'), heartbeatAt: time('11:55'), signalFamilies: [...signalFamilies],
 			maxCost: 0, evidenceSha256: hash
 		},
 		alerts: {
+            deliveryEventType:'email.delivered',
 			configSha256: hash, targetProjectRef: sourceRef, destinationAlias: 'owner-primary',
 			failureEventId: 'contract-failure', recoveryEventId: 'contract-recovery',
 			firedAt: time('11:30'), deliveredAt: time('11:31'), acknowledgedAt: time('11:32'),
@@ -104,9 +105,9 @@ function receiptFixture() {
 				deleteReadbackSha256: hash, absenceReadbackSha256: hash, absent: true
 			},{provider:'cloudflare',resourceIdSha256:idHash(`issue29-restore-${runId}`),createdIntentSha256:hash,createdReadbackSha256:hash,deleteIntentSha256:hash,deleteReadbackSha256:hash,absenceReadbackSha256:hash,absent:true}], temporaryCredentialCount: 1, revokedTemporaryCredentialCount: 1,
 			retainedResources: [
-				{ alias: 'owner-operations', kind: 'grafana-stack' },
-				{ alias: 'owner-primary', kind: 'grafana-destination' },
-				{ alias: 'launch-readiness', kind: 'grafana-rule' },
+				{ alias: 'owner-operations', kind: 'monitor-worker' },
+				{ alias: 'owner-primary', kind: 'resend-destination' },
+				{ alias: 'launch-readiness', kind: 'monitor-rules' },
 				{ alias: 'daily-backup', kind: 'encrypted-backup' },
 				{ alias: 'owner-secondary', kind: 'secondary-encrypted-copy' },
                 {alias:'synthetic-source',kind:'synthetic-source',resourceIdSha256:idHash(sourceRef)},
@@ -261,7 +262,7 @@ describe('Issue 29 operations readiness receipt', () => {
 		['incomplete temporary credential cleanup', (r) => { r.cleanup.revokedTemporaryCredentialCount = 0; }, 'credential revocation'],
 		['duplicated resource cleanup', (r) => { r.cleanup.resources.push({ ...r.cleanup.resources[0] }); }, 'cleanup resource inventory contains duplicates'],
 		['wrong deleted project', (r) => { r.cleanup.resources[0].resourceIdSha256 = hash; }, 'absence of the exact restore target'],
-		['missing retained monitor', (r) => { r.cleanup.retainedResources[0].kind = 'grafana-rule'; }, 'retained resource inventory'],
+		['missing retained monitor', (r) => { r.cleanup.retainedResources[0].kind = 'monitor-rules'; }, 'retained resource inventory'],
 		['future top-level timestamp', (r) => { r.generatedAt = time('12:06'); }, 'receipt is stale or future-dated']
 	];
 	it.each(semanticFailures)('rejects %s even with matching evidence hashes', (_name, mutate, message) => {
@@ -274,7 +275,7 @@ describe('Issue 29 operations readiness receipt', () => {
 	it.each([
 		['unknown root field', (r: ReturnType<typeof receiptFixture>) => Object.assign(r, { privateKey: 'never-print-secret' })],
 		['unknown nested field', (r: ReturnType<typeof receiptFixture>) => Object.assign(r.alerts, { recipient: 'never-print-secret@example.invalid' })],
-		['recipient in alias', (r: ReturnType<typeof receiptFixture>) => { r.monitor.stackAlias = 'never-print-secret@example.invalid'; }],
+		['recipient in alias', (r: ReturnType<typeof receiptFixture>) => { r.monitor.workerAlias = 'never-print-secret@example.invalid'; }],
 		['unsigned mode', (r: ReturnType<typeof receiptFixture>) => { r.backup.encryption.algorithm = 'plaintext'; }],
 		['private key in automation', (r: ReturnType<typeof receiptFixture>) => { r.decryption.privateKeyRetainedByAutomation = true; }],
 		['unknown source data', (r: ReturnType<typeof receiptFixture>) => { r.backup.sourceClassification = 'unknown'; }],
@@ -419,6 +420,11 @@ it('rejects the obsolete readiness receipt without two-slot maintenance and pers
  expect(validateOperationsReadiness({...receipt,schemaVersion:1},options)).toEqual(['operations receipt schema is invalid']);
 });
 
+it('refuses sending-only evidence even when all recovery receipt sections are otherwise valid',()=>{
+ const {receipt,options}=withEvidence();
+ expect(validateOperationsReadiness({...receipt,alerts:{...receipt.alerts,deliveryEventType:'email.sent'}},options)).toEqual(['operations receipt schema is invalid']);
+});
+
 it.each(['worker-drift','source-deleted','missing-retention','paused-too-early','target-still-present','monitor-not-resumed','preserved-source'])('rejects %s even after rehashing the maintenance receipt',kind=>{
  const r=receiptFixture();
  if(kind==='worker-drift')r.maintenance.resumeProof.workerSha256='f'.repeat(64);
@@ -442,9 +448,8 @@ function mergedReadinessFixture(){
  const merge={schemaVersion:1,kind:'issue29-protected-merge',evidenceMode:'provider-readback',repository:'todevan/perfume-marketplace-bg',repositoryId:12,pullRequestNumber:99,fromCandidate,mergeSha:r.commitSha,treeSha:r.treeSha,verifiedAt:time('10:01'),mergedAt:time('10:00'),protectionSha256:hash,checkRunsSha256:hash};
  const extra=new Map<string,Buffer>();const store=(v:unknown)=>{const b=Buffer.from(canonicalJson(v)),h=createHash('sha256').update(b).digest('hex');extra.set(h,b);return h;};r.releaseUpdate.protectedMergeSha256=store(merge);
  const worker={evidenceMode:'provider-readback',workerName:`issue29-${runId}`,accountId:'c'.repeat(32),purpose:'source',versionId:r.workerVersion,candidateSha:r.commitSha,candidateTree:r.treeSha,projectRef:sourceRef,createdAt:time('10:02'),configSha256:hash,origin,status:'verified',checkedAt:time('10:03'),evidenceSha256:hash};r.releaseUpdate.workerReadbackSha256=store(worker);
- const resources=Array.from({length:13},(_,i)=>({status:'verified',kind:i<2?'check':'rule',key:'rule-'+i,configSha256:r.monitor.configSha256,resourceId:'id-'+i,evidenceSha256:hash,readBackAt:time('10:04'),previousCandidateSha:fromCandidate.sha,candidateSha:r.commitSha,priorStateSha256:proofHash}));
- const configurationResources=[...resources.map(({previousCandidateSha:_p,candidateSha:_c,priorStateSha256:_s,...item})=>item),...['folder','secret','receiver'].map(kind=>({status:'verified',kind,key:kind,configSha256:r.monitor.configSha256,resourceId:kind,evidenceSha256:hash,readBackAt:time('10:04')}))];
- const monitor={schemaVersion:1,kind:'issue29-grafana-release-update',evidenceMode:'provider-readback',runId,previousCandidateSha:fromCandidate.sha,candidateSha:r.commitSha,previousConfigSha256:hash,configSha256:r.monitor.configSha256,environmentAlias:r.environmentAlias,origin,verifiedAt:time('10:05'),protectedMergeEvidenceSha256:r.releaseUpdate.protectedMergeSha256,resources,configuration:{status:'verified',candidateSha:r.commitSha,configSha256:r.monitor.configSha256,verifiedAt:time('10:05'),resources:configurationResources,evidenceSha256:hash}};r.releaseUpdate.monitorReadbackSha256=store(monitor);
+ const resource={provider:'cloudflare-monitor',resourceId:`worker:${r.monitor.workerAlias}`,previousCandidateSha:fromCandidate.sha,candidateSha:r.commitSha,priorStateSha256:proofHash};
+ const monitor={schemaVersion:1,kind:'issue29-monitor-release-update',evidenceMode:'provider-readback',runId,previousCandidateSha:fromCandidate.sha,candidateSha:r.commitSha,previousConfigSha256:hash,configSha256:r.monitor.configSha256,environmentAlias:r.environmentAlias,origin,verifiedAt:time('10:05'),protectedMergeEvidenceSha256:r.releaseUpdate.protectedMergeSha256,resource,configuration:{status:'verified',candidateSha:r.commitSha,configSha256:r.monitor.configSha256,workerAlias:r.monitor.workerAlias,verifiedAt:time('10:05'),evidenceSha256:hash}};r.releaseUpdate.monitorReadbackSha256=store(monitor);
  const descriptor=descriptorFixture();descriptor.metadata.backupSetId='22345678-1234-4123-8123-123456789012';descriptor.metadata.release={commitSha:r.commitSha,treeSha:r.treeSha,workerVersion:r.workerVersion};descriptor.metadata.startedAt=time('11:00');descriptor.metadata.finishedAt=time('11:10');descriptor.retention.expiresAt='2026-10-10T11:10:00.000Z';
  const b=Buffer.from(canonicalJson(descriptor)+'\n'),descriptorHash=createHash('sha256').update(b).digest('hex');extra.set(descriptorHash,b);r.backup.descriptorSha256=descriptorHash;r.backup.setId=descriptor.metadata.backupSetId;r.backup.sourceCommitSha=r.commitSha;r.backup.checkpointAt=time('11:00');r.backup.completedAt=time('11:10');r.backup.verifiedAt=time('11:11');r.backup.artifact.createdAt=time('11:12');r.backup.artifact.expiresAt='2026-10-10T11:12:00.000Z';r.backup.artifact.readBackAt=time('11:13');r.backup.artifact.downloadVerifiedAt=time('11:14');
  const result=withEvidence(r);for(const[k,v]of extra)result.evidence.set(k,v);
@@ -476,13 +481,13 @@ import {TARGET_DATABASE_CONTRACTS,validateTargetTap} from '../../scripts/issue29
 import {validateManifest} from '../../scripts/issue29-operations/manifest.mjs';
 function producerFixture(){
  const f=withEvidence(),r=f.receipt,m=manifestFixture();const save=(value:any)=>{const bytes=Buffer.isBuffer(value)?value:Buffer.from(canonicalJson(value)),key=idHash(bytes.toString());f.evidence.set(key,bytes);return key;};
- m.state='cleanup_verified';m.candidate={sha:r.commitSha,tree:r.treeSha,deploymentId:r.workerVersion};m.source={...m.source!,ref:sourceRef,url:`https://${sourceRef}.supabase.co`};m.target={...m.target!,ref:targetRef,url:`https://${targetRef}.supabase.co`};m.forbiddenRefs=r.isolation.forbiddenRefs;m.preservedRefs=[productionRef,r.isolation.canonicalStagingRef];m.grafana={...m.grafana,stackAlias:r.monitor.stackAlias,configSha256:r.monitor.configSha256};
+ m.state='cleanup_verified';m.candidate={sha:r.commitSha,tree:r.treeSha,deploymentId:r.workerVersion};m.source={...m.source!,ref:sourceRef,url:`https://${sourceRef}.supabase.co`};m.target={...m.target!,ref:targetRef,url:`https://${targetRef}.supabase.co`};m.forbiddenRefs=r.isolation.forbiddenRefs;m.preservedRefs=[productionRef,r.isolation.canonicalStagingRef];m.monitoring={...m.monitoring,workerAlias:r.monitor.workerAlias,configSha256:r.monitor.configSha256};
  m.maintenance={...maintenanceFixture(m),id:runId,phase:'closed',sourceRef,authorizedAt:r.maintenance.authorizedAt,expiresAt:r.maintenance.expiresAt,pausedAt:r.maintenance.pausedAt,pauseReadbackSha256:proofHash,resumedAt:r.maintenance.resumedAt,resumeReadbackSha256:proofHash,endedAt:r.maintenance.endedAt,backup:r.maintenance.backup,preservation:r.maintenance.preservation,resumeProof:r.maintenance.resumeProof,monitoring:{...r.maintenance.monitoring,silences:[{ruleKey:'health',id:runId,evidenceSha256:proofHash}]}};
  m.recoveryTimings={startedAt:r.restore.startedAt,databaseVerifiedAt:r.restore.databaseIntegrityAt,storageStartedAt:r.restore.storageStartedAt,storageVerifiedAt:r.restore.storageRestoredAt,applicationVerifiedAt:r.restore.completedAt};
  const history=(step:string,value:any,resourceId:string|null=null,intentSha256?:string)=>{const evidenceSha256=save(value);m.history.push({step,operationId:runId,resourceId,evidenceSha256,completedAt:time('10:00'),...(intentSha256?{intentSha256}:{})});return evidenceSha256;};
  const timeline={...r.alerts,recoveryEvaluatedAt:r.alerts.recoveredAt,ackEvidenceSha256:save({roleAlias:'owner',acknowledgedAt:r.alerts.acknowledgedAt})};delete (timeline as any).evidenceSha256;
- const map=[...signalFamilies,'health','email'].map((signal,i)=>({signal,ruleKey:'fixture-'+i,sourceRuleKey:'rule-'+i}));
- const monitor=history('monitoring-proof',{status:'verified',configuration:{status:'verified',candidateSha:r.commitSha,configSha256:r.monitor.configSha256,resources:Array.from({length:16},()=>({status:'verified'}))},checks:Array.from({length:11},()=>({score:{score:0},state:{state:'inactive'}})),heartbeat:{heartbeatAt:r.monitor.heartbeatAt},heartbeatAt:r.monitor.heartbeatAt,checkedAt:r.monitor.readBackAt});
+ const map=signalFamilies.map((signal,i)=>({signal,ruleKey:'fixture-'+i,sourceRuleKey:'rule-'+i}));
+ const monitor=history('monitoring-proof',{status:'verified',configuration:{status:'verified',candidateSha:r.commitSha,configSha256:r.monitor.configSha256,workerAlias:r.monitor.workerAlias},checks:signalFamilies.map(signal=>({signal,ok:true})),heartbeat:{heartbeatAt:r.monitor.heartbeatAt},heartbeatAt:r.monitor.heartbeatAt,checkedAt:r.monitor.readBackAt});
  const alerts=history('monitoring-proof',{status:'verified',evidenceMode:'provider-readback',runId,candidateSha:r.commitSha,sourceConfigSha256:r.monitor.configSha256,destinationAlias:'owner-primary',timelines:map.map((mapping,i)=>({...timeline,ruleKey:mapping.ruleKey,failureEventId:'failure-'+i,recoveryEventId:'recovery-'+i})),ruleMappings:map});
  const restore={status:'DATABASE_STORAGE_VERIFIED_APPLICATION_PROOF_PENDING',descriptorSha256:r.restore.descriptorSha256};
  const tap=Buffer.from('1..1\nok 1 - deterministic fixture only\n'),tapSha=save(tap);

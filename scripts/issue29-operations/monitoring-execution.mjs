@@ -8,9 +8,9 @@ import {canonicalJson,readRecoveryDescriptor,verifyEncryptedRecoverySet} from '.
 import {persistOperationsEvidence,persistOperationsIntent} from './operator.mjs';
 import {readPrivateBytes} from './execution.mjs';
 import {readSourceReleaseBinding,readTargetReleaseBinding} from './source-binding.mjs';
-import {createGrafanaAdapter,createGrafanaRuleFixtureAdapter,createGrafanaHeartbeatAdapter,grafanaConfigSchema} from './grafana-adapter.mjs';
+import {createMonitorAdapter,monitorConfigSchema} from './monitor-adapter.mjs';
 import {readProtectedMergeEvidence} from './worker-adapter.mjs';
-import {configureGrafanaMonitoring} from './grafana-operator.mjs';
+import {configureMonitor} from './monitor-operator.mjs';
 import {captureMonitoringPhase,verifyMonitoringProof} from './monitoring-proof.mjs';
 import {createSentinelAdapter,createEmailCanaryAdapter,captureIncidentBaseline,verifyStorageIncident} from './incident-adapter.mjs';
 import {CANONICAL_SYNTHETIC_JOBS,readSyntheticJobsEvidence} from './synthetic-jobs.mjs';
@@ -21,14 +21,13 @@ const database=z.object({scope:z.object({mode:z.literal('hosted'),role:z.enum(['
   toolchain:z.discriminatedUnion('mode',[z.object({mode:z.literal('container')}).strict(),z.object({mode:z.literal('native'),binDirectory:z.string()}).strict()])}).strict();
 const resend=z.object({apiKey:secret,domainId:z.uuid(),webhookId:z.uuid(),from:z.email(),to:z.email(),operationId:z.uuid(),windowStart:z.iso.datetime(),webhookOrigin:z.url(),syntheticScopeEvidenceSha256:hash,requireLiveQuota:z.boolean().optional(),
   freePlanEvidence:z.object({observedAt:z.iso.datetime(),remainingDaily:z.number().int().positive(),quotedCost:z.literal(0),evidenceSha256:hash}).strict()}).strict();
+const maintenanceTarget=z.object({origin:z.url(),readinessUrl:z.url(),readinessToken:secret,runtimeEnvironment:z.enum(['development','staging']),release:z.string().regex(/^[a-f0-9]{40}$/u)}).strict();
 export const monitoringExecutionSettingsSchema=z.object({schemaVersion:z.literal(1),operation:z.enum(['configure-monitoring','monitoring-proof','incident-drill','maintenance-silence','maintenance-unsilence']),
-  action:z.enum(['configure','release-update','configure-fixture','cleanup-fixture','fixture-sample','capture-failure','capture-recovery','verify-rule-proof','maintenance-silence','maintenance-unsilence',
-    'canary-send','canary-checkpoint','sentinel-readiness','sentinel-read','sentinel-create-bucket','sentinel-upload','sentinel-remove','sentinel-recover','sentinel-delete-bucket','incident-baseline','incident-verify','backup-checkpoint','source-green']),
-  actionId:z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/u),grafana:grafanaConfigSchema,binding,fixture:z.object({writeOrigin:z.url(),writeToken:secret,expiresAt:z.iso.datetime()}).strict().optional(),
-  sentinel:z.object({sha256:hash,bytesBase64:z.string().max(8192)}).strict().optional(),canary:z.object({database,resend}).strict().optional(),
-  metricsWrite:z.object({writeOrigin:z.url(),writeToken:secret}).strict().optional(),backupDirectory:z.string().optional(),inputPath:z.string().optional(),knownMessageId:z.uuid().optional(),
-  previousCandidateSha:z.string().regex(/^[a-f0-9]{40}$/u).optional(),mergeEvidenceDirectory:z.string().optional(),
-  ruleKey:alias.optional(),windowStart:z.iso.datetime().optional(),sample:z.object({phase:z.enum(['failure','recovery']),sampleAt:z.iso.datetime()}).strict().optional()}).strict();
+ action:z.enum(['configure','release-update','attach-target','remove-target','capture-failure','capture-recovery','verify-rule-proof','maintenance-silence','maintenance-unsilence','canary-send','canary-checkpoint','sentinel-readiness','sentinel-read','sentinel-create-bucket','sentinel-upload','sentinel-remove','sentinel-recover','sentinel-delete-bucket','incident-baseline','incident-verify','backup-checkpoint','source-green']),
+ actionId:z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/u),monitor:monitorConfigSchema,binding,readinessToken:secret.optional(),maintenanceTarget:maintenanceTarget.optional(),
+ sentinel:z.object({sha256:hash,bytesBase64:z.string().max(8192)}).strict().optional(),canary:z.object({database,resend}).strict().optional(),
+ backupDirectory:z.string().optional(),inputPath:z.string().optional(),knownMessageId:z.uuid().optional(),previousCandidateSha:z.string().regex(/^[a-f0-9]{40}$/u).optional(),mergeEvidenceDirectory:z.string().optional(),
+ ruleKey:z.string().regex(/^[a-z_]{1,32}$/u).optional(),windowStart:z.iso.datetime().optional()}).strict();
 /** @typedef {z.infer<typeof monitoringExecutionSettingsSchema>} MonitoringExecutionSettings */
 /** @param {unknown} value */
 const digest=value=>createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -78,30 +77,30 @@ async function requireCurrentSourceJobProof(manifest,manifestPath,repositoryRoot
 export async function executeMonitoringAction(options){
   const parsed=monitoringExecutionSettingsSchema.safeParse(options.settings);ensure(parsed.success,'MONITORING_SETTINGS_INVALID');const s=parsed.data;
   const {manifestPath,repositoryRoot,candidate}=options,clock=options.clock??(()=>options.now??new Date().toISOString());
-  const g=createGrafanaAdapter(s.grafana,{fetchImpl:options.fetchImpl,now:clock});
-  if(s.action==='configure'){ensure(s.operation==='configure-monitoring','MONITORING_ACTION_MISMATCH');return configureGrafanaMonitoring({...options,adapter:g,bindingSettings:s.binding,clock});}
+  const g=createMonitorAdapter(s.monitor,{fetchImpl:options.fetchImpl,now:clock});
+  if(s.action==='configure'){ensure(s.operation==='configure-monitoring','MONITORING_ACTION_MISMATCH');return configureMonitor({...options,adapter:g,bindingSettings:s.binding,clock});}
   const step=s.action.startsWith('maintenance-')?s.action:s.operation;
-  ensure((s.action==='release-update'&&s.operation==='configure-monitoring')||(s.action.startsWith('maintenance-')&&s.operation===s.action)||
-    (['canary-send','canary-checkpoint','backup-checkpoint','source-green','configure-fixture','cleanup-fixture','fixture-sample','capture-failure','capture-recovery','verify-rule-proof'].includes(s.action)&&s.operation==='monitoring-proof')||
+  ensure((['release-update','attach-target','remove-target'].includes(s.action)&&s.operation==='configure-monitoring')||(s.action.startsWith('maintenance-')&&s.operation===s.action)||
+    (['canary-send','canary-checkpoint','backup-checkpoint','source-green','capture-failure','capture-recovery','verify-rule-proof'].includes(s.action)&&s.operation==='monitoring-proof')||
     ((s.action.startsWith('sentinel-')||s.action.startsWith('incident-'))&&s.operation==='incident-drill'),'MONITORING_ACTION_MISMATCH');
   await assertPrivatePath(manifestPath,repositoryRoot);let lock;
   try{lock=await open(manifestPath+'.lock',constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);}catch{throw new OperationsError('TRANSACTION_LOCKED_INSPECT_BEFORE_RESUMING');}
   try{
-    const m=await readPrivateManifest(manifestPath,{repositoryRoot,candidate,now:clock()}),role=s.grafana.targetRole??'source';
+    const m=await readPrivateManifest(manifestPath,{repositoryRoot,candidate,now:clock()}),role=s.monitor.targetRole??'source';
     ensure(m.allowedActions.includes(step)&&!m.terminal&&!m.humanBoundary,'ACTION_FORBIDDEN');
     const selected=role==='source'?m.source:m.target;ensure(selected&&!m.preservedRefs.includes(selected.ref),'MONITORING_TARGET_UNPROVEN');
     if(role==='target')ensure(g.configuration().targetCycleId===(m.maintenance?.id??m.runId),'MONITORING_TARGET_CYCLE_MISMATCH');
     const release=s.action==='release-update';
     if(release)ensure(role==='source'&&m.releaseUpdate&&s.previousCandidateSha===m.releaseUpdate.fromCandidate.sha,'MONITORING_RELEASE_PRIOR_MISMATCH');
-    const previousConfiguration=release?createGrafanaAdapter({...s.grafana,candidateSha:s.previousCandidateSha??''}).configuration():null;
-    const config=g.configuration(),configured=role==='source'?m.grafana.configSha256:m.grafana.targetConfigSha256;
-    ensure(config.runId===m.runId&&config.candidateSha===candidate.sha&&config.stackAlias===m.grafana.stackAlias&&(config.configSha256===configured||(release&&previousConfiguration?.configSha256===configured))&&
-      config.targetOrigin===s.binding.deployment.origin&&config.runtimeEnvironment==='development'&&s.binding.source.apiUrl===selected.url,'MONITORING_MANIFEST_IDENTITY_MISMATCH');
+    const config=await g.verifyConfiguration(),configured=m.monitoring.configSha256;
+    ensure(config.environmentAlias===m.fixture.alias&&config.runId===m.runId&&config.candidateSha===candidate.sha&&config.workerAlias===m.monitoring.workerAlias&&(release||config.configSha256===configured)&&
+      (role==='target'?s.monitor.targetProbeOrigin:s.monitor.targetOrigin)===s.binding.deployment.origin&&s.monitor.runtimeEnvironment==='development'&&s.binding.source.apiUrl===selected.url,'MONITORING_MANIFEST_IDENTITY_MISMATCH');
     const selectedOwned=m.cleanup.resources.find(r=>r.provider==='supabase'&&r.id===selected.ref&&r.runId===m.runId&&r.absentAt===null);
     ensure(selectedOwned?.disposition===(role==='source'?'persistent':'disposable'),'MONITORING_TARGET_OWNERSHIP_MISMATCH');
-    g.assertCredentialSeparation([s.binding.providerToken,s.binding.source.serviceKey,s.binding.deployment.readToken]);
+    const monitorTokens=[s.monitor.evidenceReadToken,s.monitor.watchdogToken,s.monitor.backupCheckpointToken,s.monitor.maintenanceToken,s.monitor.releaseAdoptionToken];
+    ensure(![s.binding.providerToken,s.binding.source.serviceKey,s.binding.deployment.readToken].some(t=>monitorTokens.includes(t)),'MONITOR_CROSS_PROVIDER_CREDENTIAL_FORBIDDEN');
     const save=()=>writePrivateManifest(manifestPath,m,{repositoryRoot,candidate,now:clock(),replace:true});
-    const scope=role==='target'?`target-${digest({cycleId:m.maintenance?.id??m.runId,action:s.action,actionId:s.actionId}).slice(0,32)}`:s.fixture?`source-${s.action}-${digest({actionId:s.actionId,fixtureConfig:createGrafanaRuleFixtureAdapter(s.grafana,s.fixture).configuration().configSha256}).slice(0,16)}`:`${role}-${s.action}-${s.actionId}`;
+    const scope=role==='target'?`target-${digest({cycleId:m.maintenance?.id??m.runId,action:s.action,actionId:s.actionId}).slice(0,32)}`:`${role}-${s.action}-${s.actionId}`;
     /** @param {string} key */const path=key=>/^[a-f0-9]{64}$/u.test(key)?join(dirname(manifestPath),`${key}.json`):`${manifestPath}.${key}.json`;
     /** @param {string} key @param {unknown} proof */
     async function writeEvidence(key,proof){await persistOperationsEvidence(manifestPath,repositoryRoot,proof,digest(proof));const file=path(key);await assertPrivatePath(file,repositoryRoot);
@@ -136,55 +135,41 @@ export async function executeMonitoringAction(options){
         else ensure(owned.absentAt===null&&owned.disposition===ownership.disposition,'MONITORING_RESOURCE_OWNERSHIP_MISMATCH');}
       await writeEvidence(key,proof);m.history.push({step,operationId:pending.operationId,resourceId:key,completedAt:clock(),evidenceSha256:digest(proof),...(intentSha256?{intentSha256}:{})});m.pending=null;await save();return proof;
     }
-    const sentinel=()=>{ensure(s.sentinel,'SENTINEL_SETTINGS_REQUIRED');return createSentinelAdapter({manifest:m,projectRef:selected.ref,providerToken:s.binding.providerToken,serviceKey:s.binding.source.serviceKey,
-      sentinel:{path:`${m.runId}/sentinel.bin`,sha256:s.sentinel.sha256,bytes:Buffer.from(s.sentinel.bytesBase64,'base64')},readinessOrigin:s.binding.deployment.origin,monitorToken:s.grafana.monitorToken},{fetchImpl:options.fetchImpl,now:clock});};
+    const sentinel=()=>{ensure(s.sentinel&&s.readinessToken,'SENTINEL_SETTINGS_REQUIRED');return createSentinelAdapter({manifest:m,projectRef:selected.ref,providerToken:s.binding.providerToken,serviceKey:s.binding.source.serviceKey,
+      sentinel:{path:`${m.runId}/sentinel.bin`,sha256:s.sentinel.sha256,bytes:Buffer.from(s.sentinel.bytesBase64,'base64')},readinessOrigin:s.binding.deployment.origin,monitorToken:s.readinessToken},{fetchImpl:options.fetchImpl,now:clock});};
     const input=async()=>{ensure(s.inputPath,'PRIVATE_EVIDENCE_INPUT_REQUIRED');return JSON.parse((await readPrivateBytes(s.inputPath,repositoryRoot)).toString());};
     if(release){
-      ensure(previousConfiguration&&m.releaseUpdate&&s.previousCandidateSha,'MONITORING_RELEASE_PRIOR_MISMATCH');
-      ensure(!m.maintenance||m.maintenance.phase==='closed','SOURCE_MAINTENANCE_ACTIVE');
+      ensure(m.releaseUpdate&&s.previousCandidateSha,'MONITORING_RELEASE_PRIOR_MISMATCH');
       const merge=await readProtectedMergeEvidence(m,s.mergeEvidenceDirectory??dirname(manifestPath),repositoryRoot,{allowFixture:Boolean(options.fetchImpl)});
       ensure(m.candidate.deploymentId!==m.releaseUpdate.fromCandidate.deploymentId&&m.history.some(h=>h.step==='update-worker'&&h.resourceId===s.binding.deployment.workerName&&Date.parse(h.completedAt)>=Date.parse(merge.verifiedAt)),'MONITORING_RELEASE_WORKER_UNPROVEN');
-      await bind();
-      const finished=m.history.find(h=>h.step===step&&h.resourceId===scope);
-      if(finished){ensure(!m.pending,'PENDING_OPERATION_REQUIRES_READBACK');const receipt=await readEvidence(finished.evidenceSha256);
-        ensure(digest(receipt)===finished.evidenceSha256&&receipt.previousConfigSha256===previousConfiguration.configSha256&&receipt.configSha256===config.configSha256,'MONITORING_RELEASE_PRIOR_MISMATCH');await g.verifyConfiguration();return receipt;}
-      ensure(configured===previousConfiguration.configSha256,'MONITORING_RELEASE_PRIOR_MISMATCH');
-      const receipts=[];
-      for(const resource of config.resources){
-        const creation=m.history.find(h=>h.step==='configure-monitoring'&&h.resourceId===resource.key);
-        const owned=m.cleanup.resources.find(r=>r.provider==='grafana'&&r.id.startsWith(resource.kind+':')&&r.evidenceSha256===creation?.evidenceSha256&&r.runId===m.runId&&r.disposition==='persistent'&&r.absentAt===null);
-        ensure(creation&&owned,'MONITORING_RELEASE_RESOURCE_NOT_OWNED');const resourceId=owned.id.slice(resource.kind.length+1);
-        if(!['check','rule'].includes(resource.kind)){ensure((await g.readResource(resource.key,resourceId)).status==='verified','MONITORING_RELEASE_RESOURCE_UNPROVEN');continue;}
-        const key=`${scope}-${resource.key}`,completed=m.history.find(h=>h.step===step&&h.resourceId===key);
-        const priorSha=m.pending?.resourceId===key?m.pending.priorStateSha256:completed?(await readEvidence(key)).priorStateSha256:null;
-        const priorState=priorSha?await readEvidence(priorSha):undefined;if(priorSha)ensure(digest(priorState)===priorSha,'MONITORING_EVIDENCE_HASH_MISMATCH');
-        const op=g.releaseUpdateOperation(resource.key,s.previousCandidateSha,{resourceId,priorState,...(priorSha?{expectedPriorSha256:priorSha}:{}),capturePrior:async prior=>writeEvidence(digest(prior),prior)});
-        receipts.push(await mutate(key,op));
-      }
-      ensure(receipts.length===13,'MONITORING_RELEASE_INVENTORY_INVALID');const configuration=await g.verifyConfiguration();
-      const receipt={schemaVersion:1,kind:'issue29-grafana-release-update',evidenceMode,runId:m.runId,previousCandidateSha:s.previousCandidateSha,candidateSha:candidate.sha,
-        previousConfigSha256:previousConfiguration.configSha256,configSha256:config.configSha256,environmentAlias:config.environmentAlias,origin:config.targetOrigin,
-        verifiedAt:clock(),protectedMergeEvidenceSha256:m.releaseUpdate.evidenceSha256,resources:receipts,configuration};
-      const evidenceSha256=digest(receipt);await writeEvidence(evidenceSha256,receipt);m.grafana.configSha256=config.configSha256;
-      m.history.push({step,operationId:randomUUID(),resourceId:scope,completedAt:clock(),evidenceSha256});await save();return receipt;
+      const update=m.history.findLast(h=>h.step==='deploy-monitor'&&h.resourceId===`worker:${m.monitoring.workerAlias}`&&Date.parse(h.completedAt)>=Date.parse(merge.verifiedAt));
+      ensure(update,'MONITORING_RELEASE_DEPLOYMENT_REQUIRED');const deployment=await readEvidence(update.evidenceSha256);
+      ensure(deployment.candidateSha===candidate.sha&&deployment.previousCandidateSha===s.previousCandidateSha&&deployment.previousConfigSha256===configured,'MONITORING_RELEASE_PRIOR_MISMATCH');
+      await mutate(`${scope}-adoption`,g.releaseAdoptionOperation({environment:s.monitor.environmentAlias,previousRelease:s.previousCandidateSha,release:candidate.sha,previousConfigSha256:configured,protectedMergeEvidenceSha256:m.releaseUpdate.evidenceSha256}));
+      const receipt={schemaVersion:1,kind:'issue29-monitor-release-update',evidenceMode,runId:m.runId,previousCandidateSha:s.previousCandidateSha,candidateSha:candidate.sha,previousConfigSha256:configured,configSha256:config.configSha256,environmentAlias:config.environmentAlias,origin:config.targetOrigin,verifiedAt:clock(),protectedMergeEvidenceSha256:m.releaseUpdate.evidenceSha256,resource:{provider:'cloudflare-monitor',resourceId:`worker:${m.monitoring.workerAlias}`,previousCandidateSha:s.previousCandidateSha,candidateSha:candidate.sha,priorStateSha256:update.evidenceSha256},configuration:config};
+      const proof=await capture(scope,async()=>receipt);m.monitoring.configSha256=config.configSha256;await save();return proof;
     }
-    if(s.action.startsWith('maintenance-')){
-      const maintenance=m.maintenance;ensure(role==='source'&&maintenance&&maintenance.sourceRef===selected.ref,'MAINTENANCE_SOURCE_MISMATCH');
-      const ending=s.action==='maintenance-unsilence';ensure(ending?['active','closed'].includes(maintenance.phase):['authorized','monitoring_ready'].includes(maintenance.phase),'MAINTENANCE_PHASE_INVALID');
-      if(ending)ensure(maintenance.resumeProof&&maintenance.monitoring,'SOURCE_RESUME_PROOF_REQUIRED');
-      if(ending)await requireCurrentSourceJobProof(m,manifestPath,repositoryRoot);
-      const deferBackupFreshness=ending&&await hasCurrentPremergeOwnerCopy(m,manifestPath,repositoryRoot,clock());
-      const keys=config.resources.filter(r=>r.kind==='rule'&&!r.key.includes('backup-freshness')&&!r.key.endsWith('monitor-heartbeat')).map(r=>r.key);ensure(keys.length===8,'MAINTENANCE_RULE_INVENTORY_INVALID');
-      const receipts=[];
-      for(const key of keys){const existing=maintenance.monitoring?.silences.find(r=>r.ruleKey===key);
-        const op=g.maintenanceSilenceOperation({maintenance:{id:maintenance.id,authorizedAt:maintenance.authorizedAt,expiresAt:maintenance.expiresAt,sourceConfigSha256:config.configSha256},ruleKey:key,action:ending?'expire':'create',...(ending?{resourceId:existing?.id}:{})});
-        receipts.push(await mutate(`${scope}-${key}`,op,{provider:'grafana',disposition:'disposable',remove:ending,id:p=>`silence:${p.resourceId}`}));}
-      const heartbeatKey=config.resources.find(r=>r.key.endsWith('monitor-heartbeat'))?.key;ensure(heartbeatKey,'MONITOR_HEARTBEAT_RULE_REQUIRED');
-      const heartbeat=await g.readRuleScore(heartbeatKey),evaluation=await g.readEvaluation(heartbeatKey);ensure(heartbeat.score===0&&evaluation.state==='inactive','MONITOR_HEARTBEAT_NOT_HEALTHY');
-      if(ending){ensure(maintenance.monitoring,'MAINTENANCE_MONITORING_REQUIRED');for(const key of config.resources.filter(r=>r.kind==='rule').map(r=>r.key)){if(deferBackupFreshness&&key.includes('backup-freshness'))continue;const score=await g.readRuleScore(key),state=await g.readEvaluation(key);ensure(score.score===0&&state.state==='inactive','SOURCE_MONITOR_RECOVERY_UNPROVEN');}
-        const aggregate={receipts,heartbeat,evaluation,resumeProof:maintenance.resumeProof,deferredBackupFreshness:deferBackupFreshness};const endingProof=digest(aggregate);await writeEvidence(endingProof,aggregate);maintenance.monitoring.endedAt=clock();maintenance.monitoring.endEvidenceSha256=endingProof;maintenance.endedAt=clock();maintenance.phase='closed';}
-      else{const aggregate={receipts,heartbeat,evaluation},evidenceSha256=digest(aggregate);await writeEvidence(evidenceSha256,aggregate);maintenance.monitoring={beganAt:maintenance.monitoring?.beganAt??receipts.map(p=>p.startsAt).sort()[0],sourceConfigSha256:config.configSha256,silences:receipts.map(p=>({ruleKey:p.ruleKey,id:p.resourceId,evidenceSha256:digest(p)})),evidenceSha256};maintenance.phase='monitoring_ready';}
-      await save();return {status:evidenceMode==='provider-readback'?'verified':'deterministic-only',maintenanceId:maintenance.id,phase:maintenance.phase,heartbeat,notificationClaim:'none-maintenance-suppresses-notifications'};
+    if(s.action==='maintenance-silence'){
+      const maintenance=m.maintenance;ensure(role==='source'&&maintenance&&maintenance.sourceRef===selected.ref&&['authorized','monitoring_ready'].includes(maintenance.phase),'MAINTENANCE_SOURCE_MISMATCH');
+      const proof=await mutate(scope,g.maintenanceOperation({action:'start',startsAt:maintenance.authorizedAt,endsAt:maintenance.expiresAt,incidentId:maintenance.id}));
+      const heartbeat=await g.readMonitorHeartbeat();ensure(Date.parse(clock())-Date.parse(heartbeat.heartbeatAt)<=20*60*1000,'MONITOR_HEARTBEAT_NOT_HEALTHY');
+      const evidenceSha256=digest({proof,heartbeat});await writeEvidence(evidenceSha256,{proof,heartbeat});
+      maintenance.monitoring={beganAt:maintenance.monitoring?.beganAt??clock(),sourceConfigSha256:config.configSha256,silences:['health','auth','database','storage','email','deals','safety'].map(ruleKey=>({ruleKey,id:maintenance.id,evidenceSha256})),evidenceSha256};maintenance.phase='monitoring_ready';await save();return{status:'verified',maintenanceId:maintenance.id,phase:maintenance.phase,heartbeat};
+    }
+    if(s.action==='attach-target'||s.action==='remove-target'){
+      const maintenance=m.maintenance;ensure(role==='target'&&maintenance&&['paused','active'].includes(maintenance.phase)&&m.target&&s.monitor.targetCycleId===maintenance.id,'MAINTENANCE_TARGET_REQUIRED');
+      if(s.action==='attach-target'){
+        ensure(['storage_restored','integrity_verified'].includes(m.state)&&s.maintenanceTarget&&s.maintenanceTarget.origin===s.binding.deployment.origin&&s.maintenanceTarget.readinessUrl===`${s.binding.deployment.origin}/api/operations/readiness`&&s.maintenanceTarget.release===candidate.sha&&s.maintenanceTarget.runtimeEnvironment==='development','MAINTENANCE_TARGET_MISMATCH');
+        return mutate(scope,g.maintenanceOperation({action:'attach-target',incidentId:maintenance.id,target:s.maintenanceTarget}));
+      }
+      ensure(m.state==='incident_drill_verified','INCIDENT_PROOF_REQUIRED');return mutate(scope,g.maintenanceOperation({action:'remove-target',incidentId:maintenance.id}));
+    }
+    if(s.action==='maintenance-unsilence'){
+      const maintenance=m.maintenance;ensure(role==='source'&&maintenance?.monitoring&&maintenance.resumeProof&&['active','closed'].includes(maintenance.phase),'SOURCE_RESUME_PROOF_REQUIRED');
+      await requireCurrentSourceJobProof(m,manifestPath,repositoryRoot);
+      const proof=await mutate(scope,g.maintenanceOperation({action:'end',incidentId:maintenance.id}));
+      const state=await g.readSourceGreenState(),heartbeat=await g.readMonitorHeartbeat();ensure(state.signals.every(c=>c.ok===true)&&Date.parse(clock())-Date.parse(heartbeat.heartbeatAt)<=20*60*1000,'SOURCE_MONITOR_RECOVERY_UNPROVEN');
+      const evidenceSha256=digest({proof,heartbeat,resumeProof:maintenance.resumeProof});await writeEvidence(evidenceSha256,{proof,heartbeat,resumeProof:maintenance.resumeProof});maintenance.monitoring.endedAt=clock();maintenance.monitoring.endEvidenceSha256=evidenceSha256;maintenance.endedAt=clock();maintenance.phase='closed';await save();return{status:'verified',maintenanceId:maintenance.id,phase:maintenance.phase,heartbeat};
     }
     if(s.action==='sentinel-readiness')return capture(scope,()=>sentinel().readiness());
     if(s.action==='sentinel-read')return capture(scope,()=>sentinel().read());
@@ -200,30 +185,23 @@ export async function executeMonitoringAction(options){
         return a.readback(messageId??'');}});
     }
     if(s.action==='backup-checkpoint'){
-      ensure(s.metricsWrite,'METRICS_WRITE_REQUIRED');const h=await input();ensure(h.descriptorSha256===m.backupVerification?.descriptorSha256&&m.cleanup.resources.some(r=>r.provider==='github'&&r.id===String(h.artifactId)&&r.disposition==='persistent'&&r.absentAt===null),'BACKUP_ARTIFACT_OWNERSHIP_UNPROVEN');
-      ensure(s.backupDirectory,'ENCRYPTED_BACKUP_DIRECTORY_REQUIRED');
-      const descriptor=await readRecoveryDescriptor({directory:s.backupDirectory,repositoryRoot,expectedDescriptorSha256:h.descriptorSha256});
+      const h=await input();const artifact=m.cleanup.resources.find(r=>r.provider==='github'&&r.id===String(h.artifactId)&&r.disposition==='persistent'&&r.absentAt===null);
+      const ownerCopy=m.cleanup.resources.find(r=>r.provider==='owner-copy'&&r.id===`owner-copy:${h.descriptorSha256}`&&r.disposition==='persistent'&&r.absentAt===null);
+      const retained=artifact??ownerCopy;
+      ensure(h.descriptorSha256===m.backupVerification?.descriptorSha256&&retained&&h.artifactSha256===retained.evidenceSha256,'BACKUP_ARTIFACT_OWNERSHIP_UNPROVEN');
+      if(!artifact)ensure(await hasCurrentPremergeOwnerCopy(m,manifestPath,repositoryRoot,clock()),'PREMERGE_OWNER_COPY_PROOF_INVALID');
+      const artifactProof=await readEvidence(h.artifactSha256);ensure(digest(artifactProof)===h.artifactSha256,'BACKUP_ARTIFACT_OWNERSHIP_UNPROVEN');
+      ensure(s.backupDirectory,'ENCRYPTED_BACKUP_DIRECTORY_REQUIRED');const descriptor=await readRecoveryDescriptor({directory:s.backupDirectory,repositoryRoot,expectedDescriptorSha256:h.descriptorSha256});
       await verifyEncryptedRecoverySet({directory:s.backupDirectory,repositoryRoot,expectedDescriptorSha256:h.descriptorSha256});
       ensure(h.checkpointAt===descriptor.metadata.startedAt&&descriptor.metadata.release.commitSha===candidate.sha&&descriptor.metadata.source.projectRef===m.source?.ref,'BACKUP_CHECKPOINT_IDENTITY_MISMATCH');
-      const a=createGrafanaHeartbeatAdapter({...s.metricsWrite,queryOrigin:s.grafana.metricsQueryOrigin,queryBasePath:s.grafana.metricsQueryBasePath,metricsInstanceId:s.grafana.metricsInstanceId,readToken:s.grafana.metricsReadToken,
-        environmentAlias:s.grafana.environmentAlias,candidateSha:candidate.sha,configSha256:config.configSha256},{fetchImpl:options.fetchImpl,now:clock});
-      return mutate(scope,{inspect:async()=>({status:'verified',evidenceSha256:digest(h)}),mutate:()=>a.publishBackupHeartbeat(h),readback:()=>a.verifyBackupHeartbeat(h)});
+      return mutate(scope,g.backupCheckpointOperation({checkpointAt:h.checkpointAt,descriptorSha256:h.descriptorSha256,artifactSha256:h.artifactSha256}));
     }
-    if(s.action==='incident-baseline'){const deferBackupFreshness=await hasCurrentPremergeOwnerCopy(m,manifestPath,repositoryRoot,clock());return capture(scope,()=>captureIncidentBaseline(g,sentinel(),{now:clock(),deferBackupFreshness}));}
+    if(s.action==='incident-baseline')return capture(scope,()=>captureIncidentBaseline(g,sentinel(),{now:clock()}));
     if(s.action==='incident-verify'){const supplied=await input();ensure([supplied.baseline,supplied.removed,supplied.recovered,supplied.failureSignal,supplied.recoverySignal,...(supplied.phases??[])].every(proof=>m.history.some(h=>['incident-drill','monitoring-proof'].includes(h.step)&&h.evidenceSha256===digest(proof))),'INCIDENT_PROOF_PROVENANCE_MISSING');if(supplied.baseline?.deferredBackupFreshness===true)ensure(await hasCurrentPremergeOwnerCopy(m,manifestPath,repositoryRoot,clock()),'PREMERGE_OWNER_COPY_PROOF_INVALID');const receipt=await capture(scope,()=>verifyStorageIncident(g,sentinel(),{...supplied,now:clock()}));if(receipt.status==='verified'){m.state='incident_drill_verified';await save();}return receipt;}
-    if(s.action==='source-green')return capture(scope,async()=>{const configuration=await g.verifyConfiguration(),checks=[];for(const r of config.resources.filter(r=>r.kind==='rule')){const score=await g.readRuleScore(r.key),state=await g.readEvaluation(r.key);ensure(score.score===0&&state.state==='inactive','SOURCE_MONITOR_RECOVERY_UNPROVEN');checks.push({score,state});}const heartbeat=await g.readMonitorHeartbeat();return {status:evidenceMode==='provider-readback'?'verified':'deterministic-only',configuration,checks,heartbeat,heartbeatAt:heartbeat.heartbeatAt,checkedAt:clock()};});
-    const proofAdapter=s.fixture?createGrafanaRuleFixtureAdapter(s.grafana,s.fixture,{fetchImpl:options.fetchImpl,now:clock}):g;
-    if(s.action==='configure-fixture'||s.action==='cleanup-fixture'){
-      ensure(s.fixture,'GRAFANA_FIXTURE_REQUIRED');const receipts=[];
-      for(const r of proofAdapter.configuration().resources){const id=`rule:${r.key}`;
-        if(s.action==='cleanup-fixture')ensure(m.cleanup.resources.some(x=>x.provider==='grafana'&&x.id===id&&x.disposition==='disposable'&&x.runId===m.runId),'MONITORING_CLEANUP_NOT_OWNED');
-        receipts.push(await mutate(`${scope}-${r.key}`,s.action==='configure-fixture'?proofAdapter.resourceOperation(r.key):proofAdapter.cleanupOperation(r.key,r.key),{provider:'grafana',disposition:'disposable',remove:s.action==='cleanup-fixture',id:()=>id}));}
-      return {status:'verified',configSha256:proofAdapter.configuration().configSha256,resources:receipts};
-    }
-    if(s.action==='fixture-sample'){ensure(s.fixture&&s.sample,'GRAFANA_FIXTURE_REQUIRED');return mutate(scope,proofAdapter.fixtureSampleOperation(s.sample));}
-    if(s.action==='capture-failure'||s.action==='capture-recovery'){ensure(s.ruleKey&&s.windowStart,'MONITORING_PHASE_INPUT_REQUIRED');const ruleKey=s.ruleKey,windowStart=s.windowStart;return capture(scope,()=>captureMonitoringPhase(proofAdapter,{ruleKey,phase:s.action==='capture-failure'?'failure':'recovery',windowStart,now:clock()}));}
+    if(s.action==='source-green')return capture(scope,async()=>{const configuration=await g.verifyConfiguration(),state=await g.readSourceGreenState();ensure(state.signals.every(c=>c.ok),'SOURCE_MONITOR_RECOVERY_UNPROVEN');const heartbeat=await g.readMonitorHeartbeat();return{status:evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode,configuration,checks:state.signals,heartbeat,heartbeatAt:heartbeat.heartbeatAt,checkedAt:clock()};});
+    if(s.action==='capture-failure'||s.action==='capture-recovery'){ensure(s.ruleKey&&s.windowStart,'MONITORING_PHASE_INPUT_REQUIRED');const ruleKey=s.ruleKey,windowStart=s.windowStart;return capture(scope,()=>captureMonitoringPhase(g,{ruleKey,phase:s.action==='capture-failure'?'failure':'recovery',windowStart,now:clock()}));}
     if(s.action==='verify-rule-proof'){const supplied=await input();ensure(Array.isArray(supplied.phases)&&supplied.phases.every(/** @param {unknown} phase */phase=>m.history.some(h=>h.step==='monitoring-proof'&&h.evidenceSha256===digest(phase))),'MONITORING_PHASE_PROVENANCE_MISSING');
-      const proof=await capture(scope,()=>verifyMonitoringProof(proofAdapter,{...supplied,now:clock()}));if(proof.status==='verified'){m.state='monitoring_proved';await save();}return proof;}
+      const proof=await capture(scope,()=>verifyMonitoringProof(g,{...supplied,now:clock()}));if(proof.status==='verified'){m.state='monitoring_proved';await save();}return proof;}
     throw new OperationsError('MONITORING_ACTION_MISMATCH');
   }catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('MONITORING_EXECUTION_FAILED');}
   finally{await lock.close();await unlink(manifestPath+'.lock').catch(()=>{});}
@@ -236,7 +214,7 @@ export async function executeDailyCanary(options){
   ensure(z.uuid().safeParse(options.executionId).success&&z.iso.datetime().safeParse(options.preparedAt).success,'DAILY_CANARY_LEASE_INVALID');
   const parsed=monitoringExecutionSettingsSchema.safeParse(options.settings);ensure(parsed.success&&parsed.data.canary,'DAILY_CANARY_SETTINGS_INVALID');
   const clock=options.clock??(()=>options.now??new Date().toISOString()),s=parsed.data,id=options.executionId.replaceAll('-','');
-  ensure((s.grafana.targetRole??'source')==='source','DAILY_CANARY_SOURCE_REQUIRED');
+  ensure((s.monitor.targetRole??'source')==='source','DAILY_CANARY_SOURCE_REQUIRED');
   const m=await readPrivateManifest(options.manifestPath,{repositoryRoot:options.repositoryRoot,candidate:options.candidate,now:clock()});
   ensure(!m.maintenance||m.maintenance.phase==='closed','SOURCE_MAINTENANCE_ACTIVE');
   const sendKey=`source-canary-send-${id}`,checkpointKey=`source-canary-checkpoint-${id}`;

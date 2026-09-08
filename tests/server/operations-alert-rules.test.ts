@@ -8,7 +8,7 @@ function result(minutes: number, ok = false, name: OperationsSignal['signal'] = 
 		deploymentIdentity: 'a'.repeat(40), correlationId: `11111111-1111-4111-8111-${String(minutes).padStart(12, '0')}`,
 		reasonCode: ok ? 'healthy' : reasonCode, runbookAnchor: `docs/INCIDENT-RESPONSE.md#${name.replaceAll('_', '-')}` };
 }
-describe('selected Grafana alert signal contract', () => {
+describe('selected scheduled monitor alert signal contract', () => {
 	it('fires once after two five-minute health failures and recovers after two successes', () => {
 		const first = evaluateOperationsAlert(undefined, result(0));
 		expect(first.notification).toBeNull();

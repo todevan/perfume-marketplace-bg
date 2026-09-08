@@ -228,36 +228,35 @@ export function createEmailCanaryAdapter(settings,options={}){
 }
 
 /** @typedef {ReturnType<typeof createSentinelAdapter>} SentinelAdapter */
-/** @typedef {import('./monitoring-proof.mjs').GrafanaAdapter} GrafanaAdapter */
-/** @param {GrafanaAdapter} grafana @param {SentinelAdapter} sentinel */
-function incidentIdentity(grafana,sentinel){
-  const id=sentinel.identity(),config=grafana.configuration();
+/** @typedef {ReturnType<import('./monitor-adapter.mjs').createMonitorAdapter>} MonitorAdapter */
+/** @param {MonitorAdapter} monitor @param {SentinelAdapter} sentinel */
+function incidentIdentity(monitor,sentinel){
+  const id=sentinel.identity(),config=monitor.configuration();
   ensure(id.restoreTarget && ['integrity_verified','incident_drill_verified'].includes(id.state),'INCIDENT_RESTORED_INTEGRITY_REQUIRED');
-  ensure(id.runId===config.runId&&id.candidateSha===config.candidateSha&&id.targetOrigin===config.targetOrigin&&
-    id.evidenceMode===config.evidenceMode&&config.runtimeEnvironment==='development','INCIDENT_MONITOR_TARGET_MISMATCH');
+  ensure(id.runId===config.runId&&id.candidateSha===config.candidateSha&&config.targetRole==='target'&&id.targetOrigin===config.targetProbeOrigin&&
+    config.evidenceMode==='provider-readback'&&config.runtimeEnvironment==='development','INCIDENT_MONITOR_TARGET_MISMATCH');
   return {id,config};
 }
 /** Captures an actual all-green baseline before the separately persisted sentinel deletion.
- * A current, independently validated pre-merge owner copy may defer only backup freshness.
- * @param {GrafanaAdapter} grafana @param {SentinelAdapter} sentinel @param {{now?:string,deferBackupFreshness?:boolean}} [options] */
-export async function captureIncidentBaseline(grafana,sentinel,options={}){
-  const {id,config}=incidentIdentity(grafana,sentinel),checkedAt=options.now??new Date().toISOString();
-  await sentinel.preflight();const configuration=await grafana.verifyConfiguration(),object=await sentinel.read(),signal=await sentinel.readiness();
+ * @param {MonitorAdapter} monitor @param {SentinelAdapter} sentinel @param {{now?:string}} [options] */
+export async function captureIncidentBaseline(monitor,sentinel,options={}){
+  const {id,config}=incidentIdentity(monitor,sentinel),checkedAt=options.now??new Date().toISOString();
+  await sentinel.preflight();const configuration=await monitor.verifyConfiguration(),object=await sentinel.read(),signal=await sentinel.readiness();
   ensure(object.status==='verified'&&signal.ok===true,'INCIDENT_BASELINE_UNHEALTHY');
-  const allRules=config.resources.filter(r=>r.kind==='rule'),deferredRuleKeys=options.deferBackupFreshness===true?allRules.filter(rule=>rule.key.includes('backup-freshness')).map(rule=>rule.key):[];
-  ensure(options.deferBackupFreshness!==true||deferredRuleKeys.length===2,'INCIDENT_BACKUP_DEFERRAL_INVALID');
+  const allRules=config.signals.map(key=>({key})),/** @type {string[]} */deferredRuleKeys=[];
   const rules=[];
   for(const rule of allRules.filter(rule=>!deferredRuleKeys.includes(rule.key))){
-    const evaluation=await grafana.readEvaluation(rule.key),score=await grafana.readRuleScore(rule.key);
+    const observed=await monitor.readSignal(rule.key),evaluation={ruleKey:rule.key,state:observed.ok?'inactive':'firing',evaluatedAt:observed.checkedAt,firedAt:observed.ok?null:observed.checkedAt,candidateSha:observed.candidateSha,configSha256:observed.configSha256},score={ruleKey:rule.key,score:observed.ok?0:2,checkedAt:observed.checkedAt,candidateSha:observed.candidateSha,configSha256:observed.configSha256};
     ensure(evaluation.state==='inactive'&&score.score===0,'INCIDENT_BASELINE_UNHEALTHY');
     rules.push({ruleKey:rule.key,evaluation,score});
   }
-  const body={schemaVersion:1,status:config.evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode:config.evidenceMode,
+  const body={schemaVersion:1,status:id.evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode:id.evidenceMode,
     runId:id.runId,candidateSha:id.candidateSha,projectRef:id.projectRef,configSha256:config.configSha256,checkedAt,
-    configurationEvidenceSha256:configuration.evidenceSha256,configuration,object,signal,deferredBackupFreshness:options.deferBackupFreshness===true,deferredRuleKeys,rules};
+    configurationEvidenceSha256:configuration.evidenceSha256,configuration,object,signal,deferredBackupFreshness:false,deferredRuleKeys,rules};
   return {...body,evidenceSha256:evidence(body)};
 }
 /** @typedef {{[key:string]:any,evidenceSha256:string,checkedAt:string}} IncidentReceipt */
+const incidentPhaseSchema=z.object({ruleKey:z.string(),phase:z.enum(['failure','recovery']),windowStart:z.iso.datetime()}).passthrough();
 /** @param {IncidentReceipt} receipt @param {ReturnType<SentinelAdapter['identity']>} identity @param {string} now */
 function validateIncidentReceipt(receipt,identity,now){
   const {evidenceSha256,...body}=receipt;
@@ -268,17 +267,17 @@ function validateIncidentReceipt(receipt,identity,now){
 /** Mutation-free final drill verification: real notification identities are independently re-read,
  * and only the exact owned sentinel bucket/object may be reported absent. Human diagnostic and
  * private inbox evidence are explicit attestations, never inferred from provider acceptance.
- * @param {GrafanaAdapter} grafana @param {SentinelAdapter} sentinel
+ * @param {MonitorAdapter} monitor @param {SentinelAdapter} sentinel
  * @param {{baseline:Awaited<ReturnType<typeof captureIncidentBaseline>>,removed:IncidentReceipt,recovered:IncidentReceipt,
- * failureSignal:IncidentReceipt,recoverySignal:IncidentReceipt,phases:import('./monitoring-proof.mjs').MonitoringPhase[],
- * acknowledgement:import('./monitoring-proof.mjs').Acknowledgement,containedAt:string,diagnosedAt:string,
+ * failureSignal:IncidentReceipt,recoverySignal:IncidentReceipt,phases:unknown[],
+ * acknowledgement:{ruleKey:string,failureEventId:string,acknowledgedAt:string,roleAlias:'owner'|'authorized-operator',inboxEvidenceSha256:string},containedAt:string,diagnosedAt:string,
  * rollbackDecision:{decision:'fixture-restore-only',decidedAt:string,evidenceSha256:string},runbookSha256:string,closedAt:string,now?:string}} input */
-export async function verifyStorageIncident(grafana,sentinel,input){
-  const {id,config}=incidentIdentity(grafana,sentinel),now=input.now??new Date().toISOString();
+export async function verifyStorageIncident(monitor,sentinel,input){
+  const {id,config}=incidentIdentity(monitor,sentinel),now=input.now??new Date().toISOString();
   for(const receipt of [input.baseline,input.removed,input.recovered,input.failureSignal,input.recoverySignal])validateIncidentReceipt(receipt,id,now);
-  const b=input.baseline,keys=config.resources.filter(r=>r.kind==='rule').map(r=>r.key),deferredRuleKeys=b.deferredBackupFreshness===true?keys.filter(key=>key.includes('backup-freshness')):[],baselineKeys=keys.filter(key=>!deferredRuleKeys.includes(key));
+  const b=input.baseline,keys=config.signals,/** @type {string[]} */deferredRuleKeys=[],baselineKeys=keys;
   ensure(typeof b.deferredBackupFreshness==='boolean'&&Array.isArray(b.deferredRuleKeys)&&canonicalJson(b.deferredRuleKeys)===canonicalJson(deferredRuleKeys)&&
-    (b.deferredBackupFreshness===false||deferredRuleKeys.length===2)&&b.configSha256===config.configSha256&&b.rules.length===baselineKeys.length&&new Set(b.rules.map(r=>r.ruleKey)).size===baselineKeys.length&&
+    b.deferredBackupFreshness===false&&b.configSha256===config.configSha256&&b.rules.length===baselineKeys.length&&new Set(b.rules.map(r=>r.ruleKey)).size===baselineKeys.length&&
     b.rules.every(r=>baselineKeys.includes(r.ruleKey)&&r.evaluation.ruleKey===r.ruleKey&&r.score.ruleKey===r.ruleKey&&
       r.evaluation.candidateSha===id.candidateSha&&r.score.candidateSha===id.candidateSha&&
       r.evaluation.configSha256===config.configSha256&&r.score.configSha256===config.configSha256&&
@@ -289,11 +288,12 @@ export async function verifyStorageIncident(grafana,sentinel,input){
     input.recovered.resourceId===sentinel.resourceIds.object&&input.recovered.status==='verified'&&input.recovered.sha256===id.sha256&&input.recovered.bytes===id.bytes&&
     input.failureSignal.signal==='storage'&&input.failureSignal.ok===false&&['sentinel_unavailable','storage_integrity_mismatch'].includes(input.failureSignal.reasonCode)&&
     input.recoverySignal.signal==='storage'&&input.recoverySignal.ok===true&&input.recoverySignal.reasonCode==='healthy','INCIDENT_SENTINEL_SEQUENCE_INVALID');
-  const ruleKey=keys.find(k=>k.endsWith('-storage'));ensure(ruleKey,'INCIDENT_STORAGE_RULE_MISSING');
-  ensure(input.phases.length===2&&input.phases.every(p=>p.ruleKey===ruleKey),'INCIDENT_STORAGE_RULE_MISSING');
-  await grafana.verifyConfiguration();
-  const timeline=await verifyMonitoringRuleJourney(grafana,{ruleKey,phases:input.phases,acknowledgements:[input.acknowledgement],now});
-  const failure=input.phases.find(p=>p.phase==='failure'),recovery=input.phases.find(p=>p.phase==='recovery');
+  const ruleKey=keys.find(k=>k==='storage');ensure(ruleKey,'INCIDENT_STORAGE_RULE_MISSING');
+  const phases=input.phases.map(value=>incidentPhaseSchema.safeParse(value));ensure(phases.every(phase=>phase.success),'INCIDENT_STORAGE_RULE_MISSING');const parsedPhases=phases.map(phase=>phase.data);
+  ensure(parsedPhases.length===2&&parsedPhases.every(phase=>phase.ruleKey===ruleKey),'INCIDENT_STORAGE_RULE_MISSING');
+  await monitor.verifyConfiguration();
+  const timeline=await verifyMonitoringRuleJourney(monitor,{ruleKey,phases:input.phases,acknowledgements:[input.acknowledgement],now});
+  const failure=parsedPhases.find(phase=>phase.phase==='failure'),recovery=parsedPhases.find(phase=>phase.phase==='recovery');
   ensure(failure&&recovery&&Date.parse(failure.windowStart)>=Date.parse(input.removed.checkedAt)&&
     Date.parse(recovery.windowStart)>=Date.parse(input.recovered.checkedAt),'INCIDENT_PHASE_PRECEDES_MUTATION');
   const times=[b.checkedAt,input.removed.checkedAt,input.failureSignal.checkedAt,timeline.firedAt,timeline.deliveredAt,timeline.acknowledgedAt,
@@ -301,7 +301,7 @@ export async function verifyStorageIncident(grafana,sentinel,input){
   ensure(times.every((time,index)=>typeof time==='string'&&Number.isFinite(Date.parse(time))&&(index===0||Date.parse(time)>=Date.parse(/** @type {string} */(times[index-1]))))&&
     input.rollbackDecision.decision==='fixture-restore-only'&&HASH.test(input.rollbackDecision.evidenceSha256)&&HASH.test(input.runbookSha256),'INCIDENT_TIMELINE_INVALID');
   const cleanup=await sentinel.cleanupReadback();
-  const body={schemaVersion:1,status:config.evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode:config.evidenceMode,runId:id.runId,
+  const body={schemaVersion:1,status:id.evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode:id.evidenceMode,runId:id.runId,
     candidateSha:id.candidateSha,projectRef:id.projectRef,configSha256:config.configSha256,
     startedAt:b.checkedAt,mutationReadBackAt:input.removed.checkedAt,detectedAt:input.failureSignal.checkedAt,...timeline,
     containedAt:input.containedAt,diagnosedAt:input.diagnosedAt,rollbackDecision:input.rollbackDecision,recoveredAt:input.recovered.checkedAt,

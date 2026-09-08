@@ -144,14 +144,14 @@ describe('manifest-owned cleanup', () => {
         const path = await privatePath();
         const input = manifestFixture();
         input.state = 'incident_drill_verified';
-        input.cleanup.resources = [{ provider: 'grafana', id: 'persistent-rule', runId: input.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'persistent', absentAt: null }];
+        input.cleanup.resources = [{ provider: 'cloudflare-monitor', id: 'persistent-rule', runId: input.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'persistent', absentAt: null }];
         await writePrivateManifest(path, input, { repositoryRoot: process.cwd(), now });
         for (const resourceId of ['foreign-project', 'persistent-rule'])
             await expect(executeOperatorStep({ manifestPath: path, repositoryRoot: process.cwd(), step: 'cleanup-resource', capability: 'cleanup', resourceId, candidate, now, inspect: async () => { throw new Error('not reached'); }, mutate: async () => { throw new Error('not reached'); }, readback: async () => { throw new Error('not reached'); } })).rejects.toThrow('CLEANUP_OWNERSHIP_MISMATCH');
     });
     test('rejects duplicate resource identity across providers before cleanup can become ambiguous', () => {
         const input = manifestFixture();
-        input.cleanup.resources = ['grafana', 'cloudflare'].map(provider => ({ provider, id: 'same-id', runId: input.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'disposable', absentAt: null }));
+        input.cleanup.resources = ['cloudflare-monitor', 'cloudflare'].map(provider => ({ provider, id: 'same-id', runId: input.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'disposable', absentAt: null }));
         expect(() => validateManifest(input, { now })).toThrow('MANIFEST_INVALID');
     });
 });

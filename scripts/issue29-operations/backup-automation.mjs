@@ -8,7 +8,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { captureManagedBaseline, POSTGRES_IMAGE, SUPABASE_CLI_VERSION } from './logical-recovery.mjs';
 import { verifyEncryptedArtifactDirectory, verifyGitHubArtifact } from './artifact-store.mjs';
-import { createGrafanaHeartbeatAdapter } from './grafana-adapter.mjs';
+import { createMonitorHeartbeatAdapter } from './monitor-heartbeat.mjs';
 import { canonicalJson } from './recovery-set.mjs';
 const execFile = promisify(execFileCallback);
 const hash = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -300,7 +300,7 @@ export async function finalizeArtifact(options) {
     });
 }
 /** Exactly-once heartbeat submission; repeated calls with an existing pending intent do NOT POST.
- * @param {PublicationOptions & {heartbeatConfig:import('./grafana-adapter.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} options
+ * @param {PublicationOptions & {heartbeatConfig:import('./monitor-heartbeat.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} options
  */
 export async function beginHeartbeat(options) {
     return withManifest(options, async (manifest, _context, save) => {
@@ -319,7 +319,7 @@ export async function beginHeartbeat(options) {
         return data.adapter.publishBackupHeartbeat(data.heartbeat);
     });
 }
-/** @param {PublicationOptions & {heartbeatConfig:import('./grafana-adapter.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} options */
+/** @param {PublicationOptions & {heartbeatConfig:import('./monitor-heartbeat.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} options */
 export async function finalizeHeartbeat(options) {
     return withManifest(options, async (manifest, _context, save) => {
         ensure(manifest.state === 'backup_heartbeat_pending' && manifest.pending?.step === 'backup-heartbeat', 'PENDING_HEARTBEAT_REQUIRED');
@@ -334,15 +334,15 @@ export async function finalizeHeartbeat(options) {
         return verified;
     });
 }
-/** @param {PublicationOptions & {heartbeatConfig:import('./grafana-adapter.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} options @param {import('./manifest.mjs').OperationsManifest} manifest */
+/** @param {PublicationOptions & {heartbeatConfig:import('./monitor-heartbeat.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} options @param {import('./manifest.mjs').OperationsManifest} manifest */
 async function heartbeatInputs(options, manifest) {
     const artifact = await readPrivateJson(join(options.directory, 'artifact-readback.json'), options.repositoryRoot);
     ensure(artifact.descriptorSha256 === options.expectedDescriptorSha256 && manifest.history.some(entry => entry.step === 'artifact-upload' && entry.evidenceSha256 === digest(canonicalJson(artifact)) && entry.resourceId === String(artifact.artifact.artifactId)), 'ARTIFACT_READBACK_PROVENANCE_REQUIRED');
     const verified = await boundRecovery(options, manifest);
-    ensure(options.heartbeatConfig.configSha256===manifest.grafana.configSha256,'HEARTBEAT_CONFIG_MISMATCH');
+    ensure(options.heartbeatConfig.configSha256===manifest.monitoring.configSha256,'HEARTBEAT_CONFIG_MISMATCH');
     ensure(options.heartbeatConfig.candidateSha === manifest.candidate.sha && options.heartbeatConfig.environmentAlias === verified.descriptor.metadata.source.environmentAlias, 'HEARTBEAT_TARGET_MISMATCH');
-    const heartbeat = { checkpointAt: verified.descriptor.metadata.startedAt, candidateSha: manifest.candidate.sha, descriptorSha256: verified.descriptorSha256, configSha256: options.heartbeatConfig.configSha256, artifactId: String(artifact.artifact.artifactId) };
-    const adapter = createGrafanaHeartbeatAdapter(options.heartbeatConfig, { fetchImpl: options.fetchImpl, now: () => options.now ?? new Date().toISOString() });
+    const heartbeat = { checkpointAt: verified.descriptor.metadata.startedAt, candidateSha: manifest.candidate.sha, descriptorSha256: verified.descriptorSha256, configSha256: options.heartbeatConfig.configSha256, artifactId: String(artifact.artifact.artifactId), artifactSha256: digest(canonicalJson(artifact)) };
+    const adapter = createMonitorHeartbeatAdapter(options.heartbeatConfig, { fetchImpl: options.fetchImpl, now: () => options.now ?? new Date().toISOString() });
     return { heartbeat, adapter };
 }
 /** A personal-account budget has no supported REST readback. This is explicitly current
@@ -389,16 +389,16 @@ export async function backupTransactionSummary(options) {
         independentOwnerDecryptionVerified: manifest.backupVerification !== null };
 }
 
-/** @typedef {PublicationOptions & {heartbeatConfig:import('./grafana-adapter.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} FailureHeartbeatOptions */
+/** @typedef {PublicationOptions & {heartbeatConfig:import('./monitor-heartbeat.mjs').HeartbeatConfig,fetchImpl?:typeof fetch}} FailureHeartbeatOptions */
 /** @param {FailureHeartbeatOptions} options @param {import('./manifest.mjs').OperationsManifest} manifest */
 async function failureInputs(options,manifest){
     const failure=await readPrivateJson(join(options.directory,'backup-failure.json'),options.repositoryRoot);
     const parsed=z.strictObject({schemaVersion:z.literal(1),executionId:z.string().uuid(),candidateSha:z.string(),descriptorSha256:hash,detectedAt:z.iso.datetime(),reasonCode:z.literal('backup_integrity_failed')}).safeParse(failure);
     ensure(parsed.success&&failure.executionId===options.executionId&&failure.candidateSha===manifest.candidate.sha&&failure.descriptorSha256===options.expectedDescriptorSha256,'FAILURE_PROVENANCE_REQUIRED');
     const age=Date.parse(options.now??new Date().toISOString())-Date.parse(failure.detectedAt);ensure(age>=0&&age<=300000,'FAILURE_PROVENANCE_STALE');
-    ensure(options.heartbeatConfig.candidateSha===manifest.candidate.sha&&options.heartbeatConfig.configSha256===manifest.grafana.configSha256&&options.heartbeatConfig.environmentAlias===manifest.fixture.alias,'HEARTBEAT_TARGET_MISMATCH');
+    ensure(options.heartbeatConfig.candidateSha===manifest.candidate.sha&&options.heartbeatConfig.configSha256===manifest.monitoring.configSha256&&options.heartbeatConfig.environmentAlias===manifest.fixture.alias,'HEARTBEAT_TARGET_MISMATCH');
     const value={candidateSha:manifest.candidate.sha,configSha256:options.heartbeatConfig.configSha256,evidenceSha256:digest(canonicalJson(failure))};
-    return{value,adapter:createGrafanaHeartbeatAdapter(options.heartbeatConfig,{fetchImpl:options.fetchImpl,now:()=>options.now??new Date().toISOString()})};
+    return{value,adapter:createMonitorHeartbeatAdapter(options.heartbeatConfig,{fetchImpl:options.fetchImpl,now:()=>options.now??new Date().toISOString()})};
 }
 /** Signal only a locally observed definite encrypted-component failure. Never displace an ambiguous
  * export/upload intent; those cases remain readback-only and the independent freshness alarm applies.
@@ -427,7 +427,7 @@ export async function finalizeFailureHeartbeat(options){
 }
 
 /** Daily canary shares the current private source manifest and exact trusted GitHub execution lease.
- * Resend credentials stay in private runner memory, never Grafana configuration or public output.
+ * Resend credentials stay in private runner memory, never monitor configuration or public output.
  * @param {{directory:string,repositoryRoot:string,context:unknown,settingsJson:string,now?:string}} options
  */
 export async function executeAutomationCanary(options){
@@ -440,7 +440,7 @@ export async function executeAutomationCanary(options){
  let raw;try{raw=JSON.parse(options.settingsJson);}catch{throw new OperationsError('DAILY_CANARY_SETTINGS_REQUIRED');}
  const {executeDailyCanary,monitoringExecutionSettingsSchema}=await import('./monitoring-execution.mjs');
  const parsed=monitoringExecutionSettingsSchema.safeParse(raw);ensure(parsed.success,'DAILY_CANARY_SETTINGS_REQUIRED');
- ensure(parsed.data.binding.source.apiUrl===source.url&&(parsed.data.grafana.targetRole??'source')==='source','DAILY_CANARY_SOURCE_MISMATCH');
+ ensure(parsed.data.binding.source.apiUrl===source.url&&(parsed.data.monitor.targetRole??'source')==='source','DAILY_CANARY_SOURCE_MISMATCH');
  await executeDailyCanary({manifestPath:join(directory,'manifest.json'),repositoryRoot:options.repositoryRoot,candidate:manifest.candidate,settings:parsed.data,executionId:lease.executionId,preparedAt:lease.preparedAt});
  return{status:'CANARY_DELIVERY_CHECKPOINT_VERIFIED',executionId:lease.executionId};
 }

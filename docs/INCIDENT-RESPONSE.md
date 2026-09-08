@@ -47,7 +47,7 @@ Do not downgrade an incident merely because the visible symptom has stopped.
 | --- | --- |
 | Incident Commander; privacy/communications decisions | `owner` |
 | Technical Lead; backup/restore operator | `authorized-operator` |
-| Independent Grafana alert destination | `owner-primary` |
+| Resend alert destination | `owner-primary` |
 
 Private contact values live in the owner-controlled secrets/password system under
 `owner-private-contact-map`, outside Git, receipts and issue comments. The contact
@@ -62,20 +62,23 @@ support route; do not claim coverage outside a declared window.
 
 ## Operational signals and independent alerts
 
-Grafana Cloud Free is the selected independent alert plane; destination
-`owner-primary` uses Grafana-managed private email, **not Aromatika's Resend
-transport**. Cloudflare Workers Logs/Metrics and Supabase native operational
-surfaces remain diagnostic sources. No broad Supabase administrator credential may
-be handed to Grafana. The selected configuration is not a claim that a stack,
-rules, delivery or recovery notifications have been proven live.
+One Cloudflare scheduled Worker checks the public health and protected readiness
+surfaces. Resend sends actionable failure and recovery alerts to the private
+`owner-primary` destination. Delivery acceptance requires the exact correlated,
+authenticated Resend `email.delivered` event; `email.sent` and a successful send
+response are insufficient. Delivery is not proof that a human read the message.
+The independent GitHub Actions watchdog checks the Cloudflare monitor heartbeat
+every 20 minutes with a 45-minute freshness tolerance because GitHub schedules
+can be delayed. It cannot certify its own health.
+Only sanitized event evidence is retained privately; GitHub receives bounded
+failure codes, never provider bodies, recipients or credentials.
 
 Use `GET /api/operations/readiness` only with a dedicated monitor Bearer credential;
 it returns a bounded sanitized signal contract, not raw rows, private paths,
 recipient values, provider bodies or topology. Missing evidence is unhealthy, not
 an assumed green result. Do not bypass Auth, CAPTCHA, MFA or RLS for monitoring.
 
-The public liveness cadence is 5 minutes; protected read-only checks are every
-10 minutes. Alert after two consecutive health failures and resolve after two
+Public liveness and protected read-only checks run every 10 minutes. Alert after two consecutive health failures and resolve after two
 successes. Protected rules require two failed evaluations within 10 minutes;
 deployment/integrity/privacy failures are immediate critical. Validate the actual
 provider schedule/window configuration; the cadence label alone is not proof that
@@ -116,7 +119,7 @@ Internal `sent` continues to mean provider API acceptance, not recipient deliver
 The daily/manual synthetic canary is critical if absent 15 minutes after the
 explicit `OPERATIONS_CANARY_EXPECTED_UTC` (`HH:MM`) deadline; there is no inferred
 daily schedule. Keep exact message/event identities, bounded timestamp window and count
-in private evidence; no recipient in public evidence. Escalate through Grafana,
+in private evidence; no recipient in public evidence. Escalate through the private contact map,
 not the failing Resend path. Do not resend user messages blindly.
 
 ### Deals
@@ -145,7 +148,8 @@ Follow `BACKUP-RESTORE.md`; a green historical workflow is not current proof.
 
 ### Monitor heartbeat
 
-Alert after two missed expected intervals. Check Grafana's own rule execution and
+The scheduled Worker runs every ten minutes. The independent watchdog fails when
+its successful-cycle timestamp is more than 45 minutes old. Check the monitor cycle and
 last application/backup heartbeat independently. Do not use the application being
 monitored as its sole dead-man or alert delivery path. Require actual failure and
 recovery notification delivery readback, not only a green rules API response.
@@ -193,7 +197,7 @@ are green and the current encrypted set has been verified:
 
 1. Record target, run ID, candidate and start time; persist fault intent.
 2. Delete/corrupt only the disposable sentinel and read back that exact mutation.
-3. Observe Storage/readiness failure, Grafana rule firing and independent delivery.
+3. Observe Storage/readiness failure, Cloudflare monitor failure and independent delivery.
 4. Acknowledge as `owner`/`authorized-operator`, preserving detection, delivery and
    acknowledgement times; inspect the exact evidence window and target.
 5. Record containment, diagnosis and the rollback-limit decision. Restore the

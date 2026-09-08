@@ -152,15 +152,14 @@ jobs:
       - name: Publish and independently read back the original backup-time heartbeat
         env:
           ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
-          ISSUE29_GRAFANA_HEARTBEAT_JSON: ${{ secrets.ISSUE29_GRAFANA_HEARTBEAT_JSON }}
+          ISSUE29_MONITOR_HEARTBEAT_JSON: ${{ secrets.ISSUE29_MONITOR_HEARTBEAT_JSON }}
         run: |
           node --input-type=module <<'JS'
           import { beginHeartbeat, finalizeHeartbeat, runnerPublicationOptions, automationContextFromEnvironment, automationErrorMessage } from './scripts/issue29-operations/backup-automation.mjs';
           try {
-            const p={...await runnerPublicationOptions({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}),heartbeatConfig:JSON.parse(process.env.ISSUE29_GRAFANA_HEARTBEAT_JSON??'null')};
+            const p={...await runnerPublicationOptions({directory:process.env.ISSUE29_PRIVATE_DIRECTORY,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}),heartbeatConfig:JSON.parse(process.env.ISSUE29_MONITOR_HEARTBEAT_JSON??'null')};
             await beginHeartbeat(p);
-            // Metrics ingestion can be eventually consistent. This wait never repeats the POST.
-            await new Promise(resolve=>setTimeout(resolve,30000));
+            // Checkpoint readback never repeats the POST.
             await finalizeHeartbeat(p);
           }catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
           JS
@@ -168,7 +167,7 @@ jobs:
         if: ${{ failure() && steps.publication.outcome == 'failure' }}
         env:
           ISSUE29_PRIVATE_DIRECTORY: ${{ steps.prepare.outputs.directory }}
-          ISSUE29_GRAFANA_HEARTBEAT_JSON: ${{ secrets.ISSUE29_GRAFANA_HEARTBEAT_JSON }}
+          ISSUE29_MONITOR_HEARTBEAT_JSON: ${{ secrets.ISSUE29_MONITOR_HEARTBEAT_JSON }}
         run: |
           node --input-type=module <<'JS'
           import { lstat } from 'node:fs/promises';
@@ -177,10 +176,9 @@ jobs:
             const directory=process.env.ISSUE29_PRIVATE_DIRECTORY;
             const failure=await lstat(`${directory}/backup-failure.json`).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
             if(failure){
-              const p={...await runnerPublicationOptions({directory,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}),heartbeatConfig:JSON.parse(process.env.ISSUE29_GRAFANA_HEARTBEAT_JSON??'null')};
+              const p={...await runnerPublicationOptions({directory,repositoryRoot:process.cwd(),context:automationContextFromEnvironment(process.env)}),heartbeatConfig:JSON.parse(process.env.ISSUE29_MONITOR_HEARTBEAT_JSON??'null')};
               await beginFailureHeartbeat(p);
-              await new Promise(resolve=>setTimeout(resolve,30000));
-              await finalizeFailureHeartbeat(p);
+                await finalizeFailureHeartbeat(p);
             }
           }catch(error){console.error(automationErrorMessage(error));process.exitCode=1;}
           JS

@@ -4,7 +4,7 @@ type SignalName = OperationsSignal['signal'];
 type Rule = { intervalSeconds: number; twoFailureWindowSeconds: number; destinationAlias: 'owner-primary'; ruleAlias: string };
 const rule = (signal: SignalName): Rule => ({ intervalSeconds: signal === 'health' ? 300 : 600,
 	twoFailureWindowSeconds: 600, destinationAlias: 'owner-primary', ruleAlias: `issue29-${signal.replaceAll('_', '-')}` });
-/** Selected Grafana rule contract, not provider configuration or delivery evidence. */
+/** Scheduled monitor rule contract, not provider configuration or delivery evidence. */
 export const OPERATIONS_RULES: Readonly<Record<SignalName, Rule>> = Object.freeze({
 	health: rule('health'), auth: rule('auth'), database: rule('database'), storage: rule('storage'),
 	email: rule('email'), deals: rule('deals'), safety: rule('safety'),

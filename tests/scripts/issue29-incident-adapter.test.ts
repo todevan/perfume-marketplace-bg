@@ -113,60 +113,41 @@ it('requires an actual signed downstream delivered event, not provider acceptanc
 });
 
 import { captureIncidentBaseline, verifyStorageIncident } from '../../scripts/issue29-operations/incident-adapter.mjs';
-import { createGrafanaAdapter } from '../../scripts/issue29-operations/grafana-adapter.mjs';
+import { createMonitorAdapter, MONITOR_SIGNALS } from '../../scripts/issue29-operations/monitor-adapter.mjs';
 import { captureMonitoringPhase } from '../../scripts/issue29-operations/monitoring-proof.mjs';
-import { monitoringConfig, providerFixture } from '../fixtures/issue29-grafana';
 it('requires a restored target and re-reads exact delivered/recovered notifications and sentinel absence for the drill',async()=>{
-  const s=settings();s.projectRef=s.manifest.target!.ref;s.readinessOrigin=`https://issue29-restore-${s.manifest.runId}.owner.workers.dev`;s.manifest.state='integrity_verified';
-  s.manifest.cleanup.resources.push({provider:'supabase',id:s.projectRef,runId:s.manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'disposable',absentAt:null});
-  const storage=storageFixture(s),config={...monitoringConfig,runId:s.manifest.runId,targetOrigin:s.readinessOrigin,runtimeEnvironment:'development' as const};
-  const grafana=providerFixture({},config);let current=now,phase='green',healthy=true;
+  const s=targetSettings();s.manifest.state='integrity_verified';
+  const storage=storageFixture(s),sourceOrigin='https://issue29-source.owner.workers.dev',config={workerAlias:'aromatika-issue29-monitor',origin:'https://aromatika-issue29-monitor.owner.workers.dev',targetOrigin:sourceOrigin,targetProbeOrigin:s.readinessOrigin,targetRole:'target' as const,targetCycleId:s.manifest.runId,environmentAlias:'synthetic-recovery',runtimeEnvironment:'development' as const,candidateSha:s.manifest.candidate.sha,runId:s.manifest.runId,configSha256:'f'.repeat(64),evidenceReadToken:'e'.repeat(43),watchdogToken:'w'.repeat(43),backupCheckpointToken:'b'.repeat(43),maintenanceToken:'m'.repeat(43)};
+  let current=now,healthy=true;const incidentId='45454545-4545-4454-8454-454545454545';
   const fetchImpl:typeof fetch=async(url,init)=>{const u=new URL(String(url));
-    if(u.pathname==='/api/prometheus/grafana/api/v1/rules')return Response.json({status:'success',data:{groups:[{rules:[...grafana.stored.values()].filter(r=>r.ruleGroup).map(r=>({
-      uid:r.uid,folderUid:config.folderUid,health:'ok',isPaused:false,state:phase==='failure'?'firing':'inactive',lastEvaluation:current,
-      activeAt:phase==='failure'?'2026-09-05T12:20:00.000Z':null,labels:r.labels}))}]}});
-    if(u.pathname==='/api/prom/api/v1/query')return Response.json({status:'success',data:{resultType:'vector',result:[{metric:{},value:[Date.parse(current)/1000,phase==='failure'?'2':'0']}]}});
-    if(u.hostname.endsWith('.grafana.net')||u.hostname==='grafana.com')return grafana.fetchImpl(url,init);
-    if(u.hostname.endsWith('.workers.dev'))return Response.json({schemaVersion:1,signals:['health','auth','database','storage','email','deals','safety','backup_freshness','monitor_heartbeat'].map(signal=>({
-      signal,ok:signal!=='storage'||healthy,severity:signal==='storage'&&!healthy?'critical':'none',reasonCode:signal==='storage'&&!healthy?'sentinel_unavailable':'healthy',checkedAt:current,
-      deploymentIdentity:s.manifest.candidate.sha,environment:'development',correlationId:'45454545-4545-4454-8454-454545454545',runbookAnchor:`docs/INCIDENT-RESPONSE.md#${signal.replaceAll('_','-')}`}))});
+    if(u.origin===config.origin&&u.pathname==='/ops/monitor/config')return Response.json({schemaVersion:1,environment:config.environmentAlias,runtimeEnvironment:'development',targetOrigin:sourceOrigin,release:config.candidateSha,signalFamilies:MONITOR_SIGNALS,scheduleMinutes:10,configSha256:config.configSha256});
+    if(u.origin===config.origin&&u.pathname==='/ops/monitor/state')return Response.json({schemaVersion:1,environment:config.environmentAlias,release:config.candidateSha,observedTargetOrigin:s.readinessOrigin,lastSuccessfulMonitorCycleAt:current,lastCompletedMonitorCycleAt:current,latestTrustedBackupCheckpointAt:'2026-09-05T11:59:00.000Z',latestTrustedBackupDescriptorSha256:'a'.repeat(64),latestTrustedBackupArtifactSha256:'b'.repeat(64),integrityFailureEvidenceSha256:null,maintenance:{active:true,endsAt:'2026-09-05T13:00:00.000Z',incidentId,target:{origin:s.readinessOrigin,runtimeEnvironment:'development',release:config.candidateSha}},signals:MONITOR_SIGNALS.map(signal=>({signal,ok:signal!=='storage'||healthy,severity:signal==='storage'&&!healthy?'critical':'none',reasonCode:signal==='storage'&&!healthy?'sentinel_unavailable':'healthy',checkedAt:current,...(signal==='storage'?{incidentId}:{})}))});
+    if(u.origin===config.origin&&u.pathname==='/ops/monitor/events'){const state=u.searchParams.get('state');return Response.json({schemaVersion:1,incidentId,signal:'storage',state,messageId:state==='firing'?'55555555-5555-4555-8555-555555555555':'66666666-6666-4666-8666-666666666666',eventId:state==='firing'?'incident-firing':'incident-resolved',eventType:'email.delivered',occurredAt:state==='firing'?'2026-09-05T12:21:00.000Z':'2026-09-05T12:42:10.000Z'});}
+    if(u.origin===s.readinessOrigin&&u.pathname==='/api/operations/readiness')return Response.json({schemaVersion:1,signals:MONITOR_SIGNALS.map(signal=>({signal,ok:signal!=='storage'||healthy,severity:signal==='storage'&&!healthy?'critical':'none',reasonCode:signal==='storage'&&!healthy?'sentinel_unavailable':'healthy',checkedAt:current,deploymentIdentity:s.manifest.candidate.sha,environment:'development',correlationId:incidentId,runbookAnchor:`docs/INCIDENT-RESPONSE.md#${signal.replaceAll('_','-')}`}))});
     return storage.fetchImpl(url,init);
   };
-  const g=createGrafanaAdapter(config,{now:()=>current,fetchImpl}),a=createSentinelAdapter(s,{now:()=>current,fetchImpl});
-  for(const r of g.configuration().resources){const op=g.resourceOperation(r.key);await op.inspect();await op.mutate();}
+  const monitor=createMonitorAdapter(config,{now:()=>current,fetchImpl}),a=createSentinelAdapter(s,{now:()=>current,fetchImpl});
   const bucket=a.operation('create-bucket');await bucket.inspect();await bucket.mutate();await bucket.readback();own(s,a.resourceIds.bucket);
   const upload=a.operation('upload');await upload.inspect();await upload.mutate();await upload.readback();own(s,a.resourceIds.object);
-  const baseline=await captureIncidentBaseline(g,a,{now:current});
+  const baseline=await captureIncidentBaseline(monitor,a,{now:current});
   expect(baseline).toMatchObject({status:'deterministic-only',projectRef:s.projectRef});
   current='2026-09-05T12:01:00.000Z';const remove=a.operation('remove');await remove.inspect();await remove.mutate();const removed=await remove.readback();healthy=false;
   current='2026-09-05T12:02:00.000Z';const failureSignal=await a.readiness();
-  const rule=[...grafana.stored.values()].find(r=>r.uid?.endsWith('-storage'))!;
-  grafana.setEvents(['firing','resolved'].map(status=>({uuid:`incident-${status}`,timestamp:status==='firing'?'2026-09-05T12:20:10.000Z':'2026-09-05T12:42:10.000Z',receiver:rule.notification_settings.receiver,
-    integration:'email',integrationIndex:0,status,outcome:'success',ruleUIDs:[rule.uid],groupLabels:rule.labels})));
-  current='2026-09-05T12:21:00.000Z';phase='failure';const failure=await captureMonitoringPhase(g,{ruleKey:rule.uid,phase:'failure',windowStart:removed.checkedAt,now:current});
+  current='2026-09-05T12:21:00.000Z';expect(await monitor.readSignal('storage')).toMatchObject({ok:false,incidentId,candidateSha:config.candidateSha,configSha256:config.configSha256,checkedAt:current});const failure=await captureMonitoringPhase(monitor,{ruleKey:'storage',phase:'failure',windowStart:removed.checkedAt,incidentId,now:current});
   current='2026-09-05T12:22:00.000Z';const recover=a.operation('recover');await recover.inspect();await recover.mutate();const recovered=await recover.readback();healthy=true;const recoverySignal=await a.readiness();
-  current='2026-09-05T12:43:00.000Z';phase='recovery';const recovery=await captureMonitoringPhase(g,{ruleKey:rule.uid,phase:'recovery',windowStart:recovered.checkedAt,now:current});
+  current='2026-09-05T12:43:00.000Z';const recovery=await captureMonitoringPhase(monitor,{ruleKey:'storage',phase:'recovery',windowStart:recovered.checkedAt,incidentId,now:current});
   current='2026-09-05T12:44:00.000Z';const clean=a.operation('remove');await clean.inspect();await clean.mutate();await clean.readback();
   const cleanBucket=a.operation('delete-bucket');await cleanBucket.inspect();await cleanBucket.mutate();await cleanBucket.readback();
   const input={baseline,removed,recovered,failureSignal,recoverySignal,phases:[failure,recovery] as Parameters<typeof verifyStorageIncident>[2]['phases'],
-    acknowledgement:{ruleKey:rule.uid,failureEventId:'incident-firing',acknowledgedAt:'2026-09-05T12:21:10.000Z',roleAlias:'owner' as const,inboxEvidenceSha256:'e'.repeat(64)},
+    acknowledgement:{ruleKey:'storage',failureEventId:'incident-firing',acknowledgedAt:'2026-09-05T12:21:10.000Z',roleAlias:'owner' as const,inboxEvidenceSha256:'e'.repeat(64)},
     containedAt:'2026-09-05T12:21:20.000Z',diagnosedAt:'2026-09-05T12:21:30.000Z',rollbackDecision:{decision:'fixture-restore-only' as const,decidedAt:'2026-09-05T12:21:35.000Z',evidenceSha256:'c'.repeat(64)},
     runbookSha256:'b'.repeat(64),closedAt:current,now:current};
-  const proof=await verifyStorageIncident(g,a,input);
+  const proof=await verifyStorageIncident(monitor,a,input);
   expect(proof).toMatchObject({status:'deterministic-only',recoveredAt:'2026-09-05T12:22:00.000Z',recoveryDeliveredAt:'2026-09-05T12:42:10.000Z',cleanup:{status:'absent'}});
   expect(JSON.stringify(proof)).not.toMatch(/sentinel.bin|private-owner|private-token/);
-  await expect(verifyStorageIncident(g,a,{...input,recovered:{...recovered,sha256:'f'.repeat(64)}})).rejects.toThrow('INCIDENT_RECEIPT_INVALID');
-  await expect(verifyStorageIncident(g,a,{...input,acknowledgement:{...input.acknowledgement,failureEventId:'unrelated'}})).rejects.toThrow('MONITORING_ACKNOWLEDGEMENT_INVALID');
-  s.manifest.state='database_restored';await expect(captureIncidentBaseline(g,a,{now:current})).rejects.toThrow('INCIDENT_RESTORED_INTEGRITY_REQUIRED');
-});
-it('defers only the two backup-freshness rules for a provenance-validated caller and keeps the other nine baseline rules mandatory',async()=>{
-  const input={...monitoringConfig,runId:'29292929-2929-4292-8292-292929292929',candidateSha:'a'.repeat(40),targetOrigin:'https://issue29-restore-29292929-2929-4292-8292-292929292929.owner.workers.dev',runtimeEnvironment:'development' as const};
-  const config=createGrafanaAdapter(input,{now:()=>now,fetchImpl:async()=>new Response()}).configuration(),rules=config.resources.filter(resource=>resource.kind==='rule'),backup=rules.filter(rule=>rule.key.includes('backup-freshness'));
-  expect(rules).toHaveLength(11);expect(backup).toHaveLength(2);
-  const sentinel={identity:()=>({runId:config.runId,candidateSha:config.candidateSha,projectRef:'cdefghijklmnopqrstuv',restoreTarget:true,state:'integrity_verified',evidenceMode:config.evidenceMode,targetOrigin:config.targetOrigin,sha256:'c'.repeat(64),bytes:32}),preflight:async()=>{},read:async()=>({schemaVersion:1,evidenceMode:config.evidenceMode,runId:config.runId,candidateSha:config.candidateSha,projectRef:'cdefghijklmnopqrstuv',checkedAt:now,status:'verified',sha256:'c'.repeat(64),bytes:32,evidenceSha256:'d'.repeat(64)}),readiness:async()=>({schemaVersion:1,evidenceMode:config.evidenceMode,runId:config.runId,candidateSha:config.candidateSha,projectRef:'cdefghijklmnopqrstuv',checkedAt:now,signal:'storage',ok:true,severity:'none',reasonCode:'healthy',evidenceSha256:'e'.repeat(64)})};
-  const grafana={configuration:()=>config,verifyConfiguration:async()=>({evidenceSha256:'f'.repeat(64)}),readEvaluation:async(ruleKey:string)=>({ruleKey,state:'inactive',candidateSha:config.candidateSha,configSha256:config.configSha256}),readRuleScore:async(ruleKey:string)=>({ruleKey,score:ruleKey.includes('backup-freshness')?2:0,candidateSha:config.candidateSha,configSha256:config.configSha256})};
-  const deferred=await captureIncidentBaseline(grafana as never,sentinel as never,{now,deferBackupFreshness:true});expect(deferred.deferredBackupFreshness).toBe(true);expect(deferred.deferredRuleKeys).toEqual(backup.map(rule=>rule.key));expect(deferred.rules).toHaveLength(9);
-  await expect(captureIncidentBaseline(grafana as never,sentinel as never,{now})).rejects.toThrow('INCIDENT_BASELINE_UNHEALTHY');
+  await expect(verifyStorageIncident(monitor,a,{...input,recovered:{...recovered,sha256:'f'.repeat(64)}})).rejects.toThrow('INCIDENT_RECEIPT_INVALID');
+  await expect(verifyStorageIncident(monitor,a,{...input,acknowledgement:{...input.acknowledgement,failureEventId:'unrelated'}})).rejects.toThrow('MONITORING_ACKNOWLEDGEMENT_INVALID');
+  s.manifest.state='database_restored';await expect(captureIncidentBaseline(monitor,a,{now:current})).rejects.toThrow('INCIDENT_RESTORED_INTEGRITY_REQUIRED');
 });
 it('keeps persistent source sentinel resources out of destructive rehearsal and cleanup',()=>{
   const s=ownedSettings(),a=createSentinelAdapter(s,{now:()=>now,fetchImpl:storageFixture(s).fetchImpl});
