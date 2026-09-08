@@ -82,7 +82,7 @@ CODEGRAPH_MCP_BOOTSTRAP = GIT_WORKTREE_ROOT_BOOTSTRAP + (
 )
 CODEGRAPH_MCP_ARGS = ["--input-type=module", "--eval", CODEGRAPH_MCP_BOOTSTRAP]
 EXPECTED_RAW = (
-    'model_reasoning_effort = "high"\n'
+    'model_reasoning_effort = "medium"\n'
     "\n"
     "[mcp_servers.aromatika-svelte]\n"
     'command = "node"\n'
@@ -121,7 +121,7 @@ EXPECTED_RAW = (
 )
 
 EXPECTED = {
-    "model_reasoning_effort": "high",
+    "model_reasoning_effort": "medium",
     "mcp_servers": {
         "aromatika-svelte": {
             "command": "node",

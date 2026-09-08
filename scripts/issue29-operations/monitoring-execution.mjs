@@ -49,6 +49,7 @@ export async function hasCurrentPremergeOwnerCopy(manifest,manifestPath,reposito
   const artifactBytes=await readPrivateBytes(join(dirname(manifestPath),`${maintenance.backup.artifactSha256}.json`),repositoryRoot);
   ensure(createHash('sha256').update(artifactBytes).digest('hex')===maintenance.backup.artifactSha256,'PREMERGE_OWNER_COPY_PROOF_INVALID');artifact=JSON.parse(artifactBytes.toString());
  }catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('PREMERGE_OWNER_COPY_PROOF_INVALID');}
+ /** @param {Record<string, any>} value */
  const exact=value=>value&&typeof value==='object'&&value.provider==='owner-encrypted-retention'&&value.runId===manifest.runId&&value.sourceRef===source.ref&&value.descriptorSha256===maintenance.backup.descriptorSha256&&value.destinationAlias==='owner-secondary'&&value.retentionDays===35&&value.encryptedOnly===true&&value.workflowProof===false&&typeof value.expiresAt==='string'&&Date.parse(value.expiresAt)>Date.parse(now);
  ensure(exact(copy)&&exact(artifact)&&artifact.verifiedAt===maintenance.backup.retentionVerifiedAt&&artifact.recovery?.descriptorSha256===maintenance.backup.descriptorSha256,'PREMERGE_OWNER_COPY_PROOF_INVALID');
  return true;
@@ -60,15 +61,16 @@ export async function hasCurrentPremergeOwnerCopy(manifest,manifestPath,reposito
 async function requireCurrentSourceJobProof(manifest,manifestPath,repositoryRoot){
  const maintenance=manifest.maintenance,source=manifest.source;
  ensure(maintenance?.resumedAt&&source,'SOURCE_JOBS_RESUME_PROOF_REQUIRED');
+ const resumedAt=maintenance.resumedAt;
  const resumeIndex=manifest.history.map((entry,index)=>({entry,index})).filter(({entry})=>entry.step==='resume-source'&&entry.resourceId===`${source.ref}:${maintenance.id}`).at(-1)?.index;
  let jobs;try{jobs=await readSyntheticJobsEvidence({manifest,manifestPath,repositoryRoot,role:'source'});}catch{throw new OperationsError('SOURCE_JOBS_RESUME_PROOF_REQUIRED');}
  const jobIndex=manifest.history.findLastIndex(entry=>entry.step==='synthetic-jobs'&&entry.resourceId==='source-jobs');
  ensure(resumeIndex!==undefined&&jobIndex>resumeIndex&&jobs.mode==='proved'&&Date.parse(jobs.checkedAt)>=Date.parse(maintenance.resumedAt),'SOURCE_JOBS_RESUME_PROOF_REQUIRED');
- ensure(Array.isArray(jobs.state)&&jobs.state.length===CANONICAL_SYNTHETIC_JOBS.length&&jobs.state.every(job=>{
+ ensure(Array.isArray(jobs.state)&&jobs.state.length===CANONICAL_SYNTHETIC_JOBS.length&&jobs.state.every(/** @param {Record<string, any>} job */ job=>{
   const expected=CANONICAL_SYNTHETIC_JOBS.find(candidate=>candidate.jobname===job.jobname);
   return expected&&job.active===true&&job.schedule===expected.schedule&&job.command===expected.command&&job.nodename==='localhost'&&job.nodeport===5432&&job.database==='postgres'&&job.username==='postgres';
  }), 'SOURCE_JOBS_RESUME_PROOF_REQUIRED');
- ensure(Array.isArray(jobs.proof)&&jobs.proof.length===CANONICAL_SYNTHETIC_JOBS.length&&jobs.proof.every(proof=>CANONICAL_SYNTHETIC_JOBS.some(job=>job.jobname===proof.jobname)&&proof.status==='succeeded'&&['1 row','SELECT 1'].includes(proof.returnMessage)&&Date.parse(proof.startTime)>=Date.parse(maintenance.resumedAt)&&Date.parse(proof.endTime)>=Date.parse(proof.startTime)),'SOURCE_JOBS_RESUME_PROOF_REQUIRED');
+ ensure(Array.isArray(jobs.proof)&&jobs.proof.length===CANONICAL_SYNTHETIC_JOBS.length&&jobs.proof.every(/** @param {Record<string, any>} proof */ proof=>CANONICAL_SYNTHETIC_JOBS.some(job=>job.jobname===proof.jobname)&&proof.status==='succeeded'&&['1 row','SELECT 1'].includes(proof.returnMessage)&&Date.parse(proof.startTime)>=Date.parse(resumedAt)&&Date.parse(proof.endTime)>=Date.parse(proof.startTime)),'SOURCE_JOBS_RESUME_PROOF_REQUIRED');
 }
 /** One existing private manifest, one exact once-only mutation per pending intent. Evidence JSON
  * beside the manifest is output, not a competing state machine; history binds every accepted hash.
