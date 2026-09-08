@@ -238,20 +238,23 @@ function incidentIdentity(grafana,sentinel){
   return {id,config};
 }
 /** Captures an actual all-green baseline before the separately persisted sentinel deletion.
- * @param {GrafanaAdapter} grafana @param {SentinelAdapter} sentinel @param {{now?:string}} [options] */
+ * A current, independently validated pre-merge owner copy may defer only backup freshness.
+ * @param {GrafanaAdapter} grafana @param {SentinelAdapter} sentinel @param {{now?:string,deferBackupFreshness?:boolean}} [options] */
 export async function captureIncidentBaseline(grafana,sentinel,options={}){
   const {id,config}=incidentIdentity(grafana,sentinel),checkedAt=options.now??new Date().toISOString();
   await sentinel.preflight();const configuration=await grafana.verifyConfiguration(),object=await sentinel.read(),signal=await sentinel.readiness();
   ensure(object.status==='verified'&&signal.ok===true,'INCIDENT_BASELINE_UNHEALTHY');
+  const allRules=config.resources.filter(r=>r.kind==='rule'),deferredRuleKeys=options.deferBackupFreshness===true?allRules.filter(rule=>rule.key.includes('backup-freshness')).map(rule=>rule.key):[];
+  ensure(options.deferBackupFreshness!==true||deferredRuleKeys.length===2,'INCIDENT_BACKUP_DEFERRAL_INVALID');
   const rules=[];
-  for(const rule of config.resources.filter(r=>r.kind==='rule')){
+  for(const rule of allRules.filter(rule=>!deferredRuleKeys.includes(rule.key))){
     const evaluation=await grafana.readEvaluation(rule.key),score=await grafana.readRuleScore(rule.key);
     ensure(evaluation.state==='inactive'&&score.score===0,'INCIDENT_BASELINE_UNHEALTHY');
     rules.push({ruleKey:rule.key,evaluation,score});
   }
   const body={schemaVersion:1,status:config.evidenceMode==='provider-readback'?'verified':'deterministic-only',evidenceMode:config.evidenceMode,
     runId:id.runId,candidateSha:id.candidateSha,projectRef:id.projectRef,configSha256:config.configSha256,checkedAt,
-    configurationEvidenceSha256:configuration.evidenceSha256,configuration,object,signal,rules};
+    configurationEvidenceSha256:configuration.evidenceSha256,configuration,object,signal,deferredBackupFreshness:options.deferBackupFreshness===true,deferredRuleKeys,rules};
   return {...body,evidenceSha256:evidence(body)};
 }
 /** @typedef {{[key:string]:any,evidenceSha256:string,checkedAt:string}} IncidentReceipt */
@@ -273,9 +276,10 @@ function validateIncidentReceipt(receipt,identity,now){
 export async function verifyStorageIncident(grafana,sentinel,input){
   const {id,config}=incidentIdentity(grafana,sentinel),now=input.now??new Date().toISOString();
   for(const receipt of [input.baseline,input.removed,input.recovered,input.failureSignal,input.recoverySignal])validateIncidentReceipt(receipt,id,now);
-  const b=input.baseline,keys=config.resources.filter(r=>r.kind==='rule').map(r=>r.key);
-  ensure(b.configSha256===config.configSha256&&b.rules.length===keys.length&&new Set(b.rules.map(r=>r.ruleKey)).size===keys.length&&
-    b.rules.every(r=>keys.includes(r.ruleKey)&&r.evaluation.ruleKey===r.ruleKey&&r.score.ruleKey===r.ruleKey&&
+  const b=input.baseline,keys=config.resources.filter(r=>r.kind==='rule').map(r=>r.key),deferredRuleKeys=b.deferredBackupFreshness===true?keys.filter(key=>key.includes('backup-freshness')):[],baselineKeys=keys.filter(key=>!deferredRuleKeys.includes(key));
+  ensure(typeof b.deferredBackupFreshness==='boolean'&&Array.isArray(b.deferredRuleKeys)&&canonicalJson(b.deferredRuleKeys)===canonicalJson(deferredRuleKeys)&&
+    (b.deferredBackupFreshness===false||deferredRuleKeys.length===2)&&b.configSha256===config.configSha256&&b.rules.length===baselineKeys.length&&new Set(b.rules.map(r=>r.ruleKey)).size===baselineKeys.length&&
+    b.rules.every(r=>baselineKeys.includes(r.ruleKey)&&r.evaluation.ruleKey===r.ruleKey&&r.score.ruleKey===r.ruleKey&&
       r.evaluation.candidateSha===id.candidateSha&&r.score.candidateSha===id.candidateSha&&
       r.evaluation.configSha256===config.configSha256&&r.score.configSha256===config.configSha256&&
       r.evaluation.state==='inactive'&&r.score.score===0),'INCIDENT_BASELINE_INVALID');

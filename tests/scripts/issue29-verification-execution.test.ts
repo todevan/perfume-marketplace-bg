@@ -110,8 +110,26 @@ it('parses native node --test TAP counts without inventing converted pass eviden
  replaceMachineReport(f,3,Buffer.from('# tests 8\n# pass 7\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n'));expect(()=>validateStage04Evidence(f.s,key=>f.evidence.get(key),{sha,tree,deploymentId:'pending'})).toThrow('STAGE04_TEST_DISCOVERY_INVALID');
 });
 function browserReport(){return{stats:{expected:1,unexpected:0,flaky:0,skipped:1},suites:[{file:'listing.spec.ts',specs:[{title:'shows listings',ok:true,tests:[{projectName:'chromium',status:'expected',expectedStatus:'passed',annotations:[] as {type:string,description:string}[],results:[{status:'passed'}]}]}]},{file:'real-beta.spec.ts',specs:[{title:'seller → buyer → offer → chat → deal → review',ok:true,tests:[{projectName:'chromium',status:'skipped',expectedStatus:'skipped',annotations:[{type:'skip',description:'Set E2E_REAL_RUN=true to run the state-changing real-beta suite.'}],results:[{status:'skipped'}]}]}]}]};}
+function fullBrowserReport(){const passed=Array.from({length:13},(_,index)=>({title:`real local browser scenario ${index}`,ok:true,tests:[{projectName:'chromium',status:'expected',expectedStatus:'passed',annotations:[] as {type:string,description:string}[],results:[{status:'passed'}]}]}));const hosted=[
+ ['real-beta.spec.ts','seller → buyer → offer → chat → deal → review','Set E2E_REAL_RUN=true to run the state-changing real-beta suite.'],
+ ['real-beta.spec.ts','moderator reaches the AAL2 moderation queue','Real-beta mutations run once in the desktop Chromium project.'],
+ ['hosted-report-evidence.spec.ts','executes all ten target-locked scenarios','Hosted report-evidence verification requires both explicit real-run flags and every approved secure input.'],
+ ['hosted-report-evidence.spec.ts','executes the checkpointed Issue #24 moderation-safety proof','Hosted mutations run once in the desktop project.'],
+ ['hosted-report-evidence.spec.ts','cleans only the persisted A10 manifest under A11','Hosted mutations run once in the desktop project.']
+].flatMap(([file,title,reason])=>['chromium','mobile'].map(projectName=>({file,specs:[{title,ok:true,tests:[{projectName,status:'skipped',expectedStatus:'skipped',annotations:[{type:'skip',description:reason}],results:[{status:'skipped'}]}]}]})));
+ return{stats:{expected:13,unexpected:0,flaky:0,skipped:11},suites:[{file:'marketplace.spec.ts',specs:passed},...hosted,{file:'marketplace.spec.ts',specs:[{title:'core pages do not create document-level overflow at acceptance viewports',ok:true,tests:[{projectName:'mobile',status:'skipped',expectedStatus:'skipped',annotations:[{type:'skip',description:'One Chromium matrix covers the exact widths.'}],results:[{status:'skipped'}]}]}]}]};}
 it('counts only exact existing guarded hosted-suite skips in the full local browser gate',()=>{
  const f=stageFixture();replaceMachineReport(f,7,browserReport());expect(validateStage04Evidence(f.s,key=>f.evidence.get(key),{sha,tree,deploymentId:'pending'})).toMatchObject({discoveredTests:25,allowedLocalHostedSkips:1});
+});
+it('accepts the actual thirteen-pass, eleven-skip native browser report only with the one bounded mobile viewport duplicate',()=>{
+ const f=stageFixture();replaceMachineReport(f,7,fullBrowserReport());expect(validateStage04Evidence(f.s,key=>f.evidence.get(key),{sha,tree,deploymentId:'pending'})).toMatchObject({discoveredTests:37,allowedLocalHostedSkips:11});
+});
+it.each(['wrong-reason','duplicate-project','second-duplicate'])('rejects an unbounded viewport duplicate (%s)',kind=>{
+ const f=stageFixture(),report=fullBrowserReport(),duplicate=report.suites.at(-1)!.specs[0]!.tests[0]!;
+ if(kind==='wrong-reason')duplicate.annotations[0].description='viewport run is optional';
+ if(kind==='duplicate-project')duplicate.projectName='chromium';
+ if(kind==='second-duplicate'){report.suites.push({file:'marketplace.spec.ts',specs:[{title:'core pages do not create document-level overflow at acceptance viewports',ok:true,tests:[{...duplicate,annotations:[...duplicate.annotations],results:[...duplicate.results]}]}]});report.stats.skipped++;}
+ replaceMachineReport(f,7,report);expect(()=>validateStage04Evidence(f.s,key=>f.evidence.get(key),{sha,tree,deploymentId:'pending'})).toThrow(kind==='second-duplicate'?'STAGE04_TEST_DISCOVERY_INVALID':'STAGE04_UNAPPROVED_TEST_SKIP');
 });
 it.each(['wrong-file','wrong-title','wrong-reason','focused','unknown-project'])('rejects %s skipped browser evidence rather than weakening applicable discovery',kind=>{
  const f=stageFixture(),report=browserReport();

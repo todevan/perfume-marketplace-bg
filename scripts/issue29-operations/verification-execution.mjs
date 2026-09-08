@@ -51,7 +51,7 @@ function testDiscovery(bytes,allowLocalHostedSkips){
  ensure(report&&typeof report==='object'&&!Array.isArray(report),'STAGE04_TEST_DISCOVERY_INVALID');
  if('numTotalTests'in report){ensure(report.success===true&&Number.isSafeInteger(report.numTotalTests)&&report.numTotalTests>0&&report.numPassedTests===report.numTotalTests&&report.numFailedTests===0&&report.numPendingTests===0&&Array.isArray(report.testResults)&&report.testResults.length>0,'STAGE04_TEST_DISCOVERY_INVALID');const assertions=report.testResults.flatMap((/** @type {any} */r)=>r.assertionResults??[]);ensure(assertions.length===report.numTotalTests&&assertions.every((/** @type {any} */r)=>r.status==='passed'),'STAGE04_TEST_DISCOVERY_INVALID');return{passed:report.numTotalTests,skipped:0};}
  ensure(report.stats&&Number.isSafeInteger(report.stats.expected)&&report.stats.expected>0&&report.stats.unexpected===0&&report.stats.flaky===0&&Number.isSafeInteger(report.stats.skipped)&&report.stats.skipped>=0&&Array.isArray(report.suites),'STAGE04_TEST_DISCOVERY_INVALID');
- let count=0,nodes=0,skipped=0;
+ let count=0,nodes=0,skipped=0,hostedSkips=0,duplicateViewportSkips=0;
  /** @param {any[]} suites @param {number} depth @param {string} inheritedFile */
  function walk(suites,depth,inheritedFile){ensure(depth<32,'STAGE04_TEST_DISCOVERY_INVALID');for(const suite of suites){ensure(++nodes<=100000,'STAGE04_TEST_DISCOVERY_INVALID');const file=suite.file??inheritedFile;for(const spec of suite.specs??[]){ensure(spec.ok===true&&Array.isArray(spec.tests)&&spec.tests.length>0,'STAGE04_TEST_DISCOVERY_INVALID');for(const t of spec.tests){
   if(t.status==='skipped'){
@@ -59,10 +59,13 @@ function testDiscovery(bytes,allowLocalHostedSkips){
    const real=/^(?:tests\/e2e\/)?real-beta\.spec\.ts$/u.test(path),reports=/^(?:tests\/e2e\/)?hosted-report-evidence\.spec\.ts$/u.test(path);
    const titles=real?['seller → buyer → offer → chat → deal → review','moderator reaches the AAL2 moderation queue']:reports?['executes all ten target-locked scenarios','executes the checkpointed Issue #24 moderation-safety proof','cleans only the persisted A10 manifest under A11']:[];
    const reasons=real?['Set E2E_REAL_RUN=true to run the state-changing real-beta suite.','Real-beta mutations run once in the desktop Chromium project.']:['Hosted report-evidence verification requires both explicit real-run flags and every approved secure input.','Hosted mutations run once in the desktop project.'];
-   ensure(allowLocalHostedSkips&&titles.includes(spec.title)&&['chromium','mobile'].includes(t.projectName)&&t.expectedStatus==='skipped'&&Array.isArray(t.annotations)&&t.annotations.some((/** @type {any} */a)=>a.type==='skip'&&reasons.includes(a.description))&&Array.isArray(t.results)&&t.results.every((/** @type {any} */r)=>r.status==='skipped'),'STAGE04_UNAPPROVED_TEST_SKIP');skipped++;
+   const annotations=Array.isArray(t.annotations)&&t.annotations.some((/** @type {any} */a)=>a.type==='skip'&&reasons.includes(a.description));
+   const hosted=allowLocalHostedSkips&&titles.includes(spec.title)&&['chromium','mobile'].includes(t.projectName)&&annotations;
+   const duplicateViewport=allowLocalHostedSkips&&/^(?:tests\/e2e\/)?marketplace\.spec\.ts$/u.test(path)&&spec.title==='core pages do not create document-level overflow at acceptance viewports'&&t.projectName==='mobile'&&Array.isArray(t.annotations)&&t.annotations.some((/** @type {any} */a)=>a.type==='skip'&&a.description==='One Chromium matrix covers the exact widths.');
+   ensure((hosted||duplicateViewport)&&t.expectedStatus==='skipped'&&Array.isArray(t.results)&&t.results.every((/** @type {any} */r)=>r.status==='skipped'),'STAGE04_UNAPPROVED_TEST_SKIP');if(hosted)hostedSkips++;if(duplicateViewport)duplicateViewportSkips++;skipped++;
   }else{ensure(t.status==='expected'&&t.expectedStatus==='passed'&&Array.isArray(t.results)&&t.results.length===1&&t.results[0].status==='passed','STAGE04_TEST_DISCOVERY_INVALID');count++;}
  }}walk(suite.suites??[],depth+1,file);}}
- walk(report.suites,0,'');ensure(count===report.stats.expected&&skipped===report.stats.skipped&&skipped<=10,'STAGE04_TEST_DISCOVERY_INVALID');return{passed:count,skipped};
+ walk(report.suites,0,'');ensure(count===report.stats.expected&&skipped===report.stats.skipped&&hostedSkips<=10&&duplicateViewportSkips<=1&&skipped<=11,'STAGE04_TEST_DISCOVERY_INVALID');return{passed:count,skipped};
 }
 /** Existing exact-SHA app/database gate with complete bounded readback and sanitized errors.
  * @param {{repository:string,candidateSha:string,readToken:string,now?:string,fetchImpl?:typeof fetch}} options */

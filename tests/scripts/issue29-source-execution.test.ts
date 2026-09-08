@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { manifestFixture, candidate } from '../fixtures/issue29-operations';
 import { writePrivateManifest, readPrivateManifest } from '../../scripts/issue29-operations/manifest.mjs';
 import { executeSeedSource } from '../../scripts/issue29-operations/source-execution.mjs';
+import { syntheticActorDefinitions } from '../../scripts/issue29-operations/synthetic-source.mjs';
 const now = '2026-09-05T12:01:00.000Z', dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 async function fixture() { const directory = await mkdtemp(join(tmpdir(), 'issue29-source-execution-')); dirs.push(directory); const manifest = manifestFixture(); manifest.target = null; manifest.state = 'source_read_back'; manifest.allowedActions.push('seed-source'); manifest.sourceProvenance = { createdAt: now, creationIntentId: manifest.runId, creationReadbackSha256: 'd'.repeat(64), fixtureRunId: null, fixtureManifestSha256: null, inventorySha256: null, releaseBindingSha256: null, verifiedAt: null }; manifest.cleanup.resources = [{ provider: 'supabase', id: manifest.source!.ref, runId: manifest.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'persistent', absentAt: null }]; const manifestPath = join(directory, 'manifest.json'), settingsPath = join(directory, 'settings.json'); const settings = { schemaVersion: 1, operation: 'seed-source', providerToken: 'private-provider-token', source: { apiUrl: manifest.source!.url, serviceKey: 'private-service-key' }, connection: { host: `db.${manifest.source!.ref}.supabase.co`, port: 5432, database: 'postgres', user: 'postgres', password: 'private-password', sslmode: 'verify-full' }, toolchain: { mode: 'container' }, privateDirectory: directory }; await writePrivateManifest(manifestPath, manifest, { repositoryRoot: process.cwd(), candidate, now }); await writeFile(settingsPath, JSON.stringify(settings), { mode: 0o600 }); return { directory, manifest, manifestPath, settingsPath, settings }; }
@@ -15,8 +16,66 @@ test.each(['unowned', 'wrong-state', 'pending', 'completed-source'])('refuses %s
     f.manifest.backupVerification = { descriptorSha256: 'd'.repeat(64), independentlyVerifiedAt: now, sourceReadsComplete: true }; await writePrivateManifest(f.manifestPath, f.manifest, { repositoryRoot: process.cwd(), candidate, now, replace: true }); let called = false; await expect(executeSeedSource({ ...f, repositoryRoot: process.cwd(), candidate, now }, { preflight: async () => { called = true; return { projectRef: f.manifest.source!.ref, signupDisabled: true, evidenceSha256: 'a'.repeat(64) }; }, initialize: async () => { called = true; throw new Error('unexpected'); } })).rejects.toThrow('Issue #29:'); expect(called).toBe(false); });
 import { createHash } from 'node:crypto';
 import { readSeededSourceEvidence } from '../../scripts/issue29-operations/source-execution.mjs';
-function initialized(runId: string, projectRef: string) { const schemaSql = '-- synthetic managed baseline'; return { managedBaseline: { schemaSql, schemaSha256: createHash('sha256').update(schemaSql).digest('hex'), roleNames: ['postgres'], postgresVersion: '17.6' }, provenance: { runId, projectRef }, privateAuthFixtures: { users: [{ id: '11111111-1111-4111-8111-111111111111', email: 'synthetic@example.invalid', alias: 'synthetic-user-0' }], password: 'PRIVATE_FIXTURE_PASSWORD' }, fixture: { listingId: '22222222-2222-4222-8222-222222222222' } } as never; }
-test('persists intent before initialization mutations and writes only hash-bound mode600 private fixture evidence', async () => { const f = await fixture(); const result = await executeSeedSource({ ...f, repositoryRoot: process.cwd(), candidate, now }, { preflight: async () => ({ projectRef: f.manifest.source!.ref, signupDisabled: true, evidenceSha256: 'd'.repeat(64) }), initialize: async (options) => { const intent = { kind: 'source-auth-user', resource: 'synthetic-user-0', sha256: 'e'.repeat(64) }; await options.persistIntent(intent); const pending = await readPrivateManifest(f.manifestPath, { repositoryRoot: process.cwd(), now }); expect(pending.pending?.step).toBe('seed-source'); expect(pending.history).toHaveLength(0); await options.readbackVerified({ ...intent, resource: '11111111-1111-4111-8111-111111111111' }); return initialized(f.manifest.runId, f.manifest.source!.ref); } }); expect(JSON.stringify(result)).not.toContain('PRIVATE_FIXTURE_PASSWORD'); const manifest = await readPrivateManifest(f.manifestPath, { repositoryRoot: process.cwd(), now }); expect(manifest.state).toBe('source_read_back'); expect(manifest.sourceProvenance?.verifiedAt).toBeNull(); expect(manifest.pending).toBeNull(); expect((await stat(join(f.directory, 'source-fixture.json'))).mode & 0o777).toBe(0o600); const evidence = await readSeededSourceEvidence({ manifest, privateDirectory: f.directory, repositoryRoot: process.cwd() }); expect(evidence.summary.fixtureManifestSha256).toBe(result.fixtureManifestSha256); await writeFile(join(f.directory, 'source-fixture.json'), '{}', { mode: 0o600 }); await expect(readSeededSourceEvidence({ manifest, privateDirectory: f.directory, repositoryRoot: process.cwd() })).rejects.toThrow('SOURCE_SEED_EVIDENCE_MISMATCH'); });
+function actorUsers(runId: string) { return syntheticActorDefinitions(runId).map((actor, index) => ({ ...actor, id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}` })); }
+function initialized(runId: string, projectRef: string) { const schemaSql = '-- synthetic managed baseline'; return { managedBaseline: { schemaSql, schemaSha256: createHash('sha256').update(schemaSql).digest('hex'), roleNames: ['postgres'], postgresVersion: '17.6' }, provenance: { runId, projectRef }, privateAuthFixtures: { users: actorUsers(runId), password: 'PRIVATE_FIXTURE_PASSWORD' }, fixture: { listingId: '22222222-2222-4222-8222-222222222222' } } as never; }
+test('coordinates all four canonical actor readbacks with persisted intents and hash-bound mode600 evidence', async () => {
+    const f = await fixture();
+    const result = await executeSeedSource({ ...f, repositoryRoot: process.cwd(), candidate, now }, {
+        preflight: async () => ({ projectRef: f.manifest.source!.ref, signupDisabled: true, evidenceSha256: 'd'.repeat(64) }),
+        initialize: async (options) => {
+            const actors = actorUsers(f.manifest.runId);
+            expect(actors.map(actor => actor.alias)).toEqual(['seller', 'buyer', 'outsider', 'future-staff']);
+            for (const [index, actor] of actors.entries()) {
+                const intent = { kind: 'source-auth-user', resource: actor.alias, sha256: createHash('sha256').update(JSON.stringify(actor)).digest('hex') };
+                await options.persistIntent(intent);
+                const pending = await readPrivateManifest(f.manifestPath, { repositoryRoot: process.cwd(), now });
+                expect(pending.pending?.step).toBe('seed-source');
+                expect(pending.history).toHaveLength(index);
+                await options.readbackVerified({ ...intent, resource: actor.id });
+                const observed = await readPrivateManifest(f.manifestPath, { repositoryRoot: process.cwd(), now });
+                expect(observed.pending).toBeNull();
+                expect(observed.history).toHaveLength(index + 1);
+            }
+            return initialized(f.manifest.runId, f.manifest.source!.ref);
+        }
+    });
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_FIXTURE_PASSWORD');
+    const manifest = await readPrivateManifest(f.manifestPath, { repositoryRoot: process.cwd(), now });
+    expect(manifest.state).toBe('source_read_back');
+    expect(manifest.sourceProvenance?.verifiedAt).toBeNull();
+    expect(manifest.pending).toBeNull();
+    expect((await stat(join(f.directory, 'source-fixture.json'))).mode & 0o777).toBe(0o600);
+    const evidence = await readSeededSourceEvidence({ manifest, privateDirectory: f.directory, repositoryRoot: process.cwd() });
+    expect(evidence.summary.fixtureManifestSha256).toBe(result.fixtureManifestSha256);
+    await writeFile(join(f.directory, 'source-fixture.json'), '{}', { mode: 0o600 });
+    await expect(readSeededSourceEvidence({ manifest, privateDirectory: f.directory, repositoryRoot: process.cwd() })).rejects.toThrow('SOURCE_SEED_EVIDENCE_MISMATCH');
+});
+test.each([
+    ['source-auth-user', 'synthetic-user-0', '11111111-1111-4111-8111-111111111111', 'e', 'SOURCE_READBACK_IDENTITY_MISMATCH'],
+    ['source-auth-user', 'unknown-actor', '11111111-1111-4111-8111-111111111111', 'e', 'SOURCE_READBACK_IDENTITY_MISMATCH'],
+    ['source-auth-user', 'seller', 'seller', 'e', 'SOURCE_READBACK_IDENTITY_MISMATCH'],
+    ['source-auth-user', 'seller', '11111111-1111-1111-1111-111111111111', 'e', 'SOURCE_READBACK_IDENTITY_MISMATCH'],
+    ['source-auth-user', 'seller', '11111111-1111-4111-8111-111111111111', 'f', 'SOURCE_READBACK_PROVENANCE_REQUIRED'],
+    ['source-storage-object', 'owned-object', 'different-object', 'e', 'SOURCE_READBACK_IDENTITY_MISMATCH']
+])('rejects invalid %s readback from %s to %s without clearing pending or retrying', async (kind, resource, readbackResource, digestCharacter, error) => {
+    const f = await fixture();
+    let initializations = 0;
+    const dependencies = {
+        preflight: async () => ({ projectRef: f.manifest.source!.ref, signupDisabled: true, evidenceSha256: 'd'.repeat(64) }),
+        initialize: async (options: Parameters<NonNullable<Parameters<typeof executeSeedSource>[1]>['initialize'] & Function>[0]) => {
+            initializations++;
+            await options.persistIntent({ kind, resource, sha256: 'e'.repeat(64) });
+            await options.readbackVerified({ kind, resource: readbackResource, sha256: digestCharacter.repeat(64) });
+            return initialized(f.manifest.runId, f.manifest.source!.ref);
+        }
+    };
+    await expect(executeSeedSource({ ...f, repositoryRoot: process.cwd(), candidate, now }, dependencies)).rejects.toThrow(error);
+    const manifest = await readPrivateManifest(f.manifestPath, { repositoryRoot: process.cwd(), now });
+    expect(manifest.pending?.step).toBe('seed-source');
+    expect(manifest.history).toHaveLength(0);
+    await expect(executeSeedSource({ ...f, repositoryRoot: process.cwd(), candidate, now }, dependencies)).rejects.toThrow('SOURCE_MUTATION_READBACK_REQUIRED');
+    expect(initializations).toBe(1);
+});
 test('ambiguous signup quarantine is read back on resume and never patched twice', async () => { const f = await fixture(); let writes = 0, disabled = false, initializations = 0; const dependencies = { preflight: async () => ({ projectRef: f.manifest.source!.ref, signupDisabled: disabled, evidenceSha256: 'd'.repeat(64) }), fetchImpl: async () => { writes++; disabled = true; throw new Error('PRIVATE_PROVIDER_RESPONSE'); }, initialize: async () => { initializations++; return initialized(f.manifest.runId, f.manifest.source!.ref); } }; await expect(executeSeedSource({ ...f, repositoryRoot: process.cwd(), candidate, now }, dependencies)).rejects.toThrow('SOURCE_SIGNUP_MUTATION_UNCERTAIN'); expect(writes).toBe(1); expect(initializations).toBe(0); expect((await readPrivateManifest(f.manifestPath, { repositoryRoot: process.cwd(), now })).pending?.step).toBe('seed-source'); await executeSeedSource({ ...f, repositoryRoot: process.cwd(), candidate, now }, dependencies); expect(writes).toBe(1); expect(initializations).toBe(1); });
 test('allows seed pending deployment to bind actual Worker only with exact SHA/tree and ownership-linked deployment evidence',async()=>{
  const f=await fixture();f.manifest.candidate={...candidate,deploymentId:'pending'};await writePrivateManifest(f.manifestPath,f.manifest,{repositoryRoot:process.cwd(),candidate:f.manifest.candidate,now,replace:true});await executeSeedSource({...f,repositoryRoot:process.cwd(),candidate:f.manifest.candidate,now},{preflight:async()=>({projectRef:f.manifest.source!.ref,signupDisabled:true,evidenceSha256:'d'.repeat(64)}),initialize:async()=>initialized(f.manifest.runId,f.manifest.source!.ref)});

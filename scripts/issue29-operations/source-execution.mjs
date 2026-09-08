@@ -8,7 +8,7 @@ import { readPrivateBytes } from './execution.mjs';
 import { readProtectedMergeEvidence } from './worker-adapter.mjs';
 import { canonicalJson } from './recovery-set.mjs';
 import { validateManagedBaseline, validateDatabaseConnection } from './logical-recovery.mjs';
-import { initializeSyntheticSource, createSyntheticSentinel, verifySyntheticSource } from './synthetic-source.mjs';
+import { initializeSyntheticSource, createSyntheticSentinel, verifySyntheticSource, syntheticActorDefinitions } from './synthetic-source.mjs';
 const HASH = /^[a-f0-9]{64}$/u;
 /** @param {unknown} value */
 const digest = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -97,7 +97,20 @@ export async function executeSeedSource(options, dependencies = {}) {
         /** @param {import('./synthetic-source.mjs').FixtureIntent} intent */
         async function persistIntent(intent) { ensure(!manifest.pending && HASH.test(intent.sha256), 'SOURCE_MUTATION_READBACK_REQUIRED'); const key = digest({ kind: intent.kind, resource: intent.resource }); ensure(!manifest.attempts[`seed-source:${key}`], 'ATTEMPT_LIMIT'); const operationId = randomUUID(); const evidence = { schemaVersion: 1, runId: manifest.runId, projectRef: source.ref, operationId, startedAt: clock(), intent }; const hash = await writeEvidence(join(settings.privateDirectory, `${operationId}-intent.json`), evidence, repositoryRoot); manifest.pending = { step: 'seed-source', operationId, startedAt: clock(), resourceId: key, priorStateSha256: hash }; manifest.attempts[`seed-source:${key}`] = 1; activeIntent = intent; await saved(); }
         /** @param {import('./synthetic-source.mjs').FixtureIntent} intent */
-        async function readbackVerified(intent) { const pending = manifest.pending; ensure(pending?.step === 'seed-source' && activeIntent && activeIntent.kind === intent.kind && activeIntent.sha256 === intent.sha256, 'SOURCE_READBACK_PROVENANCE_REQUIRED'); ensure(activeIntent.resource === intent.resource || (intent.kind === 'source-auth-user' && /^synthetic-user-[01]$/u.test(activeIntent.resource) && /^[a-f0-9-]{36}$/u.test(intent.resource)), 'SOURCE_READBACK_IDENTITY_MISMATCH'); const hash = await writeEvidence(join(settings.privateDirectory, `${pending.operationId}-readback.json`), { schemaVersion: 1, runId: manifest.runId, projectRef: source.ref, operationId: pending.operationId, intentSha256: pending.priorStateSha256, completedAt: clock(), readback: intent }, repositoryRoot); manifest.history.push({ step: 'seed-source', operationId: pending.operationId, completedAt: clock(), resourceId: digest({ kind: intent.kind, resource: intent.resource }), evidenceSha256: hash }); manifest.pending = null; activeIntent = null; await saved(); }
+        async function readbackVerified(intent) {
+            const pending = manifest.pending;
+            ensure(pending?.step === 'seed-source' && activeIntent && activeIntent.kind === intent.kind && activeIntent.sha256 === intent.sha256, 'SOURCE_READBACK_PROVENANCE_REQUIRED');
+            const originalResource = activeIntent.resource;
+            const identityMatches = intent.kind === 'source-auth-user'
+                ? syntheticActorDefinitions(manifest.runId).some(actor => actor.alias === originalResource) && z.uuid().safeParse(intent.resource).success
+                : originalResource === intent.resource;
+            ensure(identityMatches, 'SOURCE_READBACK_IDENTITY_MISMATCH');
+            const hash = await writeEvidence(join(settings.privateDirectory, `${pending.operationId}-readback.json`), { schemaVersion: 1, runId: manifest.runId, projectRef: source.ref, operationId: pending.operationId, intentSha256: pending.priorStateSha256, completedAt: clock(), readback: intent }, repositoryRoot);
+            manifest.history.push({ step: 'seed-source', operationId: pending.operationId, completedAt: clock(), resourceId: digest({ kind: intent.kind, resource: intent.resource }), evidenceSha256: hash });
+            manifest.pending = null;
+            activeIntent = null;
+            await saved();
+        }
         ensure(!manifest.history.some(entry => entry.step === 'seed-source' && entry.resourceId === null), 'SOURCE_ALREADY_INITIALIZED');
         for (const name of ['source-fixture.json', 'managed-baseline.json']) {
             try {

@@ -16,8 +16,8 @@ describe('Issue29 exact sentinel transaction',()=>{
 });
 function ownedSettings(){const s=settings();s.manifest.target=null;s.manifest.cleanup.resources.push({provider:'supabase',id:s.projectRef,runId:s.manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'persistent',absentAt:null});return s;}
 function targetSettings(){const s=ownedSettings();s.manifest.target=structuredClone(target);s.projectRef=target.ref;s.readinessOrigin=`https://issue29-restore-${s.manifest.runId}.owner.workers.dev`;s.manifest.cleanup.resources.push({provider:'supabase',id:target.ref,runId:s.manifest.runId,createdAt:now,evidenceSha256:'e'.repeat(64),disposition:'disposable',absentAt:null});return s;}
-function storageFixture(s:ReturnType<typeof ownedSettings>){
-  let bucket:Record<string,unknown>|null=null,object:Uint8Array|null=null,foreign=false,failDelete=false;
+function storageFixture(s:ReturnType<typeof ownedSettings>,initialBucket=false){
+  let bucket:Record<string,unknown>|null=initialBucket?{id:'operations-sentinels',name:'operations-sentinels',public:false}:null,object:Uint8Array|null=null,foreign=false,failDelete=false;
   const mutations:{method:string;path:string;body:unknown;headers:Headers}[]=[];
   const fetchImpl:typeof fetch=async(url,init)=>{const u=new URL(String(url)),method=init?.method??'GET';
     if(u.hostname==='api.supabase.com'){
@@ -52,6 +52,14 @@ it('creates one private owned bucket/sentinel, removes exactly that path, recove
   expect(fixture.mutations.filter(x=>x.path.includes('/object/')&&x.method==='POST'&&!x.path.includes('/list/')).every(x=>x.headers.get('x-upsert')==='false')).toBe(true);
   const cleanupObject=adapter.operation('remove');await cleanupObject.inspect();await cleanupObject.mutate();await cleanupObject.readback();
   const cleanupBucket=adapter.operation('delete-bucket');await cleanupBucket.inspect();await cleanupBucket.mutate();expect(await cleanupBucket.readback()).toMatchObject({status:'absent'});
+});
+it('allows an exact restore-owned target sentinel bucket to receive its sentinel, but refuses an unproven existing bucket',async()=>{
+  const restored=targetSettings(),restoredFixture=storageFixture(restored,true),restoredAdapter=createSentinelAdapter(restored,{now:()=>now,fetchImpl:restoredFixture.fetchImpl});
+  own(restored,restoredAdapter.resourceIds.bucket);
+  const upload=restoredAdapter.operation('upload');await upload.inspect();await upload.mutate();expect(await upload.readback()).toMatchObject({status:'verified',sha256});
+  const foreign=targetSettings(),foreignFixture=storageFixture(foreign,true),foreignAdapter=createSentinelAdapter(foreign,{now:()=>now,fetchImpl:foreignFixture.fetchImpl});
+  await expect(foreignAdapter.operation('upload').inspect()).rejects.toThrow('SENTINEL_RESOURCE_NOT_OWNED');
+  await expect(foreignAdapter.operation('create-bucket').inspect()).rejects.toThrow('SENTINEL_BUCKET_FOREIGN');
 });
 it('does not retry an ambiguous sentinel deletion and refuses unknown bucket content or a corrupt fixture',async()=>{
   const s=targetSettings(),fixture=storageFixture(s),a=createSentinelAdapter(s,{now:()=>now,fetchImpl:fixture.fetchImpl});
@@ -150,6 +158,15 @@ it('requires a restored target and re-reads exact delivered/recovered notificati
   await expect(verifyStorageIncident(g,a,{...input,recovered:{...recovered,sha256:'f'.repeat(64)}})).rejects.toThrow('INCIDENT_RECEIPT_INVALID');
   await expect(verifyStorageIncident(g,a,{...input,acknowledgement:{...input.acknowledgement,failureEventId:'unrelated'}})).rejects.toThrow('MONITORING_ACKNOWLEDGEMENT_INVALID');
   s.manifest.state='database_restored';await expect(captureIncidentBaseline(g,a,{now:current})).rejects.toThrow('INCIDENT_RESTORED_INTEGRITY_REQUIRED');
+});
+it('defers only the two backup-freshness rules for a provenance-validated caller and keeps the other nine baseline rules mandatory',async()=>{
+  const input={...monitoringConfig,runId:'29292929-2929-4292-8292-292929292929',candidateSha:'a'.repeat(40),targetOrigin:'https://issue29-restore-29292929-2929-4292-8292-292929292929.owner.workers.dev',runtimeEnvironment:'development' as const};
+  const config=createGrafanaAdapter(input,{now:()=>now,fetchImpl:async()=>new Response()}).configuration(),rules=config.resources.filter(resource=>resource.kind==='rule'),backup=rules.filter(rule=>rule.key.includes('backup-freshness'));
+  expect(rules).toHaveLength(11);expect(backup).toHaveLength(2);
+  const sentinel={identity:()=>({runId:config.runId,candidateSha:config.candidateSha,projectRef:'cdefghijklmnopqrstuv',restoreTarget:true,state:'integrity_verified',evidenceMode:config.evidenceMode,targetOrigin:config.targetOrigin,sha256:'c'.repeat(64),bytes:32}),preflight:async()=>{},read:async()=>({schemaVersion:1,evidenceMode:config.evidenceMode,runId:config.runId,candidateSha:config.candidateSha,projectRef:'cdefghijklmnopqrstuv',checkedAt:now,status:'verified',sha256:'c'.repeat(64),bytes:32,evidenceSha256:'d'.repeat(64)}),readiness:async()=>({schemaVersion:1,evidenceMode:config.evidenceMode,runId:config.runId,candidateSha:config.candidateSha,projectRef:'cdefghijklmnopqrstuv',checkedAt:now,signal:'storage',ok:true,severity:'none',reasonCode:'healthy',evidenceSha256:'e'.repeat(64)})};
+  const grafana={configuration:()=>config,verifyConfiguration:async()=>({evidenceSha256:'f'.repeat(64)}),readEvaluation:async(ruleKey:string)=>({ruleKey,state:'inactive',candidateSha:config.candidateSha,configSha256:config.configSha256}),readRuleScore:async(ruleKey:string)=>({ruleKey,score:ruleKey.includes('backup-freshness')?2:0,candidateSha:config.candidateSha,configSha256:config.configSha256})};
+  const deferred=await captureIncidentBaseline(grafana as never,sentinel as never,{now,deferBackupFreshness:true});expect(deferred.deferredBackupFreshness).toBe(true);expect(deferred.deferredRuleKeys).toEqual(backup.map(rule=>rule.key));expect(deferred.rules).toHaveLength(9);
+  await expect(captureIncidentBaseline(grafana as never,sentinel as never,{now})).rejects.toThrow('INCIDENT_BASELINE_UNHEALTHY');
 });
 it('keeps persistent source sentinel resources out of destructive rehearsal and cleanup',()=>{
   const s=ownedSettings(),a=createSentinelAdapter(s,{now:()=>now,fetchImpl:storageFixture(s).fetchImpl});
