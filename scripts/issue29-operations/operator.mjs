@@ -14,7 +14,7 @@ import { validateOwnerSourceAuthorization } from './supabase-adapter.mjs';
 
 /** Fresh source and window-scoped restore creation share the same private transaction.
  * No provider mutation can occur before persisted intent; ambiguity permits readback only.
- * @param {{manifestPath:string,repositoryRoot:string,candidate:import('./manifest.mjs').Candidate,step:string,adapter:LifecycleAdapter,now?:string,clock?:()=>string}} options
+ * @param {{manifestPath:string,repositoryRoot:string,candidate:import('./manifest.mjs').Candidate,step:string,adapter:LifecycleAdapter,ownerSourceAuthorization?:unknown,now?:string,clock?:()=>string}} options
  * @returns {Promise<Manifest>}
  */
 export async function executeProjectLifecycleStep(options) {
@@ -31,6 +31,8 @@ export async function executeProjectLifecycleStep(options) {
         ensure(['preflight','create-source','verify-source','retire-source','create-target'].includes(step) && manifest.allowedActions.includes(step), 'ACTION_FORBIDDEN');
         ensure(manifest.humanBoundary === null && manifest.terminal === null, 'TRANSACTION_TERMINAL');
         ensure(manifest.pending === null || manifest.pending.step === step, 'PENDING_OPERATION_REQUIRES_READBACK');
+        if (options.ownerSourceAuthorization)
+            ensure(step === 'create-source' && manifest.state === 'source_creation_pending' && manifest.pending?.step === 'create-source' && manifest.source === null && manifest.target === null, 'OWNER_SOURCE_AUTHORIZATION_READBACK_ONLY');
         if (manifest.pending === null && manifest.history.some(entry => entry.step === step && (step!=='create-target'||entry.resourceId===manifest.maintenance?.id))) return manifest;
         const purpose = step === 'create-target' ? 'target' : 'source';
         const operationId = manifest.pending?.operationId ?? randomUUID();
@@ -67,6 +69,10 @@ export async function executeProjectLifecycleStep(options) {
             const before = step === 'create-source' ? ['provider_preflighted','source_creation_pending'] : ['source_paused','target_creation_pending'];
             ensure(before.includes(manifest.state) && (purpose === 'source' ? manifest.source === null : manifest.source !== null && manifest.target === null), 'STATE_TRANSITION_FORBIDDEN');
             if (purpose === 'target') ensure(manifest.backupVerification?.sourceReadsComplete === true && manifest.maintenance?.phase==='paused' && manifest.maintenance.pauseReadbackSha256, 'SOURCE_PAUSE_PROOF_REQUIRED');
+            if (options.ownerSourceAuthorization) {
+                ensure(purpose === 'source' && manifest.pending !== null, 'OWNER_SOURCE_AUTHORIZATION_READBACK_ONLY');
+                intentSha256 = await readOwnerAuthorizedOriginalIntent(manifestPath, manifest, repositoryRoot, options.ownerSourceAuthorization, clock());
+            }
             if (manifest.pending === null) {
                 if(purpose==='target'){ensure(adapter.readPaused&&manifest.maintenance,'SOURCE_PAUSE_READBACK_REQUIRED');ensure(Date.parse(clock())<Date.parse(manifest.maintenance.expiresAt),'MAINTENANCE_WINDOW_INVALID');const paused=await adapter.readPaused({...context,purpose:'source'});ensure(paused.status==='INACTIVE'&&paused.project.ref===manifest.source?.ref&&paused.identitySha256===manifest.maintenance.preservation.identitySha256&&paused.preservationSha256===preservationDigest(manifest.maintenance.preservation),'SOURCE_PAUSE_READBACK_REQUIRED');}
                 const {evidence,...observed}=await adapter.preflight(context);
@@ -92,6 +98,8 @@ export async function executeProjectLifecycleStep(options) {
             const withinCreationWindow = Number.isFinite(Date.parse(proof.createdAt)) && Date.parse(proof.createdAt) >= Date.parse(manifest.pending.startedAt) - 1000 && Date.parse(proof.createdAt) <= Date.parse(clock()) + 300000;
             if (proof.ownerSourceAuthorization)
                 validateOwnerSourceAuthorization(proof.ownerSourceAuthorization, { manifest, operationId, purpose, sourceRef: proof.project.ref, sourceName: manifest.provisioning.sourceName, observedCreatedAt: proof.createdAt, now: clock() });
+            if (options.ownerSourceAuthorization)
+                ensure(proof.ownerSourceAuthorization && canonicalJson(proof.ownerSourceAuthorization) === canonicalJson(options.ownerSourceAuthorization), 'OWNER_SOURCE_AUTHORIZATION_MISMATCH');
             ensure(withinCreationWindow || proof.ownerSourceAuthorization, 'CREATION_TIME_MISMATCH');
             await persistOperationsEvidence(manifestPath,repositoryRoot,proof.evidence,proof.evidenceSha256);
             const owned = { provider: 'supabase', id: proof.project.ref, runId: manifest.runId, createdAt: proof.createdAt, evidenceSha256: proof.evidenceSha256, disposition: /** @type {'persistent'|'disposable'} */ (purpose==='source'?'persistent':'disposable'), absentAt: null };
@@ -305,12 +313,47 @@ export async function persistOperationsEvidence(manifestPath,repositoryRoot,evid
  catch(error){const code=/** @type {NodeJS.ErrnoException} */(error).code;ensure(!options.mustExist||code!=='ENOENT','INTENT_EVIDENCE_REQUIRED');ensure(code==='EEXIST','EVIDENCE_PERSISTENCE_FAILED');file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{const stat=await file.stat();ensure(stat.isFile()&&stat.nlink===1&&stat.size===bytes.length&&(stat.mode&0o777)===0o600&&(await file.readFile()).equals(bytes),'EVIDENCE_PREIMAGE_MISMATCH');}finally{await file.close();}return evidenceSha256;}
  try{if(options.mustExist){const stat=await file.stat();ensure(stat.isFile()&&stat.nlink===1&&stat.size===bytes.length&&(stat.mode&0o777)===0o600&&(await file.readFile()).equals(bytes),'EVIDENCE_PREIMAGE_MISMATCH');}else{await file.writeFile(bytes);await file.sync();}}finally{await file.close();}if(!options.mustExist){const parent=await open(dirname(path),constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{await parent.sync();}finally{await parent.close();}}return evidenceSha256;
 }
+/** @param {Manifest} manifest */
+function intentEnvelope(manifest) {
+ return {schemaVersion:1,kind:'issue29-operator-intent',runId:manifest.runId,candidate:manifest.candidate,maintenanceId:manifest.maintenance?.id??null,pending:manifest.pending,source:manifest.source,target:manifest.target,providerPreflightSha256:manifest.providerPreflight?.evidenceSha256??null};
+}
+/** @param {unknown} value */
+function assertIntentCandidate(value) {
+ const candidate = /** @type {{sha?:unknown,tree?:unknown,deploymentId?:unknown}} */ (value);
+ ensure(candidate && typeof candidate === 'object' && !Array.isArray(candidate) && Object.keys(candidate).length === 3 && ['sha','tree','deploymentId'].every(key => Object.hasOwn(candidate,key)) && typeof candidate.sha === 'string' && /^[a-f0-9]{40}$/u.test(candidate.sha) && typeof candidate.tree === 'string' && /^[a-f0-9]{40}$/u.test(candidate.tree) && typeof candidate.deploymentId === 'string' && /^[a-zA-Z0-9-]{1,128}$/u.test(candidate.deploymentId), 'ORIGINAL_INTENT_EVIDENCE_MISMATCH');
+ return /** @type {import('./manifest.mjs').Candidate} */ (candidate);
+}
+/** Read one immutable intent created under the preceding candidate. Its entire envelope
+ * must still bind the current pending source readback; only the historic candidate varies.
+ * @param {string} manifestPath @param {Manifest} manifest @param {string} repositoryRoot @param {unknown} authorization @param {string} now */
+async function readOwnerAuthorizedOriginalIntent(manifestPath, manifest, repositoryRoot, authorization, now) {
+ const requested = authorization !== null && typeof authorization === 'object' && !Array.isArray(authorization) ? /** @type {{projectRef?:unknown}} */ (authorization) : {};
+ const ownerAuthorization = validateOwnerSourceAuthorization(authorization, { manifest, operationId: manifest.pending?.operationId ?? '', purpose: 'source', sourceRef: typeof requested.projectRef === 'string' ? requested.projectRef : '', sourceName: manifest.provisioning.sourceName, now });
+ const path = join(dirname(manifestPath), `${ownerAuthorization.originalIntentSha256}.json`);
+ await assertPrivatePath(path, repositoryRoot);
+ let file;
+ try { file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+ catch (error) { if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') throw new OperationsError('ORIGINAL_INTENT_EVIDENCE_REQUIRED'); throw error; }
+ let bytes;
+ try {
+  const stat = await file.stat();
+  ensure(stat.isFile() && stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && stat.size > 0 && stat.size <= 2097152, 'ORIGINAL_INTENT_EVIDENCE_MISMATCH');
+  bytes = await file.readFile();
+ } finally { await file.close(); }
+ ensure(createHash('sha256').update(bytes).digest('hex') === ownerAuthorization.originalIntentSha256, 'ORIGINAL_INTENT_EVIDENCE_MISMATCH');
+ let original;
+ try { original = JSON.parse(bytes.toString('utf8')); }
+ catch { throw new OperationsError('ORIGINAL_INTENT_EVIDENCE_MISMATCH'); }
+ const originalCandidate = assertIntentCandidate(/** @type {{candidate?:unknown}} */ (original).candidate);
+ const expected = { ...intentEnvelope(manifest), candidate: originalCandidate };
+ ensure(canonicalJson(original) === canonicalJson(expected), 'ORIGINAL_INTENT_EVIDENCE_MISMATCH');
+ return ownerAuthorization.originalIntentSha256;
+}
 /** Capture only an already-persisted pending intent. Resume requires the original bytes, never retroactive creation.
  * @param {string} manifestPath @param {Manifest} manifest @param {string} repositoryRoot @param {{mustExist?:boolean}} [options] */
 export async function persistOperationsIntent(manifestPath,manifest,repositoryRoot,options={}){
  ensure(manifest.pending,'PERSISTED_INTENT_REQUIRED');
  const persisted=await readPrivateManifest(manifestPath,{repositoryRoot,candidate:manifest.candidate,now:manifest.pending.startedAt});
- const envelope=(/** @type {Manifest} */m)=>({schemaVersion:1,kind:'issue29-operator-intent',runId:m.runId,candidate:m.candidate,maintenanceId:m.maintenance?.id??null,pending:m.pending,source:m.source,target:m.target,providerPreflightSha256:m.providerPreflight?.evidenceSha256??null});
- const evidence=envelope(manifest);ensure(canonicalJson(evidence)===canonicalJson(envelope(persisted)),'PERSISTED_INTENT_MISMATCH');
+ const evidence=intentEnvelope(manifest);ensure(canonicalJson(evidence)===canonicalJson(intentEnvelope(persisted)),'PERSISTED_INTENT_MISMATCH');
  return persistOperationsEvidence(manifestPath,repositoryRoot,evidence,createHash('sha256').update(canonicalJson(evidence)).digest('hex'),options);
 }

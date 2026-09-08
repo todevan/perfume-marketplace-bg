@@ -15,7 +15,7 @@ const schema=z.strictObject({schemaVersion:z.literal(1),operation:z.enum(['prefl
  capability:z.strictObject({role:z.enum(['source-read','restore-write']),id:z.string().min(1).max(128)}),
  twoSlotAuthorization:z.strictObject({schemaVersion:z.literal(1),policy:z.literal('supabase-free-two-active-projects'),organizationId:z.string(),preservedStagingRef:z.string().regex(/^[a-z]{20}$/u),authorizedAt:z.iso.datetime(),expiresAt:z.iso.datetime(),maximumActiveProjects:z.literal(2),maximumCost:z.literal(0),evidenceSha256:z.string().regex(/^[a-f0-9]{64}$/u)}).optional(),databasePasswords:z.strictObject({source:secret.optional(),target:secret.optional()}).optional(),
  databaseConnections:z.strictObject({source:databaseCoordinates.optional(),target:databaseCoordinates.optional()}).optional(),
- ownerSourceAuthorization:z.strictObject({schemaVersion:z.literal(1),policy:z.literal('issue29-owner-authorized-pending-source-readback'),runId:z.string().uuid(),operationId:z.string().uuid(),organizationId:z.string().min(1).max(63),projectRef:z.string().regex(/^[a-z]{20}$/u),region:z.string().min(1).max(63),sourceName:z.string().min(1).max(128),observedCreatedAt:z.iso.datetime(),authorizedAt:z.iso.datetime(),expiresAt:z.iso.datetime(),evidenceSha256:z.string().regex(/^[a-f0-9]{64}$/u)}).optional(),
+ ownerSourceAuthorization:z.strictObject({schemaVersion:z.literal(1),policy:z.literal('issue29-owner-authorized-pending-source-readback'),runId:z.string().uuid(),operationId:z.string().uuid(),organizationId:z.string().min(1).max(63),projectRef:z.string().regex(/^[a-z]{20}$/u),region:z.string().min(1).max(63),sourceName:z.string().min(1).max(128),observedCreatedAt:z.iso.datetime(),authorizedAt:z.iso.datetime(),expiresAt:z.iso.datetime(),evidenceSha256:z.string().regex(/^[a-f0-9]{64}$/u),originalIntentSha256:z.string().regex(/^[a-f0-9]{64}$/u)}).optional(),
  verification:z.strictObject({seedSettingsPath:z.string(),bindingSettingsPath:z.string()}).optional()});
 /** @param {unknown} value */
 const digest=value=>createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -63,7 +63,7 @@ export async function executeHostedLifecycle(options,dependencies={}){
    await(dependencies.baseline??captureManagedBaseline)({scope:{mode:'hosted',role:purpose,runId:manifest.runId,projectRef:project.ref,sourceRef,preservedRefs:manifest.preservedRefs,createdResourceEvidenceSha256,apiUrl:project.url},connection,toolchain:{mode:'container'}});
    return true;
   }});
- const result=await executeProjectLifecycleStep({manifestPath,repositoryRoot,candidate,step:settings.operation,clock,adapter:{...adapter,verifySource:async({manifest:current})=>{
+ const result=await executeProjectLifecycleStep({manifestPath,repositoryRoot,candidate,step:settings.operation,clock,...(ownerSourceAuthorization?{ownerSourceAuthorization}:{}),adapter:{...adapter,verifySource:async({manifest:current})=>{
   ensure(settings.verification&&current.source,'SOURCE_VERIFICATION_SETTINGS_REQUIRED');
   const {readSourceSettings}=await import('./source-execution.mjs');
   const seed=await readSourceSettings(settings.verification.seedSettingsPath,repositoryRoot);

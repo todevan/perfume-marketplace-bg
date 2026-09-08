@@ -226,12 +226,16 @@ capacity/cost and ownership proof. Historical source credentials do not authoriz
 exports. If a provider-created source is found after a persisted `create-source`
 intent but its provider timestamp predates that intent, resume requires a private,
 expiring owner authorization bound to the exact run, pending operation, organization,
-source ref, region, source name, observed timestamp, and approval-evidence hash. It
-is readback-only: it cannot create a project, authorize a target, reclassify
-preserved/forbidden or already-owned state, or skip the fresh empty-state inspection.
-The resulting evidence preserves the provider timestamp and identifies an
-owner-authorized source readback; it does not claim fresh creation. Future production
-recovery requires separate current owner authority.
+source ref, region, source name, observed timestamp, approval-evidence hash, and the
+SHA-256 of the original private intent. If the candidate has advanced, that immutable
+original intent must match the current run, pending operation, source/target,
+maintenance, and preflight bindings exactly; only its separately validated historic
+candidate may differ. It is readback-only: it cannot create a project, authorize a
+target, reclassify preserved/forbidden or already-owned state, replace intent bytes,
+or skip the fresh empty-state inspection. The resulting evidence preserves the
+provider timestamp and identifies an owner-authorized source readback; it does not
+claim fresh creation. Future production recovery requires separate current owner
+authority.
 
 A valid credential does not authorize backing up or restoring the wrong project.
 
