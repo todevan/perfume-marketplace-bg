@@ -268,8 +268,12 @@ then use its persisted intent and readback path if the outcome is uncertain.
 2. For the first transaction only, run `create-source`, `seed-source`,
    `prepare-worker`, `deploy-worker`, and `verify-source`. Retain their exact
    source and Worker identities for subsequent rehearsals.
-3. Run `deploy-monitor` in create mode and `configure-monitoring` for the one
-   source-bound monitor Worker. Establish canary and heartbeat evidence. Prove
+3. Configure the private Resend webhook to the exact planned monitor origin plus
+   `/ops/monitor/resend-webhook`, enabled for `email.delivered`. Deploy the one
+   source-bound monitor with `deploy-monitor` in create mode using that signing
+   secret, so its first scheduled alerts already have the correct callback route.
+   `configure-monitoring` requires authenticated Resend readback of that route
+   and a signing-secret match with the deployed Worker before marking it configured. Establish canary and heartbeat evidence. Prove
    the two approved source jobs with `synthetic-jobs`, capture the old source
    session with `capture-source-session`, then quiesce those jobs before export.
 4. Run `backup-set`, independently decrypt it with `verify-backup`, and retain

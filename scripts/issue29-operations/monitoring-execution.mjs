@@ -22,12 +22,13 @@ const database=z.object({scope:z.object({mode:z.literal('hosted'),role:z.enum(['
 const resend=z.object({apiKey:secret,domainId:z.uuid(),webhookId:z.uuid(),from:z.email(),to:z.email(),operationId:z.uuid(),windowStart:z.iso.datetime(),webhookOrigin:z.url(),syntheticScopeEvidenceSha256:hash,requireLiveQuota:z.boolean().optional(),
   freePlanEvidence:z.object({observedAt:z.iso.datetime(),remainingDaily:z.number().int().positive(),quotedCost:z.literal(0),evidenceSha256:hash}).strict()}).strict();
 const maintenanceTarget=z.object({origin:z.url(),readinessUrl:z.url(),readinessToken:secret,runtimeEnvironment:z.enum(['development','staging']),release:z.string().regex(/^[a-f0-9]{40}$/u)}).strict();
+const resendWebhook=z.object({id:z.uuid(),apiKey:secret,signingSecret:z.string().regex(/^whsec_[A-Za-z0-9+/]{20,128}={0,2}$/u)}).strict();
 export const monitoringExecutionSettingsSchema=z.object({schemaVersion:z.literal(1),operation:z.enum(['configure-monitoring','monitoring-proof','incident-drill','maintenance-silence','maintenance-unsilence']),
  action:z.enum(['configure','release-update','attach-target','remove-target','capture-failure','capture-recovery','verify-rule-proof','maintenance-silence','maintenance-unsilence','canary-send','canary-checkpoint','sentinel-readiness','sentinel-read','sentinel-create-bucket','sentinel-upload','sentinel-remove','sentinel-recover','sentinel-delete-bucket','incident-baseline','incident-verify','backup-checkpoint','source-green']),
- actionId:z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/u),monitor:monitorConfigSchema,binding,readinessToken:secret.optional(),maintenanceTarget:maintenanceTarget.optional(),
+ actionId:z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/u),monitor:monitorConfigSchema,binding,readinessToken:secret.optional(),maintenanceTarget:maintenanceTarget.optional(),resendWebhook:resendWebhook.optional(),
  sentinel:z.object({sha256:hash,bytesBase64:z.string().max(8192)}).strict().optional(),canary:z.object({database,resend}).strict().optional(),
  backupDirectory:z.string().optional(),inputPath:z.string().optional(),knownMessageId:z.uuid().optional(),previousCandidateSha:z.string().regex(/^[a-f0-9]{40}$/u).optional(),mergeEvidenceDirectory:z.string().optional(),
- ruleKey:z.string().regex(/^[a-z_]{1,32}$/u).optional(),windowStart:z.iso.datetime().optional()}).strict();
+ ruleKey:z.string().regex(/^[a-z_]{1,32}$/u).optional(),windowStart:z.iso.datetime().optional()}).strict().superRefine((value,context)=>{if(value.action==='configure'&&!value.resendWebhook)context.addIssue({code:'custom',message:'resendWebhook required for configure'});});
 /** @typedef {z.infer<typeof monitoringExecutionSettingsSchema>} MonitoringExecutionSettings */
 /** @param {unknown} value */
 const digest=value=>createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -78,7 +79,7 @@ export async function executeMonitoringAction(options){
   const parsed=monitoringExecutionSettingsSchema.safeParse(options.settings);ensure(parsed.success,'MONITORING_SETTINGS_INVALID');const s=parsed.data;
   const {manifestPath,repositoryRoot,candidate}=options,clock=options.clock??(()=>options.now??new Date().toISOString());
   const g=createMonitorAdapter(s.monitor,{fetchImpl:options.fetchImpl,now:clock});
-  if(s.action==='configure'){ensure(s.operation==='configure-monitoring','MONITORING_ACTION_MISMATCH');return configureMonitor({...options,adapter:g,bindingSettings:s.binding,clock});}
+  if(s.action==='configure'){ensure(s.operation==='configure-monitoring'&&s.resendWebhook,'MONITORING_ACTION_MISMATCH');return configureMonitor({...options,adapter:g,bindingSettings:s.binding,resendWebhook:s.resendWebhook,clock});}
   const step=s.action.startsWith('maintenance-')?s.action:s.operation;
   ensure((['release-update','attach-target','remove-target'].includes(s.action)&&s.operation==='configure-monitoring')||(s.action.startsWith('maintenance-')&&s.operation===s.action)||
     (['canary-send','canary-checkpoint','backup-checkpoint','source-green','capture-failure','capture-recovery','verify-rule-proof'].includes(s.action)&&s.operation==='monitoring-proof')||

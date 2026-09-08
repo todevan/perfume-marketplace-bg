@@ -21,7 +21,7 @@ export interface MonitorEnv {
 	BACKUP_CHECKPOINT_TOKEN: string; WATCHDOG_TOKEN: string; EVIDENCE_READ_TOKEN: string; MAINTENANCE_TOKEN: string; RELEASE_ADOPTION_TOKEN: string;
 }
 type Signal = { signal: SignalName; ok: boolean; severity: Severity; reasonCode: string; checkedAt: string };
-type Delivery = { messageId?: string; eventId?: string; eventType?: 'email.delivered'; occurredAt?: string; sendAttemptedAt?: string; sendStatus?: 'sent' | 'uncertain' };
+type Delivery = { messageId?: string; eventId?: string; eventType?: 'email.delivered'; occurredAt?: string; sendAttemptedAt?: string; sendStatus?: 'sent' | 'uncertain'; attempts?: number; requestBody?: string; idempotencyKey?: string };
 type StoredSignal = Signal & { incidentId?: string; alertState?: AlertState; deliveries?: Partial<Record<AlertState, Delivery>>; failures?: number; successes?: number; firingSeverity?: Severity };
 type Backup = { release: string; checkpointAt: string; descriptorSha256: string; artifactSha256: string; integrityFailureEvidenceSha256?: string };
 type MaintenanceTarget = { origin: string; readinessUrl: string; readinessToken: string; runtimeEnvironment: string; release: string };
@@ -47,8 +47,8 @@ async function load(env: MonitorEnv): Promise<MonitorState> { try { const raw = 
 async function save(env: MonitorEnv, state: MonitorState): Promise<void> { await env.MONITOR_STATE.put(STATE_KEY, JSON.stringify(state)); }
 async function boundedBytes(response: Response | Request): Promise<Uint8Array> {
 	if (!response.body || Number(response.headers.get('content-length') ?? 0) > MAX_JSON_BYTES) throw new Error('response_invalid');
-	const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
-	try { while (true) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength; if (size > MAX_JSON_BYTES) throw new Error('response_invalid'); chunks.push(part.value); } }
+	const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0; const deadline = Date.now() + 5_000;
+	try { while (true) { let timer: ReturnType<typeof setTimeout> | undefined; const part = await Promise.race([reader.read(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('body_timeout')), Math.max(1, deadline - Date.now())); })]).finally(() => clearTimeout(timer)); if (part.done) break; size += part.value.byteLength; if (size > MAX_JSON_BYTES) throw new Error('response_invalid'); chunks.push(part.value); } }
 	finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 	const bytes = new Uint8Array(size); let offset = 0; for (const part of chunks) { bytes.set(part, offset); offset += part.byteLength; }
 	return bytes;
@@ -92,14 +92,13 @@ function bodyFor(signal: StoredSignal, env: MonitorEnv): string {
 	const state = signal.alertState === 'resolved' ? 'RECOVERY' : 'FAILURE';
 	return [`Issue 29 ${state}`, `Environment: ${env.EXPECTED_ENVIRONMENT}`, `Severity: ${signal.severity}`, `Signal: ${signal.signal}`, `Incident: ${signal.incidentId}`, `Observed: ${signal.checkedAt}`, `Immediate action: ${runbook(signal.signal)}`].join('\n');
 }
-async function sendAlert(env: MonitorEnv, signal: StoredSignal, fetcher: FetchLike, now: number): Promise<Delivery> {
-	const delivery: Delivery = { sendAttemptedAt: new Date(now).toISOString(), sendStatus: 'uncertain' };
+async function sendAlert(env: MonitorEnv, delivery: Delivery, fetcher: FetchLike): Promise<Delivery> {
 	try {
-		const result = await boundedFetch(fetcher, 'https://api.resend.com/emails', { method: 'POST', headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: env.RESEND_FROM, to: [env.RESEND_TO], subject: `Issue 29 ${signal.alertState === 'resolved' ? 'recovery' : 'failure'}: ${signal.signal}`, text: bodyFor(signal, env) }) });
+		const result = await boundedFetch(fetcher, 'https://api.resend.com/emails', { method: 'POST', headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json', 'Idempotency-Key': delivery.idempotencyKey! }, body: delivery.requestBody });
 		if (!result.ok) { await result.body?.cancel(); return delivery; }
-		const value = await json(result); const id = value && typeof value === 'object' ? (value as Record<string, unknown>).id : undefined;
-		if (typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(id)) return { ...delivery, messageId: id, sendStatus: 'sent' };
-	} catch { /* send outcome remains explicitly uncertain and is never retried automatically */ }
+		const value = await json(result), id = value && typeof value === 'object' ? (value as Record<string, unknown>).id : undefined;
+		if (typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return { ...delivery, messageId: id, sendStatus: 'sent' };
+	} catch { /* Preserve the exact idempotent request; replay is bounded within Resend's 24-hour window. */ }
 	return delivery;
 }
 async function digest(value: unknown): Promise<string> { const bytes = new TextEncoder().encode(JSON.stringify(value)); const output = await crypto.subtle.digest('SHA-256', bytes); return Array.from(new Uint8Array(output), byte => byte.toString(16).padStart(2, '0')).join(''); }
@@ -126,9 +125,23 @@ async function cycle(env: MonitorEnv, fetcher: FetchLike, now: number): Promise<
 	state.lastCompletedMonitorCycleAt = new Date(now).toISOString(); await save(env, state);
 	for (const name of SIGNALS) {
 		const signal = state.signals[name]!;
-		if (signal.incidentId && signal.alertState && alertable(name, maintenance && !target) && !signal.deliveries?.[signal.alertState]) { const phase = signal.alertState; signal.deliveries = { ...signal.deliveries, [phase]: { sendAttemptedAt: new Date(now).toISOString(), sendStatus: 'uncertain' } }; await save(env, state); signal.deliveries[phase] = await sendAlert(env, signal, fetcher, now); await save(env, state); }
+		if (signal.incidentId && signal.alertState && alertable(name, maintenance && !target) && !signal.deliveries?.[signal.alertState]) {
+			const phase=signal.alertState;
+			signal.deliveries = { ...signal.deliveries, [phase]: { sendAttemptedAt: new Date(now).toISOString(), sendStatus: 'uncertain', attempts: 0, idempotencyKey: `issue29/${env.EXPECTED_RELEASE_SHA}/${signal.incidentId}/${phase}`, requestBody: JSON.stringify({ from: env.RESEND_FROM, to: [env.RESEND_TO], subject: `Issue 29 ${phase === 'resolved' ? 'recovery' : 'failure'}: ${signal.signal}`, text: bodyFor(signal, env) }) } };
+			await save(env,state);
+		}
+		for (const phase of ['firing','resolved'] as const) {
+			const delivery=signal.deliveries?.[phase];
+			if (delivery?.sendStatus==='uncertain' && delivery.requestBody && delivery.idempotencyKey && (delivery.attempts??0)<3 && now-Date.parse(delivery.sendAttemptedAt!)<60*MINUTE) {
+				delivery.attempts=(delivery.attempts??0)+1;await save(env,state);
+				signal.deliveries![phase]=await sendAlert(env,delivery,fetcher);await save(env,state);
+			}
+		}
 	}
-	{ state.lastSuccessfulMonitorCycleAt = new Date(now).toISOString(); state.observedTargetOrigin = probe.TARGET_ORIGIN; await save(env, state); }
+	const deliveryHealthy=Object.values(state.signals).every(signal=>Object.values(signal.deliveries??{}).every(delivery=>delivery.eventType==='email.delivered'||(utc(delivery.sendAttemptedAt)&&now-Date.parse(delivery.sendAttemptedAt)<=20*MINUTE)));
+	state.observedTargetOrigin = probe.TARGET_ORIGIN;
+	if(deliveryHealthy)state.lastSuccessfulMonitorCycleAt = new Date(now).toISOString();
+	await save(env,state);
 }
 function configOk(env: MonitorEnv): boolean {
 	try {
@@ -148,7 +161,7 @@ async function resendWebhook(request: Request, env: MonitorEnv, now: number): Pr
 async function handler(request: Request, env: MonitorEnv, now = Date.now()): Promise<Response> {
 	if (!configOk(env)) return response(503, { ok: false, code: 'monitor_unavailable' }); const url = new URL(request.url);
 	if (url.pathname === '/ops/monitor/resend-webhook' && !url.search) return resendWebhook(request, env, now);
-	if (url.pathname === '/ops/monitor/config' && request.method === 'GET' && sameToken(request, env.EVIDENCE_READ_TOKEN) && !url.search) return response(200, { schemaVersion: 1, environment: env.EXPECTED_ENVIRONMENT, runtimeEnvironment: env.RUNTIME_ENVIRONMENT, targetOrigin: env.TARGET_ORIGIN, release: env.EXPECTED_RELEASE_SHA, signalFamilies: SIGNALS, scheduleMinutes: 10, configSha256: await digest({ environment: env.EXPECTED_ENVIRONMENT, runtimeEnvironment: env.RUNTIME_ENVIRONMENT, targetOrigin: env.TARGET_ORIGIN, release: env.EXPECTED_RELEASE_SHA, signalFamilies: SIGNALS, scheduleMinutes: 10 }) });
+	if (url.pathname === '/ops/monitor/config' && request.method === 'GET' && sameToken(request, env.EVIDENCE_READ_TOKEN) && !url.search) return response(200, { schemaVersion: 1, environment: env.EXPECTED_ENVIRONMENT, runtimeEnvironment: env.RUNTIME_ENVIRONMENT, targetOrigin: env.TARGET_ORIGIN, release: env.EXPECTED_RELEASE_SHA, signalFamilies: SIGNALS, scheduleMinutes: 10, webhookSigningSecretSha256: await digest(env.RESEND_WEBHOOK_SECRET), configSha256: await digest({ environment: env.EXPECTED_ENVIRONMENT, runtimeEnvironment: env.RUNTIME_ENVIRONMENT, targetOrigin: env.TARGET_ORIGIN, release: env.EXPECTED_RELEASE_SHA, signalFamilies: SIGNALS, scheduleMinutes: 10 }) });
 	if (url.pathname === '/ops/monitor/heartbeat' && request.method === 'GET' && sameToken(request, env.WATCHDOG_TOKEN) && !url.search) return response(200, redactState(await load(env), now));
 	if (url.pathname === '/ops/monitor/state' && request.method === 'GET' && sameToken(request, env.EVIDENCE_READ_TOKEN) && !url.search) { const state = await load(env); return response(200, { ...redactState(state, now), signals: SIGNALS.map(signal => { const item = state.signals[signal]; return item ? { signal, ok: item.ok, severity: item.severity, reasonCode: item.reasonCode, checkedAt: item.checkedAt, incidentId: item.incidentId } : { signal, ok: false, severity: 'critical', reasonCode: 'monitor_never_completed', checkedAt: null }; }) }); }
 	if (url.pathname === '/ops/monitor/events' && request.method === 'GET' && sameToken(request, env.EVIDENCE_READ_TOKEN) && [...url.searchParams.keys()].every(key => key === 'incidentId' || key === 'state')) { const incidentId = url.searchParams.get('incidentId'), phase = url.searchParams.get('state'); if (!incidentId || (phase !== 'firing' && phase !== 'resolved') || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(incidentId)) return response(400, { ok: false, code: 'invalid_request' }); const state = await load(env); const signal = SIGNALS.map(name => state.signals[name]).find(item => item?.incidentId === incidentId); const delivery = signal?.deliveries?.[phase]; if (!signal || delivery?.eventType !== 'email.delivered' || !delivery.messageId || !delivery.eventId || !delivery.occurredAt) return response(404, { ok: false, code: 'delivery_unproven' }); return response(200, { schemaVersion: 1, incidentId, signal: signal.signal, state: phase, messageId: delivery.messageId, eventId: delivery.eventId, eventType: 'email.delivered', occurredAt: delivery.occurredAt }); }
@@ -168,7 +181,12 @@ export class Issue29MonitorCoordinator {
 	private queue: Promise<void> = Promise.resolve();
 	private readonly runtime: MonitorEnv;
 	constructor(state: DurableObjectStateLike, env: WorkerBindingEnv) { this.runtime = { ...env, MONITOR_STATE: { get: async key => (await state.storage.get<string>(key)) ?? null, put: async (key, value) => state.storage.put(key, value) } }; }
-	fetch(request: Request): Promise<Response> {
+	async fetch(request: Request): Promise<Response> {
+		// Streaming ingress must finish outside the state queue, so a hostile body cannot block cron or heartbeat work.
+		if (request.method !== 'GET' && new URL(request.url).pathname !== '/_issue29/internal-cycle') {
+			try { const bytes=await boundedBytes(request); request=new Request(request.url,{method:request.method,headers:request.headers,body:bytes.buffer as ArrayBuffer}); }
+			catch { return response(400,{ok:false,code:'invalid_request'}); }
+		}
 		const execute = async () => { const url = new URL(request.url); if (url.pathname === '/_issue29/internal-cycle' && request.method === 'POST' && !url.search) { if (!configOk(this.runtime)) return response(503, { ok: false, code: 'monitor_unavailable' }); await cycle(this.runtime, fetch, Date.now()); return response(204); } return handler(request, this.runtime); };
 		const result = this.queue.then(execute); this.queue = result.then(() => undefined, () => undefined); return result;
 	}

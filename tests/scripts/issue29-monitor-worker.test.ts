@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createIssue29Monitor, Issue29MonitorCoordinator, type MonitorEnv } from '../../workers/issue29-monitor/src/index';
 import { verifyMonitorHeartbeat } from '../../scripts/issue29-operations/monitor-watchdog.mjs';
 
@@ -87,7 +87,10 @@ describe('Issue 29 Cloudflare monitor', () => {
 		const values = new Map<string, string>(); const storage = { get: async <T>(key: string) => values.has(key) ? values.get(key) as T : undefined, put: async (key: string, value: string) => { await Promise.resolve(); values.set(key, value); } };
 		const configuration = env() as unknown as Record<string, unknown>; delete configuration.MONITOR_STATE; configuration.MONITOR_COORDINATOR = {};
 		const coordinator = new Issue29MonitorCoordinator({ storage }, configuration as never); const checkpoint = { schemaVersion: 1, environment: 'staging', release, checkpointAt: new Date().toISOString(), descriptorSha256: 'd'.repeat(64), artifactSha256: 'c'.repeat(64) };
-		const write = coordinator.fetch(new Request('https://internal/ops/monitor/backup-checkpoint', { method: 'POST', headers: { authorization: `Bearer ${env().BACKUP_CHECKPOINT_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(checkpoint) })); const read = coordinator.fetch(new Request('https://internal/ops/monitor/heartbeat', { headers: { authorization: `Bearer ${env().WATCHDOG_TOKEN}` } })); expect((await write).status).toBe(204); const result = await read; expect((await result.json() as { latestTrustedBackupCheckpointAt: string | null }).latestTrustedBackupCheckpointAt).toBe(checkpoint.checkpointAt);
+		const write = coordinator.fetch(new Request('https://internal/ops/monitor/backup-checkpoint', { method: 'POST', headers: { authorization: `Bearer ${env().BACKUP_CHECKPOINT_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(checkpoint) }));
+		const maintenance=coordinator.fetch(new Request('https://internal/ops/monitor/maintenance',{method:'PUT',headers:{authorization:`Bearer ${env().MAINTENANCE_TOKEN}`,'content-type':'application/json'},body:JSON.stringify({schemaVersion:1,incidentId:'55555555-5555-4555-8555-555555555555',startsAt:new Date().toISOString(),endsAt:new Date(Date.now()+60_000).toISOString()})}));
+		expect((await write).status).toBe(204);expect((await maintenance).status).toBe(204);
+		const result=await coordinator.fetch(new Request('https://internal/ops/monitor/heartbeat',{headers:{authorization:`Bearer ${env().WATCHDOG_TOKEN}`}}));const readback=await result.json() as any;expect(readback.latestTrustedBackupCheckpointAt).toBe(checkpoint.checkpointAt);expect(readback.maintenance.incidentId).toBe('55555555-5555-4555-8555-555555555555');
 	});
 });
 
@@ -129,10 +132,33 @@ it('reports a missed schedule on resumption and then advances actual cycle heart
  const configuration=env();let tick=now;const sends:string[]=[];
  const monitor=createIssue29Monitor({now:()=>tick,fetch:fetcher({sends})});await monitor.scheduled(configuration);tick+=40*60_000;await monitor.scheduled(configuration);
  const state=await (await monitor.fetch(new Request('https://monitor.example.test/ops/monitor/state',{headers:{authorization:`Bearer ${configuration.EVIDENCE_READ_TOKEN}`}}),configuration)).json() as any;
- expect(state.signals.find((s:any)=>s.signal==='monitor_heartbeat')).toMatchObject({ok:false,reasonCode:'monitor_cycle_gap'});expect(state.lastSuccessfulMonitorCycleAt).toBe(new Date(tick).toISOString());expect(sends.some(s=>s.includes('monitor_heartbeat'))).toBe(true);
+ expect(state.signals.find((s:any)=>s.signal==='monitor_heartbeat')).toMatchObject({ok:false,reasonCode:'monitor_cycle_gap'});expect(state.lastCompletedMonitorCycleAt).toBe(new Date(tick).toISOString());expect(sends.some(s=>s.includes('monitor_heartbeat'))).toBe(true);
 });
 it('retains corruption evidence even before the first trusted checkpoint without creating freshness',async()=>{
  const configuration=env(),monitor=createIssue29Monitor({now:()=>now});
  expect((await monitor.fetch(new Request('https://monitor.example.test/ops/monitor/backup-failure',{method:'POST',headers:{authorization:`Bearer ${configuration.BACKUP_CHECKPOINT_TOKEN}`,'content-type':'application/json'},body:JSON.stringify({schemaVersion:1,environment:'staging',release,evidenceSha256:'f'.repeat(64)})}),configuration)).status).toBe(204);
  const proof=await (await monitor.fetch(new Request('https://monitor.example.test/ops/monitor/backup-checkpoint',{headers:{authorization:`Bearer ${configuration.EVIDENCE_READ_TOKEN}`}}),configuration)).json();expect(proof).toMatchObject({backupRelease:null,checkpointAt:null,integrityFailureEvidenceSha256:'f'.repeat(64)});
+});
+it('does not let a stalled unsigned webhook block the coordinator heartbeat',async()=>{
+ const configuration=env();const stored=new Map<string,string>();const coordinator=new Issue29MonitorCoordinator({storage:{get:async<T>(key:string)=>stored.get(key) as T|undefined,put:async(key,value)=>{stored.set(key,value);}}},{...configuration,MONITOR_COORDINATOR:{} as never});
+ let finish!:()=>void;const stream=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(new TextEncoder().encode('{'));finish=()=>controller.close();}});
+ const hostile=coordinator.fetch(new Request('https://monitor.example.test/ops/monitor/resend-webhook',{method:'POST',headers:{'content-type':'application/json','svix-id':'msg_unsigned123','svix-timestamp':String(Math.floor(now/1000))},body:stream,duplex:'half'} as RequestInit));
+ const heartbeat=await coordinator.fetch(new Request('https://monitor.example.test/ops/monitor/heartbeat',{headers:{authorization:`Bearer ${configuration.WATCHDOG_TOKEN}`}}));expect(heartbeat.status).toBe(200);finish();expect((await hostile).status).toBe(400);
+});
+it.each(['failed','accepted'])('makes persistently %s delivery visible to the independent watchdog',async outcome=>{
+ const configuration=env();let tick=now;const requests:{body:string,key:string|null}[]=[];
+ const monitor=createIssue29Monitor({now:()=>tick,fetch:async(input,init)=>{if(new URL(String(input)).hostname==='api.resend.com'){requests.push({body:String(init?.body),key:new Headers(init?.headers).get('Idempotency-Key')});return outcome==='failed'?new Response(null,{status:503}):Response.json({id:crypto.randomUUID()});}return fetcher({readiness:readiness({storage:{ok:false,severity:'critical',reasonCode:'storage_integrity_mismatch'}})})(input,init);}});
+ for(let i=0;i<=7;i++){tick=now+i*10*60_000;await monitor.scheduled(configuration);}
+ const heartbeat=await (await monitor.fetch(new Request('https://monitor.example.test/ops/monitor/heartbeat',{headers:{authorization:`Bearer ${configuration.WATCHDOG_TOKEN}`}}),configuration)).json() as any;
+ expect(heartbeat.lastCompletedMonitorCycleAt).toBe(new Date(tick).toISOString());
+ await expect(verifyMonitorHeartbeat({env:{MONITOR_HEARTBEAT_URL:'https://monitor.owner.workers.dev/ops/monitor/heartbeat',MONITOR_WATCHDOG_TOKEN:configuration.WATCHDOG_TOKEN,MONITOR_EXPECTED_ENVIRONMENT:'staging',MONITOR_EXPECTED_RELEASE_SHA:release},now:()=>tick,fetchImpl:async()=>Response.json(heartbeat)})).rejects.toThrow('heartbeat_stale');
+ const storage=requests.filter(r=>JSON.parse(r.body).subject.endsWith(': storage'));expect(storage).toHaveLength(outcome==='failed'?3:1);expect(new Set(storage.map(r=>r.body)).size).toBe(1);expect(new Set(storage.map(r=>r.key)).size).toBe(1);
+});
+it('cancels a stalled ingress body at the five-second deadline',async()=>{
+ vi.useFakeTimers();try{
+  const configuration=env();const coordinator=new Issue29MonitorCoordinator({storage:{get:async()=>undefined,put:async()=>{}}},{...configuration,MONITOR_COORDINATOR:{} as never});let canceled=false;
+  const stream=new ReadableStream<Uint8Array>({start(c){c.enqueue(new TextEncoder().encode('{'));},cancel(){canceled=true;}});
+  const pending=coordinator.fetch(new Request('https://monitor.example.test/ops/monitor/resend-webhook',{method:'POST',headers:{'content-type':'application/json'},body:stream,duplex:'half'} as RequestInit));
+  await vi.advanceTimersByTimeAsync(5001);expect((await pending).status).toBe(400);expect(canceled).toBe(true);
+ }finally{vi.useRealTimers();}
 });

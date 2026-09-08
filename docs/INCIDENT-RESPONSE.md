@@ -70,6 +70,11 @@ response are insufficient. Delivery is not proof that a human read the message.
 The independent GitHub Actions watchdog checks the Cloudflare monitor heartbeat
 every 20 minutes with a 45-minute freshness tolerance because GitHub schedules
 can be delayed. It cannot certify its own health.
+A cycle is successful only while alert delivery is proven or still inside a
+20-minute delivery window. Completed-cycle time remains separately observable.
+An unresolved send replays the exact stored request and idempotency key at most
+three times within one hour; an accepted message is never resent. Missing
+`email.delivered` evidence eventually makes the independent watchdog fail.
 Only sanitized event evidence is retained privately; GitHub receives bounded
 failure codes, never provider bodies, recipients or credentials.
 
