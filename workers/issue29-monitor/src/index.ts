@@ -21,7 +21,7 @@ export interface MonitorEnv {
 	BACKUP_CHECKPOINT_TOKEN: string; WATCHDOG_TOKEN: string; EVIDENCE_READ_TOKEN: string; MAINTENANCE_TOKEN: string; RELEASE_ADOPTION_TOKEN: string;
 }
 type Signal = { signal: SignalName; ok: boolean; severity: Severity; reasonCode: string; checkedAt: string };
-type Delivery = { messageId?: string; eventId?: string; eventType?: 'email.delivered'; occurredAt?: string; sendAttemptedAt?: string; sendStatus?: 'sent' | 'uncertain'; attempts?: number; requestBody?: string; idempotencyKey?: string };
+type Delivery = { messageId?: string; eventId?: string; eventType?: 'email.delivered'; occurredAt?: string; sendAttemptedAt?: string; sendStatus?: 'sent' | 'uncertain'; attempts?: number; messageText?: string; requestSha256?: string; idempotencyKey?: string };
 type StoredSignal = Signal & { incidentId?: string; alertState?: AlertState; deliveries?: Partial<Record<AlertState, Delivery>>; failures?: number; successes?: number; firingSeverity?: Severity };
 type Backup = { release: string; checkpointAt: string; descriptorSha256: string; artifactSha256: string; integrityFailureEvidenceSha256?: string };
 type MaintenanceTarget = { origin: string; readinessUrl: string; readinessToken: string; runtimeEnvironment: string; release: string };
@@ -92,9 +92,9 @@ function bodyFor(signal: StoredSignal, env: MonitorEnv): string {
 	const state = signal.alertState === 'resolved' ? 'RECOVERY' : 'FAILURE';
 	return [`Issue 29 ${state}`, `Environment: ${env.EXPECTED_ENVIRONMENT}`, `Severity: ${signal.severity}`, `Signal: ${signal.signal}`, `Incident: ${signal.incidentId}`, `Observed: ${signal.checkedAt}`, `Immediate action: ${runbook(signal.signal)}`].join('\n');
 }
-async function sendAlert(env: MonitorEnv, delivery: Delivery, fetcher: FetchLike): Promise<Delivery> {
+async function sendAlert(env: MonitorEnv, delivery: Delivery, requestBody: string, fetcher: FetchLike): Promise<Delivery> {
 	try {
-		const result = await boundedFetch(fetcher, 'https://api.resend.com/emails', { method: 'POST', headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json', 'Idempotency-Key': delivery.idempotencyKey! }, body: delivery.requestBody });
+		const result = await boundedFetch(fetcher, 'https://api.resend.com/emails', { method: 'POST', headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json', 'Idempotency-Key': delivery.idempotencyKey! }, body: requestBody });
 		if (!result.ok) { await result.body?.cancel(); return delivery; }
 		const value = await json(result), id = value && typeof value === 'object' ? (value as Record<string, unknown>).id : undefined;
 		if (typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return { ...delivery, messageId: id, sendStatus: 'sent' };
@@ -118,23 +118,25 @@ async function cycle(env: MonitorEnv, fetcher: FetchLike, now: number): Promise<
 	for (const result of observed) {
 		const previous = state.signals[result.signal]; const immediate = result.signal === 'backup_freshness' || result.signal === 'monitor_heartbeat' || ['deployment_identity_mismatch', 'storage_integrity_mismatch', 'deal_invariant_violation', 'safety_invariant_violation', 'email_canary_absent'].includes(result.reasonCode);
 		const next: StoredSignal = { ...result, incidentId: previous?.incidentId, alertState: undefined, deliveries: previous?.deliveries, failures: result.ok ? 0 : Math.min(2, (previous?.failures ?? 0) + 1), successes: result.ok ? Math.min(2, (previous?.successes ?? 0) + 1) : 0, firingSeverity: previous?.firingSeverity ?? 'none' };
-		if (alertable(result.signal, maintenance && !target) && !result.ok && (immediate || next.failures === 2) && (next.firingSeverity === 'none' || (next.firingSeverity === 'warning' && result.severity === 'critical'))) { if (next.firingSeverity === 'none') { next.incidentId = crypto.randomUUID(); next.deliveries = {}; } next.alertState = 'firing'; next.firingSeverity = result.severity; }
-		else if (alertable(result.signal, maintenance && !target) && result.ok && previous && previous.firingSeverity !== 'none' && next.successes === 2 && previous.incidentId) { next.incidentId = previous.incidentId; next.alertState = 'resolved'; next.firingSeverity = 'none'; next.deliveries = { ...previous.deliveries, resolved: undefined }; }
+		if (alertable(result.signal, maintenance && !target) && !result.ok && (immediate || next.failures === 2) && (next.firingSeverity === 'none' || (next.firingSeverity === 'warning' && result.severity === 'critical'))) { if (next.firingSeverity === 'none' && Object.values(next.deliveries??{}).every(delivery=>delivery.eventType==='email.delivered')) { next.incidentId = crypto.randomUUID(); next.deliveries = {}; } next.alertState = 'firing'; next.firingSeverity = result.severity; }
+		else if (alertable(result.signal, maintenance && !target) && result.ok && previous && previous.firingSeverity !== 'none' && next.successes === 2 && previous.incidentId) { next.incidentId = previous.incidentId; next.alertState = 'resolved'; next.firingSeverity = 'none'; next.deliveries = { ...previous.deliveries }; }
 		state.signals[result.signal] = next;
 	}
 	state.lastCompletedMonitorCycleAt = new Date(now).toISOString(); await save(env, state);
 	for (const name of SIGNALS) {
 		const signal = state.signals[name]!;
 		if (signal.incidentId && signal.alertState && alertable(name, maintenance && !target) && !signal.deliveries?.[signal.alertState]) {
-			const phase=signal.alertState;
-			signal.deliveries = { ...signal.deliveries, [phase]: { sendAttemptedAt: new Date(now).toISOString(), sendStatus: 'uncertain', attempts: 0, idempotencyKey: `issue29/${env.EXPECTED_RELEASE_SHA}/${signal.incidentId}/${phase}`, requestBody: JSON.stringify({ from: env.RESEND_FROM, to: [env.RESEND_TO], subject: `Issue 29 ${phase === 'resolved' ? 'recovery' : 'failure'}: ${signal.signal}`, text: bodyFor(signal, env) }) } };
+			const phase=signal.alertState, messageText=bodyFor(signal,env), requestBody=JSON.stringify({from:env.RESEND_FROM,to:[env.RESEND_TO],subject:`Issue 29 ${phase==='resolved'?'recovery':'failure'}: ${signal.signal}`,text:messageText});
+			signal.deliveries = { ...signal.deliveries, [phase]: { sendAttemptedAt: new Date(now).toISOString(), sendStatus: 'uncertain', attempts: 0, idempotencyKey: `issue29/${env.EXPECTED_RELEASE_SHA}/${signal.incidentId}/${phase}`, messageText, requestSha256:await digest(requestBody) } };
 			await save(env,state);
 		}
 		for (const phase of ['firing','resolved'] as const) {
 			const delivery=signal.deliveries?.[phase];
-			if (delivery?.sendStatus==='uncertain' && delivery.requestBody && delivery.idempotencyKey && (delivery.attempts??0)<3 && now-Date.parse(delivery.sendAttemptedAt!)<60*MINUTE) {
+			if (delivery?.sendStatus==='uncertain' && delivery.messageText && delivery.requestSha256 && delivery.idempotencyKey && (delivery.attempts??0)<3 && now-Date.parse(delivery.sendAttemptedAt!)<60*MINUTE) {
+				const requestBody=JSON.stringify({from:env.RESEND_FROM,to:[env.RESEND_TO],subject:`Issue 29 ${phase==='resolved'?'recovery':'failure'}: ${signal.signal}`,text:delivery.messageText});
+				if(await digest(requestBody)!==delivery.requestSha256)continue;
 				delivery.attempts=(delivery.attempts??0)+1;await save(env,state);
-				signal.deliveries![phase]=await sendAlert(env,delivery,fetcher);await save(env,state);
+				signal.deliveries![phase]=await sendAlert(env,delivery,requestBody,fetcher);await save(env,state);
 			}
 		}
 	}

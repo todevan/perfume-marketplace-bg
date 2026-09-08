@@ -27,7 +27,7 @@ function fetcher(options: { readiness?: unknown; delivered?: boolean; sends?: st
 		throw new Error(`unexpected ${url}`);
 	};
 }
-async function signedWebhook(configuration: MonitorEnv, id: string, payload: string) { const timestamp = String(Math.floor(now / 1000)); const key = await crypto.subtle.importKey('raw', Uint8Array.from(atob(configuration.RESEND_WEBHOOK_SECRET.slice(6)), item => item.charCodeAt(0)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const bytes = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${timestamp}.${payload}`)); return new Request('https://monitor.example.test/ops/monitor/resend-webhook', { method: 'POST', headers: { 'content-type': 'application/json', 'svix-id': id, 'svix-timestamp': timestamp, 'svix-signature': `v1,${btoa(String.fromCharCode(...new Uint8Array(bytes)))}` }, body: payload }); }
+async function signedWebhook(configuration: MonitorEnv, id: string, payload: string, observedNow=now) { const timestamp = String(Math.floor(observedNow / 1000)); const key = await crypto.subtle.importKey('raw', Uint8Array.from(atob(configuration.RESEND_WEBHOOK_SECRET.slice(6)), item => item.charCodeAt(0)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const bytes = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${timestamp}.${payload}`)); return new Request('https://monitor.example.test/ops/monitor/resend-webhook', { method: 'POST', headers: { 'content-type': 'application/json', 'svix-id': id, 'svix-timestamp': timestamp, 'svix-signature': `v1,${btoa(String.fromCharCode(...new Uint8Array(bytes)))}` }, body: payload }); }
 
 describe('Issue 29 Cloudflare monitor', () => {
 	it('runs the exact nine readiness families, verifies public release identity, and exposes only its minimal heartbeat state', async () => {
@@ -114,18 +114,18 @@ it('keeps monitor heartbeat and trusted backup observable when readiness is unav
  expect(state.lastSuccessfulMonitorCycleAt).toBe(new Date(now).toISOString());expect(state.signals.find((s:any)=>s.signal==='backup_freshness').ok).toBe(true);expect(state.signals.find((s:any)=>s.signal==='health').ok).toBe(false);
 });
 it('creates a new incident for a later failure and persists send intent before every request', async () => {
- const configuration=env();let tick=now,failed=true;const storageIncidents:string[]=[];
+ const configuration=env();let tick=now,failed=true;const storageIncidents:string[]=[],sentIds:string[]=[];
  const monitor=createIssue29Monitor({now:()=>tick,fetch:async(input,init)=>{
   if(new URL(String(input)).hostname==='api.resend.com'){
    const body=JSON.parse(String(init?.body));if(body.subject.endsWith(': storage')){
     const persisted=JSON.parse((await configuration.MONITOR_STATE.get('issue29-monitor-state-v1'))!);const current=persisted.signals.storage;expect(current.deliveries[current.alertState].sendStatus).toBe('uncertain');
     storageIncidents.push(current.incidentId);
    }
-   return Response.json({id:crypto.randomUUID()});
+   const id=crypto.randomUUID();sentIds.push(id);return Response.json({id});
   }
   return fetcher({readiness:{...readiness(failed?{storage:{ok:false,severity:'critical',reasonCode:'storage_integrity_mismatch'}}:{}),signals:readiness(failed?{storage:{ok:false,severity:'critical',reasonCode:'storage_integrity_mismatch'}}:{}).signals.map(s=>({...s,checkedAt:new Date(tick).toISOString()}))}})(input,init);
  }});
- await monitor.scheduled(configuration);failed=false;tick+=10*60_000;await monitor.scheduled(configuration);tick+=10*60_000;await monitor.scheduled(configuration);failed=true;tick+=10*60_000;await monitor.scheduled(configuration);
+ const run=async()=>{await monitor.scheduled(configuration);for(const id of sentIds.splice(0)){const webhook=await signedWebhook(configuration,'msg_'+crypto.randomUUID(),JSON.stringify({type:'email.delivered',created_at:new Date(tick).toISOString(),data:{email_id:id}}),tick);expect((await monitor.fetch(webhook,configuration)).status).toBe(200);}};await run();failed=false;tick+=10*60_000;await run();tick+=10*60_000;await run();failed=true;tick+=10*60_000;await run();
  expect(storageIncidents).toHaveLength(3);expect(storageIncidents[0]).toBe(storageIncidents[1]);expect(storageIncidents[2]).not.toBe(storageIncidents[0]);
 });
 it('reports a missed schedule on resumption and then advances actual cycle heartbeat',async()=>{
@@ -161,4 +161,20 @@ it('cancels a stalled ingress body at the five-second deadline',async()=>{
   const pending=coordinator.fetch(new Request('https://monitor.example.test/ops/monitor/resend-webhook',{method:'POST',headers:{'content-type':'application/json'},body:stream,duplex:'half'} as RequestInit));
   await vi.advanceTimersByTimeAsync(5001);expect((await pending).status).toBe(400);expect(canceled).toBe(true);
  }finally{vi.useRealTimers();}
+});
+it.each(['failed','accepted'])('preserves unresolved %s notification deadlines across recurring incidents and release adoption',async outcome=>{
+ const configuration=env();let tick=now;const monitor=createIssue29Monitor({now:()=>tick,fetch:async(input,init)=>{if(new URL(String(input)).hostname==='api.resend.com')return outcome==='failed'?new Response(null,{status:503}):Response.json({id:crypto.randomUUID()});const failing=((tick-now)/(10*60_000))%3===0;const data=readiness(failing?{storage:{ok:false,severity:'critical',reasonCode:'storage_integrity_mismatch'}}:{});data.signals=data.signals.map(s=>({...s,checkedAt:new Date(tick).toISOString()}));return fetcher({readiness:data})(input,init);}});
+ const update=async(path:string,body:unknown,capability:string)=>monitor.fetch(new Request('https://monitor.example.test'+path,{method:'POST',headers:{authorization:`Bearer ${capability}`,'content-type':'application/json'},body:JSON.stringify(body)}),configuration);
+ await update('/ops/monitor/backup-checkpoint',{schemaVersion:1,environment:'staging',release,checkpointAt:new Date(now).toISOString(),descriptorSha256:'d'.repeat(64),artifactSha256:'e'.repeat(64)},configuration.BACKUP_CHECKPOINT_TOKEN);
+ let first='';for(let i=0;i<=12;i++){tick=now+i*10*60_000;await monitor.scheduled(configuration);const stored=JSON.parse((await configuration.MONITOR_STATE.get('issue29-monitor-state-v1'))!);if(i===0)first=stored.signals.storage.incidentId;expect(stored.signals.storage.incidentId).toBe(first);expect(stored.signals.storage.deliveries.firing.sendAttemptedAt).toBe(new Date(now).toISOString());}
+ const getHeartbeat=async()=> (await monitor.fetch(new Request('https://monitor.example.test/ops/monitor/heartbeat',{headers:{authorization:`Bearer ${configuration.WATCHDOG_TOKEN}`}}),configuration)).json();
+ const watchdog={env:{MONITOR_HEARTBEAT_URL:'https://monitor.owner.workers.dev/ops/monitor/heartbeat',MONITOR_WATCHDOG_TOKEN:configuration.WATCHDOG_TOKEN,MONITOR_EXPECTED_ENVIRONMENT:'staging',MONITOR_EXPECTED_RELEASE_SHA:release},now:()=>tick,fetchImpl:async()=>Response.json(await getHeartbeat())};await expect(verifyMonitorHeartbeat(watchdog)).rejects.toThrow('heartbeat_stale');
+ const persisted=(await configuration.MONITOR_STATE.get('issue29-monitor-state-v1'))!;for(const confidential of [configuration.RESEND_TO,configuration.RESEND_FROM,configuration.RESEND_API_KEY,'requestBody'])expect(persisted).not.toContain(confidential);
+ configuration.EXPECTED_RELEASE_SHA='f'.repeat(40);expect((await update('/ops/monitor/release-update',{schemaVersion:1,environment:'staging',previousRelease:release,release:configuration.EXPECTED_RELEASE_SHA,previousConfigSha256:'a'.repeat(64),protectedMergeEvidenceSha256:'b'.repeat(64)},configuration.RELEASE_ADOPTION_TOKEN)).status).toBe(200);
+ const adopted=JSON.parse((await configuration.MONITOR_STATE.get('issue29-monitor-state-v1'))!);expect(adopted.signals.storage.incidentId).toBe(first);expect(adopted.signals.storage.deliveries.firing.sendAttemptedAt).toBe(new Date(now).toISOString());expect(adopted.lastSuccessfulMonitorCycleAt).toBe(JSON.parse(persisted).lastSuccessfulMonitorCycleAt);
+});
+it('refuses idempotency replay when changed secret bindings would change the request',async()=>{
+ const configuration=env();let tick=now,sends=0;const monitor=createIssue29Monitor({now:()=>tick,fetch:async(input,init)=>{if(new URL(String(input)).hostname==='api.resend.com'){sends++;return new Response(null,{status:503});}return fetcher()(input,init);}});
+ await monitor.scheduled(configuration);const initial=sends;expect(initial).toBeGreaterThan(0);configuration.RESEND_TO='changed@example.test';tick+=10*60_000;await monitor.scheduled(configuration);expect(sends).toBe(initial);
+ const raw=(await configuration.MONITOR_STATE.get('issue29-monitor-state-v1'))!;expect(raw).not.toContain('changed@example.test');expect(raw).not.toContain('owner@example.test');
 });
