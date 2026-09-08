@@ -59,29 +59,36 @@ export async function executeRestore(options){
      await restoreLogicalRecovery({...database,components,quarantine:q.quarantine});
     }else ensure(manifest.pending.step==='restore-database'&&manifest.pending.priorStateSha256===settings.descriptorSha256,'PENDING_OPERATION_REQUIRES_READBACK');
     const proof=await verifyLogicalRecovery({...database,expectedInventory:platform});
-    manifest.history.push({step:'restore-database',operationId:manifest.pending.operationId,completedAt:clock(),resourceId:target.ref,evidenceSha256:await storeRestoreProof(proof,manifestPath,repositoryRoot)});manifest.pending=null;manifest.state='database_restored';manifest.recoveryTimings.databaseVerifiedAt=clock();await save();
+    const evidenceSha256=await storeRestoreProof(proof,manifestPath,repositoryRoot),databaseVerifiedAt=clock();
+    manifest.history.push({step:'restore-database',operationId:manifest.pending.operationId,completedAt:databaseVerifiedAt,resourceId:target.ref,evidenceSha256});manifest.pending=null;manifest.state='database_restored';manifest.recoveryTimings.databaseVerifiedAt=databaseVerifiedAt;await save();
    }
    const photos=await readFinalizedPhotos(database);
    const storage={scope,secretKey:settings.targetServiceKey,photos,expectedRowsetSha256:descriptor.checkpoint.finalizedRowsetSha256,storageManifest,descriptorSha256:settings.descriptorSha256,bucketInventory:platform.storageBuckets};
    if(manifest.state==='database_restored'){
     ensure(!options.verifyOnly,'RESTORE_STATE_INVALID');
     await verifyLogicalRecovery({...database,expectedInventory:platform});
-    manifest.recoveryTimings.storageStartedAt??=clock();await save();
     const databaseVerifiedAt=manifest.recoveryTimings?.databaseVerifiedAt;ensure(databaseVerifiedAt,'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');
-    const logicalRestore=manifest.history.find(h=>h.step==='restore-database'&&h.resourceId===target.ref&&Date.parse(h.completedAt)>=Date.parse(databaseVerifiedAt));
+    const logicalRestores=manifest.history.filter(h=>h.step==='restore-database'&&h.resourceId===target.ref&&h.completedAt===databaseVerifiedAt);
+    ensure(logicalRestores.length===1,'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');const logicalRestore=logicalRestores[0];
+    try{const bytes=await readPrivateBytes(join(dirname(manifestPath),`${logicalRestore.evidenceSha256}.json`),repositoryRoot,1048576);ensure(createHash('sha256').update(bytes).digest('hex')===logicalRestore.evidenceSha256,'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');}catch{throw new OperationsError('SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');}
     const sentinelBuckets=Array.isArray(platform.storageBuckets)?platform.storageBuckets.filter(/** @param {Record<string,any>} bucket */bucket=>bucket?.id==='operations-sentinels'&&bucket.name==='operations-sentinels'&&bucket.public===false):[];
     ensure(sentinelBuckets.length===1,'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');
     const sentinelBucket=sentinelBuckets[0],sentinelIntentSha256=digest(sentinelBucket),sentinelResourceId=`storage-bucket:${target.ref}:operations-sentinels`;
+    manifest.recoveryTimings.storageStartedAt??=clock();await save();
     /** @param {import('./storage-adapter.mjs').StorageIntent} intent */
     const key=intent=>{if(intent.kind==='bucket-create'&&intent.resource==='operations-sentinels'){ensure(intent.sha256===sentinelIntentSha256,'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');return sentinelResourceId;}return digest({targetRef:target.ref,kind:intent.kind,resource:intent.resource});};
     await restoreFinalizedStorage({...storage,components,...(manifest.history.some(h=>h.step==='restore-storage'&&Date.parse(h.completedAt)>=Date.parse(/** @type {NonNullable<typeof manifest.recoveryTimings>} */(manifest.recoveryTimings).storageStartedAt??''))||manifest.pending?.step==='restore-storage'?{resumeDescriptorSha256:settings.descriptorSha256}:{}),
      persistIntent:async intent=>{const resourceId=key(intent);ensure(!manifest.pending,'PENDING_UPLOAD_REQUIRES_READBACK');ensure(!manifest.attempts[`restore-storage:${resourceId}`],'ATTEMPT_LIMIT');manifest.pending={step:'restore-storage',operationId:randomUUID(),startedAt:clock(),resourceId,priorStateSha256:settings.descriptorSha256};manifest.attempts[`restore-storage:${resourceId}`]=1;await save();},
      readbackVerified:async intent=>{const resourceId=key(intent),sentinel=resourceId===sentinelResourceId;
       const existing=manifest.history.find(h=>h.step==='restore-storage'&&h.resourceId===resourceId);
-      if(existing){if(sentinel)ensure(manifest.cleanup.resources.some(r=>r.provider==='supabase-storage'&&r.id===sentinelResourceId&&r.runId===manifest.runId&&r.disposition==='disposable'&&r.absentAt===null&&r.evidenceSha256===existing.evidenceSha256),'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');return;}
-      if(sentinel&&!manifest.pending){ensure(logicalRestore&&intent.kind==='bucket-create'&&intent.resource==='operations-sentinels'&&intent.sha256===sentinelIntentSha256&&!manifest.attempts[`restore-storage:${resourceId}`],'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');manifest.pending={step:'restore-storage',operationId:randomUUID(),startedAt:clock(),resourceId,priorStateSha256:settings.descriptorSha256};manifest.attempts[`restore-storage:${resourceId}`]=1;await save();}
+      if(existing){if(sentinel){
+       ensure(manifest.cleanup.resources.some(r=>r.provider==='supabase-storage'&&r.id===sentinelResourceId&&r.runId===manifest.runId&&r.disposition==='disposable'&&r.absentAt===null&&r.evidenceSha256===existing.evidenceSha256),'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');
+       let previous;try{const bytes=await readPrivateBytes(join(dirname(manifestPath),`${existing.evidenceSha256}.json`),repositoryRoot,1048576);ensure(createHash('sha256').update(bytes).digest('hex')===existing.evidenceSha256,'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');previous=JSON.parse(bytes.toString());}catch{throw new OperationsError('SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');}
+       ensure(previous?.targetRef===target.ref&&previous.descriptorSha256===settings.descriptorSha256&&previous.logicalRestoreEvidenceSha256===logicalRestore.evidenceSha256&&canonicalJson(previous.intent)===canonicalJson(intent)&&canonicalJson(previous.bucket)===canonicalJson(sentinelBucket),'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');
+      }return;}
+      if(sentinel&&!manifest.pending){ensure(intent.kind==='bucket-create'&&intent.resource==='operations-sentinels'&&intent.sha256===sentinelIntentSha256&&!manifest.attempts[`restore-storage:${resourceId}`],'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');manifest.pending={step:'restore-storage',operationId:randomUUID(),startedAt:clock(),resourceId,priorStateSha256:settings.descriptorSha256};manifest.attempts[`restore-storage:${resourceId}`]=1;await save();}
       ensure(manifest.pending?.step==='restore-storage'&&manifest.pending.resourceId===resourceId&&manifest.pending.priorStateSha256===settings.descriptorSha256,'STORAGE_READBACK_PROVENANCE_REQUIRED');
-      const proof=sentinel?{targetRef:target.ref,descriptorSha256:settings.descriptorSha256,logicalRestoreEvidenceSha256:logicalRestore?.evidenceSha256,intent,bucket:sentinelBucket}:intent,evidenceSha256=await storeRestoreProof(proof,manifestPath,repositoryRoot);
+      const proof=sentinel?{targetRef:target.ref,descriptorSha256:settings.descriptorSha256,logicalRestoreEvidenceSha256:logicalRestore.evidenceSha256,intent,bucket:sentinelBucket}:intent,evidenceSha256=await storeRestoreProof(proof,manifestPath,repositoryRoot);
       if(sentinel){const owned=manifest.cleanup.resources.find(r=>r.provider==='supabase-storage'&&r.id===sentinelResourceId&&r.runId===manifest.runId);ensure(!owned,'SENTINEL_BUCKET_RESTORE_OWNERSHIP_REQUIRED');manifest.cleanup.resources.push({provider:'supabase-storage',id:sentinelResourceId,runId:manifest.runId,createdAt:clock(),evidenceSha256,disposition:'disposable',absentAt:null});}
       manifest.history.push({step:'restore-storage',operationId:manifest.pending.operationId,completedAt:clock(),resourceId,evidenceSha256});manifest.pending=null;await save();}});
     ensure(!manifest.pending,'PENDING_UPLOAD_REQUIRES_READBACK');const proof=await verifyFinalizedStorage(storage);manifest.state='storage_restored';manifest.recoveryTimings.storageVerifiedAt=clock();manifest.history.push({step:'restore-storage',operationId:randomUUID(),completedAt:clock(),resourceId:target.ref,evidenceSha256:await storeRestoreProof(proof,manifestPath,repositoryRoot)});await save();
