@@ -1,12 +1,15 @@
 import { afterEach, expect, test } from 'vitest';
-import { mkdtemp, writeFile, rm, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile, stat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { manifestFixture, candidate } from '../fixtures/issue29-operations';
 import { writePrivateManifest, readPrivateManifest } from '../../scripts/issue29-operations/manifest.mjs';
 import { executeSeedSource } from '../../scripts/issue29-operations/source-execution.mjs';
 import { syntheticActorDefinitions } from '../../scripts/issue29-operations/synthetic-source.mjs';
 const now = '2026-09-05T12:01:00.000Z', dirs: string[] = [];
+const executeFile = promisify(execFile);
 afterEach(async () => { await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 async function fixture() { const directory = await mkdtemp(join(tmpdir(), 'issue29-source-execution-')); dirs.push(directory); const manifest = manifestFixture(); manifest.target = null; manifest.state = 'source_read_back'; manifest.allowedActions.push('seed-source'); manifest.sourceProvenance = { createdAt: now, creationIntentId: manifest.runId, creationReadbackSha256: 'd'.repeat(64), fixtureRunId: null, fixtureManifestSha256: null, inventorySha256: null, releaseBindingSha256: null, verifiedAt: null }; manifest.cleanup.resources = [{ provider: 'supabase', id: manifest.source!.ref, runId: manifest.runId, createdAt: now, evidenceSha256: 'd'.repeat(64), disposition: 'persistent', absentAt: null }]; const manifestPath = join(directory, 'manifest.json'), settingsPath = join(directory, 'settings.json'); const settings = { schemaVersion: 1, operation: 'seed-source', providerToken: 'private-provider-token', source: { apiUrl: manifest.source!.url, serviceKey: 'private-service-key' }, connection: { host: `db.${manifest.source!.ref}.supabase.co`, port: 5432, database: 'postgres', user: 'postgres', password: 'private-password', sslmode: 'verify-full' }, toolchain: { mode: 'container' }, privateDirectory: directory }; await writePrivateManifest(manifestPath, manifest, { repositoryRoot: process.cwd(), candidate, now }); await writeFile(settingsPath, JSON.stringify(settings), { mode: 0o600 }); return { directory, manifest, manifestPath, settingsPath, settings }; }
 test.each(['unowned', 'wrong-state', 'pending', 'completed-source'])('refuses %s before source initialization or any provider write', async (kind) => { const f = await fixture(); if (kind === 'unowned')
@@ -93,4 +96,59 @@ test('keeps original seed bytes across protected unchanged-tree merge adoption a
  await expect(readSeededSourceEvidence({manifest:m,privateDirectory:f.directory,repositoryRoot:process.cwd()})).rejects.toThrow('MERGE_ADOPTION_REQUIRED');m.history.push({step:'adopt-merged-release',operationId:m.runId,completedAt:now,resourceId:m.candidate.sha,evidenceSha256});
  expect((await readSeededSourceEvidence({manifest:m,privateDirectory:f.directory,repositoryRoot:process.cwd()})).summary.candidate.sha).toBe(fromCandidate.sha);expect(await readFile(join(f.directory,'source-seed-evidence.json'))).toEqual(before);
  m.candidate.tree='9'.repeat(40);await expect(readSeededSourceEvidence({manifest:m,privateDirectory:f.directory,repositoryRoot:process.cwd()})).rejects.toThrow('MERGE_ADOPTION_REQUIRED');
+});
+
+async function git(root:string,args:string[]){return (await executeFile('git',args,{cwd:root})).stdout.trim();}
+async function revision(root:string){const sha=await git(root,['rev-parse','HEAD']);return{sha,tree:await git(root,['rev-parse','HEAD^{tree}']),deploymentId:'version-29'};}
+async function seedReuseFixture(change:{path:string,contents:string}){
+ const repositoryRoot=await mkdtemp(join(tmpdir(),'issue29-seed-reuse-repository-'));dirs.push(repositoryRoot);
+ await git(repositoryRoot,['init','--initial-branch=main']);await git(repositoryRoot,['config','user.email','issue29@example.test']);await git(repositoryRoot,['config','user.name','Issue 29']);
+ const sourcePath=join(repositoryRoot,'scripts/issue29-operations/source-execution.mjs');await mkdir(join(repositoryRoot,'scripts/issue29-operations'),{recursive:true});await writeFile(sourcePath,await readFile(join(process.cwd(),'scripts/issue29-operations/source-execution.mjs')));
+ await git(repositoryRoot,['add','.']);await git(repositoryRoot,['commit','-m','seed candidate']);const from=await revision(repositoryRoot);
+ const f=await fixture();f.manifest.candidate=from;await writePrivateManifest(f.manifestPath,f.manifest,{repositoryRoot,candidate:from,now,replace:true});
+ await executeSeedSource({...f,repositoryRoot,candidate:from,now},{preflight:async()=>({projectRef:f.manifest.source!.ref,signupDisabled:true,evidenceSha256:'d'.repeat(64)}),initialize:async()=>initialized(f.manifest.runId,f.manifest.source!.ref)});
+ const originalSummary=await readFile(join(f.directory,'source-seed-evidence.json'));
+ const changedPath=join(repositoryRoot,change.path);await mkdir(join(changedPath,'..'),{recursive:true});await writeFile(changedPath,change.contents);await git(repositoryRoot,['add','.']);await git(repositoryRoot,['commit','-m','candidate repair']);const to=await revision(repositoryRoot);
+ const approval=Buffer.from('{"approved":true}');const approvalEvidenceSha256=createHash('sha256').update(approval).digest('hex');await writeFile(join(f.directory,`${approvalEvidenceSha256}.json`),approval,{mode:0o600});
+ const authorization={schemaVersion:1,policy:'issue29-owner-authorized-seed-candidate-reuse',runId:f.manifest.runId,projectRef:f.manifest.source!.ref,fromCandidate:{sha:from.sha,tree:from.tree},toCandidate:{sha:to.sha,tree:to.tree},originalSummarySha256:createHash('sha256').update(originalSummary).digest('hex'),approvalEvidenceSha256,authorizedAt:'2026-09-05T12:00:00.000Z',expiresAt:'2026-09-05T13:00:00.000Z'};
+ await writeFile(join(f.directory,`seed-candidate-reuse-${to.sha}.json`),JSON.stringify(authorization),{mode:0o600});
+ const manifest=await readPrivateManifest(f.manifestPath,{repositoryRoot,now});manifest.candidate=to;
+ return{...f,repositoryRoot,from,to,manifest,authorization,originalSummary};
+}
+async function overwriteReuseAuthorization(f:Awaited<ReturnType<typeof seedReuseFixture>>,value:unknown){await writeFile(join(f.directory,`seed-candidate-reuse-${f.to.sha}.json`),JSON.stringify(value),{mode:0o600});}
+
+test('reuses immutable seed evidence only for an authorized, ancestor repair with unchanged initialization',async()=>{
+ const f=await seedReuseFixture({path:'scripts/issue29-operations/worker-adapter.mjs',contents:'// bounded pagination repair\n'});
+ const evidence=await readSeededSourceEvidence({manifest:f.manifest,privateDirectory:f.directory,repositoryRoot:f.repositoryRoot,now});
+ expect(evidence.reuse).toMatchObject({fromCandidate:{sha:f.from.sha,tree:f.from.tree},toCandidate:{sha:f.to.sha,tree:f.to.tree},approvalEvidenceSha256:f.authorization.approvalEvidenceSha256,changedPaths:['scripts/issue29-operations/worker-adapter.mjs']});
+ expect(await readFile(join(f.directory,'source-seed-evidence.json'))).toEqual(f.originalSummary);
+});
+
+test.each([
+ ['seed initialization prefix','scripts/issue29-operations/source-execution.mjs','// changed before the source initialization boundary\n'],
+ ['migration','supabase/migrations/20260908000000_forbidden.sql','select 1;\n'],
+ ['application','src/forbidden.ts','export const forbidden = true;\n']
+])('refuses an authorized repair that changes %s',async(_name,path,contents)=>{
+ const f=await seedReuseFixture({path,contents});
+ await expect(readSeededSourceEvidence({manifest:f.manifest,privateDirectory:f.directory,repositoryRoot:f.repositoryRoot,now})).rejects.toThrow(path.includes('source-execution')?'SEED_REUSE_INITIALIZATION_CHANGED':'SEED_REUSE_SCOPE_FORBIDDEN');
+});
+
+test.each(['fromCandidate','toCandidate','runId','projectRef','originalSummarySha256'] as const)('refuses reuse authorization with a wrong %s binding',async(key)=>{
+ const f=await seedReuseFixture({path:'docs/BACKUP-RESTORE.md',contents:'bounded repair\n'});const bad={...f.authorization};
+ if(key==='fromCandidate')bad.fromCandidate={sha:f.to.sha,tree:f.to.tree};else if(key==='toCandidate')bad.toCandidate={sha:f.from.sha,tree:f.from.tree};else if(key==='runId')bad.runId='39393939-3939-4393-8393-393939393939';else if(key==='projectRef')bad.projectRef='bcdefghijklmnopqrstu';else bad.originalSummarySha256='e'.repeat(64);
+ await overwriteReuseAuthorization(f,bad);await expect(readSeededSourceEvidence({manifest:f.manifest,privateDirectory:f.directory,repositoryRoot:f.repositoryRoot,now})).rejects.toThrow(key==='runId'||key==='projectRef'?'SEED_REUSE_IDENTITY_MISMATCH':'SEED_REUSE_BINDING_MISMATCH');
+});
+
+test('refuses missing or expired owner reuse authorization',async()=>{
+ const f=await seedReuseFixture({path:'docs/BACKUP-RESTORE.md',contents:'bounded repair\n'});await rm(join(f.directory,`seed-candidate-reuse-${f.to.sha}.json`));await expect(readSeededSourceEvidence({manifest:f.manifest,privateDirectory:f.directory,repositoryRoot:f.repositoryRoot,now})).rejects.toThrow('SEED_REUSE_AUTHORIZATION_REQUIRED');
+ await overwriteReuseAuthorization(f,{...f.authorization,expiresAt:'2026-09-05T12:01:00.000Z'});await expect(readSeededSourceEvidence({manifest:f.manifest,privateDirectory:f.directory,repositoryRoot:f.repositoryRoot,now})).rejects.toThrow('SEED_REUSE_AUTHORIZATION_EXPIRED');
+});
+
+test('composes authorized seed reuse with a later verified protected merge',async()=>{
+ const f=await seedReuseFixture({path:'docs/BACKUP-RESTORE.md',contents:'bounded repair\n'});
+ await git(f.repositoryRoot,['commit','--allow-empty','-m','protected merge']);const merged=await revision(f.repositoryRoot);
+ const proof={schemaVersion:1,kind:'issue29-protected-merge',evidenceMode:'provider-readback',repository:'owner/aromatika',repositoryId:29,pullRequestNumber:29,fromCandidate:f.to,mergeSha:merged.sha,treeSha:merged.tree,verifiedAt:now,mergedAt:now,protectionSha256:'a'.repeat(64),checkRunsSha256:'b'.repeat(64)};
+ const {canonicalJson}=await import('../../scripts/issue29-operations/recovery-set.mjs');const bytes=Buffer.from(canonicalJson(proof));const evidenceSha256=createHash('sha256').update(bytes).digest('hex');await writeFile(join(f.directory,`${evidenceSha256}.json`),bytes,{mode:0o600});
+ f.manifest.candidate=merged;f.manifest.releaseUpdate={fromCandidate:f.to,mergeSha:merged.sha,treeSha:merged.tree,pullRequestNumber:29,verifiedAt:now,evidenceSha256,repository:proof.repository,repositoryId:proof.repositoryId};f.manifest.history.push({step:'adopt-merged-release',operationId:f.manifest.runId,completedAt:now,resourceId:merged.sha,evidenceSha256});
+ const evidence=await readSeededSourceEvidence({manifest:f.manifest,privateDirectory:f.directory,repositoryRoot:f.repositoryRoot,now});expect(evidence.reuse).toMatchObject({toCandidate:{sha:f.to.sha,tree:f.to.tree}});expect(await readFile(join(f.directory,'source-seed-evidence.json'))).toEqual(f.originalSummary);
 });

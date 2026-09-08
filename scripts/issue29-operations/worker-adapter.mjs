@@ -130,8 +130,17 @@ export function createIssue29WorkerAdapter(input, dependencies = {}) {
                 ensure(result.result.length < 50, 'WORKER_INVENTORY_TRUNCATED');
                 return values;
             }
-            ensure(Number.isInteger(info.total_pages) && info.total_pages >= 0 && info.total_pages <= 100 && info.page === page, 'WORKER_INVENTORY_TRUNCATED');
-            if (page >= info.total_pages) {
+            ensure(typeof info === 'object' && !Array.isArray(info) && info.page === page && result.result.length <= 50, 'WORKER_INVENTORY_TRUNCATED');
+            ensure(info.count === undefined || (Number.isSafeInteger(info.count) && info.count === result.result.length), 'WORKER_INVENTORY_TRUNCATED');
+            ensure(info.per_page === undefined || info.per_page === 50, 'WORKER_INVENTORY_TRUNCATED');
+            ensure(info.total_count === undefined || (Number.isSafeInteger(info.total_count) && info.total_count >= 0 && info.total_count <= 5000), 'WORKER_INVENTORY_TRUNCATED');
+            // Cloudflare may omit total_pages while supplying the complete count/page contract.
+            const totalPages = info.total_pages === undefined ? (info.per_page === 50 && info.total_count !== undefined ? Math.ceil(info.total_count / 50) : NaN) : info.total_pages;
+            ensure(Number.isSafeInteger(totalPages) && totalPages >= 0 && totalPages <= 100, 'WORKER_INVENTORY_TRUNCATED');
+            if (info.total_count !== undefined && info.per_page === 50)
+                ensure(totalPages === Math.ceil(info.total_count / 50) || (info.total_count === 0 && totalPages === 1), 'WORKER_INVENTORY_TRUNCATED');
+            ensure(page >= totalPages || result.result.length === 50, 'WORKER_INVENTORY_TRUNCATED');
+            if (page >= totalPages) {
                 ensure(info.total_count === undefined || info.total_count === values.length, 'WORKER_INVENTORY_TRUNCATED');
                 return values;
             }

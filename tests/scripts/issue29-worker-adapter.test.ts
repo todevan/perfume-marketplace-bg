@@ -318,3 +318,46 @@ it('keeps source origin stable while assigning each monthly rehearsal a distinct
  const {workerNameFor}=await import('../../scripts/issue29-operations/worker-adapter.mjs');const {maintenanceFixture}=await import('../fixtures/issue29-operations');const m=manifestFixture();m.maintenance=maintenanceFixture(m);m.maintenance.id='11111111-1111-4111-8111-111111111111';
  expect(workerNameFor(m,'source')).toBe('issue29-29292929-2929-4292-8292-292929292929');expect(workerNameFor(m,'target')).toBe('issue29-restore-11111111-1111-4111-8111-111111111111');
 });
+
+describe('complete Cloudflare inventory without optional total_pages', () => {
+    async function inspectDomains(responder: (page: number) => any) {
+        const f = fixture(), provider = cloudflareFixture(f), pages: number[] = [];
+        const { createIssue29WorkerAdapter } = await import('../../scripts/issue29-operations/worker-adapter.mjs');
+        const fetchImpl: typeof fetch = async (url, init) => {
+            const u = new URL(String(url));
+            if (u.pathname.endsWith('/workers/domains')) {
+                const page = Number(u.searchParams.get('page')); pages.push(page);
+                return Response.json(responder(page));
+            }
+            return provider.fetchImpl(url, init);
+        };
+        const adapter = createIssue29WorkerAdapter({ settings: f.settings, readToken: 'r'.repeat(40), repositoryRoot: process.cwd(), privateDirectory: '/tmp/read-only' }, { fetchImpl, now: () => now });
+        return { result: adapter.inspect({ manifest: f.manifest, operationId: f.manifest.runId }), pages, f };
+    }
+    it('accepts the exact native empty-domain response with count/page/per_page/total_count', async () => {
+        const run = await inspectDomains(() => ({ success: true, result: [], result_info: { page: 1, per_page: 50, count: 0, total_count: 0 } }));
+        await expect(run.result).resolves.toMatchObject({ status: 'absent' });
+        expect(run.pages).toEqual([1]);
+    });
+    it.each([false, true])('reads all count-derived pages and detects a last-page route collision: %s', async collision => {
+        const expectedWorker = `issue29-${fixture().manifest.runId}`;
+        const run = await inspectDomains(page => ({ success: true, result: page === 1 ? Array.from({length: 50}, (_, i) => ({ service: `other-${i}` })) : [{ service: collision ? expectedWorker : 'other-final' }], result_info: { page, per_page: 50, count: page === 1 ? 50 : 1, total_count: 51 } }));
+        if (collision) await expect(run.result).rejects.toThrow('WORKER_CUSTOM_DOMAIN_FORBIDDEN');
+        else await expect(run.result).resolves.toMatchObject({ status: 'absent' });
+        expect(run.pages).toEqual([1, 2]);
+    });
+    it.each([
+        { page: 1, per_page: 50, count: 0 },
+        { page: 1, per_page: 50, count: 1, total_count: 0 },
+        { page: 2, per_page: 50, count: 0, total_count: 0 },
+        { page: 1, per_page: 20, count: 0, total_count: 0 },
+        { page: 1, per_page: 50, count: 0, total_count: 51 },
+        { page: 1, per_page: 50, count: 0, total_count: 0, total_pages: 2 },
+        { page: 1, per_page: 50, count: 0, total_count: -1 },
+        { page: 1, per_page: 50, count: 0, total_count: 5001 }
+    ])('rejects incomplete or contradictory pagination %j before declaring absence', async result_info => {
+        const run = await inspectDomains(() => ({ success: true, result: [], result_info }));
+        await expect(run.result).rejects.toThrow('WORKER_INVENTORY_TRUNCATED');
+        expect(run.pages).toEqual([1]);
+    });
+});

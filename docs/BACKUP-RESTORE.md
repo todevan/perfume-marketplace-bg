@@ -284,6 +284,20 @@ then use its persisted intent and readback path if the outcome is uncertain.
 2. For the first transaction only, run `create-source`, `seed-source`,
    `prepare-worker`, `deploy-worker`, and `verify-source`. Retain their exact
    source and Worker identities for subsequent rehearsals.
+
+   A previously seeded source may be read only by a repaired candidate when the
+   private source directory contains an owner-supplied, mode-600
+   `seed-candidate-reuse-<effective-to-sha>.json`. It is a short-lived,
+   hash-bound authorization for the exact run, synthetic source, original seed
+   candidate, repaired candidate, and original `source-seed-evidence.json`.
+   Its `approvalEvidenceSha256` names an immutable private evidence file with
+   that SHA-256. The operation checks both candidate trees and ancestry with
+   Git, requires the source-initialization prefix to be byte-identical, and
+   accepts only the listed Issue 29 operator/binding/test/documentation paths.
+   It never rewrites seed artifacts. `verify-source` still performs fresh
+   source-inventory and release-binding checks, then records the derived reuse
+   authorization hash in its proof. A protected merge after that repair keeps
+   using the merge's `fromCandidate`; protected-merge evidence remains required.
 3. Configure the private Resend webhook to the exact planned monitor origin plus
    `/ops/monitor/resend-webhook`, enabled for `email.delivered`. Deploy the one
    source-bound monitor with `deploy-monitor` in create mode using that signing

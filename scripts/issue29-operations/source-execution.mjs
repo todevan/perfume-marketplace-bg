@@ -172,11 +172,60 @@ export async function executeSeedSource(options, dependencies = {}) {
         await unlink(`${manifestPath}.lock`);
     }
 }
-/** Read generated, hash-bound private source evidence; callers must separately compare a fresh verifySyntheticSource result and release binding. @param {{manifest:import('./manifest.mjs').OperationsManifest,privateDirectory:string,repositoryRoot:string}} options */
-export async function readSeededSourceEvidence({ manifest, privateDirectory, repositoryRoot }) { const completed = manifest.history.find(entry => entry.step === 'seed-source' && entry.resourceId === null); ensure(completed && manifest.source, 'SOURCE_SEED_EVIDENCE_REQUIRED'); const summaryBytes = await readPrivateBytes(join(privateDirectory, 'source-seed-evidence.json'), repositoryRoot); ensure(createHash('sha256').update(summaryBytes).digest('hex') === completed.evidenceSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH'); const summary = JSON.parse(summaryBytes.toString());
- const merged=summary.candidate?.sha!==manifest.candidate.sha?await readProtectedMergeEvidence(manifest,privateDirectory,repositoryRoot):null;
- const candidate=merged?merged.fromCandidate:manifest.candidate;
- const workerName=`issue29-${manifest.runId}`;
- const deploymentLinked=manifest.history.some(h=>h.step==='deploy-worker'&&h.resourceId===workerName&&manifest.cleanup.resources.some(r=>r.provider==='cloudflare'&&r.id===workerName&&r.runId===manifest.runId&&r.disposition==='persistent'&&r.absentAt===null&&(r.evidenceSha256===h.evidenceSha256||(merged&&r.priorStateSha256&&manifest.history.some(update=>update.step==='update-worker'&&update.resourceId===workerName&&update.evidenceSha256===r.evidenceSha256)))));
- ensure(summary.runId===manifest.runId&&summary.projectRef===manifest.source.ref&&summary.candidate.sha===candidate.sha&&summary.candidate.tree===candidate.tree&&candidate.tree===manifest.candidate.tree&&(summary.candidate.deploymentId===candidate.deploymentId||(summary.candidate.deploymentId==='pending'&&candidate.deploymentId!=='pending'&&deploymentLinked)),'SOURCE_SEED_EVIDENCE_MISMATCH');
- const fixtureBytes = await readPrivateBytes(join(privateDirectory, 'source-fixture.json'), repositoryRoot); const baselineBytes = await readPrivateBytes(join(privateDirectory, 'managed-baseline.json'), repositoryRoot, 8388608); ensure(createHash('sha256').update(fixtureBytes).digest('hex') === summary.fixtureManifestSha256 && createHash('sha256').update(baselineBytes).digest('hex') === summary.baselineFileSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH'); return { summary, fixture: JSON.parse(fixtureBytes.toString()), managedBaseline: validateManagedBaseline(JSON.parse(baselineBytes.toString())) }; }
+/** Read generated, hash-bound private source evidence; callers must separately compare a fresh verifySyntheticSource result and release binding. @param {{manifest:import('./manifest.mjs').OperationsManifest,privateDirectory:string,repositoryRoot:string,now?:string,clock?:()=>string}} options */
+export async function readSeededSourceEvidence({ manifest, privateDirectory, repositoryRoot, now, clock }) {
+ const completed = manifest.history.find(entry => entry.step === 'seed-source' && entry.resourceId === null); ensure(completed && manifest.source, 'SOURCE_SEED_EVIDENCE_REQUIRED');
+ const sourceRef = manifest.source.ref;
+ const summaryBytes = await readPrivateBytes(join(privateDirectory, 'source-seed-evidence.json'), repositoryRoot); const summarySha256 = createHash('sha256').update(summaryBytes).digest('hex'); ensure(summarySha256 === completed.evidenceSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH'); const summary = JSON.parse(summaryBytes.toString());
+ ensure(summary.runId === manifest.runId && summary.projectRef === manifest.source.ref && !manifest.preservedRefs.includes(manifest.source.ref) && manifest.cleanup.resources.some(resource => resource.provider === 'supabase' && resource.id === sourceRef && resource.runId === manifest.runId && resource.disposition === 'persistent' && resource.absentAt === null), 'SOURCE_SEED_EVIDENCE_MISMATCH');
+ ensure(summary.candidate?.sha !== manifest.candidate.sha || summary.candidate?.tree === manifest.candidate.tree, 'SOURCE_SEED_EVIDENCE_MISMATCH');
+ const hasCandidateChange = summary.candidate?.sha !== manifest.candidate.sha;
+ const merged = hasCandidateChange && manifest.releaseUpdate ? await readProtectedMergeEvidence(manifest, privateDirectory, repositoryRoot) : null;
+ if (hasCandidateChange && !merged && manifest.releaseUpdate) throw new OperationsError('MERGE_ADOPTION_REQUIRED');
+ const effectiveCandidate = merged ? merged.fromCandidate : manifest.candidate;
+ const workerName = `issue29-${manifest.runId}`;
+ const deploymentLinked = manifest.history.some(h => h.step === 'deploy-worker' && h.resourceId === workerName && manifest.cleanup.resources.some(r => r.provider === 'cloudflare' && r.id === workerName && r.runId === manifest.runId && r.disposition === 'persistent' && r.absentAt === null && (r.evidenceSha256 === h.evidenceSha256 || (merged && r.priorStateSha256 && manifest.history.some(update => update.step === 'update-worker' && update.resourceId === workerName && update.evidenceSha256 === r.evidenceSha256)))));
+ const ordinaryBinding = summary.candidate.sha === effectiveCandidate.sha && summary.candidate.tree === effectiveCandidate.tree && effectiveCandidate.tree === manifest.candidate.tree && (summary.candidate.deploymentId === effectiveCandidate.deploymentId || (summary.candidate.deploymentId === 'pending' && effectiveCandidate.deploymentId !== 'pending' && deploymentLinked));
+ if (!hasCandidateChange && !ordinaryBinding) throw new OperationsError('SOURCE_SEED_EVIDENCE_MISMATCH');
+ /** @type {null|{authorizationSha256:string,approvalEvidenceSha256:string,fromCandidate:unknown,toCandidate:unknown,changedPaths:string[]}} */ let reuse = null;
+ if (!ordinaryBinding) {
+  const authorizationPath = join(privateDirectory, `seed-candidate-reuse-${effectiveCandidate.sha}.json`);
+  let authorizationBytes; try { authorizationBytes = await readPrivateBytes(authorizationPath, repositoryRoot); } catch { throw new OperationsError('SEED_REUSE_AUTHORIZATION_REQUIRED'); }
+  const authorizationSha256 = createHash('sha256').update(authorizationBytes).digest('hex');
+  let parsed; try { parsed = seedCandidateReuseSchema.safeParse(JSON.parse(authorizationBytes.toString())); } catch { throw new OperationsError('SEED_REUSE_AUTHORIZATION_INVALID'); } ensure(parsed.success, 'SEED_REUSE_AUTHORIZATION_INVALID'); const authorization = parsed.data;
+  const observedNow = clock ? clock() : (now ?? new Date().toISOString());
+  ensure(Date.parse(authorization.authorizedAt) <= Date.parse(observedNow) && Date.parse(observedNow) < Date.parse(authorization.expiresAt) && Date.parse(authorization.expiresAt) <= Date.parse(manifest.expiresAt), 'SEED_REUSE_AUTHORIZATION_EXPIRED');
+  ensure(authorization.runId === manifest.runId && authorization.projectRef === manifest.source.ref && !manifest.preservedRefs.includes(authorization.projectRef) && manifest.forbiddenRefs.includes(authorization.projectRef), 'SEED_REUSE_IDENTITY_MISMATCH');
+  ensure(authorization.fromCandidate.sha === summary.candidate.sha && authorization.fromCandidate.tree === summary.candidate.tree && authorization.toCandidate.sha === effectiveCandidate.sha && authorization.toCandidate.tree === effectiveCandidate.tree && authorization.originalSummarySha256 === summarySha256, 'SEED_REUSE_BINDING_MISMATCH');
+  let approvalBytes; try { approvalBytes = await readPrivateBytes(join(privateDirectory, `${authorization.approvalEvidenceSha256}.json`), repositoryRoot); } catch { throw new OperationsError('SEED_REUSE_APPROVAL_EVIDENCE_MISMATCH'); } ensure(createHash('sha256').update(approvalBytes).digest('hex') === authorization.approvalEvidenceSha256, 'SEED_REUSE_APPROVAL_EVIDENCE_MISMATCH');
+  const git = await readSeedReuseGit(repositoryRoot, authorization.fromCandidate, authorization.toCandidate, manifest.candidate);
+  reuse = { authorizationSha256, approvalEvidenceSha256: authorization.approvalEvidenceSha256, fromCandidate: authorization.fromCandidate, toCandidate: authorization.toCandidate, changedPaths: git.changedPaths };
+ }
+ const fixtureBytes = await readPrivateBytes(join(privateDirectory, 'source-fixture.json'), repositoryRoot); const baselineBytes = await readPrivateBytes(join(privateDirectory, 'managed-baseline.json'), repositoryRoot, 8388608); ensure(createHash('sha256').update(fixtureBytes).digest('hex') === summary.fixtureManifestSha256 && createHash('sha256').update(baselineBytes).digest('hex') === summary.baselineFileSha256, 'SOURCE_SEED_EVIDENCE_MISMATCH');
+ return { summary, fixture: JSON.parse(fixtureBytes.toString()), managedBaseline: validateManagedBaseline(JSON.parse(baselineBytes.toString())), reuse };
+}
+
+/** Candidate-only repair authorization. This private document is owner-supplied evidence, never generated by an operation. */
+const reuseCandidateSchema = z.strictObject({ sha: z.string().regex(/^[a-f0-9]{40}$/u), tree: z.string().regex(/^[a-f0-9]{40}$/u) });
+const seedCandidateReuseSchema = z.strictObject({ schemaVersion: z.literal(1), policy: z.literal('issue29-owner-authorized-seed-candidate-reuse'), runId: z.string().uuid(), projectRef: z.string().regex(/^[a-z]{20}$/u), fromCandidate: reuseCandidateSchema, toCandidate: reuseCandidateSchema, originalSummarySha256: z.string().regex(HASH), approvalEvidenceSha256: z.string().regex(HASH), authorizedAt: z.iso.datetime(), expiresAt: z.iso.datetime() });
+const sourceExecutionPrefixMarker = '/** Read generated, hash-bound private source evidence' + ';';
+const reuseAllowedPaths = new Set(['scripts/issue29-operations/source-execution.mjs', 'scripts/issue29-operations/hosted-execution.mjs', 'scripts/issue29-operations/worker-adapter.mjs', 'tests/scripts/issue29-source-execution.test.ts', 'tests/scripts/issue29-hosted-execution.test.ts', 'tests/scripts/issue29-worker-adapter.test.ts', 'docs/BACKUP-RESTORE.md']);
+/** Run constrained Git readback against manifest-bound object ids. @param {string} repositoryRoot @param {{sha:string,tree:string}} fromCandidate @param {{sha:string,tree:string}} toCandidate @param {{sha:string,tree:string}} currentCandidate @returns {Promise<{fromTree:string,toTree:string,changedPaths:string[]}>} */
+async function readSeedReuseGit(repositoryRoot, fromCandidate, toCandidate, currentCandidate) {
+ const { execFile } = await import('node:child_process');
+ const { promisify } = await import('node:util');
+ const execute = promisify(execFile);
+ /** @param {string[]} args @param {string} failure @returns {Promise<string>} */
+ const run = async (args, failure) => { try { return String((await execute('git', args, { cwd: repositoryRoot, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8' }, encoding: 'utf8', maxBuffer: 1048576 })).stdout).trim(); } catch { throw new OperationsError(failure); } };
+ const [fromTree, toTree, headSha, headTree] = await Promise.all([run(['rev-parse', `${fromCandidate.sha}^{tree}`], 'SEED_REUSE_GIT_EVIDENCE_REQUIRED'), run(['rev-parse', `${toCandidate.sha}^{tree}`], 'SEED_REUSE_GIT_EVIDENCE_REQUIRED'), run(['rev-parse', 'HEAD'], 'SEED_REUSE_GIT_EVIDENCE_REQUIRED'), run(['rev-parse', 'HEAD^{tree}'], 'SEED_REUSE_GIT_EVIDENCE_REQUIRED')]);
+ ensure(fromTree === fromCandidate.tree && toTree === toCandidate.tree, 'SEED_REUSE_GIT_TREE_MISMATCH');
+ ensure(headSha === currentCandidate.sha && headTree === currentCandidate.tree, 'SEED_REUSE_CURRENT_RELEASE_MISMATCH');
+ await run(['merge-base', '--is-ancestor', fromCandidate.sha, toCandidate.sha], 'SEED_REUSE_GIT_ANCESTRY_REQUIRED');
+ const [fromSource, toSource, changed] = await Promise.all([run(['show', `${fromCandidate.sha}:scripts/issue29-operations/source-execution.mjs`], 'SEED_REUSE_INITIALIZATION_CHANGED'), run(['show', `${toCandidate.sha}:scripts/issue29-operations/source-execution.mjs`], 'SEED_REUSE_INITIALIZATION_CHANGED'), run(['diff', '--name-only', fromCandidate.sha, toCandidate.sha], 'SEED_REUSE_SCOPE_UNPROVEN')]);
+ /** @param {string} value @returns {string} */
+ const prefix = value => { const marker = value.indexOf(sourceExecutionPrefixMarker); ensure(marker >= 0, 'SEED_REUSE_INITIALIZATION_CHANGED'); return value.slice(0, marker); };
+ ensure(prefix(fromSource) === prefix(toSource), 'SEED_REUSE_INITIALIZATION_CHANGED');
+ const changedPaths = changed ? changed.split('\n') : [];
+ ensure(changedPaths.length > 0 && changedPaths.every(path => reuseAllowedPaths.has(path)), 'SEED_REUSE_SCOPE_FORBIDDEN');
+ return { fromTree, toTree, changedPaths };
+}

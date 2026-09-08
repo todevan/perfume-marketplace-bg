@@ -67,14 +67,14 @@ export async function executeHostedLifecycle(options,dependencies={}){
   ensure(settings.verification&&current.source,'SOURCE_VERIFICATION_SETTINGS_REQUIRED');
   const {readSourceSettings}=await import('./source-execution.mjs');
   const seed=await readSourceSettings(settings.verification.seedSettingsPath,repositoryRoot);
-  const evidence=await readSeededSourceEvidence({manifest:current,privateDirectory:seed.privateDirectory,repositoryRoot});
+  const evidence=await readSeededSourceEvidence({manifest:current,privateDirectory:seed.privateDirectory,repositoryRoot,clock});
   const binding=JSON.parse((await readPrivateBytes(settings.verification.bindingSettingsPath,repositoryRoot)).toString());
   const release=await readSourceReleaseBinding({manifest:current,settings:binding,now:clock()});
   const owned=current.cleanup.resources.find(r=>r.provider==='supabase'&&r.id===current.source?.ref&&r.absentAt===null);
   ensure(owned&&seed.source.apiUrl===current.source.url,'SOURCE_OWNERSHIP_UNPROVEN');
   const provenance=await verifySyntheticSource({scope:{mode:'hosted',role:'source',runId:current.runId,projectRef:current.source.ref,sourceRef:current.source.ref,preservedRefs:current.preservedRefs,createdResourceEvidenceSha256:owned.evidenceSha256,apiUrl:current.source.url},connection:seed.connection,toolchain:seed.toolchain,managedBaseline:evidence.managedBaseline,secretKey:seed.source.serviceKey});
   ensure(digest(provenance)===evidence.summary.inventorySha256,'SOURCE_PROVENANCE_DRIFT');
-  const proof={fixtureRunId:current.runId,fixtureManifestSha256:evidence.summary.fixtureManifestSha256,inventorySha256:digest(provenance),releaseBindingSha256:release.evidenceSha256};
+  const proof={fixtureRunId:current.runId,fixtureManifestSha256:evidence.summary.fixtureManifestSha256,inventorySha256:digest(provenance),releaseBindingSha256:release.evidenceSha256,...(evidence.reuse?{seedCandidateReuse:evidence.reuse}:{})};
   return{...proof,evidence:proof,evidenceSha256:digest(proof)};
  }} });
  return{status:'LIFECYCLE_READBACK_VERIFIED',state:result.state,operation:settings.operation,runId:result.runId,evidenceSha256:result.history.at(-1)?.evidenceSha256};
