@@ -29,6 +29,12 @@ function stageFixture(change?:(f:any)=>void){
 it('hash-verifies nonzero local discovery and exactly two independent final-SHA reviewer artifacts',()=>{
  const f=stageFixture();expect(validateStage04Evidence(f.s,key=>f.evidence.get(key),{sha,tree,deploymentId:'pending'})).toMatchObject({discoveredTests:26,fullGateCount:12,reviews:[{role:'engineering'},{role:'adversarial'}]});
 });
+it.each(['src/routes/api/operations/readiness/+server.ts','src/routes/api/webhooks/resend/+server.ts'])('accepts the actual Svelte route changed-file path %s',path=>{
+ const f=stageFixture();f.s.changedFiles.push({path,acceptance:[1,5]});expect(validateStage04Evidence(f.s,key=>f.evidence.get(key),{sha,tree,deploymentId:'pending'})).toMatchObject({fullGateCount:12});
+});
+it.each(['/src/routes/+server.ts','../src/routes/+server.ts','src/../+server.ts','src/routes/..','src\\routes\\+server.ts','src/routes/+server.ts\n','src/routes/%2e%2e/+server.ts'])('rejects unsafe changed-file path %s',path=>{
+ const f=stageFixture();f.s.changedFiles[0].path=path;expect(()=>validateStage04Evidence(f.s,key=>f.evidence.get(key),{sha,tree,deploymentId:'pending'})).toThrow('STAGE04_EVIDENCE_INVALID');
+});
 it.each(['zero-tests','failed-test','skipped','missing-output','wrong-command-sha','missing-full-gate','same-reviewer','same-review-role','old-review','missing-review-report','review-before-gates','unresolved-finding'])('rejects %s without manufacturing Stage04 verification',kind=>{
  const f=stageFixture(({machine,commands,reviews,evidence,output})=>{
  if(kind==='zero-tests'){machine.numTotalTests=0;machine.numPassedTests=0;machine.testResults=[];}
