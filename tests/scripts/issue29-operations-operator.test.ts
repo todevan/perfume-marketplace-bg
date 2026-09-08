@@ -31,7 +31,7 @@ describe('exact-target mutation guards', () => {
         expect(buildChildEnvironment({ PATH: '/usr/bin', NODE_OPTIONS: '--require evil', SUPABASE_ACCESS_TOKEN: 'foreign', PGHOST: 'target', PGPASSWORD: 'private' }, 'restore-write')).toEqual({ PATH: '/usr/bin', PGHOST: 'target', PGPASSWORD: 'private' });
     });
 });
-import { executeOperatorStep } from '../../scripts/issue29-operations/operator.mjs';
+import { executeOperatorStep, executeProjectLifecycleStep, persistOperationsIntent } from '../../scripts/issue29-operations/operator.mjs';
 describe('persisted mutation execution', () => {
     test('writes pending intent before one mutation and advances only after exact readback', async () => {
         const path = await privatePath();
@@ -158,6 +158,14 @@ describe('manifest-owned cleanup', () => {
 test('requires the fresh project lifecycle for target creation instead of legacy source health assumptions',async()=>{
     const path=await privatePath(); const input=manifestFixture(); input.state='backup_verified'; input.target=null; await writePrivateManifest(path,input,{repositoryRoot:process.cwd(),now});
     await expect(executeOperatorStep({manifestPath:path,repositoryRoot:process.cwd(),step:'create-target',capability:'restore-write',candidate,now,inspect:async()=>projectReadback(),mutate:async()=>{throw new Error('must not mutate');},readback:async()=>{throw new Error('must not read');}})).rejects.toThrow('FRESH_PROJECT_LIFECYCLE_REQUIRED');
+});
+
+test('does not admit a nonempty owner-authorized pending source readback',async()=>{
+ const path=await privatePath(),input=manifestFixture();input.source=null;input.target=null;input.sourceProvenance=null;input.forbiddenRefs=[...input.preservedRefs];input.state='source_creation_pending';input.pending={step:'create-source',operationId:input.runId,startedAt:now,resourceId:null,priorStateSha256:null};await writePrivateManifest(path,input,{repositoryRoot:process.cwd(),now});await persistOperationsIntent(path,input,process.cwd());
+ const ownerSourceAuthorization={schemaVersion:1,policy:'issue29-owner-authorized-pending-source-readback',runId:input.runId,operationId:input.runId,organizationId:input.provisioning.organizationId,projectRef:source.ref,region:input.provisioning.region,sourceName:input.provisioning.sourceName,observedCreatedAt:'2026-09-05T11:20:24.000Z',authorizedAt:'2026-09-05T11:59:00.000Z',expiresAt:'2026-09-05T13:00:00.000Z',evidenceSha256:'e'.repeat(64)};
+ const proof=evidenced({project:source,createdAt:'2026-09-05T11:20:24.000Z',foreignState:true,ownerSourceAuthorization});
+ await expect(executeProjectLifecycleStep({manifestPath:path,repositoryRoot:process.cwd(),candidate,step:'create-source',now,adapter:{preflight:async()=>{throw new Error('not reached');},readCreated:async()=>proof as any}})).rejects.toThrow('TARGET_IDENTITY_MISMATCH');
+ expect((await readPrivateManifest(path,{repositoryRoot:process.cwd(),candidate,now})).pending?.step).toBe('create-source');
 });
 
 test('checks the live completion clock for a legitimate restore longer than five minutes',async()=>{

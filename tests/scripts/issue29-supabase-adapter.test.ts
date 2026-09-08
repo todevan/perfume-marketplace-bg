@@ -84,3 +84,38 @@ it('exposes the exact sanitized preflight hash preimage and labels classificatio
  const adapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,readCapacityQuote:async()=>capacity,fetch:async(url,init)=>{const response=await transport([])(url,init);if(String(url).endsWith('/projects'))return Response.json([{ref:'cdefghijklmnopqrstuv',organization_slug:'owned-org',region:'eu-central-1',status:'ACTIVE_HEALTHY',database_password:'DO_NOT_RETAIN',owner_email:'DO_NOT_RETAIN'}]);return response;}});
  const proof=await adapter.preflight(context);expect(digest(proof.evidence)).toBe(proof.evidenceSha256);expect(proof.evidence.providerInventory.projects).toEqual([{ref:'cdefghijklmnopqrstuv',organizationId:'owned-org',region:'eu-central-1',status:'ACTIVE_HEALTHY'}]);expect(proof.evidence.classification.basis).toBe('manifest-authorization-only');expect(JSON.stringify(proof)).not.toContain('DO_NOT_RETAIN');
 });
+
+function pendingSourceContext(){const c=structuredClone(context);c.manifest.source=null;c.manifest.target=null;c.manifest.sourceProvenance=null;c.manifest.forbiddenRefs=[...c.manifest.preservedRefs];c.manifest.state='source_creation_pending';c.manifest.pending={step:'create-source',operationId:c.operationId,startedAt:now,resourceId:null,priorStateSha256:null};return c;}
+function ownerSourceAuthorization(c:ReturnType<typeof pendingSourceContext>,overrides:Record<string,unknown>={}){return{schemaVersion:1 as const,policy:'issue29-owner-authorized-pending-source-readback' as const,runId:c.manifest.runId,operationId:c.operationId,organizationId:c.manifest.provisioning.organizationId,projectRef:'zvqmspihywhxdzxpgtzo',region:c.manifest.provisioning.region,sourceName:c.manifest.provisioning.sourceName,observedCreatedAt:'2026-09-05T11:20:24.000Z',authorizedAt:'2026-09-05T11:59:00.000Z',expiresAt:'2026-09-05T13:00:00.000Z',evidenceSha256:'5'.repeat(64),...overrides};}
+function staleCreatedProject(c:ReturnType<typeof pendingSourceContext>,purpose:'source'|'target'='source'){const name=purpose==='source'?c.manifest.provisioning.sourceName:c.manifest.provisioning.targetName;return async(input:string|URL|Request,init?:RequestInit)=>{const url=String(input);if(url.endsWith('/projects'))return Response.json([{name,ref:'zvqmspihywhxdzxpgtzo'}]);return Response.json({name,ref:'zvqmspihywhxdzxpgtzo',organization_slug:c.manifest.provisioning.organizationId,region:c.manifest.provisioning.region,status:'ACTIVE_HEALTHY',created_at:'2026-09-05T11:20:24.000Z',database:{version:'17.6.1'}});};}
+describe('owner-authorized pending source readback',()=>{
+ it('preserves the observed creation time and labels an authorized readback without POST',async()=>{
+  const c=pendingSourceContext(),methods:string[]=[];const adapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,ownerSourceAuthorization:ownerSourceAuthorization(c),inspectEmpty:async()=>true,fetch:async(input,init)=>{methods.push(init?.method??'GET');return staleCreatedProject(c)(input,init);}});
+  const proof=await adapter.readCreated(c);expect(proof.createdAt).toBe('2026-09-05T11:20:24.000Z');expect(proof.evidence.kind).toBe('issue29-supabase-owner-authorized-source');expect(methods).toEqual(['GET','GET']);expect(methods).not.toContain('POST');
+ });
+ it('keeps the normal creation-time fence when no owner authorization is supplied',async()=>{
+  const c=pendingSourceContext(),adapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,inspectEmpty:async()=>true,fetch:staleCreatedProject(c)});
+  await expect(adapter.readCreated(c)).rejects.toThrow('CREATION_TIME_MISMATCH');
+ });
+ it('validates a supplied authorization even when the provider timestamp passes the normal window',async()=>{
+  const c=pendingSourceContext();let inspected=false;const adapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,ownerSourceAuthorization:ownerSourceAuthorization(c,{projectRef:'abcdefghijklmnopqrst'}),inspectEmpty:async()=>{inspected=true;return true;},fetch:async(input)=>{const url=String(input),name=c.manifest.provisioning.sourceName;if(url.endsWith('/projects'))return Response.json([{name,ref:'zvqmspihywhxdzxpgtzo'}]);return Response.json({name,ref:'zvqmspihywhxdzxpgtzo',organization_slug:c.manifest.provisioning.organizationId,region:c.manifest.provisioning.region,status:'ACTIVE_HEALTHY',created_at:now,database:{version:'17.6.1'}});}});
+  await expect(adapter.readCreated(c)).rejects.toThrow('OWNER_SOURCE_AUTHORIZATION_MISMATCH');expect(inspected).toBe(false);
+ });
+ it('rejects a future provider timestamp even with an otherwise matching authorization',async()=>{
+  const c=pendingSourceContext(),future='2026-09-05T12:06:00.000Z';let inspected=false;const adapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,ownerSourceAuthorization:ownerSourceAuthorization(c,{observedCreatedAt:future}),inspectEmpty:async()=>{inspected=true;return true;},fetch:async(input)=>{const url=String(input),name=c.manifest.provisioning.sourceName;if(url.endsWith('/projects'))return Response.json([{name,ref:'zvqmspihywhxdzxpgtzo'}]);return Response.json({name,ref:'zvqmspihywhxdzxpgtzo',organization_slug:c.manifest.provisioning.organizationId,region:c.manifest.provisioning.region,status:'ACTIVE_HEALTHY',created_at:future,database:{version:'17.6.1'}});}});
+  await expect(adapter.readCreated(c)).rejects.toThrow('CREATION_TIME_MISMATCH');expect(inspected).toBe(false);
+ });
+ it.each([
+  ['mismatched operation',{operationId:'39393939-3939-4393-8393-393939393939'},'OWNER_SOURCE_AUTHORIZATION_MISMATCH'],
+  ['expired authorization',{expiresAt:now},'OWNER_SOURCE_AUTHORIZATION_EXPIRED']
+ ])('rejects %s before empty-state inspection',async(_name,overrides,code)=>{
+  const c=pendingSourceContext();let inspected=false;const adapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,ownerSourceAuthorization:ownerSourceAuthorization(c,overrides),inspectEmpty:async()=>{inspected=true;return true;},fetch:staleCreatedProject(c)});
+  await expect(adapter.readCreated(c)).rejects.toThrow(code);expect(inspected).toBe(false);
+ });
+ it('cannot be consumed for targets or preserved source refs',async()=>{
+  const c=pendingSourceContext(),targetContext={...c,purpose:'target' as const};const targetAdapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,ownerSourceAuthorization:ownerSourceAuthorization(c),inspectEmpty:async()=>true,fetch:staleCreatedProject(c,'target')});
+  await expect(targetAdapter.readCreated(targetContext)).rejects.toThrow('OWNER_SOURCE_AUTHORIZATION_SCOPE_FORBIDDEN');
+  const preserved=pendingSourceContext(),ref=preserved.manifest.preservedRefs[0];const adapter=createSupabaseOperationsAdapter({token:'private-token',clock:()=>now,ownerSourceAuthorization:ownerSourceAuthorization(preserved,{projectRef:ref}),inspectEmpty:async()=>true,fetch:async(input,init)=>{const url=String(input);if(url.endsWith('/projects'))return Response.json([{name:preserved.manifest.provisioning.sourceName,ref}]);return Response.json({name:preserved.manifest.provisioning.sourceName,ref,organization_slug:preserved.manifest.provisioning.organizationId,region:preserved.manifest.provisioning.region,status:'ACTIVE_HEALTHY',created_at:'2026-09-05T11:20:24.000Z',database:{version:'17.6.1'}});}});
+  await expect(adapter.readCreated(preserved)).rejects.toThrow('TARGET_IDENTITY_MISMATCH');
+ });
+});

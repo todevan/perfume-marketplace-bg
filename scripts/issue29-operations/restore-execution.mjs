@@ -19,7 +19,7 @@ async function storeRestoreProof(proof,manifestPath,repositoryRoot){
  try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}return sha256;
 }
 const settingsSchema=z.strictObject({schemaVersion:z.literal(1),operation:z.literal('restore'),providerToken:z.string().min(10),targetServiceKey:z.string().min(10),backupDirectory:z.string(),descriptorSha256:z.string().regex(/^[a-f0-9]{64}$/u),privateKeyPath:z.string(),sourceWorker:z.strictObject({settings:z.unknown(),privateDirectory:z.string(),readToken:z.string().min(10)}).optional(),
- connection:z.strictObject({host:z.string(),port:z.literal(5432),database:z.literal('postgres'),user:z.string(),password:z.string().min(1),sslmode:z.literal('verify-full'),sslRootCert:z.literal('system').optional()}),toolchain:z.strictObject({mode:z.literal('container')})});
+ connection:z.strictObject({host:z.string(),port:z.literal(5432),database:z.literal('postgres'),user:z.string(),password:z.string().min(1),sslmode:z.literal('verify-full'),sslRootCert:z.enum(['system','supabase-prod-2021']).optional()}),toolchain:z.strictObject({mode:z.literal('container')})});
 /** @typedef {{manifestPath:string,repositoryRoot:string,candidate:import('./manifest.mjs').Candidate,settingsPath:string,now?:string,clock?:()=>string,verifyOnly?:boolean}} RestoreOptions */
 /** Coordinated real DB/Auth and Storage restore within the existing manifest. This does not claim
  * application/browser/privacy journey completion: those independent gates must still advance integrity_verified.

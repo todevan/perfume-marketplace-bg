@@ -157,7 +157,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { assertPrivatePath, readPrivateManifest, writePrivateManifest } from './manifest.mjs';
 import { readPrivateBytes } from './execution.mjs';
-const settingsSchema = z.strictObject({ schemaVersion: z.literal(1), operation: z.literal('synthetic-jobs'), mode: z.enum(['quiesce', 'prove', 'resume']), role: z.enum(['source', 'target']), connection: z.strictObject({ host: z.string(), port: z.literal(5432), database: z.literal('postgres'), user: z.string(), password: z.string().min(1).max(1024), sslmode: z.literal('verify-full'), sslRootCert: z.literal('system').optional() }), toolchain: z.strictObject({ mode: z.literal('container') }), priorStatePath: z.string().optional() });
+const settingsSchema = z.strictObject({ schemaVersion: z.literal(1), operation: z.literal('synthetic-jobs'), mode: z.enum(['quiesce', 'prove', 'resume']), role: z.enum(['source', 'target']), connection: z.strictObject({ host: z.string(), port: z.literal(5432), database: z.literal('postgres'), user: z.string(), password: z.string().min(1).max(1024), sslmode: z.literal('verify-full'), sslRootCert: z.enum(['system','supabase-prod-2021']).optional() }), toolchain: z.strictObject({ mode: z.literal('container') }), priorStatePath: z.string().optional() });
 /** @param {unknown} value @param {string} directory @param {string} root */
 async function storeEvidence(value, directory, root) { const bytes = Buffer.from(canonicalJson(value)), hash = sha256(bytes), path = join(directory, `${hash}.json`); await assertPrivatePath(path, root); let handle; try {
     handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);

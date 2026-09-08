@@ -3,7 +3,7 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {executeHostedLifecycle} from '../../scripts/issue29-operations/hosted-execution.mjs';
+import {executeHostedLifecycle,lifecycleDatabaseConnection} from '../../scripts/issue29-operations/hosted-execution.mjs';
 import {writePrivateManifest,readPrivateManifest} from '../../scripts/issue29-operations/manifest.mjs';
 import {manifestFixture,candidate} from '../fixtures/issue29-operations';
 const dirs:string[]=[];const now='2026-09-05T12:01:00.000Z';
@@ -16,4 +16,10 @@ it('wires preflight into the existing persisted lifecycle with no mutation',asyn
 });
 it.each(['wrong-role','operation-mismatch','public-settings','unapproved-field'])('fails before provider access for %s',async kind=>{
  const f=await fixture();if(kind==='wrong-role')f.settings.capability.role='restore-write';if(kind==='operation-mismatch')f.operation='create-source';if(kind==='unapproved-field')(f.settings as any).sql='DROP SCHEMA public CASCADE;';await writeFile(f.settingsPath,JSON.stringify(f.settings));if(kind==='public-settings'){const {chmod}=await import('node:fs/promises');await chmod(f.settingsPath,0o644);}const adapterFactory=vi.fn();await expect(executeHostedLifecycle(f,{adapterFactory})).rejects.toThrow('Issue #29:');expect(adapterFactory).not.toHaveBeenCalled();
+});
+it('accepts the exact Supabase session-pooler coordinates and rejects foreign host or project user bindings',()=>{
+ const m=manifestFixture(),scope={runId:m.runId,ref:m.source!.ref,sourceRef:m.source!.ref,preservedRefs:m.preservedRefs,createdResourceEvidenceSha256:'d'.repeat(64),url:m.source!.url};const pooler={host:'aws-0-eu-central-1.pooler.supabase.com',port:5432 as const,database:'postgres' as const,user:`postgres.${m.source!.ref}`,sslmode:'verify-full' as const,sslRootCert:'supabase-prod-2021' as const};
+ expect(lifecycleDatabaseConnection(scope,'source','private-password',pooler)).toMatchObject(pooler);
+ expect(()=>lifecycleDatabaseConnection(scope,'source','private-password',{...pooler,host:'foreign.pooler.supabase.com'})).toThrow('DATABASE_TARGET_MISMATCH');
+ expect(()=>lifecycleDatabaseConnection(scope,'source','private-password',{...pooler,user:'postgres.bcdefghijklmnopqrstu'})).toThrow('DATABASE_TARGET_MISMATCH');
 });

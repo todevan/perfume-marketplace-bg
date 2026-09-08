@@ -5,14 +5,17 @@ import { readPrivateBytes } from './execution.mjs';
 import { canonicalJson } from './recovery-set.mjs';
 import { createSupabaseOperationsAdapter } from './supabase-adapter.mjs';
 import { executeProjectLifecycleStep } from './operator.mjs';
-import { captureManagedBaseline } from './logical-recovery.mjs';
+import { captureManagedBaseline, validateDatabaseConnection } from './logical-recovery.mjs';
 import { readSeededSourceEvidence } from './source-execution.mjs';
 import { verifySyntheticSource } from './synthetic-source.mjs';
 import { readSourceReleaseBinding } from './source-binding.mjs';
 const secret=z.string().min(10).max(4096).regex(/^[^\r\n]+$/u);
+const databaseCoordinates=z.strictObject({host:z.string().min(1).max(255),port:z.literal(5432),database:z.literal('postgres'),user:z.string().min(1).max(128),sslmode:z.literal('verify-full'),sslRootCert:z.enum(['system','supabase-prod-2021']).optional()});
 const schema=z.strictObject({schemaVersion:z.literal(1),operation:z.enum(['preflight','create-source','create-target','verify-source']),providerToken:secret,
  capability:z.strictObject({role:z.enum(['source-read','restore-write']),id:z.string().min(1).max(128)}),
  twoSlotAuthorization:z.strictObject({schemaVersion:z.literal(1),policy:z.literal('supabase-free-two-active-projects'),organizationId:z.string(),preservedStagingRef:z.string().regex(/^[a-z]{20}$/u),authorizedAt:z.iso.datetime(),expiresAt:z.iso.datetime(),maximumActiveProjects:z.literal(2),maximumCost:z.literal(0),evidenceSha256:z.string().regex(/^[a-f0-9]{64}$/u)}).optional(),databasePasswords:z.strictObject({source:secret.optional(),target:secret.optional()}).optional(),
+ databaseConnections:z.strictObject({source:databaseCoordinates.optional(),target:databaseCoordinates.optional()}).optional(),
+ ownerSourceAuthorization:z.strictObject({schemaVersion:z.literal(1),policy:z.literal('issue29-owner-authorized-pending-source-readback'),runId:z.string().uuid(),operationId:z.string().uuid(),organizationId:z.string().min(1).max(63),projectRef:z.string().regex(/^[a-z]{20}$/u),region:z.string().min(1).max(63),sourceName:z.string().min(1).max(128),observedCreatedAt:z.iso.datetime(),authorizedAt:z.iso.datetime(),expiresAt:z.iso.datetime(),evidenceSha256:z.string().regex(/^[a-f0-9]{64}$/u)}).optional(),
  verification:z.strictObject({seedSettingsPath:z.string(),bindingSettingsPath:z.string()}).optional()});
 /** @param {unknown} value */
 const digest=value=>createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -20,6 +23,14 @@ const digest=value=>createHash('sha256').update(canonicalJson(value)).digest('he
 export async function readLifecycleSettings(path,repositoryRoot){
  try{const parsed=schema.safeParse(JSON.parse((await readPrivateBytes(path,repositoryRoot)).toString()));ensure(parsed.success,'PRIVATE_SETTINGS_INVALID');return parsed.data;}
  catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('PRIVATE_SETTINGS_INVALID');}
+}
+/** Select one exact supported hosted database endpoint; the recovery engine validates the
+ * direct or session-pooler host/user pair against the manifest-bound project ref. */
+/** @param {{runId:string,ref:string,sourceRef:string,preservedRefs:string[],createdResourceEvidenceSha256:string,url:string}} project @param {'source'|'target'} purpose @param {string} password @param {{host:string,port:5432,database:'postgres',user:string,sslmode:'verify-full',sslRootCert?:'system'|'supabase-prod-2021'}|undefined} configured */
+export function lifecycleDatabaseConnection(project, purpose, password, configured) {
+ const scope={mode:/** @type {const} */('hosted'),role:purpose,runId:project.runId,projectRef:project.ref,sourceRef:project.sourceRef,preservedRefs:project.preservedRefs,createdResourceEvidenceSha256:project.createdResourceEvidenceSha256,apiUrl:project.url};
+ const coordinates=configured??{host:`db.${project.ref}.supabase.co`,port:5432,database:'postgres',user:'postgres',sslmode:/** @type {const} */('verify-full'),sslRootCert:/** @type {const} */('system')};
+ return validateDatabaseConnection(scope,{...coordinates,password,sslRootCert:coordinates.sslRootCert??'system'});
 }
 /** @typedef {{manifestPath:string,settingsPath:string,repositoryRoot:string,candidate:import('./manifest.mjs').Candidate,operation:string,now?:string,clock?:()=>string}} HostedOptions */
 /** Construct the real provider boundary; CLI accepts no injected SQL, URLs, or executable callbacks.
@@ -31,6 +42,8 @@ export async function executeHostedLifecycle(options,dependencies={}){
  const settings=await readLifecycleSettings(options.settingsPath,repositoryRoot);
  ensure(settings.operation===options.operation,'SETTINGS_OPERATION_MISMATCH');
  const manifest=await readPrivateManifest(manifestPath,{repositoryRoot,candidate,now:clock()});
+ const ownerSourceAuthorization=settings.ownerSourceAuthorization;
+ if(ownerSourceAuthorization)ensure(settings.operation==='create-source'&&manifest.state==='source_creation_pending'&&manifest.pending?.step==='create-source'&&manifest.pending.operationId===ownerSourceAuthorization.operationId&&manifest.source===null&&manifest.target===null,'OWNER_SOURCE_AUTHORIZATION_READBACK_ONLY');
  const role=settings.operation.startsWith('create-')?'restore-write':'source-read';
  ensure(settings.capability.role===role&&settings.capability.id===manifest.capabilityIds[role],'CREDENTIAL_ROLE_MISMATCH');
  ensure(manifest.allowedActions.includes(settings.operation)&&manifest.humanBoundary===null&&manifest.terminal===null,'ACTION_FORBIDDEN');
@@ -39,12 +52,15 @@ export async function executeHostedLifecycle(options,dependencies={}){
  if(settings.operation.startsWith('create-'))ensure(password&&password.length>=32,'PROJECT_PASSWORD_REQUIRED');
  const adapter=(dependencies.adapterFactory??createSupabaseOperationsAdapter)({token:settings.providerToken,clock,
   ...(settings.twoSlotAuthorization?{twoSlotAuthorization:settings.twoSlotAuthorization}:{}),
+  ...(ownerSourceAuthorization?{ownerSourceAuthorization}:{}),
   databasePassword:async selected=>{ensure(selected===purpose&&password,'CREDENTIAL_ROLE_MISMATCH');return password;},
   inspectEmpty:async project=>{
    ensure(project.organizationId===manifest.provisioning.organizationId&&project.region===manifest.provisioning.region&&!manifest.forbiddenRefs.includes(project.ref)&&!manifest.preservedRefs.includes(project.ref)&&project.environment===(purpose==='source'?'synthetic':'disposable'),'TARGET_FORBIDDEN');
    ensure(password,'PROJECT_PASSWORD_REQUIRED');
-   // The provider adapter checks creation time and exact name before invoking this read-only check.
-   await(dependencies.baseline??captureManagedBaseline)({scope:{mode:'hosted',role:purpose,runId:manifest.runId,projectRef:project.ref,sourceRef:manifest.source?.ref??project.ref,preservedRefs:manifest.preservedRefs,createdResourceEvidenceSha256:digest({runId:manifest.runId,project,operation:settings.operation}),apiUrl:project.url},connection:{host:`db.${project.ref}.supabase.co`,port:5432,database:'postgres',user:'postgres',password,sslmode:'verify-full',sslRootCert:'system'},toolchain:{mode:'container'}});
+   // The provider adapter establishes exact project identity before this read-only empty-state check.
+   const sourceRef=manifest.source?.ref??project.ref,createdResourceEvidenceSha256=digest({runId:manifest.runId,project,operation:settings.operation});
+   const connection=lifecycleDatabaseConnection({runId:manifest.runId,ref:project.ref,sourceRef,preservedRefs:manifest.preservedRefs,createdResourceEvidenceSha256,url:project.url},purpose,password,settings.databaseConnections?.[purpose]);
+   await(dependencies.baseline??captureManagedBaseline)({scope:{mode:'hosted',role:purpose,runId:manifest.runId,projectRef:project.ref,sourceRef,preservedRefs:manifest.preservedRefs,createdResourceEvidenceSha256,apiUrl:project.url},connection,toolchain:{mode:'container'}});
    return true;
   }});
  const result=await executeProjectLifecycleStep({manifestPath,repositoryRoot,candidate,step:settings.operation,clock,adapter:{...adapter,verifySource:async({manifest:current})=>{
@@ -82,7 +98,7 @@ export async function executeIsolationVerification(options,dependencies={}){
   ensure(source&&target&&source.ref!==target.ref&&!m.preservedRefs.includes(source.ref)&&!m.preservedRefs.includes(target.ref)&&!m.forbiddenRefs.includes(target.ref),'TARGET_FORBIDDEN');
   ensure(settings.capabilityId===m.capabilityIds['source-read']&&m.allowedActions.includes('verify-restore')&&!m.pending&&!m.terminal&&!m.humanBoundary&&m.maintenance?.phase==='paused'&&['storage_restored','integrity_verified','incident_drill_verified'].includes(m.state),'ISOLATION_SCOPE_FORBIDDEN');
   for(const [id,disposition]of [[source.ref,'persistent'],[target.ref,'disposable']])ensure(m.cleanup.resources.some(r=>r.provider==='supabase'&&r.id===id&&r.runId===m.runId&&r.disposition===disposition&&r.absentAt===null),'ISOLATION_OWNERSHIP_REQUIRED');
-  for(const project of [source,target]){const owned=m.cleanup.resources.find(r=>r.provider==='supabase'&&r.id===project.ref);ensure(owned,'ISOLATION_OWNERSHIP_REQUIRED');const bytes=await readPrivateBytes(join(dirname(manifestPath),owned.evidenceSha256+'.json'),repositoryRoot);ensure(createHash('sha256').update(bytes).digest('hex')===owned.evidenceSha256,'CREATION_EVIDENCE_MISMATCH');const creation=JSON.parse(bytes.toString());ensure(creation.kind==='issue29-supabase-created'&&creation.runId===m.runId&&creation.project?.ref===project.ref&&creation.empty===true,'ISOLATION_FOREIGN_STATE_UNPROVEN');}
+  for(const project of [source,target]){const owned=m.cleanup.resources.find(r=>r.provider==='supabase'&&r.id===project.ref);ensure(owned,'ISOLATION_OWNERSHIP_REQUIRED');const bytes=await readPrivateBytes(join(dirname(manifestPath),owned.evidenceSha256+'.json'),repositoryRoot);ensure(createHash('sha256').update(bytes).digest('hex')===owned.evidenceSha256,'CREATION_EVIDENCE_MISMATCH');const creation=JSON.parse(bytes.toString());const ownerAuthorizedSource=project.ref===source.ref&&creation.kind==='issue29-supabase-owner-authorized-source';ensure((creation.kind==='issue29-supabase-created'||ownerAuthorizedSource)&&creation.runId===m.runId&&creation.project?.ref===project.ref&&creation.empty===true,'ISOLATION_FOREIGN_STATE_UNPROVEN');}
   const mapped=[settings.preserved.canonicalStagingRef,...settings.preserved.productionRefs,...settings.preserved.historicalRefs];ensure(mapped.length===m.preservedRefs.length&&new Set(mapped).size===mapped.length&&mapped.every(ref=>m.preservedRefs.includes(ref))&&settings.preserved.canonicalStagingRef===settings.twoSlotAuthorization.preservedStagingRef,'PRESERVED_INVENTORY_MISMATCH');
   const canonicalConfig=JSON.parse(await readFile(join(repositoryRoot,'wrangler.jsonc'),'utf8'));ensure(canonicalConfig.env?.staging?.vars?.PUBLIC_SUPABASE_URL===`https://${settings.preserved.canonicalStagingRef}.supabase.co`,'CANONICAL_STAGING_BINDING_MISMATCH');
   const adapter=(dependencies.adapterFactory??createSupabaseOperationsAdapter)({token:settings.providerToken,clock,twoSlotAuthorization:settings.twoSlotAuthorization});

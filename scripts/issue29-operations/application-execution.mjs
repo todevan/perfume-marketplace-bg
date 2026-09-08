@@ -60,7 +60,7 @@ import {readSeededSourceEvidence} from './source-execution.mjs';
 import {runTargetDatabaseContracts,verifyTargetAuthPrivacy,TARGET_DATABASE_CONTRACTS} from './target-integrity.mjs';
 import {prepareTargetStaff} from './auth-execution.mjs';
 import {measureRecovery} from './recovery-set.mjs';
-const connection=z.strictObject({host:z.string(),port:z.literal(5432),database:z.literal('postgres'),user:z.string(),password:z.string().min(1).max(1024),sslmode:z.literal('verify-full'),sslRootCert:z.literal('system').optional()});
+const connection=z.strictObject({host:z.string(),port:z.literal(5432),database:z.literal('postgres'),user:z.string(),password:z.string().min(1).max(1024),sslmode:z.literal('verify-full'),sslRootCert:z.enum(['system','supabase-prod-2021']).optional()});
 export const applicationSettingsSchema=z.strictObject({schemaVersion:z.literal(1),operation:z.literal('verify-application'),action:z.enum(['prepare','run']),browserSettingsPath:z.string(),restoreSettingsPath:z.string(),privateDirectory:z.string(),sourceSessionProofPath:z.string(),oldSourceAccessTokenPath:z.string(),database:z.strictObject({connection,toolchain:z.strictObject({mode:z.literal('container')})})});
 const boundarySchema=z.strictObject({schemaVersion:z.literal(1),operation:z.literal('verify-application'),manifestPath:z.string(),sourcePrivateDirectory:z.string(),bindingSettingsPath:z.string(),publishableKey:z.string().min(10),totpSecretPath:z.string().optional(),sessionCredentialsPath:z.string(),allowLiveHumanChallenges:z.literal(true)});
 /** @param {ReturnType<typeof applicationBrowserPlan>} plan @param {string} repositoryRoot */

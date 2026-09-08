@@ -21,7 +21,7 @@ export function validateAutomationContext(value) {
     return parsed.data;
 }
 const settingsSchema = z.strictObject({ deployment: z.strictObject({ accountId: z.string().regex(/^[a-f0-9]{32}$/u), workerName: z.string().regex(/^issue29-[a-z0-9-]+$/u), versionId: z.string().uuid(), origin: z.string().url(), readToken: z.string().min(10).max(4096) }), schemaVersion: z.literal(1), operation: z.literal('backup-set'), providerToken: z.string().min(10).max(1024),
-    connection: z.strictObject({ host: z.string().min(1).max(256), port: z.literal(5432), database: z.literal('postgres'), user: z.string().min(1).max(128), password: z.string().min(1).max(1024), sslmode: z.literal('verify-full'), sslRootCert: z.literal('system').optional() }),
+    connection: z.strictObject({ host: z.string().min(1).max(256), port: z.literal(5432), database: z.literal('postgres'), user: z.string().min(1).max(128), password: z.string().min(1).max(1024), sslmode: z.literal('verify-full'), sslRootCert: z.enum(['system','supabase-prod-2021']).optional() }),
     toolchain: z.strictObject({ mode: z.literal('container') }), source: z.strictObject({ apiUrl: z.string().url(), serviceKey: z.string().min(10).max(4096) }),
     managedBaseline: z.strictObject({ path: z.string(), sha256: hash }), ownerPublicKeyPath: z.string(), outputDirectory: z.string(), privateDirectory: z.string() });
 const costSchema = z.strictObject({ schemaVersion: z.literal(1), kind: z.literal('github-personal-budget-ui-readback'), account: z.literal('todevan'), product: z.literal('actions'), budgetUsd: z.literal(0), stopUsage: z.literal(true), capturedAt: z.iso.datetime(), expiresAt: z.iso.datetime(), capturedEvidenceSha256: hash, attestedBy: z.literal('owner') });

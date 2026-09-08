@@ -223,7 +223,15 @@ all pre-existing inventory refs are **preserved**: read-only inventory/monitorin
 only, with no backup exports, restores, data changes or cleanup. Recovery source
 creation requires a fresh manifest-owned synthetic project with current live free
 capacity/cost and ownership proof. Historical source credentials do not authorize
-exports. Future production recovery requires separate current owner authority.
+exports. If a provider-created source is found after a persisted `create-source`
+intent but its provider timestamp predates that intent, resume requires a private,
+expiring owner authorization bound to the exact run, pending operation, organization,
+source ref, region, source name, observed timestamp, and approval-evidence hash. It
+is readback-only: it cannot create a project, authorize a target, reclassify
+preserved/forbidden or already-owned state, or skip the fresh empty-state inspection.
+The resulting evidence preserves the provider timestamp and identifies an
+owner-authorized source readback; it does not claim fresh creation. Future production
+recovery requires separate current owner authority.
 
 A valid credential does not authorize backing up or restoring the wrong project.
 

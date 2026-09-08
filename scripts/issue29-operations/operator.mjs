@@ -4,10 +4,11 @@ import { randomUUID, createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { canonicalJson } from './recovery-set.mjs';
 import { assertExactTarget, assertOwnedSource, assertPrivatePath, ensure, OperationsError, readPrivateManifest, writePrivateManifest, validateProviderPreflight, validateSourceMaintenance } from './manifest.mjs';
+import { validateOwnerSourceAuthorization } from './supabase-adapter.mjs';
 /** @typedef {import('./manifest.mjs').OperationsManifest} Manifest */
 /** @typedef {import('./manifest.mjs').ProjectReadback} ProjectReadback */
 /** @typedef {import('./manifest.mjs').Capability} Capability */
-/** @typedef {{project:import('./manifest.mjs').ProjectIdentity,createdAt:string,evidenceSha256:string,evidence?:Record<string,unknown>,foreignState:boolean}} CreatedProject */
+/** @typedef {{project:import('./manifest.mjs').ProjectIdentity,createdAt:string,evidenceSha256:string,evidence?:Record<string,unknown>,foreignState:boolean,ownerSourceAuthorization?:unknown}} CreatedProject */
 /** @typedef {{manifest:Manifest,operationId:string,purpose:'source'|'target'}} LifecycleContext */
 /** @typedef {{preflight:(context:LifecycleContext)=>Promise<import('./manifest.mjs').ProviderPreflight & {evidence?:Record<string,unknown>}>,readPaused?:(context:MaintenanceContext)=>Promise<SourceStatusReadback>,create?:(context:LifecycleContext)=>Promise<void>,readCreated?:(context:LifecycleContext)=>Promise<CreatedProject>,remove?:(context:LifecycleContext)=>Promise<void>,readAbsent?:(context:LifecycleContext)=>Promise<{absent:boolean,evidenceSha256:string}>,verifySource?:(context:LifecycleContext)=>Promise<{fixtureRunId:string,fixtureManifestSha256:string,inventorySha256:string,releaseBindingSha256:string,evidenceSha256:string,evidence?:Record<string,unknown>}>}} LifecycleAdapter */
 
@@ -88,7 +89,10 @@ export async function executeProjectLifecycleStep(options) {
             catch { throw new OperationsError('READBACK_UNCERTAIN_NO_RETRY'); }
             ensure(proof.project.organizationId === manifest.provisioning.organizationId && proof.project.region === manifest.provisioning.region && proof.project.environment === (purpose === 'source' ? 'synthetic' : 'disposable') && proof.foreignState === false, 'TARGET_IDENTITY_MISMATCH');
             ensure(!manifest.preservedRefs.includes(proof.project.ref) && !manifest.forbiddenRefs.includes(proof.project.ref), 'PRESERVED_PROJECT_FORBIDDEN');
-            ensure(Number.isFinite(Date.parse(proof.createdAt)) && Date.parse(proof.createdAt) >= Date.parse(manifest.pending.startedAt) - 1000 && Date.parse(proof.createdAt) <= Date.parse(clock()) + 300000, 'CREATION_TIME_MISMATCH');
+            const withinCreationWindow = Number.isFinite(Date.parse(proof.createdAt)) && Date.parse(proof.createdAt) >= Date.parse(manifest.pending.startedAt) - 1000 && Date.parse(proof.createdAt) <= Date.parse(clock()) + 300000;
+            if (proof.ownerSourceAuthorization)
+                validateOwnerSourceAuthorization(proof.ownerSourceAuthorization, { manifest, operationId, purpose, sourceRef: proof.project.ref, sourceName: manifest.provisioning.sourceName, observedCreatedAt: proof.createdAt, now: clock() });
+            ensure(withinCreationWindow || proof.ownerSourceAuthorization, 'CREATION_TIME_MISMATCH');
             await persistOperationsEvidence(manifestPath,repositoryRoot,proof.evidence,proof.evidenceSha256);
             const owned = { provider: 'supabase', id: proof.project.ref, runId: manifest.runId, createdAt: proof.createdAt, evidenceSha256: proof.evidenceSha256, disposition: /** @type {'persistent'|'disposable'} */ (purpose==='source'?'persistent':'disposable'), absentAt: null };
             if (purpose === 'source') {

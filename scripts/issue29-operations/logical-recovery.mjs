@@ -1,7 +1,9 @@
 import { spawn, execFile as execFileCallback } from 'node:child_process';
+import { createHash, randomUUID, X509Certificate } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { join, isAbsolute } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { ensure, OperationsError } from './manifest.mjs';
 import { canonicalJson } from './recovery-set.mjs';
 import { sha256 } from '../storage-backup-crypto.mjs';
@@ -9,13 +11,17 @@ export const POSTGRES_VERSION = '17.6';
 export const POSTGRES_IMAGE = 'public.ecr.aws/supabase/postgres@sha256:80d7b27c3e8d77cfa7226eee9508671796da214781ff15a35b3670d7ad5ee453';
 export const SUPABASE_CLI_VERSION = '2.109.1';
 /** @typedef {{mode:'local'|'hosted',role:'source'|'target',runId:string,projectRef:string,sourceRef:string,preservedRefs:string[],createdResourceEvidenceSha256:string,apiUrl:string}} RecoveryScope */
-/** @typedef {{host:string,port:number,database:string,user:string,password:string,sslmode:'disable'|'verify-full',sslRootCert?:string}} DatabaseConnection */
+/** @typedef {{host:string,port:number,database:string,user:string,password:string,sslmode:'disable'|'verify-full',sslRootCert?:'system'|'supabase-prod-2021'}} DatabaseConnection */
 /** @typedef {{mode:'container'}|{mode:'exec',containerId:string}|{mode:'native',binDirectory:string}} Toolchain */
 /** @typedef {{scope:RecoveryScope,connection:DatabaseConnection,toolchain:Toolchain}} DatabaseOptions */
 const execFile = promisify(execFileCallback);
 const REF = /^[a-z]{20}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
 const SCHEMAS = ['public', 'private'];
+const SUPABASE_POOLER_CA = fileURLToPath(new URL('./supabase-prod-ca-2021.crt', import.meta.url));
+const SUPABASE_POOLER_CA_FINGERPRINT = '807025ad50d4ed219d2c9c7d299c004f824eb00cf7f65afef607d07b72e6cafa';
+const CONTAINER_SUPABASE_POOLER_CA = '/issue29/supabase-prod-ca-2021.crt';
+function supabasePoolerCaPath() { try { const certificate = new X509Certificate(readFileSync(SUPABASE_POOLER_CA)); ensure(createHash('sha256').update(certificate.raw).digest('hex') === SUPABASE_POOLER_CA_FINGERPRINT, 'SUPABASE_CA_FINGERPRINT_MISMATCH'); return SUPABASE_POOLER_CA; } catch (error) { if (error instanceof OperationsError) throw error; throw new OperationsError('SUPABASE_CA_FINGERPRINT_MISMATCH'); } }
 /** @param {RecoveryScope} scope */
 export function assertRecoveryScope(scope) {
     ensure(scope && ['local', 'hosted'].includes(scope.mode) && ['source', 'target'].includes(scope.role) && REF.test(scope.projectRef) && REF.test(scope.sourceRef) && Array.isArray(scope.preservedRefs) && scope.preservedRefs.every(ref => REF.test(ref)), 'RECOVERY_SCOPE_INVALID');
@@ -37,12 +43,17 @@ function literal(text) { return `'${text.replaceAll("'", "''")}'`; }
 export function createPostgresToolchain({ scope, connection, toolchain }) {
     assertRecoveryScope(scope);
     ensure(connection.database === 'postgres' && Number.isSafeInteger(connection.port) && connection.port > 0 && connection.port < 65536 && typeof connection.password === 'string' && connection.password.length > 0, 'DATABASE_CONNECTION_INVALID');
+    ensure(!connection.sslRootCert || ['system','supabase-prod-2021'].includes(connection.sslRootCert), 'SYSTEM_CA_ROOTS_REQUIRED');
     if (scope.mode === 'local')
         ensure(connection.host === '127.0.0.1' && connection.sslmode === 'disable' && connection.user === 'postgres', 'LOCAL_SCOPE_INVALID');
-    else
-        ensure(connection.sslmode === 'verify-full' && ((connection.host === `db.${scope.projectRef}.supabase.co` && connection.user === 'postgres') || (/^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$/u.test(connection.host) && connection.port === 5432 && connection.user === `postgres.${scope.projectRef}`)), 'DATABASE_TARGET_MISMATCH');
-    ensure(!connection.sslRootCert || connection.sslRootCert === 'system', 'SYSTEM_CA_ROOTS_REQUIRED');
-    const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', PGHOST: connection.host, PGPORT: String(connection.port), PGDATABASE: connection.database, PGUSER: connection.user, PGPASSWORD: connection.password, PGSSLMODE: connection.sslmode, PGCONNECT_TIMEOUT: '10', ...(scope.mode === 'hosted' ? { PGSSLROOTCERT: 'system' } : {}) };
+    else {
+        const direct = connection.host === `db.${scope.projectRef}.supabase.co` && connection.user === 'postgres' && (connection.sslRootCert === undefined || connection.sslRootCert === 'system');
+        const pooler = /^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$/u.test(connection.host) && connection.port === 5432 && connection.user === `postgres.${scope.projectRef}` && connection.sslRootCert === 'supabase-prod-2021';
+        ensure(connection.sslmode === 'verify-full' && (direct || pooler), 'DATABASE_TARGET_MISMATCH');
+    }
+    const poolerCa = scope.mode === 'hosted' && connection.sslRootCert === 'supabase-prod-2021' ? supabasePoolerCaPath() : null;
+    const pgRootCert = poolerCa && toolchain.mode === 'container' ? CONTAINER_SUPABASE_POOLER_CA : poolerCa ?? 'system';
+    const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', PGHOST: connection.host, PGPORT: String(connection.port), PGDATABASE: connection.database, PGUSER: connection.user, PGPASSWORD: connection.password, PGSSLMODE: connection.sslmode, PGCONNECT_TIMEOUT: '10', ...(scope.mode === 'hosted' ? { PGSSLROOTCERT: pgRootCert } : {}) };
     const pgVariables = Object.keys(env).filter(name => name.startsWith('PG'));
     /** @param {'psql'|'pg_dump'} tool @param {string[]} args */
     function command(tool, args) {
@@ -55,7 +66,7 @@ export function createPostgresToolchain({ scope, connection, toolchain }) {
             return { file: 'docker', args: ['exec', '-i', ...pgVariables.flatMap(name => ['-e', name]), toolchain.containerId, tool, ...args] };
         }
         ensure(toolchain.mode === 'container', 'PINNED_TOOLCHAIN_REQUIRED');
-        return { file: 'docker', args: ['run', '--rm', '-i', '--network', 'host', ...pgVariables.flatMap(name => ['-e', name]), '--entrypoint', tool, POSTGRES_IMAGE, ...args] };
+        return { file: 'docker', args: ['run', '--rm', '-i', '--network', 'host', ...(poolerCa ? ['--mount', `type=bind,src=${poolerCa},dst=${CONTAINER_SUPABASE_POOLER_CA},readonly`] : []), ...pgVariables.flatMap(name => ['-e', name]), '--entrypoint', tool, POSTGRES_IMAGE, ...args] };
     }
     /** @param {'psql'|'pg_dump'} tool @param {string[]} args */
     async function run(tool, args) {

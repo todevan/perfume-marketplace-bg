@@ -30,7 +30,7 @@ async function storeBackupProof(value,manifestPath,repositoryRoot){
 const settingsSchema=z.strictObject({schemaVersion:z.literal(1),operation:z.literal('backup-set'),executionId:z.string().uuid().optional(),providerToken:z.string().min(10).max(4096),
  source:z.strictObject({apiUrl:z.string().url(),serviceKey:z.string().min(10).max(4096)}),
  deployment:z.strictObject({accountId:z.string(),workerName:z.string(),versionId:z.string(),origin:z.string().url(),readToken:z.string().min(10).max(4096)}),
- connection:z.strictObject({host:z.string(),port:z.literal(5432),database:z.literal('postgres'),user:z.string(),password:z.string().min(1).max(1024),sslmode:z.literal('verify-full'),sslRootCert:z.string().optional()}),
+ connection:z.strictObject({host:z.string(),port:z.literal(5432),database:z.literal('postgres'),user:z.string(),password:z.string().min(1).max(1024),sslmode:z.literal('verify-full'),sslRootCert:z.enum(['system','supabase-prod-2021']).optional()}),
  toolchain:z.strictObject({mode:z.literal('container')}),managedBaseline:z.strictObject({path:z.string(),sha256:z.string().regex(/^[a-f0-9]{64}$/u)}),ownerPublicKeyPath:z.string(),outputDirectory:z.string(),privateDirectory:z.string()});
 /** @param {string} path @param {string} root */
 export async function readBackupSettings(path,root){try{const parsed=settingsSchema.safeParse(JSON.parse((await readPrivateBytes(path,root)).toString('utf8')));ensure(parsed.success,'PRIVATE_SETTINGS_INVALID');return parsed.data;}catch(error){if(error instanceof OperationsError)throw error;throw new OperationsError('PRIVATE_SETTINGS_INVALID');}}
