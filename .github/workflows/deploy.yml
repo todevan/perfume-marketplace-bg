@@ -2,6 +2,19 @@ name: deploy staging
 
 on:
   workflow_dispatch:
+    inputs:
+      rollback_version_id:
+        description: Exact pre-verified fail-closed staging Worker version
+        required: true
+        type: string
+      rollback_source_sha:
+        description: Source commit recorded as the rollback version tag
+        required: true
+        type: string
+      rollback_provenance_sha256:
+        description: SHA-256 of independently captured sanitized version provenance
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,11 +32,12 @@ jobs:
     env:
       STAGING_ORIGIN: https://perfume-marketplace-bg-staging.perfume-marketplace-bg.workers.dev
       EXPECTED_GIT_SHA: ${{ github.sha }}
-      A7_REQUIRE_DISABLED_SIGNUP: "true"
       STAGING_SMOKE_ATTEMPTS: "6"
       STAGING_SMOKE_DELAY_MS: "5000"
       STAGING_SMOKE_TIMEOUT_MS: "5000"
-      SAFE_ROLLBACK_VERSION: 75593db4-12fd-486d-ae8a-bdf9ebbb3ece
+      ROLLBACK_VERSION_ID: ${{ inputs.rollback_version_id }}
+      ROLLBACK_SOURCE_SHA: ${{ inputs.rollback_source_sha }}
+      ROLLBACK_PROVENANCE_SHA256: ${{ inputs.rollback_provenance_sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -46,13 +60,18 @@ jobs:
       - run: pnpm test:db:contracts
       - name: Validate staging Cloudflare bundle
         run: pnpm exec wrangler deploy --dry-run --env staging
+      - name: Verify exact rollback version and operator provenance
+        run: node scripts/verify-worker-rollback.mjs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy staging Worker
         id: deploy
         run: pnpm exec wrangler deploy --env staging
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Smoke deployed closed-beta routes
+      - name: Smoke deployed registration and protected routes
         id: smoke
         run: node scripts/smoke-staging.mjs
       - name: Verify staging Turnstile action boundaries
@@ -61,9 +80,15 @@ jobs:
         id: rollback
         if: failure() && steps.deploy.outcome == 'success'
         run: >-
-          pnpm exec wrangler versions deploy "$SAFE_ROLLBACK_VERSION"
+          pnpm exec wrangler versions deploy "$ROLLBACK_VERSION_ID@100%"
           --env staging --yes
           --message "Automated rollback after failed staging smoke"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Read back the exact restored Worker version
+        if: failure() && steps.rollback.outcome == 'success'
+        run: node scripts/verify-worker-rollback.mjs --deployed
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

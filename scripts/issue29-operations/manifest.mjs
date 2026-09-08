@@ -1,0 +1,331 @@
+import { constants } from 'node:fs';
+import { link, lstat, open, realpath, rename, unlink } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+/** @typedef {{sha:string, tree:string, deploymentId:string}} Candidate */
+/** @typedef {{organizationId:string, ref:string, region:string, environment:string, url:string, postgresVersion:string, classification:string}} ProjectIdentity */
+/** @typedef {{provider:string,id:string,runId:string,createdAt:string,evidenceSha256:string,disposition:'disposable'|'persistent',absentAt:string|null,priorStateSha256?:string}} OwnedResource */
+/** @typedef {{step:string,operationId:string,startedAt:string,resourceId:string|null,priorStateSha256:string|null}} PendingIntent */
+/** @typedef {{step:string,operationId:string,completedAt:string,evidenceSha256:string,resourceId:string|null,intentSha256?:string}} HistoryEntry */
+/** @typedef {{createdAt:string,creationIntentId:string,creationReadbackSha256:string,fixtureRunId:string|null,fixtureManifestSha256:string|null,inventorySha256:string|null,releaseBindingSha256:string|null,verifiedAt:string|null}} SourceProvenance */
+/** @typedef {{organizationId:string,region:string,checkedAt:string,expiresAt:string,plan:'free',projectLimit:number,activeProjectCount:number,availableProjects:number,quotedCost:0,currency:'USD',deletionSupported:true,regionAvailable:true,inventoryRefs:string[],evidenceSha256:string}} ProviderPreflight */
+/** @typedef {{fromCandidate:Candidate,mergeSha:string,treeSha:string,pullRequestNumber:number,verifiedAt:string,evidenceSha256:string,repository:string,repositoryId:number}} ReleaseUpdate */
+/** @typedef {{schemaVersion:number,issue:number,runId:string,expiresAt:string,state:string,maintenance?:SourceMaintenance|null,releaseUpdate?:ReleaseUpdate,candidate:Candidate,targetDeploymentId?:string,recoveryTimings?:{startedAt:string,databaseVerifiedAt?:string,storageStartedAt?:string,storageVerifiedAt?:string,applicationVerifiedAt?:string},source:ProjectIdentity|null,target:ProjectIdentity|null,preservedRefs:string[],provisioning:{organizationId:string,region:string,sourceName:string,targetName:string},sourceProvenance:SourceProvenance|null,providerPreflight:ProviderPreflight|null,backupVerification:{descriptorSha256:string,independentlyVerifiedAt:string,sourceReadsComplete:true}|null,forbiddenRefs:string[],allowedActions:string[],capabilityIds:Record<string,string>,maximumCost:number,monitoring:{workerAlias:string,destinationAlias:string,ruleAliases:string[],configSha256?:string,targetRuleAliases?:string[],targetConfigSha256?:string},backup:{destinationAlias:string,retentionDays:number,publicKeyId:string},fixture:{alias:string,classification:string,sentinel?:{sha256:string,bytes:number}},humanBoundary:string|null,cleanup:{authorized:boolean,resources:OwnedResource[]},pending:PendingIntent|null,attempts:Record<string,number>,history:HistoryEntry[],terminal:string|null}} OperationsManifest */
+/** @typedef {{identitySha256:string,configSha256:string,provenanceSha256:string,workerSha256:string}} SourcePreservation */
+/** @typedef {SourcePreservation & {checkedAt:string,checkpointSha256:string,readinessSha256:string,evidenceSha256:string}} SourceResumeProof */
+/** @typedef {{schemaVersion:1,id:string,sourceRef:string,authorizedAt:string,expiresAt:string,backup:{descriptorSha256:string,artifactSha256:string,checkpointSha256:string,verifiedAt:string,retentionVerifiedAt:string},preservation:SourcePreservation,monitoring:{beganAt:string,evidenceSha256:string,sourceConfigSha256:string,silences:{ruleKey:string,id:string,evidenceSha256:string}[],endedAt?:string,endEvidenceSha256?:string}|null,phase:'authorized'|'monitoring_ready'|'pause_pending'|'paused'|'resume_pending'|'active'|'closed',pausedAt:string|null,pauseReadbackSha256:string|null,resumedAt:string|null,resumeReadbackSha256:string|null,resumeProof:SourceResumeProof|null,endedAt:string|null}} SourceMaintenance */
+/** @typedef {{now?:string,candidate?:Candidate}} ValidationOptions */
+/** @typedef {ValidationOptions & {repositoryRoot:string,replace?:boolean}} PrivateFileOptions */
+const SHA = /^[a-f0-9]{40}$/u;
+const HASH = /^[a-f0-9]{64}$/u;
+const REF = /^[a-z]{20}$/u;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+const ALIAS = /^[a-z0-9][a-z0-9-]{0,62}$/u;
+export const STATES = Object.freeze(['planned', 'provider_preflighted', 'source_creation_pending', 'source_read_back', 'source_verified', 'source_retirement_pending', 'source_absence_verified', 'source_pause_pending', 'source_paused', 'source_resume_pending', 'source_resumed', 'preflighted', 'implementation_verified', 'monitoring_configured', 'monitoring_proved', 'backup_started', 'artifact_upload_pending', 'artifact_verified', 'backup_heartbeat_pending', 'backup_verified', 'target_creation_pending', 'target_read_back', 'quarantine_verified', 'database_restored', 'storage_restored', 'integrity_verified', 'incident_drill_verified', 'transient_cleanup_pending', 'cleanup_verified']);
+export const ACTIONS = Object.freeze(['preflight', 'adopt-merged-release', 'update-worker', 'synthetic-jobs', 'deploy-worker', 'deploy-monitor', 'seed-source', 'create-source', 'verify-source', 'retire-source', 'authorize-maintenance', 'pause-source', 'resume-source', 'verify-source-resumed', 'maintenance-silence', 'maintenance-unsilence', 'implementation-verified', 'configure-monitoring', 'monitoring-proof', 'backup-set', 'artifact-upload', 'backup-heartbeat', 'verify-backup', 'create-target', 'quarantine', 'restore-database', 'restore-storage', 'verify-restore', 'incident-drill', 'cleanup-resource', 'cleanup']);
+export class OperationsError extends Error {
+    /** @param {string} code */
+    constructor(code) { super(`Issue #29: ${code}`); this.name = 'OperationsError'; }
+}
+/** @param {unknown} condition @param {string} code @returns {asserts condition} */
+export function ensure(condition, code) { if (!condition)
+    throw new OperationsError(code); }
+/** Validate normalized LIVE provider evidence, never substitute documented quotas for readback.
+ * @param {unknown} input @param {{organizationId:string,region:string,preservedRefs:string[],now?:string,minimumAvailable?:number}} expected
+ * @returns {ProviderPreflight}
+ */
+export function validateProviderPreflight(input, expected) {
+    record(input, ['organizationId','region','checkedAt','expiresAt','plan','projectLimit','activeProjectCount','availableProjects','quotedCost','currency','deletionSupported','regionAvailable','inventoryRefs','evidenceSha256']);
+    ensure(input.organizationId === expected.organizationId && input.region === expected.region, 'PROVIDER_PREFLIGHT_IDENTITY_MISMATCH');
+    timestamp(input.checkedAt); timestamp(input.expiresAt);
+    ensure(Date.parse(input.expiresAt) > Date.parse(input.checkedAt) && Date.parse(input.expiresAt) - Date.parse(input.checkedAt) <= 900000, 'PROVIDER_PREFLIGHT_STALE');
+    if (expected.now) ensure(Date.parse(expected.now) >= Date.parse(input.checkedAt) - 300000 && Date.parse(expected.now) < Date.parse(input.expiresAt), 'PROVIDER_PREFLIGHT_STALE');
+    ensure(input.plan === 'free' && input.quotedCost === 0 && input.currency === 'USD', 'ZERO_COST_REQUIRED');
+    for (const key of ['projectLimit','activeProjectCount','availableProjects']) ensure(Number.isSafeInteger(input[key]) && Number(input[key]) >= 0, 'CAPACITY_UNPROVEN');
+    ensure(Number(input.availableProjects) >= (expected.minimumAvailable ?? 0) && Number(input.availableProjects) <= Number(input.projectLimit) - Number(input.activeProjectCount), 'CAPACITY_UNPROVEN');
+    ensure(input.deletionSupported === true && input.regionAvailable === true, 'PROVIDER_CAPABILITY_UNPROVEN');
+    list(input.inventoryRefs, REF);
+    const inventoryRefs = input.inventoryRefs;
+    ensure(expected.preservedRefs.every(ref => inventoryRefs.includes(ref)), 'PRESERVED_INVENTORY_INCOMPLETE');
+    textValue(input.evidenceSha256, HASH);
+    return /** @type {ProviderPreflight} */ (/** @type {unknown} */ (input));
+}
+/** @param {OperationsManifest} manifest @returns {ProjectIdentity} */
+export function assertOwnedSource(manifest) {
+    const source = manifest.source;
+    ensure(source && !manifest.preservedRefs.includes(source.ref) && source.environment === 'synthetic', 'FRESH_SYNTHETIC_SOURCE_REQUIRED');
+    const created = manifest.cleanup.resources.find(r => r.provider === 'supabase' && r.id === source.ref && r.runId === manifest.runId && r.disposition === 'persistent');
+    ensure(created && created.absentAt === null && manifest.sourceProvenance?.verifiedAt && manifest.sourceProvenance.fixtureRunId === manifest.runId, 'SOURCE_PROVENANCE_UNPROVEN');
+    ensure(!manifest.maintenance || manifest.maintenance.phase==='closed','SOURCE_MAINTENANCE_ACTIVE');
+    ensure(manifest.backupVerification?.sourceReadsComplete !== true || manifest.maintenance?.phase==='closed', 'SOURCE_READS_CLOSED');
+    return source;
+}
+/** @param {unknown} value @param {string[]} keys @returns {asserts value is Record<string, unknown>} */
+function record(value, keys) { ensure(value !== null && typeof value === 'object' && !Array.isArray(value), 'MANIFEST_INVALID'); ensure(Object.keys(value).every(k => keys.includes(k)), 'MANIFEST_INVALID'); }
+/** @param {unknown} value @param {RegExp} [pattern] @returns {asserts value is string} */
+function textValue(value, pattern) { ensure(typeof value === 'string' && value.length > 0 && value.length <= 256 && (!pattern || pattern.test(value)), 'MANIFEST_INVALID'); }
+/** @param {unknown} value @returns {asserts value is string} */
+function timestamp(value) { ensure(typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(value) && Number.isFinite(Date.parse(value)), 'MANIFEST_INVALID'); }
+/** @param {unknown} value @param {RegExp} pattern @returns {asserts value is string[]} */
+function list(value, pattern) { ensure(Array.isArray(value) && value.length <= 1000 && new Set(value).size === value.length, 'MANIFEST_INVALID'); value.forEach(item => textValue(item, pattern)); }
+/** @param {unknown} value @returns {asserts value is ProjectIdentity} */
+function identity(value) { record(value, ['organizationId', 'ref', 'region', 'environment', 'url', 'postgresVersion', 'classification']); textValue(value.organizationId, ALIAS); textValue(value.ref, REF); textValue(value.region, ALIAS); textValue(value.postgresVersion, /^\d+\.\d+(?:\.\d+)?$/u); ensure(value.classification === 'synthetic-owner-controlled', 'SOURCE_CLASSIFICATION_UNPROVEN'); ensure(value.url === `https://${value.ref}.supabase.co`, 'PROJECT_URL_MISMATCH'); ensure(['staging', 'disposable', 'synthetic'].includes(String(value.environment)), 'PRODUCTION_FORBIDDEN'); }
+/** Validate a private manifest; no provider payload or credential fields are accepted. @param {unknown} input @param {ValidationOptions} [options] @returns {OperationsManifest} */
+export function validateManifest(input, { now = new Date().toISOString(), candidate } = {}) {
+    record(input, ['schemaVersion', 'issue', 'runId', 'expiresAt', 'state', 'maintenance', 'releaseUpdate', 'candidate', 'targetDeploymentId', 'recoveryTimings', 'source', 'target', 'preservedRefs', 'provisioning', 'sourceProvenance', 'providerPreflight', 'backupVerification', 'forbiddenRefs', 'allowedActions', 'capabilityIds', 'maximumCost', 'monitoring', 'backup', 'fixture', 'humanBoundary', 'cleanup', 'pending', 'attempts', 'history', 'terminal']);
+    ensure(input.schemaVersion === 2 && input.issue === 29, 'MANIFEST_INVALID');
+    textValue(input.runId, UUID);
+    timestamp(input.expiresAt);
+    timestamp(now);
+    ensure(Date.parse(input.expiresAt) > Date.parse(now), 'MANIFEST_EXPIRED');
+    ensure(STATES.includes(String(input.state)), 'MANIFEST_INVALID');
+    ensure(input.terminal === null || ['blocked', 'failed'].includes(String(input.terminal)), 'MANIFEST_INVALID');
+    record(input.candidate, ['sha', 'tree', 'deploymentId']);
+    textValue(input.candidate.sha, SHA);
+    textValue(input.candidate.tree, SHA);
+    textValue(input.candidate.deploymentId, /^[a-zA-Z0-9-]{1,128}$/u);
+    if (candidate)
+        ensure(candidate.sha === input.candidate.sha && candidate.tree === input.candidate.tree && candidate.deploymentId === input.candidate.deploymentId, 'CANDIDATE_MISMATCH');
+    if(input.releaseUpdate!==undefined){
+        record(input.releaseUpdate,['fromCandidate','mergeSha','treeSha','pullRequestNumber','verifiedAt','evidenceSha256','repository','repositoryId']);const u=input.releaseUpdate;
+        record(u.fromCandidate,['sha','tree','deploymentId']);textValue(u.fromCandidate.sha,SHA);textValue(u.fromCandidate.tree,SHA);textValue(u.fromCandidate.deploymentId,/^[a-zA-Z0-9-]{1,128}$/u);
+        textValue(u.mergeSha,SHA);textValue(u.treeSha,SHA);textValue(u.evidenceSha256,HASH);timestamp(u.verifiedAt);textValue(u.repository,/^[A-Za-z0-9-]+\/[A-Za-z0-9][A-Za-z0-9_.-]*$/u);
+        ensure(Number.isSafeInteger(u.repositoryId)&&Number(u.repositoryId)>0&&Number.isSafeInteger(u.pullRequestNumber)&&Number(u.pullRequestNumber)>0,'MERGE_EVIDENCE_INVALID');
+        ensure(u.mergeSha===input.candidate.sha&&u.treeSha===input.candidate.tree&&u.treeSha===u.fromCandidate.tree&&u.mergeSha!==u.fromCandidate.sha,'MERGE_TREE_MISMATCH');
+    }
+    if (input.targetDeploymentId !== undefined) { textValue(input.targetDeploymentId, /^[a-zA-Z0-9-]{1,128}$/u); ensure(input.target !== null, 'TARGET_IDENTITY_REQUIRED'); }
+    if (input.recoveryTimings !== undefined) { record(input.recoveryTimings, ['startedAt','databaseVerifiedAt','storageStartedAt','storageVerifiedAt','applicationVerifiedAt']); timestamp(input.recoveryTimings.startedAt); for (const value of Object.values(input.recoveryTimings)) timestamp(value); }
+    list(input.preservedRefs, REF);
+    ensure(input.preservedRefs.length > 0, 'PRESERVED_INVENTORY_REQUIRED');
+    record(input.provisioning, ['organizationId', 'region', 'sourceName', 'targetName']);
+    for (const key of ['organizationId', 'region', 'sourceName', 'targetName']) textValue(input.provisioning[key], ALIAS);
+    ensure(input.provisioning.sourceName !== input.provisioning.targetName && String(input.provisioning.sourceName).startsWith('issue29-') && String(input.provisioning.targetName).startsWith('issue29-'), 'PROJECT_NAME_INVALID');
+    list(input.forbiddenRefs, REF);
+    const forbiddenRefs = input.forbiddenRefs;
+    ensure(input.preservedRefs.every(ref => forbiddenRefs.includes(ref)), 'PRESERVED_INVENTORY_REQUIRED');
+    if (input.source !== null) {
+        identity(input.source);
+        ensure(!input.preservedRefs.includes(input.source.ref), 'PRESERVED_PROJECT_FORBIDDEN');
+        ensure(input.source.environment === 'synthetic', 'FRESH_SYNTHETIC_SOURCE_REQUIRED');
+        ensure(input.forbiddenRefs.includes(input.source.ref), 'SOURCE_NOT_FORBIDDEN');
+        ensure(input.source.organizationId === input.provisioning.organizationId && input.source.region === input.provisioning.region, 'TARGET_IDENTITY_MISMATCH');
+        record(input.sourceProvenance, ['createdAt', 'creationIntentId', 'creationReadbackSha256', 'fixtureRunId', 'fixtureManifestSha256', 'inventorySha256', 'releaseBindingSha256', 'verifiedAt']);
+        timestamp(input.sourceProvenance.createdAt); textValue(input.sourceProvenance.creationIntentId, UUID); textValue(input.sourceProvenance.creationReadbackSha256, HASH);
+        if (input.sourceProvenance.verifiedAt !== null) {
+            timestamp(input.sourceProvenance.verifiedAt);
+            ensure(input.sourceProvenance.fixtureRunId === input.runId, 'SOURCE_PROVENANCE_UNPROVEN');
+            for (const key of ['fixtureManifestSha256','inventorySha256','releaseBindingSha256']) textValue(input.sourceProvenance[key], HASH);
+        } else {
+            const provenance = input.sourceProvenance;
+            ensure(['fixtureRunId','fixtureManifestSha256','inventorySha256','releaseBindingSha256'].every(key => provenance[key] === null), 'SOURCE_PROVENANCE_UNPROVEN');
+        }
+    } else ensure(['planned','provider_preflighted','source_creation_pending'].includes(String(input.state)) && input.sourceProvenance === null && input.target === null, 'SOURCE_IDENTITY_REQUIRED');
+    if (input.target !== null) {
+        identity(input.target);
+        ensure(input.target.environment === 'disposable' && input.source !== null && input.target.ref !== input.source.ref && !input.forbiddenRefs.includes(input.target.ref), 'TARGET_FORBIDDEN');
+    }
+    if (input.providerPreflight !== null) validateProviderPreflight(input.providerPreflight, { organizationId: String(input.provisioning.organizationId), region: String(input.provisioning.region), preservedRefs: input.preservedRefs });
+    if (input.backupVerification !== null) {
+        record(input.backupVerification, ['descriptorSha256','independentlyVerifiedAt','sourceReadsComplete']);
+        textValue(input.backupVerification.descriptorSha256, HASH); timestamp(input.backupVerification.independentlyVerifiedAt);
+        ensure(input.backupVerification.sourceReadsComplete === true && input.source !== null, 'BACKUP_VERIFICATION_REQUIRED');
+    }
+    list(input.allowedActions, ALIAS);
+    ensure(input.allowedActions.length > 0 && input.allowedActions.every(action => ACTIONS.includes(action)), 'MANIFEST_INVALID');
+    ensure(input.maximumCost === 0, 'ZERO_COST_REQUIRED');
+    record(input.capabilityIds, ['source-read', 'restore-write', 'monitoring-config', 'artifact-upload', 'cleanup']);
+    for (const role of ['source-read', 'restore-write', 'monitoring-config', 'artifact-upload', 'cleanup'])
+        textValue(input.capabilityIds[role], /^[a-zA-Z0-9:_-]{1,128}$/u);
+    record(input.monitoring, ['workerAlias', 'destinationAlias', 'ruleAliases', 'configSha256','targetRuleAliases','targetConfigSha256']);
+    if(input.monitoring.targetConfigSha256!==undefined)textValue(input.monitoring.targetConfigSha256,HASH);if(input.monitoring.targetRuleAliases!==undefined)list(input.monitoring.targetRuleAliases,/^[a-z][a-z0-9_-]{0,62}$/u);
+    if (input.monitoring.configSha256 !== undefined) textValue(input.monitoring.configSha256, HASH);
+    textValue(input.monitoring.workerAlias, ALIAS);
+    ensure(input.monitoring.destinationAlias === 'owner-primary', 'MANIFEST_INVALID');
+    list(input.monitoring.ruleAliases, /^[a-z][a-z0-9_-]{0,62}$/u);
+    record(input.backup, ['destinationAlias', 'retentionDays', 'publicKeyId']);
+    textValue(input.backup.destinationAlias, ALIAS);
+    ensure(input.backup.retentionDays === 35, 'RETENTION_INVALID');
+    textValue(input.backup.publicKeyId, HASH);
+    record(input.fixture, ['alias', 'classification', 'sentinel']);
+    if (input.fixture.sentinel !== undefined) { record(input.fixture.sentinel, ['sha256','bytes']); textValue(input.fixture.sentinel.sha256,HASH); ensure(Number.isSafeInteger(input.fixture.sentinel.bytes) && Number(input.fixture.sentinel.bytes) > 0 && Number(input.fixture.sentinel.bytes) <= 65536, 'SENTINEL_FIXTURE_INVALID'); }
+    textValue(input.fixture.alias, ALIAS);
+    ensure(input.fixture.classification === 'synthetic-owner-controlled', 'SOURCE_CLASSIFICATION_UNPROVEN');
+    ensure(input.humanBoundary === null || (typeof input.humanBoundary === 'string' && ALIAS.test(input.humanBoundary)), 'MANIFEST_INVALID');
+    record(input.cleanup, ['authorized', 'resources']);
+    ensure(input.cleanup.authorized === true && Array.isArray(input.cleanup.resources), 'CLEANUP_AUTHORITY_REQUIRED');
+    const ids = new Set();
+    for (const resource of input.cleanup.resources) {
+        record(resource, ['provider', 'id', 'runId', 'createdAt', 'evidenceSha256', 'disposition', 'absentAt', 'priorStateSha256']);
+        ensure(['supabase', 'supabase-storage', 'cloudflare', 'cloudflare-monitor', 'github', 'owner-copy'].includes(String(resource.provider)), 'MANIFEST_INVALID');
+        textValue(resource.id, /^[a-zA-Z0-9:_-]{1,128}$/u);
+        ensure(resource.runId === input.runId, 'CLEANUP_OWNERSHIP_MISMATCH');
+        ensure(!ids.has(resource.id), 'MANIFEST_INVALID');
+        ids.add(resource.id);
+        timestamp(resource.createdAt);
+        textValue(resource.evidenceSha256, HASH);
+        ensure(['disposable', 'persistent'].includes(String(resource.disposition)), 'MANIFEST_INVALID');
+        if (resource.absentAt !== null)
+            timestamp(resource.absentAt);
+        if (resource.priorStateSha256 !== undefined)
+            textValue(resource.priorStateSha256, HASH);
+        if (resource.provider === 'supabase-storage') {
+            const match = /^storage-(?:bucket:([a-z]{20}):operations-sentinels|object:([a-z]{20}):([a-f0-9-]{36}):sentinel)$/u.exec(resource.id);
+            const ref = match?.[1] ?? match?.[2];
+            ensure(ref && !input.preservedRefs.includes(ref) && ((input.source !== null && ref === input.source.ref) || (input.target !== null && ref === input.target.ref) || (resource.disposition==='disposable'&&resource.absentAt!==null&&input.forbiddenRefs.includes(ref))) && (!match?.[3] || match[3] === input.runId), 'STORAGE_OWNERSHIP_MISMATCH');
+            ensure(resource.disposition === (ref===input.source?.ref?'persistent':'disposable'), 'STORAGE_OWNERSHIP_MISMATCH');
+        }
+        if (resource.provider === 'supabase')
+            ensure(!input.preservedRefs.includes(resource.id) && ((input.target !== null && resource.id === input.target.ref) || (input.source !== null && resource.id === input.source.ref) || (resource.disposition==='disposable'&&resource.absentAt!==null&&input.forbiddenRefs.includes(resource.id))), 'TARGET_FORBIDDEN');
+    }
+    if (input.pending !== null) {
+        record(input.pending, ['step', 'operationId', 'startedAt', 'resourceId', 'priorStateSha256']);
+        ensure(input.allowedActions.includes(String(input.pending.step)), 'MANIFEST_INVALID');
+        textValue(input.pending.operationId, UUID);
+        timestamp(input.pending.startedAt);
+        if (input.pending.resourceId !== null)
+            textValue(input.pending.resourceId, /^[a-zA-Z0-9:_-]{1,128}$/u);
+        if (input.pending.priorStateSha256 !== null)
+            textValue(input.pending.priorStateSha256, HASH);
+    }
+    ensure(input.attempts !== null && typeof input.attempts === 'object' && !Array.isArray(input.attempts), 'MANIFEST_INVALID');
+    for (const [key, value] of Object.entries(input.attempts))
+        ensure(/^[a-zA-Z0-9:_-]{1,200}$/u.test(key) && value === 1, 'ATTEMPT_LIMIT');
+    ensure(Array.isArray(input.history), 'MANIFEST_INVALID');
+    for (const entry of input.history) {
+        record(entry, ['step', 'operationId', 'completedAt', 'evidenceSha256', 'resourceId', 'intentSha256']);
+        if(entry.intentSha256!==undefined)textValue(entry.intentSha256,HASH);
+        ensure(input.allowedActions.includes(String(entry.step)), 'MANIFEST_INVALID');
+        textValue(entry.operationId, UUID);
+        timestamp(entry.completedAt);
+        textValue(entry.evidenceSha256, HASH);
+        if (entry.resourceId !== null)
+            textValue(entry.resourceId, /^[a-zA-Z0-9:_-]{1,128}$/u);
+    }
+    if(input.maintenance!==undefined&&input.maintenance!==null)validateSourceMaintenance(input.maintenance,/** @type {OperationsManifest} */(/** @type {unknown} */(input)));
+    return /** @type {OperationsManifest} */ ( /** @type {unknown} */(input));
+}
+/** Strict maintenance authorization binds one retained recovery point and source preservation proof. @param {unknown} input @param {OperationsManifest} manifest @returns {SourceMaintenance} */
+export function validateSourceMaintenance(input,manifest){
+ record(input,['schemaVersion','id','sourceRef','authorizedAt','expiresAt','backup','preservation','monitoring','phase','pausedAt','pauseReadbackSha256','resumedAt','resumeReadbackSha256','resumeProof','endedAt']);ensure(input.schemaVersion===1&&input.sourceRef===manifest.source?.ref&&!manifest.preservedRefs.includes(String(input.sourceRef)),'MAINTENANCE_SOURCE_MISMATCH');textValue(input.id,UUID);timestamp(input.authorizedAt);timestamp(input.expiresAt);ensure(Date.parse(input.expiresAt)>Date.parse(input.authorizedAt)&&Date.parse(input.expiresAt)-Date.parse(input.authorizedAt)<=7200000,'MAINTENANCE_WINDOW_INVALID');
+ record(input.backup,['descriptorSha256','artifactSha256','checkpointSha256','verifiedAt','retentionVerifiedAt']);for(const key of ['descriptorSha256','artifactSha256','checkpointSha256'])textValue(input.backup[key],HASH);for(const key of ['verifiedAt','retentionVerifiedAt']){timestamp(input.backup[key]);ensure(Date.parse(input.authorizedAt)-Date.parse(String(input.backup[key]))>=0&&Date.parse(input.authorizedAt)-Date.parse(String(input.backup[key]))<=300000,'MAINTENANCE_BACKUP_PROOF_STALE');}
+ record(input.preservation,['identitySha256','configSha256','provenanceSha256','workerSha256']);for(const value of Object.values(input.preservation))textValue(value,HASH);ensure(Object.keys(input.preservation).length===4,'MAINTENANCE_PRESERVATION_REQUIRED');
+ ensure(['authorized','monitoring_ready','pause_pending','paused','resume_pending','active','closed'].includes(String(input.phase)),'MAINTENANCE_PHASE_INVALID');
+ for(const key of ['pausedAt','resumedAt','endedAt'])if(input[key]!==null)timestamp(input[key]);for(const key of ['pauseReadbackSha256','resumeReadbackSha256'])if(input[key]!==null)textValue(input[key],HASH);
+ if(input.monitoring!==null){record(input.monitoring,['beganAt','evidenceSha256','sourceConfigSha256','silences','endedAt','endEvidenceSha256']);timestamp(input.monitoring.beganAt);textValue(input.monitoring.evidenceSha256,HASH);textValue(input.monitoring.sourceConfigSha256,HASH);ensure(Array.isArray(input.monitoring.silences)&&input.monitoring.silences.length>0&&input.monitoring.silences.length<=16,'MAINTENANCE_MONITORING_REQUIRED');for(const silence of input.monitoring.silences){record(silence,['ruleKey','id','evidenceSha256']);textValue(silence.ruleKey,ALIAS);textValue(silence.id,/^[a-zA-Z0-9_-]{1,128}$/u);textValue(silence.evidenceSha256,HASH);}if(input.monitoring.endedAt!==undefined)timestamp(input.monitoring.endedAt);if(input.monitoring.endEvidenceSha256!==undefined)textValue(input.monitoring.endEvidenceSha256,HASH);}
+ if(input.phase!=='authorized')ensure(input.monitoring!==null,'MAINTENANCE_MONITORING_REQUIRED');
+ if(['paused','resume_pending','active','closed'].includes(String(input.phase)))ensure(input.pausedAt!==null&&input.pauseReadbackSha256!==null,'SOURCE_PAUSE_PROOF_REQUIRED');
+ if(input.resumeProof!==null){record(input.resumeProof,['checkedAt','identitySha256','configSha256','provenanceSha256','workerSha256','checkpointSha256','readinessSha256','evidenceSha256']);timestamp(input.resumeProof.checkedAt);for(const key of ['identitySha256','configSha256','provenanceSha256','workerSha256','checkpointSha256','readinessSha256','evidenceSha256'])textValue(input.resumeProof[key],HASH);}
+ if(['active','closed'].includes(String(input.phase)))ensure(input.resumedAt!==null&&input.resumeReadbackSha256!==null&&input.resumeProof!==null,'SOURCE_RESUME_PROOF_REQUIRED');
+ if(input.phase==='closed')ensure(input.endedAt!==null&&input.monitoring?.endedAt!==undefined&&input.monitoring?.endEvidenceSha256!==undefined,'MAINTENANCE_END_PROOF_REQUIRED');
+ return /** @type {SourceMaintenance} */(/** @type {unknown} */(input));
+}
+/** Resolve a private file path without accepting symlinks or a repository boundary escape. @param {string} path @param {string} repositoryRoot */
+export async function assertPrivatePath(path, repositoryRoot) {
+    try {
+        ensure(isAbsolute(path), 'PRIVATE_PATH_REQUIRED');
+        const root = await realpath(repositoryRoot);
+        const parent = await realpath(dirname(path));
+        ensure(parent === resolve(dirname(path)), 'PRIVATE_SYMLINK_FORBIDDEN');
+        const rel = relative(root, parent);
+        ensure(rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(rel), 'PRIVATE_PATH_IN_REPOSITORY');
+        const stat = await lstat(parent);
+        ensure(stat.isDirectory() && (stat.mode & 0o777) === 0o700 && (process.getuid === undefined || stat.uid === process.getuid()), 'PRIVATE_DIRECTORY_MODE_REQUIRED');
+        try {
+            const current = await lstat(path);
+            ensure(current.isFile() && !current.isSymbolicLink() && current.nlink === 1 && (current.mode & 0o777) === 0o600 && (process.getuid === undefined || current.uid === process.getuid()), 'PRIVATE_FILE_MODE_REQUIRED');
+        }
+        catch (error) {
+            if ( /** @type {NodeJS.ErrnoException} */(error).code !== 'ENOENT')
+                throw error;
+        }
+        return resolve(path);
+    }
+    catch (error) {
+        if (error instanceof OperationsError)
+            throw error;
+        throw new OperationsError('PRIVATE_PATH_INVALID');
+    }
+}
+/** @param {string} path @param {PrivateFileOptions} options @returns {Promise<OperationsManifest>} */
+export async function readPrivateManifest(path, options) {
+    await assertPrivatePath(path, options.repositoryRoot);
+    try {
+        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+            const stat = await handle.stat();
+            ensure((stat.mode & 0o777) === 0o600 && stat.nlink === 1 && stat.size <= 1048576, 'PRIVATE_FILE_MODE_REQUIRED');
+            return validateManifest(JSON.parse(await handle.readFile('utf8')), options);
+        }
+        finally {
+            await handle.close();
+        }
+    }
+    catch (error) {
+        if (error instanceof OperationsError)
+            throw error;
+        throw new OperationsError('PRIVATE_MANIFEST_UNREADABLE');
+    }
+}
+/** Atomic writes; creation never overwrites an existing manifest. Caller must hold the transaction lock for replacement. @param {string} path @param {unknown} value @param {PrivateFileOptions} options */
+export async function writePrivateManifest(path, value, options) {
+    const validated = validateManifest(value, options);
+    await assertPrivatePath(path, options.repositoryRoot);
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+        const handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+        try {
+            await handle.writeFile(`${JSON.stringify(validated, null, 2)}\n`);
+            await handle.sync();
+        }
+        finally {
+            await handle.close();
+        }
+        if (options.replace)
+            await rename(temporary, path);
+        else
+            await link(temporary, path);
+        const directory = await open(dirname(path), constants.O_RDONLY);
+        try {
+            await directory.sync();
+        }
+        finally {
+            await directory.close();
+        }
+    }
+    catch (error) {
+        if (error instanceof OperationsError)
+            throw error;
+        throw new OperationsError('PRIVATE_MANIFEST_WRITE_FAILED');
+    }
+    finally {
+        await unlink(temporary).catch(error => { if (error.code !== 'ENOENT')
+            throw new OperationsError('PRIVATE_TEMP_CLEANUP_FAILED'); });
+    }
+}
+/** @typedef {'source-read'|'restore-write'|'monitoring-config'|'artifact-upload'|'cleanup'} Capability */
+/** @typedef {ProjectIdentity & {status:string,plan:string,cost:number,owned:boolean,freeCapacity:boolean,credential:{id:string,role:string,projectRef:string,organizationId:string},candidate:Candidate,isolation:{productionRoutes:boolean,stagingRoutes:boolean,foreignSecrets:boolean,foreignUsers:boolean,foreignData:boolean,foreignObjects:boolean,outboundEffects:boolean}}} ProjectReadback */
+/** Read-only guard shared by operator actions; readback is normalized at the provider adapter boundary. @param {unknown} input @param {ProjectReadback} observed @param {{role:Capability,now?:string,requireEmpty?:boolean,scope?:'source'|'target'}} options @returns {ProjectIdentity} */
+export function assertExactTarget(input, observed, { role, now, requireEmpty = true, scope = role === 'source-read' ? 'source' : 'target' }) {
+    const manifest = validateManifest(input, { now });
+    const expected = scope === 'source' ? manifest.source : manifest.target;
+    ensure(expected, 'TARGET_IDENTITY_REQUIRED');
+    ensure(observed && Object.entries(expected).every(([key, value]) => observed[ /** @type {keyof ProjectIdentity} */(key)] === value), 'TARGET_IDENTITY_MISMATCH');
+    ensure(observed.status === 'ACTIVE_HEALTHY', 'TARGET_STATUS_MISMATCH');
+    ensure(observed.plan === 'free' && observed.cost === 0 && observed.freeCapacity === true, 'ZERO_COST_REQUIRED');
+    ensure(observed.owned === true, 'PROJECT_OWNERSHIP_UNPROVEN');
+    ensure(observed.credential?.role === role && observed.credential.id === manifest.capabilityIds[role] && observed.credential.projectRef === expected.ref && observed.credential.organizationId === expected.organizationId, 'CREDENTIAL_ROLE_MISMATCH');
+    ensure(observed.candidate?.sha === manifest.candidate.sha && observed.candidate.tree === manifest.candidate.tree && observed.candidate.deploymentId === (scope === 'target' ? manifest.targetDeploymentId ?? manifest.candidate.deploymentId : manifest.candidate.deploymentId), 'CANDIDATE_MISMATCH');
+    if (scope === 'target') {
+        ensure(observed.isolation?.productionRoutes === false && observed.isolation.stagingRoutes === false && observed.isolation.foreignSecrets === false && observed.isolation.outboundEffects === false, 'QUARANTINE_UNPROVEN');
+        if (requireEmpty)
+            ensure(observed.isolation.foreignUsers === false && observed.isolation.foreignData === false && observed.isolation.foreignObjects === false, 'TARGET_FOREIGN_STATE');
+    }
+    return { ...expected };
+}
+/** A child cannot inherit arbitrary machine credentials, runtime hooks, or config paths. @param {Record<string,string|undefined>} environment @param {Capability} capability @returns {Record<string,string>} */
+export function buildChildEnvironment(environment, capability) {
+    const common = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR'];
+    const roles = { 'source-read': ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGSSLMODE', 'PGSSLROOTCERT'], 'restore-write': ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGSSLMODE', 'PGSSLROOTCERT'], 'monitoring-config': ['ISSUE29_MONITOR_ADMIN_TOKEN'], 'artifact-upload': ['GH_TOKEN'], cleanup: ['ISSUE29_CLEANUP_TOKEN'] };
+    ensure(Object.hasOwn(roles, capability), 'CREDENTIAL_ROLE_MISMATCH');
+    return Object.fromEntries([...common, ...roles[capability]].flatMap(name => typeof environment[name] === 'string' ? [[name, /** @type {string} */ (environment[name])]] : []));
+}

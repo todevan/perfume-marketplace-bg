@@ -72,6 +72,9 @@ jobs:
         run: pnpm validate:catalog
       - name: Run unit and contract tests
         run: pnpm test:unit
+      - name: Verify isolated Issue 29 monitor runtime
+        run: >-
+          pnpm exec tsc --noEmit --allowJs false --strict --target ES2022 --moduleResolution bundler --module ESNext --lib ES2022,WebWorker workers/issue29-monitor/src/index.ts
       - name: Run Node database operator contracts
         run: pnpm test:db:contracts
       - name: Run Svelte checks
@@ -84,6 +87,8 @@ jobs:
         run: pnpm exec wrangler deploy --dry-run --env staging
       - name: Validate production Cloudflare bundle
         run: pnpm exec wrangler deploy --dry-run --env=""
+      - name: Validate isolated Issue 29 monitor bundle
+        run: pnpm exec wrangler deploy --config workers/issue29-monitor/wrangler.jsonc --dry-run
 
   database:
     needs: dependency-audit

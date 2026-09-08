@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createOperationsEvidenceReader, validateOperationsReadiness } from './issue29-operations/readiness.mjs';
 
 const workspace = resolve(import.meta.dirname, '..');
 const envArgument = process.argv.find((argument) => argument.startsWith('--env-file='));
@@ -458,6 +459,34 @@ if (providerReceipt) {
       }
     }
   }
+}
+
+const operationsReceipt = readReceipt(
+  'OPERATIONS_READINESS_RECEIPT_PATH',
+  'OPERATIONS_READINESS_RECEIPT_SHA256'
+);
+if (operationsReceipt) {
+  const evidenceDirectory = requireValue('OPERATIONS_EVIDENCE_DIRECTORY');
+  let readEvidence;
+  try {
+    if (!evidenceDirectory) throw new Error('missing private evidence directory');
+    readEvidence = createOperationsEvidenceReader(resolve(workspace, evidenceDirectory), workspace);
+  } catch {
+    failures.push('OPERATIONS_EVIDENCE_DIRECTORY must resolve outside the repository');
+  }
+  failures.push(...validateOperationsReadiness(operationsReceipt, {
+    expected: {
+      commitSha: releaseCommitSha,
+      treeSha: requireValue('RELEASE_TREE_SHA'),
+      workerVersion: requireValue('RELEASE_WORKER_VERSION'),
+      environmentAlias: environment.APP_ENV?.trim(),
+      projectRef: expectedSupabaseRef,
+      monitorConfigSha256: requireSha256('OPERATIONS_MONITOR_CONFIG_SHA256'),
+      runbookSha256: createHash('sha256').update(readFileSync(resolve(workspace, 'docs/INCIDENT-RESPONSE.md'))).digest('hex'),
+      isolationMatrixSha256: requireSha256('OPERATIONS_ISOLATION_MATRIX_SHA256')
+    },
+    readEvidence
+  }));
 }
 
 for (const key of ['NOTIFICATION_WEBHOOK_SECRET', 'UPLOAD_CLEANUP_SECRET']) {

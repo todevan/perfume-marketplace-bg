@@ -200,7 +200,7 @@ export function verifyStagingInventoryReceipt(environment) {
 		age > 30 * 60_000 ||
 		receipt?.stopConditionsClear !== true ||
 		receipt?.containsRealData !== false ||
-		receipt?.publicSignupEnabled !== false ||
+		receipt?.publicSignupEnabled !== true ||
 		!Array.isArray(receipt?.unexpectedObjects) ||
 		receipt.unexpectedObjects.length !== 0 ||
 		JSON.stringify(categories) !== JSON.stringify([...REQUIRED_INVENTORY_CATEGORIES].sort())

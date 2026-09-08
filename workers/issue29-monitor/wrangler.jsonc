@@ -1,0 +1,12 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "aromatika-issue29-monitor",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-20",
+  "workers_dev": true,
+  "triggers": { "crons": ["*/10 * * * *"] },
+  "durable_objects": {
+    "bindings": [{ "name": "MONITOR_COORDINATOR", "class_name": "Issue29MonitorCoordinator" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Issue29MonitorCoordinator"] }]
+}

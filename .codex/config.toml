@@ -1,4 +1,4 @@
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 
 [mcp_servers.aromatika-svelte]
 command = "node"

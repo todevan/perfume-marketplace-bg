@@ -348,4 +348,29 @@ describe('pre-launch deployment hardening', () => {
 			expect(result.stderr).toContain(`${flag} must be false`);
 		}
 	});
+	it('requires an Issue 29 operations receipt, not a generic provider success', () => {
+		const result = runReadiness();
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain('OPERATIONS_READINESS_RECEIPT_PATH is required');
+		expect(result.stderr).toContain('OPERATIONS_READINESS_RECEIPT_SHA256 is required');
+	});
+
+	it('hash-binds operations receipt bytes and does not echo private content', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'operations-gate-'));
+		const path = join(directory, 'operations.json');
+		try {
+			writeFileSync(path, JSON.stringify({ passed: true, privateValue: 'must-not-appear@example.invalid' }));
+			const result = runReadiness({
+				...validReleaseEnvironment,
+				OPERATIONS_READINESS_RECEIPT_PATH: path,
+				OPERATIONS_READINESS_RECEIPT_SHA256: 'f'.repeat(64)
+			});
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain('OPERATIONS_READINESS_RECEIPT_SHA256 does not match the exact receipt bytes');
+			expect(result.stderr).not.toContain('must-not-appear');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 });

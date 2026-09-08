@@ -19,15 +19,21 @@ Form and prove one materially final candidate before hosted proof, merge, or clo
    project configuration identity; lockfile state; proof tool versions; nonzero
    expected test discovery; focused and full required local gates; hosted provider
    schema/capability preflight when needed; one-source input/display fixture; and no
-   pending acceptance-critical documentation change.
+   pending acceptance-critical documentation change. Consume still-valid focused
+   evidence from Stage 03 and run each full required local gate once for the materially
+   changed candidate rather than repeating unchanged passing suites for reassurance.
 2. Freeze the exact candidate only after that record is complete. A candidate exists
    to prove finished work, not to attract intermediate reviews.
-3. Run one final review stage against the exact SHA: one fresh engineering/coherence
-   review for R1; one fresh engineering review and one fresh adversarial/security
-   review against the same SHA for R2.
-4. Batch verified blockers into one repair. If the SHA changes, rerun affected
-   deterministic gates and obtain focused final-SHA re-attestation from every
-   required reviewer; preserve analysis of unchanged surfaces.
+3. Build one bounded evidence package and run the final review stage against the exact
+   SHA using [`../reference/MODELS-AND-TOOLS.md`](../reference/MODELS-AND-TOOLS.md):
+   one fresh engineering/coherence review for R1; one fresh engineering review and one
+   fresh adversarial/security review against the same SHA for R2. Each required reviewer
+   gets one initial independent pass, reports material findings only, and returns
+   `INCOMPLETE` rather than `PASS` when assigned coverage cannot be completed.
+4. The accountable lead deduplicates overlapping findings and batches verified blockers
+   into one repair. If the SHA changes, rerun affected deterministic gates and obtain
+   focused final-SHA re-attestation from every required reviewer; preserve analysis of
+   unchanged surfaces rather than restarting review from zero.
 5. Run required CI against the exact SHA. Treat registry, advisory, and network
    outages as infrastructure: preserve the candidate and recheck once after fresh
    recovery evidence. Keep audits, fail-closed jobs, dependencies, and required
